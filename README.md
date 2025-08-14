@@ -95,7 +95,7 @@ This toolkit is designed for enterprise environments. Contributions should maint
 
 ## License
 
-[Include appropriate license information]
+GPL-3.0
 
 ## Support
 
