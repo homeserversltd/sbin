@@ -1,0 +1,33 @@
+#!/bin/bash
+# tailget - Extract tailnet from homeserver.json configuration
+# Usage: ./tailget [path_to_homeserver.json]
+# Default path: /var/www/homeserver/src/config/homeserver.json
+
+set -e
+
+# Default path if not provided
+HOMESERVER_JSON="${1:-/var/www/homeserver/src/config/homeserver.json}"
+
+# Check if jq is installed
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: jq is required but not installed" >&2
+    exit 1
+fi
+
+# Check if file exists
+if [ ! -f "$HOMESERVER_JSON" ]; then
+    echo "Error: homeserver.json not found at $HOMESERVER_JSON" >&2
+    exit 1
+fi
+
+# Extract tailnet from CORS allowed_origins (primary source)
+echo "Checking allowed_origins..." >&2
+tailnet=$(jq -r '.global.cors.allowed_origins[]' "$HOMESERVER_JSON" | grep -o 'home\.[a-zA-Z0-9-]*\.ts\.net' | head -n1 | cut -d. -f2)
+
+# Output result
+if [[ -z "$tailnet" ]]; then
+    echo "Error: Could not determine tailnet from $HOMESERVER_JSON" >&2
+    exit 1
+else
+    echo "$tailnet"
+fi

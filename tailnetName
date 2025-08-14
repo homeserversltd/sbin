@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""
+Update Nginx homeserver site configs with new tailnet from homeserver.json.
+Handles all homeserver-* files in /etc/nginx/sites-available.
+Includes backup and rollback functionality.
+"""
+import json
+import re
+import subprocess
+import sys
+import shutil
+import glob
+from pathlib import Path
+from typing import Optional, List, Tuple
+
+# Configuration
+NGINX_SITES_DIR = "/etc/nginx/sites-available"
+HOMESERVER_JSON = "/var/www/homeserver/src/config/homeserver.json"
+BACKUP_DIR = "/etc/nginx/sites-available/backup"
+
+def check_nginx_running() -> bool:
+    """Check if nginx is running."""
+    try:
+        result = subprocess.run(
+            ['/usr/bin/systemctl', 'is-active', '--quiet', 'nginx'],
+            check=False
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print(f"Error checking nginx status: {e}")
+        return False
+
+def get_tailnet_from_json() -> Optional[str]:
+    """Extract tailnet name from homeserver.json."""
+    try:
+        with open(HOMESERVER_JSON, 'r') as f:
+            config = json.load(f)
+        
+        # Extract tailnet from CORS allowed_origins (primary source)
+        origins = config.get('global', {}).get('cors', {}).get('allowed_origins', [])
+        for origin in origins:
+            if '.ts.net' in origin:
+                match = re.search(r'https://home\.([a-zA-Z0-9-]+)\.ts\.net', origin)
+                if match:
+                    return match.group(1)
+        
+        return None
+    except Exception as e:
+        print(f"Error reading homeserver.json: {e}")
+        return None
+
+def find_homeserver_files() -> List[str]:
+    """Find all homeserver-* files in nginx sites-available directory."""
+    pattern = f"{NGINX_SITES_DIR}/homeserver-*"
+    files = glob.glob(pattern)
+    return [f for f in files if Path(f).is_file()]
+
+def get_current_tailnet_from_file(file_path: str) -> Optional[str]:
+    """Get current tailnet name from a specific nginx config file."""
+    try:
+        with open(file_path, 'r') as f:
+            content = f.read()
+            match = re.search(r'home\.([a-zA-Z0-9-]+)\.ts\.net', content)
+            return match.group(1) if match else None
+    except Exception as e:
+        print(f"Error reading nginx config {file_path}: {e}")
+        return None
+
+def update_nginx_config_file(file_path: str, old_tailnet: str, new_tailnet: str) -> bool:
+    """Update a single nginx config file with new tailnet name."""
+    try:
+        with open(file_path, 'r') as f:
+            content = f.read()
+        
+        new_content = content.replace(
+            f"home.{old_tailnet}.ts.net",
+            f"home.{new_tailnet}.ts.net"
+        )
+        
+        with open(file_path, 'w') as f:
+            f.write(new_content)
+        return True
+    except Exception as e:
+        print(f"Error updating nginx config {file_path}: {e}")
+        return False
+
+def create_backup_directory() -> bool:
+    """Create backup directory if it doesn't exist."""
+    try:
+        Path(BACKUP_DIR).mkdir(parents=True, exist_ok=True)
+        return True
+    except Exception as e:
+        print(f"Error creating backup directory: {e}")
+        return False
+
+def backup_file(file_path: str) -> bool:
+    """Create backup of a single file."""
+    try:
+        filename = Path(file_path).name
+        backup_path = f"{BACKUP_DIR}/{filename}.bak"
+        shutil.copy2(file_path, backup_path)
+        return True
+    except Exception as e:
+        print(f"Failed to create backup for {file_path}: {e}")
+        return False
+
+def restore_file(file_path: str) -> bool:
+    """Restore a single file from backup."""
+    try:
+        filename = Path(file_path).name
+        backup_path = f"{BACKUP_DIR}/{filename}.bak"
+        if Path(backup_path).exists():
+            shutil.copy2(backup_path, file_path)
+            return True
+        return False
+    except Exception as e:
+        print(f"Failed to restore {file_path}: {e}")
+        return False
+
+def test_nginx_config() -> bool:
+    """Test nginx configuration."""
+    try:
+        result = subprocess.run(
+            ['/usr/sbin/nginx', '-t'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print(f"Error testing nginx config: {e}")
+        return False
+
+def restart_nginx() -> bool:
+    """Restart nginx service."""
+    try:
+        result = subprocess.run(
+            ['/usr/bin/systemctl', 'restart', 'nginx'],
+            check=False
+        )
+        return result.returncode == 0
+    except Exception as e:
+        print(f"Error restarting nginx: {e}")
+        return False
+
+def regenerate_ssl_certificate() -> bool:
+    """Regenerate SSL certificate with new tailnet name."""
+    try:
+        result = subprocess.run(
+            ['/usr/local/sbin/sslKey.sh'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"SSL certificate regeneration failed: {result.stderr}")
+            return False
+        print("SSL certificate regenerated successfully with new tailnet")
+        return True
+    except Exception as e:
+        print(f"Error regenerating SSL certificate: {e}")
+        return False
+
+def main() -> int:
+    """Main function."""
+    # Check if nginx is running
+    if not check_nginx_running():
+        print("Nginx is not running. Exiting.")
+        return 1
+
+    # Get new tailnet name
+    new_tailnet = get_tailnet_from_json()
+    if not new_tailnet:
+        print("Could not determine tailnet from homeserver.json. Exiting.")
+        return 2
+
+    print(f"Detected tailnet: {new_tailnet}")
+
+    # Find all homeserver files
+    homeserver_files = find_homeserver_files()
+    if not homeserver_files:
+        print("No homeserver-* files found in nginx sites-available directory.")
+        return 3
+
+    print(f"Found {len(homeserver_files)} homeserver files to update:")
+    for file_path in homeserver_files:
+        print(f"  - {Path(file_path).name}")
+
+    # Get current tailnet from first file (should be consistent across all files)
+    old_tailnet = get_current_tailnet_from_file(homeserver_files[0])
+    if not old_tailnet:
+        print("Could not find old tailnet in nginx config files. Exiting.")
+        return 4
+
+    if old_tailnet == new_tailnet:
+        print("Tailnet name unchanged. No update needed.")
+        return 0
+
+    print(f"Updating tailnet from '{old_tailnet}' to '{new_tailnet}'")
+
+    # Create backup directory
+    if not create_backup_directory():
+        return 5
+
+    # Backup all files
+    print("Creating backups...")
+    for file_path in homeserver_files:
+        if not backup_file(file_path):
+            print(f"Failed to backup {file_path}. Exiting.")
+            return 6
+
+    # Update all files
+    print("Updating files...")
+    updated_files = []
+    for file_path in homeserver_files:
+        if update_nginx_config_file(file_path, old_tailnet, new_tailnet):
+            updated_files.append(file_path)
+            print(f"  ✓ Updated {Path(file_path).name}")
+        else:
+            print(f"  ✗ Failed to update {Path(file_path).name}")
+            # Rollback all updated files
+            print("Rolling back all changes...")
+            for updated_file in updated_files:
+                restore_file(updated_file)
+            return 7
+
+    # Test nginx config
+    print("Testing nginx configuration...")
+    if not test_nginx_config():
+        print("New nginx configuration is invalid. Rolling back all changes...")
+        for file_path in homeserver_files:
+            restore_file(file_path)
+        return 8
+
+    # Restart nginx
+    print("Restarting nginx...")
+    if not restart_nginx():
+        print("Failed to restart nginx. Rolling back all changes...")
+        for file_path in homeserver_files:
+            restore_file(file_path)
+        if not restart_nginx():
+            print("Failed to restart nginx even after revert! Manual intervention required.")
+            return 10
+        print("Nginx reverted and restarted successfully.")
+        return 9
+
+    # Regenerate SSL certificate with new tailnet
+    print("Regenerating SSL certificate with new tailnet...")
+    if not regenerate_ssl_certificate():
+        print("Warning: SSL certificate regeneration failed. Manual intervention may be required.")
+        # Don't fail the entire operation, just warn
+        # The nginx configs are updated successfully
+
+    print(f"Nginx restarted successfully with new tailnet: {new_tailnet}")
+    print(f"Updated {len(homeserver_files)} files:")
+    for file_path in homeserver_files:
+        print(f"  - {Path(file_path).name}")
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())

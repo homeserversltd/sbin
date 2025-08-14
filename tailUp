@@ -1,0 +1,33 @@
+#!/bin/bash
+
+# Script to run 'tailscale up' and extract the login URL
+# Used by the homeserver backend to generate authentication URLs
+
+# IMPORTANT: Do not use 'set -e' here. We need to harvest partial output even if
+# the command times out or returns non-zero.
+
+# Run tailscale up with a short timeout and line-buffering so the URL flushes
+# to stdout/stderr. Capture combined output.
+OUTPUT=$(/usr/bin/timeout 12s /usr/bin/stdbuf -oL -eL /usr/bin/tailscale up 2>&1)
+
+# Try to extract the login URL from the combined output
+LOGIN_URL=$(printf '%s' "$OUTPUT" | grep -oE 'https://login\.tailscale\.com/a/[a-zA-Z0-9]+')
+
+if [ -n "$LOGIN_URL" ]; then
+	echo "$LOGIN_URL"
+	exit 0
+fi
+
+# Passive fallback: sometimes systemctl status has the URL in logs
+STATUS_OUTPUT=$(/usr/bin/systemctl status tailscaled.service 2>&1 || true)
+LOGIN_URL=$(printf '%s' "$STATUS_OUTPUT" | grep -oE 'https://login\.tailscale\.com/a/[a-zA-Z0-9]+')
+
+if [ -n "$LOGIN_URL" ]; then
+	echo "$LOGIN_URL"
+	exit 0
+fi
+
+# If still no URL, print a concise error with captured output for debugging
+echo "ERROR: No login URL found in output:" >&2
+printf '%s\n' "$OUTPUT" >&2
+exit 1
