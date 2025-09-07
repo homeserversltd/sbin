@@ -1,0 +1,408 @@
+#!/bin/bash
+
+# Website Emergency Restoration Script
+# 
+# This script restores the website from GitHub when the update system
+# completely nukes the installation. Based on real-world recovery experience.
+#
+# Usage: ./website_emergency_restore.sh [--dry-run] [--preserve-config]
+#
+# The update system can fail catastrophically, leaving the website completely
+# broken. This script restores the core website files (backend, src, public)
+# from the GitHub repository while preserving user configurations.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+# Configuration
+DEFAULT_REPO_URL="https://github.com/homeserversltd/website.git"
+WEBSITE_DIR="/var/www/homeserver"
+TEMP_DIR="/tmp/website-emergency-restore"
+LOG_FILE="/var/log/homeserver/website_emergency_restore.log"
+
+# Colors for output (avoiding colored text per user preference)
+LOG_PREFIX="[WEBSITE-EMERGENCY]"
+
+# Parse command line arguments
+DRY_RUN=false
+PRESERVE_CONFIG=false
+REPO_URL="$DEFAULT_REPO_URL"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --preserve-config)
+            PRESERVE_CONFIG=true
+            shift
+            ;;
+        --repo-url)
+            REPO_URL="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $0 [--dry-run] [--preserve-config] [--repo-url URL]"
+            echo "  --dry-run        Show what would be done without making changes"
+            echo "  --preserve-config Preserve existing user configurations"
+            echo "  --repo-url       Custom repository URL (default: $DEFAULT_REPO_URL)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+# Logging function
+log() {
+    echo "${LOG_PREFIX} $1" | tee -a "$LOG_FILE"
+}
+
+log_error() {
+    echo "${LOG_PREFIX} ERROR: $1" | tee -a "$LOG_FILE" >&2
+}
+
+log_warn() {
+    echo "${LOG_PREFIX} WARN: $1" | tee -a "$LOG_FILE" >&2
+}
+
+# Check if we're running as root
+check_root() {
+    if [ "$(id -u)" -ne 0 ]; then
+        log_error "This script must be run as root"
+        exit 1
+    fi
+}
+
+# Check if website directory exists
+check_website_dir() {
+    if [ ! -d "$WEBSITE_DIR" ]; then
+        log_error "Website directory does not exist: $WEBSITE_DIR"
+        exit 1
+    fi
+    log "Website directory found: $WEBSITE_DIR"
+}
+
+# Backup user configurations if requested
+backup_user_config() {
+    if [ "$PRESERVE_CONFIG" = "true" ]; then
+        log "Backing up user configurations..."
+        
+        local config_backup_dir="/tmp/website_config_backup_$(date +%s)"
+        mkdir -p "$config_backup_dir"
+        
+        # Backup homeserver.json
+        if [ -f "$WEBSITE_DIR/src/config/homeserver.json" ]; then
+            cp "$WEBSITE_DIR/src/config/homeserver.json" "$config_backup_dir/"
+            log "Backed up homeserver.json"
+        fi
+        
+        # Backup themes directory
+        if [ -d "$WEBSITE_DIR/src/config/themes" ]; then
+            cp -r "$WEBSITE_DIR/src/config/themes" "$config_backup_dir/"
+            log "Backed up themes directory"
+        fi
+        
+        # Backup any other user configs
+        if [ -d "$WEBSITE_DIR/src/config" ]; then
+            find "$WEBSITE_DIR/src/config" -name "*.json" -not -name "homeserver.json" -exec cp {} "$config_backup_dir/" \;
+            log "Backed up additional config files"
+        fi
+        
+        echo "$config_backup_dir"
+    else
+        log "Skipping user config backup (--preserve-config not specified)"
+        echo ""
+    fi
+}
+
+# Clone the repository
+clone_repository() {
+    log "Cloning repository: $REPO_URL"
+    
+    if [ -d "$TEMP_DIR" ]; then
+        log "Removing existing temp directory: $TEMP_DIR"
+        rm -rf "$TEMP_DIR"
+    fi
+    
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY RUN: Would clone $REPO_URL to $TEMP_DIR"
+        return 0
+    fi
+    
+    if git clone --depth 1 --branch master "$REPO_URL" "$TEMP_DIR"; then
+        log "Repository cloned successfully"
+    else
+        log_error "Failed to clone repository"
+        return 1
+    fi
+}
+
+# Verify repository structure
+verify_repository() {
+    log "Verifying repository structure..."
+    
+    local required_dirs=("src" "backend" "public")
+    local required_files=("package.json" "main.py" "config.py")
+    
+    for dir in "${required_dirs[@]}"; do
+        if [ ! -d "$TEMP_DIR/$dir" ]; then
+            log_error "Repository missing required directory: $dir"
+            return 1
+        fi
+        log "Found directory: $dir"
+    done
+    
+    for file in "${required_files[@]}"; do
+        if [ ! -f "$TEMP_DIR/$file" ]; then
+            log_error "Repository missing required file: $file"
+            return 1
+        fi
+        log "Found file: $file"
+    done
+    
+    log "Repository structure verification passed"
+}
+
+# Restore core directories
+restore_core_directories() {
+    log "Restoring core directories..."
+    
+    local core_dirs=("backend" "src" "public")
+    
+    for dir in "${core_dirs[@]}"; do
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY RUN: Would restore $dir directory"
+        else
+            log "Restoring $dir directory..."
+            if [ -d "$WEBSITE_DIR/$dir" ]; then
+                rm -rf "$WEBSITE_DIR/$dir"
+            fi
+            cp -r "$TEMP_DIR/$dir" "$WEBSITE_DIR/"
+            log "Restored $dir directory"
+        fi
+    done
+}
+
+# Restore essential files
+restore_essential_files() {
+    log "Restoring essential files..."
+    
+    local essential_files=("main.py" "config.py" "package.json" "requirements.txt" "tsconfig.json")
+    
+    for file in "${essential_files[@]}"; do
+        if [ -f "$TEMP_DIR/$file" ]; then
+            if [ "$DRY_RUN" = "true" ]; then
+                log "DRY RUN: Would restore $file"
+            else
+                cp "$TEMP_DIR/$file" "$WEBSITE_DIR/"
+                log "Restored $file"
+            fi
+        else
+            log_warn "Essential file not found in repository: $file"
+        fi
+    done
+}
+
+# Restore user configurations
+restore_user_config() {
+    local config_backup_dir="$1"
+    
+    if [ -n "$config_backup_dir" ] && [ -d "$config_backup_dir" ]; then
+        log "Restoring user configurations..."
+        
+        if [ "$DRY_RUN" = "true" ]; then
+            log "DRY RUN: Would restore user configurations from $config_backup_dir"
+        else
+            # Restore homeserver.json
+            if [ -f "$config_backup_dir/homeserver.json" ]; then
+                cp "$config_backup_dir/homeserver.json" "$WEBSITE_DIR/src/config/"
+                log "Restored homeserver.json"
+            fi
+            
+            # Restore themes directory
+            if [ -d "$config_backup_dir/themes" ]; then
+                cp -r "$config_backup_dir/themes" "$WEBSITE_DIR/src/config/"
+                log "Restored themes directory"
+            fi
+            
+            # Restore other config files
+            find "$config_backup_dir" -name "*.json" -not -name "homeserver.json" -exec cp {} "$WEBSITE_DIR/src/config/" \;
+            log "Restored additional config files"
+        fi
+    else
+        log "No user config backup to restore"
+    fi
+}
+
+# Fix ownership and permissions
+fix_permissions() {
+    log "Fixing ownership and permissions..."
+    
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY RUN: Would set ownership to www-data:www-data"
+    else
+        chown -R www-data:www-data "$WEBSITE_DIR"
+        log "Set ownership to www-data:www-data"
+    fi
+}
+
+# Build the frontend
+build_frontend() {
+    log "Building frontend..."
+    
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY RUN: Would run npm install and npm run build"
+        return 0
+    fi
+    
+    cd "$WEBSITE_DIR"
+    
+    if npm install; then
+        log "npm install completed successfully"
+    else
+        log_error "npm install failed"
+        return 1
+    fi
+    
+    if npm run build; then
+        log "Frontend build completed successfully"
+    else
+        log_error "Frontend build failed"
+        return 1
+    fi
+}
+
+# Restart services
+restart_services() {
+    log "Restarting services..."
+    
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY RUN: Would restart gunicorn.service"
+        return 0
+    fi
+    
+    if systemctl restart gunicorn.service; then
+        log "Gunicorn service restarted successfully"
+    else
+        log_error "Failed to restart gunicorn service"
+        return 1
+    fi
+}
+
+# Verify restoration
+verify_restoration() {
+    log "Verifying restoration..."
+    
+    if [ "$DRY_RUN" = "true" ]; then
+        log "DRY RUN: Would verify website functionality"
+        return 0
+    fi
+    
+    # Check if essential files exist
+    local essential_files=("$WEBSITE_DIR/src/config/homeserver.json" "$WEBSITE_DIR/package.json" "$WEBSITE_DIR/main.py")
+    
+    for file in "${essential_files[@]}"; do
+        if [ ! -f "$file" ]; then
+            log_error "Essential file missing after restoration: $file"
+            return 1
+        fi
+    done
+    
+    # Check if gunicorn is running
+    if systemctl is-active --quiet gunicorn.service; then
+        log "Gunicorn service is running"
+    else
+        log_error "Gunicorn service is not running"
+        return 1
+    fi
+    
+    log "Restoration verification passed"
+}
+
+# Cleanup
+cleanup() {
+    log "Cleaning up temporary files..."
+    
+    if [ -d "$TEMP_DIR" ]; then
+        rm -rf "$TEMP_DIR"
+        log "Removed temporary directory: $TEMP_DIR"
+    fi
+    
+    if [ -n "$1" ] && [ -d "$1" ]; then
+        rm -rf "$1"
+        log "Removed config backup directory: $1"
+    fi
+}
+
+# Main restoration function
+main() {
+    log "Starting website emergency restoration..."
+    
+    # Check prerequisites
+    check_root
+    check_website_dir
+    
+    # Backup user config if requested
+    local config_backup_dir
+    config_backup_dir=$(backup_user_config)
+    
+    # Clone repository
+    if ! clone_repository; then
+        log_error "Cannot proceed without repository"
+        exit 1
+    fi
+    
+    # Verify repository
+    if ! verify_repository; then
+        log_error "Repository verification failed"
+        cleanup "$config_backup_dir"
+        exit 1
+    fi
+    
+    # Restore core directories
+    restore_core_directories
+    
+    # Restore essential files
+    restore_essential_files
+    
+    # Restore user configurations
+    restore_user_config "$config_backup_dir"
+    
+    # Fix permissions
+    fix_permissions
+    
+    # Build frontend
+    if ! build_frontend; then
+        log_error "Frontend build failed"
+        cleanup "$config_backup_dir"
+        exit 1
+    fi
+    
+    # Restart services
+    if ! restart_services; then
+        log_error "Service restart failed"
+        cleanup "$config_backup_dir"
+        exit 1
+    fi
+    
+    # Verify restoration
+    if ! verify_restoration; then
+        log_error "Restoration verification failed"
+        cleanup "$config_backup_dir"
+        exit 1
+    fi
+    
+    # Cleanup
+    cleanup "$config_backup_dir"
+    
+    log "Website emergency restoration completed successfully!"
+    log "Website should now be accessible at: https://home.arpa"
+}
+
+# Run main function
+main "$@"
