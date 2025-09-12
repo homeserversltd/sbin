@@ -50,7 +50,24 @@ if [[ -z "$tailnet" ]]; then
   exit 3
 fi
 
-# Create OpenSSL config with SANs
+# Extract all unique subdomains dynamically from homeserver.json
+echo "Extracting subdomains from $HOMESERVER_JSON..."
+subdomains=$(jq -r '.tabs.portals.data.portals[].localURL' "$HOMESERVER_JSON" 2>/dev/null | \
+    grep -E '^https?://[^/]+\.home\.arpa' | \
+    sed 's|^https\?://||' | \
+    sed 's|/.*$||' | \
+    sort | uniq)
+
+if [[ -z "$subdomains" ]]; then
+    echo "Warning: No subdomains found in homeserver.json. Using fallback list."
+    # Fallback to common subdomains if extraction fails
+    subdomains="jellyfin.home.arpa git.home.arpa vault.home.arpa photos.home.arpa docs.home.arpa transmission.home.arpa music.home.arpa files.home.arpa books.home.arpa rss.home.arpa"
+fi
+
+echo "Found subdomains:"
+echo "$subdomains" | sed 's/^/  - /'
+
+# Create OpenSSL config with dynamic SANs
 cat > "$CONFIG_FILE" << EOL
 [req]
 default_bits = 4096
@@ -77,6 +94,14 @@ DNS.1 = home.arpa
 DNS.2 = *.home.arpa
 DNS.3 = home.${tailnet}.ts.net
 EOL
+
+# Add each subdomain as explicit SAN entry
+counter=4
+for subdomain in $subdomains; do
+    echo "DNS.$counter = $subdomain" >> "$CONFIG_FILE"
+    echo "  Adding SAN: $subdomain"
+    counter=$((counter + 1))
+done
 
 # Generate the self-signed certificate and key with maximum validity across platforms
 # Windows/macOS/iOS: 824 days (2 years + 94 days) is the maximum allowed
