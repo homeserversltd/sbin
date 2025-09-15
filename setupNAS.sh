@@ -148,6 +148,19 @@ apply_path_permissions() {
   return 0
 }
 
+# --- Read included permissions ---
+INCLUDED_USERS=()
+INCLUDED_GROUPS=()
+if /usr/bin/jq -e '.global.permissions.nas.includedPermissions.user' "$CONFIG_PATH" >/dev/null 2>&1; then
+  mapfile -t INCLUDED_USERS < <(/usr/bin/jq -r '.global.permissions.nas.includedPermissions.user[]' "$CONFIG_PATH")
+fi
+if /usr/bin/jq -e '.global.permissions.nas.includedPermissions.group' "$CONFIG_PATH" >/dev/null 2>&1; then
+  mapfile -t INCLUDED_GROUPS < <(/usr/bin/jq -r '.global.permissions.nas.includedPermissions.group[]' "$CONFIG_PATH")
+fi
+
+log_info "Included users: ${INCLUDED_USERS[*]}"
+log_info "Included groups: ${INCLUDED_GROUPS[*]}"
+
 # --- Process applications ---
 for app in "${APPS[@]}"; do
   log_info "Processing application: $app"
@@ -156,11 +169,20 @@ for app in "${APPS[@]}"; do
   group=$(get_app_field "$app" 'group')
   mode=$(get_app_field "$app" 'permissions')
   recursive=$(get_app_field "$app" 'recursive')
+  include_included=$(get_app_field "$app" 'includeIncludedPermissions')
   [ -z "$recursive" ] && recursive="false"
+  [ -z "$include_included" ] && include_included="false"
 
   if [ -z "$user" ] || [ -z "$group" ] || [ -z "$mode" ]; then
     log_error "Missing configuration for $app (user='$user' group='$group' mode='$mode')"
     continue
+  fi
+
+  # Determine final group ownership - use first included group if includeIncludedPermissions is true
+  final_group="$group"
+  if [ "$include_included" = "true" ] && [ ${#INCLUDED_GROUPS[@]} -gt 0 ]; then
+    final_group="${INCLUDED_GROUPS[0]}"
+    log_info "Using included group '$final_group' instead of '$group' for $app"
   fi
 
   mapfile -t PATHS < <(get_app_paths "$app")
@@ -170,7 +192,7 @@ for app in "${APPS[@]}"; do
   fi
 
   for p in "${PATHS[@]}"; do
-    apply_path_permissions "$p" "$user" "$group" "$mode" "$recursive" || true
+    apply_path_permissions "$p" "$user" "$final_group" "$mode" "$recursive" || true
   done
 
   # Special handling: CalibreWeb metadata.db bootstrap
@@ -183,7 +205,7 @@ for app in "${APPS[@]}"; do
           if [ -f "$src_db" ]; then
             log_info "CalibreWeb: metadata.db not found. Copying from $src_db to $dst_db"
             if /usr/bin/cp "$src_db" "$dst_db"; then
-              /usr/bin/chown "$user:$group" "$dst_db" || log_error "Failed to chown $dst_db"
+              /usr/bin/chown "$user:$final_group" "$dst_db" || log_error "Failed to chown $dst_db"
               /usr/bin/chmod "$mode" "$dst_db" || log_error "Failed to chmod $dst_db"
               log_info "CalibreWeb: metadata.db seeded and permissions set"
             else
