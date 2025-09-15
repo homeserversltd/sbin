@@ -12,12 +12,16 @@
 set -u  # Exit on undefined variables
 
 # Configuration
-WATCH_DIR="/mnt/nas/books/upload"
+WATCH_DIR="/mnt/nas/books/upload/"
 CALIBRE_LIBRARY="/mnt/nas/books"
 SERVICE_NAME="calibre-watch"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SCRIPT_NAME="calibreWatch.sh"
 SCRIPT_PATH="/usr/local/sbin/${SCRIPT_NAME}"
+
+# Version tracking for self-update detection
+VERSION_FILE="/usr/local/sbin/VERSION"
+SERVICE_VERSION_FILE="/etc/systemd/system/${SERVICE_NAME}.version"
 
 # Colors for output
 RED='\033[0;31m'
@@ -85,10 +89,28 @@ check_calibredb() {
 # Check if watch directory exists and is writable
 check_watch_directory() {
     if [[ ! -d "$WATCH_DIR" ]]; then
-        log_info "Creating watch directory: $WATCH_DIR"
-        mkdir -p "$WATCH_DIR"
-        chown calibre:calibre "$WATCH_DIR"
-        chmod 755 "$WATCH_DIR"
+        log_info "Watch directory does not exist. Creating: $WATCH_DIR"
+        if mkdir -p "$WATCH_DIR"; then
+            log_success "Created watch directory: $WATCH_DIR"
+        else
+            log_error "Failed to create watch directory: $WATCH_DIR"
+            exit 1
+        fi
+        
+        # Set proper ownership and permissions
+        if chown calibre:calibre "$WATCH_DIR"; then
+            log_info "Set ownership to calibre:calibre"
+        else
+            log_warning "Failed to set ownership (may need to run as root)"
+        fi
+        
+        if chmod 755 "$WATCH_DIR"; then
+            log_info "Set permissions to 755"
+        else
+            log_warning "Failed to set permissions"
+        fi
+    else
+        log_info "Watch directory exists: $WATCH_DIR"
     fi
     
     if [[ ! -w "$WATCH_DIR" ]]; then
@@ -110,22 +132,49 @@ check_calibre_library() {
     fi
 }
 
+# Validate book file type
+validate_book_file() {
+    local file="$1"
+    local extension="${file##*.}"
+    case "$extension" in
+        epub|pdf|mobi|azw|azw3|txt|rtf|doc|docx|html|htm|lit|prc|pdb|fb2|djvu|djv|chm|tcr|ps|pdb|pml|rb|rtf2|snb|tcr|txtz|zip|cbz|cb7|cbr|cbt)
+            return 0
+            ;;
+        *)
+            log_warning "Skipping unsupported file type: $extension"
+            return 1
+            ;;
+    esac
+}
+
+# Check if book already exists in library
+check_duplicate() {
+    local file="$1"
+    local filename=$(basename "$file")
+    if calibredb list --library-path="$CALIBRE_LIBRARY" --fields=formats | grep -q "$filename"; then
+        log_info "Book already exists in library: $filename"
+        return 0
+    fi
+    return 1
+}
+
 # Create the systemd service file
 create_systemd_service() {
     log_info "Creating systemd service file: $SERVICE_FILE"
     
-    cat > "$SERVICE_FILE" << EOF
+    cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
 Description=Calibre Web Watch Directory Monitor
 After=network.target calibre-web.service
 Wants=calibre-web.service
+Requires=calibre-web.service
 
 [Service]
 Type=simple
 User=calibre
 Group=calibre
-WorkingDirectory=$WATCH_DIR
-ExecStart=/bin/bash -c 'while true; do if [ "\$(ls -A $WATCH_DIR 2>/dev/null)" ]; then calibredb add -r "$WATCH_DIR" --library-path="$CALIBRE_LIBRARY" --duplicates && rm -f "$WATCH_DIR"/*; fi; sleep 30; done'
+WorkingDirectory=/mnt/nas/books/upload/
+ExecStart=/bin/bash -c 'while true; do if [ "\$(ls -A /mnt/nas/books/upload/ 2>/dev/null)" ]; then echo "[$(date)] Processing books in batches of 10..."; count=0; for book in /mnt/nas/books/upload/*; do if [ -f "$book" ]; then filename=$(basename "$book"); if echo "$filename" | grep -q "\.pdf$"; then echo "[$(date)] Adding: $filename"; if calibredb list --library-path="/mnt/nas/books" --fields=formats | grep -q "$filename"; then echo "[$(date)] Skipping duplicate: $filename"; rm -f "$book"; else calibredb add "$book" --library-path="/mnt/nas/books" --duplicates && rm -f "$book" || echo "[$(date)] Failed to add: $filename"; fi; count=$((count+1)); if [ $count -ge 10 ]; then echo "[$(date)] Processed 10 books, pausing..."; sleep 5; count=0; fi; else echo "[$(date)] Skipping unsupported format: $filename"; rm -f "$book"; fi; fi; done; echo "[$(date)] Batch processing complete"; fi; sleep 60; done'
 Restart=always
 RestartSec=30
 StandardOutput=journal
@@ -136,7 +185,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$WATCH_DIR $CALIBRE_LIBRARY
+ReadWritePaths=/mnt/nas/books/upload/ /mnt/nas/books
 
 [Install]
 WantedBy=multi-user.target
@@ -144,6 +193,11 @@ EOF
 
     if [[ $? -eq 0 ]]; then
         log_success "Systemd service file created successfully"
+        # Save current version to service version file
+        if [[ -f "$VERSION_FILE" ]]; then
+            cp "$VERSION_FILE" "$SERVICE_VERSION_FILE"
+            log_info "Service version tracked: $(cat "$VERSION_FILE")"
+        fi
     else
         log_error "Failed to create systemd service file"
         exit 1
@@ -154,12 +208,18 @@ EOF
 install_service() {
     log_info "Installing Calibre Web watch service..."
     
-    # Check if service already exists
+    # Check if service already exists and if version needs updating
     if [[ -f "$SERVICE_FILE" ]]; then
-        log_warning "Service already exists. Use 'restart' or 'uninstall' first if needed."
-        log_info "Current service status:"
-        systemctl status "$SERVICE_NAME" --no-pager
-        return 0
+        log_info "Service already exists. Checking for version updates..."
+        if check_and_update_service; then
+            log_info "Service updated successfully"
+            return 0
+        else
+            log_warning "Service exists but update check failed. Use 'restart' or 'uninstall' first if needed."
+            log_info "Current service status:"
+            systemctl status "$SERVICE_NAME" --no-pager
+            return 0
+        fi
     fi
     
     # Check prerequisites
@@ -201,6 +261,7 @@ install_service() {
     log_info "Calibre library: $CALIBRE_LIBRARY"
     log_info "Service status: systemctl status $SERVICE_NAME"
     log_info "To add books: Copy files to $WATCH_DIR"
+    log_info "To check for updates: $0 update"
 }
 
 # Uninstall the service
@@ -285,23 +346,167 @@ restart_service() {
     fi
 }
 
+# Check if script version has changed and update service if needed
+check_and_update_service() {
+    if [[ ! -f "$VERSION_FILE" ]]; then
+        log_warning "Version file not found: $VERSION_FILE"
+        return 0
+    fi
+    
+    local current_version
+    current_version=$(cat "$VERSION_FILE")
+    
+    if [[ ! -f "$SERVICE_VERSION_FILE" ]]; then
+        log_info "No service version file found, service needs to be created"
+        return 1
+    fi
+    
+    local service_version
+    service_version=$(cat "$SERVICE_VERSION_FILE")
+    
+    if [[ "$current_version" != "$service_version" ]]; then
+        log_info "Script version changed from $service_version to $current_version"
+        log_info "Updating systemd service..."
+        
+        # Stop service if running
+        if systemctl is-active --quiet "$SERVICE_NAME"; then
+            log_info "Stopping service for update..."
+            systemctl stop "$SERVICE_NAME"
+        fi
+        
+        # Recreate service file
+        create_systemd_service
+        
+        # Reload systemd daemon
+        log_info "Reloading systemd daemon..."
+        systemctl daemon-reload
+        
+        # Restart service if it was enabled
+        if systemctl is-enabled --quiet "$SERVICE_NAME"; then
+            log_info "Starting updated service..."
+            systemctl start "$SERVICE_NAME"
+            if [[ $? -eq 0 ]]; then
+                log_success "Service updated and restarted successfully"
+            else
+                log_error "Failed to start updated service"
+                return 1
+            fi
+        fi
+        
+        return 0
+    else
+        log_info "Script version unchanged: $current_version"
+        return 0
+    fi
+}
+
+# Force update service file regardless of version
+force_update_service() {
+    log_info "Force updating systemd service file..."
+    
+    # Stop service if running
+    if systemctl is-active --quiet "$SERVICE_NAME"; then
+        log_info "Stopping service for update..."
+        systemctl stop "$SERVICE_NAME"
+    fi
+    
+    # Recreate service file
+    create_systemd_service
+    
+    # Reload systemd daemon
+    log_info "Reloading systemd daemon..."
+    systemctl daemon-reload
+    
+    # Restart service if it was enabled
+    if systemctl is-enabled --quiet "$SERVICE_NAME"; then
+        log_info "Starting updated service..."
+        systemctl start "$SERVICE_NAME"
+        if [[ $? -eq 0 ]]; then
+            log_success "Service force updated and restarted successfully"
+        else
+            log_error "Failed to start updated service"
+            return 1
+        fi
+    else
+        log_warning "Service is not enabled, not starting automatically"
+    fi
+    
+    return 0
+}
+
+# Dry run mode - show what would be processed without actually doing it
+dry_run_mode() {
+    log_info "DRY RUN MODE - No files will be processed"
+    log_info "Watch directory: $WATCH_DIR"
+    log_info "Calibre library: $CALIBRE_LIBRARY"
+    
+    # Check and create watch directory if needed
+    check_watch_directory
+    
+    local files_found=0
+    local valid_files=0
+    local duplicate_files=0
+    local invalid_files=0
+    
+    for book in "$WATCH_DIR"/*; do
+        if [[ -f "$book" ]]; then
+            ((files_found++))
+            local filename=$(basename "$book")
+            log_info "Found file: $filename"
+            
+            if validate_book_file "$book"; then
+                if check_duplicate "$book"; then
+                    log_info "  -> Would skip (duplicate in library)"
+                    ((duplicate_files++))
+                else
+                    log_info "  -> Would add to library"
+                    ((valid_files++))
+                fi
+            else
+                log_info "  -> Would skip (unsupported format)"
+                ((invalid_files++))
+            fi
+        fi
+    done
+    
+    if [[ $files_found -eq 0 ]]; then
+        log_info "No files found in watch directory"
+    else
+        log_info "Dry run summary:"
+        log_info "  Total files found: $files_found"
+        log_info "  Would process: $valid_files"
+        log_info "  Would skip (duplicates): $duplicate_files"
+        log_info "  Would skip (invalid format): $invalid_files"
+    fi
+    
+    return 0
+}
+
 # Show usage information
 show_usage() {
-    echo "Usage: $0 [COMMAND]"
+    echo "Usage: $0 [COMMAND] [OPTIONS]"
     echo ""
     echo "Commands:"
-    echo "  install   - Install and start the Calibre Web watch service (default)"
-    echo "  uninstall - Remove the Calibre Web watch service"
-    echo "  status    - Show service status"
-    echo "  start     - Start the service"
-    echo "  stop      - Stop the service"
-    echo "  restart   - Restart the service"
-    echo "  help      - Show this help message"
+    echo "  install      - Install and start the Calibre Web watch service (default)"
+    echo "  uninstall    - Remove the Calibre Web watch service"
+    echo "  status       - Show service status"
+    echo "  start        - Start the service"
+    echo "  stop         - Stop the service"
+    echo "  restart      - Restart the service"
+    echo "  update       - Check for script version changes and update service if needed"
+    echo "  force-update - Force update the service file regardless of version"
+    echo "  dry-run      - Show what files would be processed without actually processing them"
+    echo "  help         - Show this help message"
+    echo ""
+    echo "Update Usage:"
+    echo "  $0 update    - Check VERSION file and update service if script was updated"
     echo ""
     echo "Configuration:"
     echo "  Watch directory: $WATCH_DIR"
     echo "  Calibre library: $CALIBRE_LIBRARY"
     echo "  Service name: $SERVICE_NAME"
+    echo "  Version file: $VERSION_FILE"
+    echo ""
 }
 
 # Main script logic
@@ -330,6 +535,15 @@ main() {
             ;;
         restart)
             restart_service
+            ;;
+        update)
+            check_and_update_service
+            ;;
+        force-update)
+            force_update_service
+            ;;
+        dry-run)
+            dry_run_mode
             ;;
         help|--help|-h)
             show_usage
