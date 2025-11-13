@@ -203,9 +203,16 @@ crawl_books_directory() {
     while IFS= read -r -d '' file; do
         ((files_found++))
         local filename=$(basename "$file")
+        local relative_path="${file#$BOOKS_DIR/}"
         
         # Skip Calibre internal files and directories
         if [[ "$file" =~ /(metadata\.db|\.calibre|cover\.jpg|\.opf)$ ]] || [[ -d "$file" ]]; then
+            continue
+        fi
+        
+        # Skip anything already inside the backup tree to prevent recursive processing
+        if [[ "$relative_path" == backup/* ]]; then
+            log_info "Skipping backup tree entry: $relative_path"
             continue
         fi
         
@@ -317,7 +324,7 @@ check_calibre_library() {
     fi
     
     if [[ ! -f "$CALIBRE_LIBRARY/metadata.db" ]]; then
-        log_error "Calibre metadata.db not found in $CALIBRE_LIBRARY"
+        log_error "Calibre metadata.db not found in $CALIBRE_LIBRARY"  # Soft error: overall system stays up, but Calibre library drive must be configured
         exit 1
     fi
 }
