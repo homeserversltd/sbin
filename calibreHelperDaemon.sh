@@ -8,7 +8,7 @@
 # - Watcher: Monitors upload directory and adds books to Calibre library
 # - System: Orchestrates both components with unified management
 #
-# Usage: calibreMonolith.sh [COMMAND] [COMPONENT]
+# Usage: calibreHelperDaemon.sh [COMMAND] [COMPONENT]
 # Commands: install, uninstall, status, start, stop, restart, sync-now, stats, help
 # Components: feeder, watcher, system (default: system)
 
@@ -357,7 +357,7 @@ After=network.target
 Type=oneshot
 User=root
 Group=root
-ExecStart=/usr/local/sbin/calibreMonolith.sh feeder-cron
+ExecStart=/usr/local/sbin/calibreHelperDaemon.sh feeder-cron
 StandardOutput=journal
 StandardError=journal
 
@@ -657,7 +657,7 @@ sync_now() {
     fi
     
     log_info "Watcher service will automatically process new files"
-    log_info "Check status with: calibreMonolith.sh status"
+    log_info "Check status with: calibreHelperDaemon.sh status"
 }
 
 # Show processing statistics
