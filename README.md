@@ -11,6 +11,7 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 ### Configuration Management
 - **`factoryFallback.sh`** - Intelligent configuration fallback system that validates and selects between `homeserver.json` and `homeserver.factory` configurations
 - **`tailnetName`** - Python script for updating Nginx configurations with new Tailscale tailnet names, including backup/rollback functionality
+- **`update-kea-dhcp.sh`** - Atomic Kea DHCP configuration update script with validation, backup, and rollback capabilities
 
 ### Security & Certificates
 - **`sslKey.sh`** - Generate self-signed SSL certificates for nginx with Tailscale integration and cross-platform compatibility
@@ -39,6 +40,7 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
   - `cryptsetup` for LUKS operations
   - `nginx` for web server operations
   - `systemd` for service management
+  - `kea-dhcp4` for DHCP configuration validation
 
 ## Installation
 
@@ -71,6 +73,11 @@ sudo /usr/local/sbin/harddrive_test.sh /dev/sdb full
 ### Thermal Testing
 ```bash
 sudo /usr/local/sbin/thermalTest.sh
+```
+
+### Update Kea DHCP Configuration
+```bash
+sudo /usr/local/sbin/update-kea-dhcp.sh /path/to/config.json
 ```
 
 ## Architecture
