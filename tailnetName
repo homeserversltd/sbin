@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
 """
-Update Nginx homeserver site configs with new tailnet from homeserver.json.
+Update Nginx homeserver site configs with new tailnet name.
 Handles all homeserver-* files in /etc/nginx/sites-available.
 Includes backup and rollback functionality.
+
+Usage:
+    tailnetName [tailnet_name]
+    
+    If tailnet_name is provided as a command-line argument, it will:
+        1. Update homeserver.json with the new tailnet name
+        2. Update nginx configuration files
+        3. Regenerate SSL certificate
+        4. Restart nginx
+    
+    Otherwise, the script will read the tailnet name from homeserver.json and proceed.
 """
 import json
 import re
@@ -10,6 +21,9 @@ import subprocess
 import sys
 import shutil
 import glob
+import tempfile
+import os
+import time
 from pathlib import Path
 from typing import Optional, List, Tuple
 
@@ -48,6 +62,65 @@ def get_tailnet_from_json() -> Optional[str]:
     except Exception as e:
         print(f"Error reading homeserver.json: {e}")
         return None
+
+def update_homeserver_json(new_tailnet: str) -> bool:
+    """Update tailnet name in homeserver.json configuration."""
+    try:
+        print(f"Updating homeserver.json with new tailnet: {new_tailnet}")
+        
+        # Read current config
+        with open(HOMESERVER_JSON, 'r') as f:
+            config = json.load(f)
+        
+        # Update CORS origins
+        cors_origins = config.get('global', {}).get('cors', {}).get('allowed_origins', [])
+        updated_cors = False
+        
+        for i, origin in enumerate(cors_origins):
+            if '.ts.net' in origin:
+                cors_origins[i] = f"https://home.{new_tailnet}.ts.net"
+                updated_cors = True
+        
+        if not updated_cors:
+            cors_origins.append(f"https://home.{new_tailnet}.ts.net")
+        
+        # Ensure config structure exists
+        if 'global' not in config:
+            config['global'] = {}
+        if 'cors' not in config['global']:
+            config['global']['cors'] = {}
+        config['global']['cors']['allowed_origins'] = cors_origins
+        
+        # Update portal remoteURLs
+        portals = config.get('tabs', {}).get('portals', {}).get('data', {}).get('portals', [])
+        for portal in portals:
+            if 'remoteURL' in portal and '.ts.net' in portal['remoteURL']:
+                # Preserve path/port after .ts.net
+                portal['remoteURL'] = f"https://home.{new_tailnet}.ts.net{portal['remoteURL'].split('.ts.net')[-1]}"
+        
+        # Write to temp file first for atomic update
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, dir=os.path.dirname(HOMESERVER_JSON)) as temp_file:
+            json.dump(config, temp_file, indent=2)
+            temp_path = temp_file.name
+        
+        # Set proper permissions on temp file (readable by www-data)
+        os.chmod(temp_path, 0o644)
+        
+        # Move temp file to final location (atomic write)
+        shutil.move(temp_path, HOMESERVER_JSON)
+        
+        # Ensure final file has correct ownership (www-data:www-data)
+        try:
+            os.chown(HOMESERVER_JSON, os.getuid(), os.getgid())
+        except PermissionError:
+            # If we can't change ownership, at least ensure permissions are correct
+            os.chmod(HOMESERVER_JSON, 0o644)
+        
+        print("Successfully updated homeserver.json configuration")
+        return True
+    except Exception as e:
+        print(f"Error updating homeserver.json: {e}")
+        return False
 
 def find_homeserver_files() -> List[str]:
     """Find all homeserver-* files in nginx sites-available directory."""
@@ -128,6 +201,11 @@ def test_nginx_config() -> bool:
             text=True,
             check=False
         )
+        if result.returncode != 0:
+            print(f"Nginx configuration test failed:")
+            print(result.stderr)
+            if result.stdout:
+                print(result.stdout)
         return result.returncode == 0
     except Exception as e:
         print(f"Error testing nginx config: {e}")
@@ -145,6 +223,90 @@ def restart_nginx() -> bool:
         print(f"Error restarting nginx: {e}")
         return False
 
+def restart_gunicorn() -> bool:
+    """Restart gunicorn service using systemd one-shot to escape context."""
+    SERVICE_NAME = "restart-gunicorn-oneshot.service"
+    SERVICE_PATH = f"/etc/systemd/system/{SERVICE_NAME}"
+    
+    SERVICE_CONTENT = """[Unit]
+Description=Restart Gunicorn Service (One-Shot)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart gunicorn.service
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+"""
+    
+    try:
+        # Write service file
+        with open(SERVICE_PATH, 'w') as f:
+            f.write(SERVICE_CONTENT)
+        
+        # Reload systemd
+        result = subprocess.run(
+            ['/usr/bin/systemctl', 'daemon-reload'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"Failed to reload systemd: {result.stderr}")
+            return False
+        
+        # Start the one-shot service
+        result = subprocess.run(
+            ['/usr/bin/systemctl', 'start', SERVICE_NAME],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        if result.returncode != 0:
+            print(f"Failed to start oneshot service: {result.stderr}")
+            # Clean up on failure
+            try:
+                os.remove(SERVICE_PATH)
+                subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=False)
+            except:
+                pass
+            return False
+        
+        # Give gunicorn a moment to restart
+        time.sleep(2)
+        
+        # Verify gunicorn is running
+        result = subprocess.run(
+            ['/usr/bin/systemctl', 'is-active', '--quiet', 'gunicorn.service'],
+            check=False
+        )
+        if result.returncode != 0:
+            print("Warning: Gunicorn restart initiated but service may not be active yet")
+            return False
+        
+        # Clean up service file
+        try:
+            os.remove(SERVICE_PATH)
+            subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=False)
+        except:
+            pass  # Non-critical cleanup failure
+        
+        return True
+    except Exception as e:
+        print(f"Error restarting gunicorn: {e}")
+        # Clean up on error
+        try:
+            if os.path.exists(SERVICE_PATH):
+                os.remove(SERVICE_PATH)
+                subprocess.run(['/usr/bin/systemctl', 'daemon-reload'], check=False)
+        except:
+            pass
+        return False
+
 def regenerate_ssl_certificate() -> bool:
     """Regenerate SSL certificate with new tailnet name."""
     try:
@@ -155,9 +317,15 @@ def regenerate_ssl_certificate() -> bool:
             check=False
         )
         if result.returncode != 0:
-            print(f"SSL certificate regeneration failed: {result.stderr}")
+            print(f"SSL certificate regeneration failed (exit code {result.returncode}):")
+            if result.stderr:
+                print(f"Error: {result.stderr}")
+            if result.stdout:
+                print(f"Output: {result.stdout}")
             return False
         print("SSL certificate regenerated successfully with new tailnet")
+        if result.stdout:
+            print(result.stdout)
         return True
     except Exception as e:
         print(f"Error regenerating SSL certificate: {e}")
@@ -170,13 +338,29 @@ def main() -> int:
         print("Nginx is not running. Exiting.")
         return 1
 
-    # Get new tailnet name
-    new_tailnet = get_tailnet_from_json()
-    if not new_tailnet:
-        print("Could not determine tailnet from homeserver.json. Exiting.")
-        return 2
-
-    print(f"Detected tailnet: {new_tailnet}")
+    # Get new tailnet name - check command line argument first, then fall back to homeserver.json
+    if len(sys.argv) > 1:
+        new_tailnet = sys.argv[1]
+        # Validate tailnet name format
+        if not re.match(r'^[a-zA-Z0-9-]+$', new_tailnet):
+            print(f"Invalid tailnet name format: {new_tailnet}")
+            print("Tailnet name must contain only letters, numbers, and hyphens.")
+            return 2
+        print(f"Using tailnet name from command line: {new_tailnet}")
+        
+        # Update homeserver.json first when using command-line argument
+        if not update_homeserver_json(new_tailnet):
+            print("Failed to update homeserver.json. Exiting.")
+            return 4
+    else:
+        new_tailnet = get_tailnet_from_json()
+        if not new_tailnet:
+            print("Could not determine tailnet from homeserver.json. Exiting.")
+            print("Usage: tailnetName [tailnet_name]")
+            print("  If tailnet_name is provided, it will update homeserver.json first, then proceed.")
+            print("  Otherwise, the script will read from homeserver.json")
+            return 2
+        print(f"Detected tailnet from homeserver.json: {new_tailnet}")
 
     # Find all homeserver files
     homeserver_files = find_homeserver_files()
@@ -214,8 +398,15 @@ def main() -> int:
             print(f"Failed to backup {file_path}. Exiting.")
             return 6
 
-    # Update all files
-    print("Updating files...")
+    # STEP 1: Regenerate SSL certificate FIRST (before nginx changes)
+    # This ensures the certificate exists with proper permissions before nginx tries to use it
+    print("Regenerating SSL certificate with new tailnet (must happen before nginx restart)...")
+    if not regenerate_ssl_certificate():
+        print("SSL certificate regeneration failed. Exiting without making changes.")
+        return 8
+
+    # STEP 2: Update nginx config files
+    print("Updating nginx configuration files...")
     updated_files = []
     for file_path in homeserver_files:
         if update_nginx_config_file(file_path, new_tailnet):
@@ -229,7 +420,7 @@ def main() -> int:
                 restore_file(updated_file)
             return 7
 
-    # Test nginx config
+    # STEP 3: Test nginx config (certificate now exists, configs updated)
     print("Testing nginx configuration...")
     if not test_nginx_config():
         print("New nginx configuration is invalid. Rolling back all changes...")
@@ -237,7 +428,7 @@ def main() -> int:
             restore_file(file_path)
         return 8
 
-    # Restart nginx
+    # STEP 4: Restart nginx (certificate exists, configs valid)
     print("Restarting nginx...")
     if not restart_nginx():
         print("Failed to restart nginx. Rolling back all changes...")
@@ -249,17 +440,20 @@ def main() -> int:
         print("Nginx reverted and restarted successfully.")
         return 9
 
-    # Regenerate SSL certificate with new tailnet
-    print("Regenerating SSL certificate with new tailnet...")
-    if not regenerate_ssl_certificate():
-        print("Warning: SSL certificate regeneration failed. Manual intervention may be required.")
-        # Don't fail the entire operation, just warn
-        # The nginx configs are updated successfully
-
     print(f"Nginx restarted successfully with new tailnet: {new_tailnet}")
     print(f"Updated {len(homeserver_files)} files:")
     for file_path in homeserver_files:
         print(f"  - {Path(file_path).name}")
+    
+    # STEP 5: Restart gunicorn to apply CORS changes from updated homeserver.json
+    print("Restarting gunicorn to apply CORS configuration changes...")
+    if not restart_gunicorn():
+        print("Warning: Failed to restart gunicorn. CORS changes may not be applied until manual restart.")
+        print("You may need to manually restart gunicorn: systemctl restart gunicorn.service")
+        # Don't fail the script - nginx and configs are updated, gunicorn restart is nice-to-have
+    else:
+        print("Gunicorn restarted successfully with updated CORS configuration")
+    
     return 0
 
 if __name__ == '__main__':
