@@ -30,6 +30,9 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 - **`tailUp`** - Extract Tailscale login URLs for authentication URL generation
 - **`tailget`** - Extract tailnet information from homeserver.json configuration
 
+### Disaster Recovery (BackblazeTab B2)
+- **`homeserver-backblaze-tab-b2-disaster-recovery.py`** - Standalone recovery for Backblaze B2 chunked backups. Reconstructs files from a chunk database + skeleton key + B2 credentials into a local zip. Self-contained: on first run creates a venv under `~/.local/share/homeserver-backblaze-recovery/venv` and installs b2sdk and cryptography, then runs. Use after a disaster (e.g. fire) on any machine—clone this sbin repo and run the script; no HOMESERVER or Backblaze tab required. Requires: chunk database (plain or `_chunk_database_backup_*.encrypted.db` from B2), skeleton key (FAK), B2 key_id and application_key, bucket name.
+
 ## Requirements
 
 - **Operating System**: Linux (tested on Arch Linux)
@@ -78,6 +81,18 @@ sudo /usr/local/sbin/thermalTest.sh
 ### Update Kea DHCP Configuration
 ```bash
 sudo /usr/local/sbin/update-kea-dhcp.sh /path/to/config.json
+```
+
+### BackblazeTab B2 Disaster Recovery
+```bash
+# On any machine (e.g. after fire): clone sbin, then run (first run creates venv and installs deps)
+./homeserver-backblaze-tab-b2-disaster-recovery.py \
+  --database_path /path/to/_chunk_database_backup_YYYYMMDD_HHMMSS.encrypted.db \
+  --skeleton_key "YOUR_FAK" \
+  --bucket_name "my_bucket" \
+  --key_id "YOUR_B2_KEY_ID" \
+  --application_key "YOUR_B2_APP_KEY" \
+  --output recovered_data.zip
 ```
 
 ## Architecture
