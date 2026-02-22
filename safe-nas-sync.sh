@@ -32,14 +32,20 @@ if ! mountpoint -q /mnt/nas; then
     exit 1
 fi
 
-# CRITICAL SAFETY CHECK 3: Ensure nas_backup is on external mount (not root filesystem)
+# CRITICAL SAFETY CHECK 3: Ensure nas_backup is on external mount (not system partition)
 MOUNT_SOURCE=$(findmnt -n -o SOURCE /mnt/nas_backup 2>/dev/null || echo "UNKNOWN")
 MOUNT_TARGET=$(findmnt -n -o TARGET /mnt/nas_backup 2>/dev/null || echo "UNKNOWN")
 
-if [[ "$MOUNT_SOURCE" == "/dev/sda"* ]]; then
-    log_error "CRITICAL: /mnt/nas_backup is on root filesystem ($MOUNT_SOURCE). Aborting sync to prevent root filesystem destruction."
-    exit 1
-fi
+# Resolve symlinks (e.g. /dev/disk/by-partlabel/...) to get block device for blkid
+MOUNT_DEVICE="$MOUNT_SOURCE"
+[[ -L "$MOUNT_SOURCE" ]] && MOUNT_DEVICE=$(readlink -f "$MOUNT_SOURCE" 2>/dev/null || echo "$MOUNT_SOURCE")
+PARTLABEL=$(blkid -s PARTLABEL -o value "$MOUNT_DEVICE" 2>/dev/null || true)
+case "$PARTLABEL" in
+    homeserver-boot-efi|homeserver-boot|homeserver-swap|homeserver-vault|homeserver-deploy|homeserver-root)
+        log_error "CRITICAL: /mnt/nas_backup is on system partition ($MOUNT_SOURCE, PARTLABEL=$PARTLABEL). Aborting sync."
+        exit 1
+        ;;
+esac
 
 if [[ "$MOUNT_TARGET" == "/" ]]; then
     log_error "CRITICAL: /mnt/nas_backup mount target is root filesystem. Aborting sync to prevent root filesystem destruction."
