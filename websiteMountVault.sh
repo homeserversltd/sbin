@@ -11,20 +11,24 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Read vault config from the validated config file
-if ! vault_config=$(jq -r '.global.mounts.vault | "\(.device)"' "$config_path"); then
+# Read vault config: support both .mounts.vault (label-based) and .global.mounts.vault (legacy)
+if ! device=$(jq -r '(.mounts.vault.device // .global.mounts.vault.device) // empty' "$config_path"); then
     echo "ERROR: Failed to read vault config from ${config_path}" >&2
     exit 1
 fi
-
-# Parse device
-device="$vault_config"
 if [ -z "$device" ]; then
     echo "ERROR: Invalid vault configuration found in ${config_path}" >&2
     exit 1
 fi
 
-vault_device="/dev/${device}"
+# Normalize to block device path: full path as-is; partlabel name -> by-partlabel; else /dev/NAME
+if [[ "$device" == /dev/* ]]; then
+    vault_device="$device"
+elif [ -b "/dev/disk/by-partlabel/${device}" ]; then
+    vault_device="/dev/disk/by-partlabel/${device}"
+else
+    vault_device="/dev/${device}"
+fi
 mapper_name="vault" # Standard mapper name
 
 # Check if vault device exists
