@@ -24,13 +24,18 @@ log_info()  { echo "[${SCRIPT_NAME}] INFO: $*"; }
 log_warn()  { echo "[${SCRIPT_NAME}] WARN: $*" >&2; }
 log_error() { echo "[${SCRIPT_NAME}] ERROR: $*" >&2; ERRORS=$((ERRORS+1)); }
 
-# --- Resolve active config path via factory fallback ---
-CONFIG_PATH=$(/usr/local/sbin/factoryFallback.sh)
-if [ $? -ne 0 ] || [ -z "$CONFIG_PATH" ] || [ ! -f "$CONFIG_PATH" ]; then
-  log_error "Failed to resolve active config path via factoryFallback.sh"
-  exit 1
+# --- Resolve active config path: use HOMESERVER_CONFIG if set and valid, else factory fallback ---
+if [ -n "$HOMESERVER_CONFIG" ] && [ -f "$HOMESERVER_CONFIG" ]; then
+  CONFIG_PATH="$HOMESERVER_CONFIG"
+  log_info "Using config from env: $CONFIG_PATH"
+else
+  CONFIG_PATH=$(/usr/local/sbin/factoryFallback.sh)
+  if [ $? -ne 0 ] || [ -z "$CONFIG_PATH" ] || [ ! -f "$CONFIG_PATH" ]; then
+    log_error "Failed to resolve active config path via factoryFallback.sh"
+    exit 1
+  fi
+  log_info "Using config: $CONFIG_PATH"
 fi
-log_info "Using config: $CONFIG_PATH"
 
 # --- Ensure jq is available ---
 if ! command -v /usr/bin/jq >/dev/null 2>&1; then
