@@ -51,6 +51,9 @@ if [ -e "/dev/mapper/$mapper_name" ]; then
     else
         echo "INFO: vault.mount unit is already active." >&2
     fi
+    # Ensure NAS mounts are attempted (e.g. after reboot if vault was unlocked but mountNas had failed)
+    echo "INFO: Starting mountNas.service unit in background..." >&2
+    systemctl start mountNas.service &
     exit 0
 fi
 
