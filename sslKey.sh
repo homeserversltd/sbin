@@ -133,6 +133,14 @@ echo "Self-signed certificate and key generated at $CERT_DIR."
 # Clean up the config file
 rm -f "$CONFIG_FILE"
 
+# Add cert to system trust store so host and containers (e.g. Woodpecker clone) trust home.arpa
+CA_LOCAL="/usr/local/share/ca-certificates"
+if [ -d "$CA_LOCAL" ]; then
+    cp "$CERT_FILE" "$CA_LOCAL/home.arpa.crt"
+    update-ca-certificates 2>/dev/null || true
+    echo "System trust store updated (home.arpa)."
+fi
+
 # Restart nginx if it's running
 if systemctl is-active --quiet nginx; then
     systemctl restart nginx
