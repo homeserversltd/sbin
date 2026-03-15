@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -135,6 +136,32 @@ def _derive_fernet_from_skeleton(skeleton_key: str, salt: bytes) -> "Fernet":
     return Fernet(key)
 
 
+def _decrypt_forgejo_backup_file(enc_path: Path, out_path: Path, fernet: "Fernet") -> None:
+    """Decrypt backup file; supports chunked format (4-byte len + token per chunk) and legacy whole-file."""
+    with open(enc_path, "rb") as f:
+        first4 = f.read(4)
+    if len(first4) < 4:
+        raise InvalidToken("File too short")
+    chunk_len = struct.unpack(">I", first4)[0]
+    # Chunked format uses reasonable chunk sizes (100 B to ~50 MB)
+    if 100 <= chunk_len <= 50 * 1024 * 1024:
+        with open(enc_path, "rb") as f_in, open(out_path, "wb") as f_out:
+            while True:
+                hdr = f_in.read(4)
+                if len(hdr) < 4:
+                    break
+                length = struct.unpack(">I", hdr)[0]
+                cipher = f_in.read(length)
+                if len(cipher) != length:
+                    raise InvalidToken("Truncated chunk")
+                f_out.write(fernet.decrypt(cipher))
+    else:
+        with open(enc_path, "rb") as f:
+            cipher = f.read()
+        with open(out_path, "wb") as f:
+            f.write(fernet.decrypt(cipher))
+
+
 def do_restore_from_b2(
     bucket_name: str,
     backup_key: str,
@@ -207,17 +234,7 @@ def do_restore_from_b2(
             decrypted_zip = Path(tmpdir) / "forgejo-dump.zip"
             decrypted_sql = Path(tmpdir) / "forgejo_db.sql"
             for enc_path, out_path in [(enc_zip_path, decrypted_zip), (enc_sql_path, decrypted_sql)]:
-                with open(enc_path, "rb") as f:
-                    cipher = f.read()
-                try:
-                    plain = fernet.decrypt(cipher)
-                except InvalidToken as e:
-                    logger.error(
-                        "Decryption failed (wrong skeleton key or corrupted file?): %s", e
-                    )
-                    return 1
-                with open(out_path, "wb") as f:
-                    f.write(plain)
+                _decrypt_forgejo_backup_file(Path(enc_path), out_path, fernet)
             logger.info("Decrypted backup with skeleton key; starting restore.")
             return do_restore(
                 str(decrypted_zip),
