@@ -77,18 +77,28 @@ def _require_root() -> None:
         sys.exit(1)
 
 
-def _run(cmd: list[str], env: Optional[dict[str, str]] = None) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str],
+    env: Optional[dict[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         env=env,
+        cwd=cwd,
         capture_output=True,
         text=True,
     )
 
 
-def _run_log(cmd: list[str], description: str, env: Optional[dict[str, str]] = None) -> bool:
+def _run_log(
+    cmd: list[str],
+    description: str,
+    env: Optional[dict[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> bool:
     logger.info("Running: %s", description)
-    result = _run(cmd, env=env)
+    result = _run(cmd, env=env, cwd=cwd)
     if result.returncode != 0:
         logger.error(
             "%s failed (exit %s): %s",
@@ -238,6 +248,12 @@ def do_export(output_dir: str) -> int:
         logger.error("Output directory does not exist or is not a directory: %s", output_dir)
         return 1
 
+    # Allow postgres and git to write here (dir is created by www-data; we run pg_dump as postgres, dump as git)
+    try:
+        output_path.chmod(0o777)
+    except OSError as e:
+        logger.warning("Could not chmod output dir %s: %s", output_dir, e)
+
     logger.info("Forgejo export started; output_dir=%s", output_dir)
     logger.info("Forgejo will be stopped briefly during export; it will be started again when done.")
     ts = _timestamp()
@@ -247,11 +263,15 @@ def do_export(output_dir: str) -> int:
     if not _stop_forgejo():
         return 1
 
+    # Subprocesses run as postgres/git; cwd must be a dir they can access (avoid inheriting /root).
+    # Use output_dir (on disk, already chmod 777) not /tmp (tmpfs could exhaust RAM on large dumps).
+    safe_cwd = str(output_path)
     try:
         # pg_dump as postgres (peer auth, no password)
         if not _run_log(
             ["/usr/bin/sudo", "-u", "postgres", PG_DUMP, FORGEJO_DB_NAME, "-f", str(db_dump_path)],
             "pg_dump forgejo database",
+            cwd=safe_cwd,
         ):
             return 1
 
@@ -271,6 +291,7 @@ def do_export(output_dir: str) -> int:
                 str(dump_zip_path),
             ],
             "forgejo dump",
+            cwd=safe_cwd,
         ):
             return 1
 
