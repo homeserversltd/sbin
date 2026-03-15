@@ -34,7 +34,7 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 - **`homeserver-backblaze-tab-b2-disaster-recovery.py`** - Standalone recovery for Backblaze B2 chunked backups. Reconstructs files from a chunk database + skeleton key + B2 credentials into a local zip. Self-contained: on first run creates a venv under `~/.local/share/homeserver-backblaze-recovery/venv` and installs b2sdk and cryptography, then runs. Use after a disaster (e.g. fire) on any machine—clone this sbin repo and run the script; no HOMESERVER or Backblaze tab required. Requires: chunk database (plain or `_chunk_database_backup_*.encrypted.db` from B2), skeleton key (FAK), B2 key_id and application_key, bucket name.
 
 ### Forgejo Backup and Restore
-- **`homeserver-forgejo-migrate.py`** - Full-instance backup and restore for Forgejo (bare-metal install). Export: stops forgejo.service, runs pg_dump for database `forgejo`, runs `forgejo dump` as user `git`, then starts the service; writes `forgejo_db_<timestamp>.sql` and `forgejo-dump-<timestamp>.zip` to the given output directory. Restore: stops the service, restores Postgres from the SQL dump, extracts the Forgejo dump zip into `/opt/forgejo`, sets ownership to git:git, starts the service, and optionally runs `forgejo doctor check --all`. Requires root/sudo. The Backblaze tab can invoke it via sudo with fixed paths (e.g. export to `/var/www/homeserver/premium/forgejo_export`).
+- **`homeserver-forgejo-migrate.py`** - Full-instance backup and restore for Forgejo (bare-metal install). **export:** stops forgejo.service, runs pg_dump for database `forgejo`, runs `forgejo dump` as user `git`, then starts the service; writes `forgejo_db_<timestamp>.sql` and `forgejo-dump-<timestamp>.zip` to the given output directory. **restore:** from local paths; stops the service, restores Postgres, extracts the dump zip into `/opt/forgejo`, chown git:git, starts the service, optional `forgejo doctor check --all`; requires `--yes`. **restore-from-b2:** download encrypted backup (zip + sql) from a Backblaze B2 bucket, decrypt with skeleton key (FAK), then run restore. Same encryption as Backblaze tab (salt `backblazetab_forgejo_backup_salt`). Use `--skeleton-key` or `--skeleton-key-file` (e.g. `/root/key/skeleton.key`) to provide the FAK from the HOMESERVER that created the backup. On first use the script may create a venv for b2sdk/cryptography. Requires root/sudo. The Backblaze tab can invoke export/restore via sudo with fixed paths.
 
 ## Requirements
 
@@ -103,11 +103,22 @@ sudo /usr/local/sbin/update-kea-dhcp.sh /path/to/config.json
 # Export (writes forgejo_db_<timestamp>.sql and forgejo-dump-<timestamp>.zip to output dir)
 sudo /usr/local/sbin/homeserver-forgejo-migrate.py export --output-dir /var/www/homeserver/premium/forgejo_export
 
-# Restore from a backup pair
+# Restore from local backup pair (--yes required; restore replaces the live instance)
 sudo /usr/local/sbin/homeserver-forgejo-migrate.py restore \
   --dump-zip /path/to/forgejo-dump-20260315_120000.zip \
-  --db-dump /path/to/forgejo_db_20260315_120000.sql
+  --db-dump /path/to/forgejo_db_20260315_120000.sql \
+  --yes
 # Skip post-restore doctor check: add --no-doctor
+
+# Restore from B2: download encrypted backup, decrypt with skeleton key (FAK), then restore
+sudo /usr/local/sbin/homeserver-forgejo-migrate.py restore-from-b2 \
+  --bucket-name my-bucket \
+  --backup-key forgejo-backups/2026-03-15_14-30-00/ \
+  --key-id YOUR_B2_KEY_ID \
+  --application-key YOUR_B2_APPLICATION_KEY \
+  --skeleton-key-file /root/key/skeleton.key \
+  --yes
+# Or use --skeleton-key "YOUR_FAK" instead of --skeleton-key-file
 ```
 
 ## Architecture
