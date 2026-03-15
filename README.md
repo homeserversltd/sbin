@@ -33,6 +33,9 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 ### Disaster Recovery (BackblazeTab B2)
 - **`homeserver-backblaze-tab-b2-disaster-recovery.py`** - Standalone recovery for Backblaze B2 chunked backups. Reconstructs files from a chunk database + skeleton key + B2 credentials into a local zip. Self-contained: on first run creates a venv under `~/.local/share/homeserver-backblaze-recovery/venv` and installs b2sdk and cryptography, then runs. Use after a disaster (e.g. fire) on any machine—clone this sbin repo and run the script; no HOMESERVER or Backblaze tab required. Requires: chunk database (plain or `_chunk_database_backup_*.encrypted.db` from B2), skeleton key (FAK), B2 key_id and application_key, bucket name.
 
+### Forgejo Backup and Restore
+- **`homeserver-forgejo-migrate.py`** - Full-instance backup and restore for Forgejo (bare-metal install). Export: stops forgejo.service, runs pg_dump for database `forgejo`, runs `forgejo dump` as user `git`, then starts the service; writes `forgejo_db_<timestamp>.sql` and `forgejo-dump-<timestamp>.zip` to the given output directory. Restore: stops the service, restores Postgres from the SQL dump, extracts the Forgejo dump zip into `/opt/forgejo`, sets ownership to git:git, starts the service, and optionally runs `forgejo doctor check --all`. Requires root/sudo. The Backblaze tab can invoke it via sudo with fixed paths (e.g. export to `/var/www/homeserver/premium/forgejo_export`).
+
 ## Requirements
 
 - **Operating System**: Linux (tested on Arch Linux)
@@ -93,6 +96,18 @@ sudo /usr/local/sbin/update-kea-dhcp.sh /path/to/config.json
   --key_id "YOUR_B2_KEY_ID" \
   --application_key "YOUR_B2_APP_KEY" \
   --output recovered_data.zip
+```
+
+### Forgejo Backup and Restore
+```bash
+# Export (writes forgejo_db_<timestamp>.sql and forgejo-dump-<timestamp>.zip to output dir)
+sudo /usr/local/sbin/homeserver-forgejo-migrate.py export --output-dir /var/www/homeserver/premium/forgejo_export
+
+# Restore from a backup pair
+sudo /usr/local/sbin/homeserver-forgejo-migrate.py restore \
+  --dump-zip /path/to/forgejo-dump-20260315_120000.zip \
+  --db-dump /path/to/forgejo_db_20260315_120000.sql
+# Skip post-restore doctor check: add --no-doctor
 ```
 
 ## Architecture
