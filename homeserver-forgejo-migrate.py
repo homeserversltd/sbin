@@ -31,8 +31,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-# Bootstrap b2sdk/cryptography only when restore-from-b2 is used (reuse disaster-recovery venv)
-if "restore-from-b2" in sys.argv:
+# Bootstrap b2sdk/cryptography when restore-from-b2 or restore-from-encrypted is used (reuse disaster-recovery venv)
+if "restore-from-b2" in sys.argv or "restore-from-encrypted" in sys.argv:
     try:
         from b2sdk.v2 import B2Api, InMemoryAccountInfo
         from cryptography.fernet import Fernet, InvalidToken
@@ -160,6 +160,68 @@ def _decrypt_forgejo_backup_file(enc_path: Path, out_path: Path, fernet: "Fernet
             cipher = f.read()
         with open(out_path, "wb") as f:
             f.write(fernet.decrypt(cipher))
+
+
+def do_restore_from_encrypted(
+    enc_zip_path: str,
+    enc_sql_path: str,
+    skeleton_key: str,
+    no_doctor: bool,
+    yes: bool,
+) -> int:
+    """Restore from local encrypted zip + sql (e.g. uploaded via GUI). Decrypt with skeleton key, then restore."""
+    _require_root()
+    enc_zip = Path(enc_zip_path)
+    enc_sql = Path(enc_sql_path)
+    if not enc_zip.exists() or not enc_zip.is_file():
+        logger.error("Encrypted zip does not exist or is not a file: %s", enc_zip_path)
+        return 1
+    if not enc_sql.exists() or not enc_sql.is_file():
+        logger.error("Encrypted sql does not exist or is not a file: %s", enc_sql_path)
+        return 1
+    if not yes:
+        logger.error(
+            "restore-from-encrypted will REPLACE the current Forgejo instance. Add --yes to confirm."
+        )
+        return 1
+    if not skeleton_key:
+        logger.error(
+            "Provide --skeleton-key or --skeleton-key-file (FAK from the HOMESERVER that created the backup)"
+        )
+        return 1
+
+    logger.info(
+        "restore-from-encrypted: decrypting %s and %s with skeleton key, then restore.",
+        enc_zip_path,
+        enc_sql_path,
+    )
+    tmpdir = tempfile.mkdtemp(prefix="forgejo_restore_enc_")
+    try:
+        fernet = _derive_fernet_from_skeleton(skeleton_key, FORGEJO_BACKUP_SALT)
+        decrypted_zip = Path(tmpdir) / "forgejo-dump.zip"
+        decrypted_sql = Path(tmpdir) / "forgejo_db.sql"
+        for enc_path, out_path in [(enc_zip, decrypted_zip), (enc_sql, decrypted_sql)]:
+            try:
+                _decrypt_forgejo_backup_file(enc_path, out_path, fernet)
+            except InvalidToken as e:
+                logger.error(
+                    "Decryption failed (wrong skeleton key or corrupted file?): %s", e
+                )
+                return 1
+        logger.info("Decrypted backup with skeleton key; starting restore.")
+        return do_restore(
+            str(decrypted_zip),
+            str(decrypted_sql),
+            no_doctor=no_doctor,
+            yes=True,
+        )
+    finally:
+        try:
+            for f in Path(tmpdir).iterdir():
+                f.unlink(missing_ok=True)
+            Path(tmpdir).rmdir()
+        except OSError:
+            pass
 
 
 def do_restore_from_b2(
@@ -477,15 +539,17 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
 export: stop forgejo, pg_dump + forgejo dump, start forgejo.
 restore: from local dump zip + sql; stop forgejo, restore Postgres, extract zip, chown, start forgejo.
 restore-from-b2: download encrypted backup from B2, decrypt with skeleton key (FAK), then restore.
+restore-from-encrypted: from local encrypted zip + sql (e.g. GUI upload), decrypt with FAK, then restore.
 
 Examples:
   sudo {prog_name} export --output-dir /var/www/homeserver/premium/forgejo_export
   sudo {prog_name} restore --dump-zip /path/forgejo-dump-20260315_120000.zip --db-dump /path/forgejo_db_20260315_120000.sql --yes
-  sudo {prog_name} restore-from-b2 --bucket-name my-bucket --backup-key forgejo-backups/2026-03-15_14-30-00/ --key-id KEY --application-key SECRET --skeleton-key-file /root/key/skeleton.key --yes
+  sudo {prog_name} restore-from-b2 --bucket-name my-bucket --backup-key forgejo-backups/latest/ --key-id KEY --application-key SECRET --skeleton-key-file /root/key/skeleton.key --yes
+  sudo {prog_name} restore-from-encrypted --enc-zip /tmp/enc.zip --enc-sql /tmp/enc.sql --skeleton-key-file /root/key/skeleton.key --yes
 """,
     )
     subparsers = parser.add_subparsers(
-        dest="command", required=True, help="export, restore, or restore-from-b2"
+        dest="command", required=True, help="export, restore, restore-from-b2, or restore-from-encrypted"
     )
 
     export_parser = subparsers.add_parser("export", help="Export Forgejo instance to output directory")
@@ -556,6 +620,42 @@ Examples:
     )
     b2_parser.set_defaults(func=do_restore_from_b2)
 
+    enc_parser = subparsers.add_parser(
+        "restore-from-encrypted",
+        help="Restore from local encrypted zip + sql (e.g. uploaded via GUI). Decrypt with FAK, then restore.",
+    )
+    enc_parser.add_argument(
+        "--enc-zip",
+        required=True,
+        help="Path to encrypted forgejo-dump zip file",
+    )
+    enc_parser.add_argument(
+        "--enc-sql",
+        required=True,
+        help="Path to encrypted forgejo_db sql file",
+    )
+    enc_parser.add_argument(
+        "--skeleton-key",
+        default=None,
+        help="Skeleton key (FAK) from original HOMESERVER to decrypt the backup",
+    )
+    enc_parser.add_argument(
+        "--skeleton-key-file",
+        default=None,
+        help="Read skeleton key from file (e.g. /root/key/skeleton.key); use this or --skeleton-key",
+    )
+    enc_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm restore; required. Replaces current Forgejo instance.",
+    )
+    enc_parser.add_argument(
+        "--no-doctor",
+        action="store_true",
+        help="Skip forgejo doctor check --all after restore",
+    )
+    enc_parser.set_defaults(func=do_restore_from_encrypted)
+
     return parser.parse_args(argv)
 
 
@@ -591,6 +691,22 @@ def main(argv: Optional[list[str]] = None) -> int:
             backup_key=args.backup_key,
             key_id=args.key_id,
             application_key=args.application_key,
+            skeleton_key=skeleton_key,
+            no_doctor=getattr(args, "no_doctor", False),
+            yes=getattr(args, "yes", False),
+        )
+    if args.command == "restore-from-encrypted":
+        skeleton_key = getattr(args, "skeleton_key", None) or ""
+        skeleton_key_file = getattr(args, "skeleton_key_file", None)
+        if skeleton_key_file:
+            path = Path(skeleton_key_file)
+            if not path.exists() or not path.is_file():
+                logger.error("skeleton-key-file does not exist or is not a file: %s", skeleton_key_file)
+                return 1
+            skeleton_key = path.read_text().strip()
+        return do_restore_from_encrypted(
+            enc_zip_path=args.enc_zip,
+            enc_sql_path=args.enc_sql,
             skeleton_key=skeleton_key,
             no_doctor=getattr(args, "no_doctor", False),
             yes=getattr(args, "yes", False),
