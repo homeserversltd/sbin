@@ -33,7 +33,7 @@ mapper_name="vault" # Standard mapper name
 
 # Check if vault device exists
 if [ ! -b "$vault_device" ]; then
-    echo "ERROR: Vault device $vault_device does not exist." >&2
+    echo "ERROR: Vault device not found. Tried: by-partlabel /dev/disk/by-partlabel/${device}, fallback /dev/${device}. Neither exists." >&2
     exit 1
 fi
 
