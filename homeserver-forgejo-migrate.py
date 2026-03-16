@@ -24,10 +24,10 @@ import os
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import venv
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -118,10 +118,6 @@ def _stop_forgejo() -> bool:
 
 def _start_forgejo() -> bool:
     return _run_log([SYSTEMCTL, "start", SERVICE_NAME], "start forgejo service")
-
-
-def _timestamp() -> str:
-    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 
 def _derive_fernet_from_skeleton(skeleton_key: str, salt: bytes) -> "Fernet":
@@ -233,7 +229,7 @@ def do_restore_from_b2(
     no_doctor: bool,
     yes: bool,
 ) -> int:
-    """Download encrypted zip+sql from B2, decrypt with skeleton key, then restore."""
+    """Download encrypted backup from B2 (single .enc tarball or legacy .zip+.sql), decrypt, then restore."""
     _require_root()
     if not yes:
         logger.error(
@@ -246,7 +242,6 @@ def do_restore_from_b2(
         bucket_name,
         backup_key,
     )
-    # Normalize prefix: no leading slash; trailing slash for folder listing
     prefix = backup_key.strip("/")
     if prefix and not prefix.endswith("/"):
         prefix += "/"
@@ -261,62 +256,36 @@ def do_restore_from_b2(
 
     bucket = api.get_bucket_by_name(bucket_name)
     files = list(bucket.ls(folder_to_list=prefix, recursive=False))
+    enc_key: Optional[str] = None
     zip_key: Optional[str] = None
     sql_key: Optional[str] = None
     for file_info, _ in files:
         key = file_info.file_name
-        if key.endswith(".zip"):
+        if key.endswith(".enc"):
+            enc_key = key
+        elif key.endswith(".zip"):
             zip_key = key
         elif key.endswith(".sql"):
             sql_key = key
-    if not zip_key or not sql_key:
+
+    tmpdir = tempfile.mkdtemp(prefix="forgejo_restore_b2_")
+    try:
+        if enc_key:
+            return _restore_from_b2_single_enc(
+                bucket, enc_key, tmpdir, skeleton_key, no_doctor
+            )
+        if zip_key and sql_key:
+            return _restore_from_b2_legacy_zip_sql(
+                bucket, zip_key, sql_key, tmpdir, skeleton_key, no_doctor
+            )
         logger.error(
-            "Expected one .zip and one .sql in prefix %s; found zip=%s sql=%s",
+            "Expected one .enc file or one .zip and one .sql in prefix %s; found enc=%s zip=%s sql=%s",
             prefix or "(root)",
+            enc_key,
             zip_key,
             sql_key,
         )
         return 1
-
-    # Download to temp dir (encrypted content)
-    tmpdir = tempfile.mkdtemp(prefix="forgejo_restore_b2_")
-    try:
-        decrypted_zip: Optional[Path] = None
-        decrypted_sql: Optional[Path] = None
-        try:
-            enc_zip_path = Path(tmpdir) / "enc.zip"
-            enc_sql_path = Path(tmpdir) / "enc.sql"
-            downloaded_zip = bucket.download_file_by_name(zip_key)
-            downloaded_zip.save(enc_zip_path)
-            downloaded_sql = bucket.download_file_by_name(sql_key)
-            downloaded_sql.save(enc_sql_path)
-            logger.info("Downloaded %s and %s from B2", zip_key, sql_key)
-
-            fernet = _derive_fernet_from_skeleton(skeleton_key, FORGEJO_BACKUP_SALT)
-            decrypted_zip = Path(tmpdir) / "forgejo-dump.zip"
-            decrypted_sql = Path(tmpdir) / "forgejo_db.sql"
-            for enc_path, out_path in [(enc_zip_path, decrypted_zip), (enc_sql_path, decrypted_sql)]:
-                try:
-                    _decrypt_forgejo_backup_file(Path(enc_path), out_path, fernet)
-                except InvalidToken as e:
-                    logger.error(
-                        "Decryption failed (wrong skeleton key or corrupted file?): %s", e
-                    )
-                    return 1
-            logger.info("Decrypted backup with skeleton key; starting restore.")
-            return do_restore(
-                str(decrypted_zip),
-                str(decrypted_sql),
-                no_doctor=no_doctor,
-                yes=True,
-            )
-        finally:
-            for p in (decrypted_zip, decrypted_sql):
-                if p and p.exists():
-                    try:
-                        p.unlink()
-                    except OSError:
-                        pass
     finally:
         try:
             for f in Path(tmpdir).iterdir():
@@ -324,6 +293,63 @@ def do_restore_from_b2(
             Path(tmpdir).rmdir()
         except OSError:
             pass
+
+
+def _restore_from_b2_single_enc(
+    bucket, enc_key: str, tmpdir: str, skeleton_key: str, no_doctor: bool
+) -> int:
+    """Download single .enc (encrypted tarball), decrypt, extract, restore."""
+    enc_path = Path(tmpdir) / "enc.enc"
+    downloaded = bucket.download_file_by_name(enc_key)
+    downloaded.save(enc_path)
+    logger.info("Downloaded %s from B2", enc_key)
+
+    fernet = _derive_fernet_from_skeleton(skeleton_key, FORGEJO_BACKUP_SALT)
+    tar_path = Path(tmpdir) / "backup.tar"
+    try:
+        _decrypt_forgejo_backup_file(enc_path, tar_path, fernet)
+    except InvalidToken as e:
+        logger.error("Decryption failed (wrong skeleton key or corrupted file?): %s", e)
+        return 1
+    extract_dir = Path(tmpdir) / "extract"
+    extract_dir.mkdir()
+    with tarfile.open(tar_path, "r") as tar:
+        tar.extractall(extract_dir)
+    zip_path = extract_dir / "forgejo-dump.zip"
+    sql_path = extract_dir / "forgejo_db.sql"
+    if not zip_path.is_file() or not sql_path.is_file():
+        logger.error("Tarball missing forgejo-dump.zip or forgejo_db.sql")
+        return 1
+    logger.info("Decrypted and extracted backup; starting restore.")
+    return do_restore(str(zip_path), str(sql_path), no_doctor=no_doctor, yes=True)
+
+
+def _restore_from_b2_legacy_zip_sql(
+    bucket, zip_key: str, sql_key: str, tmpdir: str, skeleton_key: str, no_doctor: bool
+) -> int:
+    """Legacy: download .zip and .sql, decrypt each, restore."""
+    enc_zip_path = Path(tmpdir) / "enc.zip"
+    enc_sql_path = Path(tmpdir) / "enc.sql"
+    bucket.download_file_by_name(zip_key).save(enc_zip_path)
+    bucket.download_file_by_name(sql_key).save(enc_sql_path)
+    logger.info("Downloaded %s and %s from B2", zip_key, sql_key)
+
+    fernet = _derive_fernet_from_skeleton(skeleton_key, FORGEJO_BACKUP_SALT)
+    decrypted_zip = Path(tmpdir) / "forgejo-dump.zip"
+    decrypted_sql = Path(tmpdir) / "forgejo_db.sql"
+    for enc_path, out_path in [(enc_zip_path, decrypted_zip), (enc_sql_path, decrypted_sql)]:
+        try:
+            _decrypt_forgejo_backup_file(Path(enc_path), out_path, fernet)
+        except InvalidToken as e:
+            logger.error("Decryption failed (wrong skeleton key or corrupted file?): %s", e)
+            return 1
+    logger.info("Decrypted backup with skeleton key; starting restore.")
+    return do_restore(
+        str(decrypted_zip),
+        str(decrypted_sql),
+        no_doctor=no_doctor,
+        yes=True,
+    )
 
 
 def do_export(output_dir: str) -> int:
@@ -339,19 +365,20 @@ def do_export(output_dir: str) -> int:
     except OSError as e:
         logger.warning("Could not chmod output dir %s: %s", output_dir, e)
 
-    # Clobber: remove any previous export artifacts so only this run's files exist (staging + NAS get one copy).
-    for old in list(output_path.glob("forgejo-dump-*.zip")) + list(output_path.glob("forgejo_db_*.sql")):
-        try:
-            old.unlink()
-            logger.info("Removed previous export artifact: %s", old.name)
-        except OSError as e:
-            logger.warning("Could not remove %s: %s", old, e)
+    # Clobber: single fixed names, no dates (anti-pattern: file names do not contain dates).
+    for name in ("forgejo_db.sql", "forgejo-dump.zip"):
+        old = output_path / name
+        if old.exists():
+            try:
+                old.unlink()
+                logger.info("Removed previous export artifact: %s", name)
+            except OSError as e:
+                logger.warning("Could not remove %s: %s", old, e)
 
     logger.info("Forgejo export started; output_dir=%s", output_dir)
     logger.info("Forgejo will be stopped briefly during export; it will be started again when done.")
-    ts = _timestamp()
-    db_dump_path = output_path / f"forgejo_db_{ts}.sql"
-    dump_zip_path = output_path / f"forgejo-dump-{ts}.zip"
+    db_dump_path = output_path / "forgejo_db.sql"
+    dump_zip_path = output_path / "forgejo-dump.zip"
 
     if not _stop_forgejo():
         return 1
