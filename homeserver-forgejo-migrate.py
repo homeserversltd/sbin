@@ -234,7 +234,13 @@ def do_restore_from_b2(
             decrypted_zip = Path(tmpdir) / "forgejo-dump.zip"
             decrypted_sql = Path(tmpdir) / "forgejo_db.sql"
             for enc_path, out_path in [(enc_zip_path, decrypted_zip), (enc_sql_path, decrypted_sql)]:
-                _decrypt_forgejo_backup_file(Path(enc_path), out_path, fernet)
+                try:
+                    _decrypt_forgejo_backup_file(Path(enc_path), out_path, fernet)
+                except InvalidToken as e:
+                    logger.error(
+                        "Decryption failed (wrong skeleton key or corrupted file?): %s", e
+                    )
+                    return 1
             logger.info("Decrypted backup with skeleton key; starting restore.")
             return do_restore(
                 str(decrypted_zip),
@@ -270,6 +276,14 @@ def do_export(output_dir: str) -> int:
         output_path.chmod(0o777)
     except OSError as e:
         logger.warning("Could not chmod output dir %s: %s", output_dir, e)
+
+    # Clobber: remove any previous export artifacts so only this run's files exist (staging + NAS get one copy).
+    for old in list(output_path.glob("forgejo-dump-*.zip")) + list(output_path.glob("forgejo_db_*.sql")):
+        try:
+            old.unlink()
+            logger.info("Removed previous export artifact: %s", old.name)
+        except OSError as e:
+            logger.warning("Could not remove %s: %s", old, e)
 
     logger.info("Forgejo export started; output_dir=%s", output_dir)
     logger.info("Forgejo will be stopped briefly during export; it will be started again when done.")
