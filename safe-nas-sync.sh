@@ -10,6 +10,15 @@ set -euo pipefail
 # Log prefix for systemd journal
 LOG_TAG="nas-sync"
 
+# Serialize all callers (cron, UI via gunicorn, manual). Same lock for every entry path.
+LOCK_FILE="/run/homeserver-nas-sync.lock"
+exec 200>"$LOCK_FILE"
+if ! flock -n 200; then
+    echo "[ERROR] Another NAS sync is already running" >&2
+    echo "Another NAS sync is already running" | systemd-cat -t "$LOG_TAG" -p err
+    exit 1
+fi
+
 log_info() {
     echo "[INFO] $1"
     echo "$1" | systemd-cat -t "$LOG_TAG" -p info
@@ -67,7 +76,8 @@ log_info "  Source: /mnt/nas (device: $NAS_DEVICE)"
 log_info "  Destination: /mnt/nas_backup (device: $BACKUP_DEVICE)"
 
 # Execute the sync with proper options
-/usr/bin/rsync -av --stats --delete-before --exclude=lost+found /mnt/nas/ /mnt/nas_backup/ >> /var/log/homeserver/auto-sync.log 2>&1
+# -H preserves hard links so backup disk usage matches source semantics.
+/usr/bin/rsync -avH --stats --delete-before --exclude=lost+found /mnt/nas/ /mnt/nas_backup/ >> /var/log/homeserver/auto-sync.log 2>&1
 EXIT_CODE=$?
 
 if [[ $EXIT_CODE -eq 0 ]]; then
