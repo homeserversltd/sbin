@@ -229,11 +229,11 @@ Include in your PR:
 
 ### Edge Cases
 - Ran script multiple times: IDEMPOTENT
-- Tested on Debian 12: SUCCESS
+- Tested on Debian 13 (Trixie): SUCCESS
 - Tested on Arch Linux: SUCCESS (if applicable)
 
 ### Test Environment
-- OS: Debian 12 / Arch Linux
+- OS: Debian 13 (Trixie) / Arch Linux
 - HOMESERVER version: [version]
 - Related services: nginx, systemd
 
@@ -261,7 +261,7 @@ Changes made:
 - Improved logging throughout the process
 
 Testing:
-- Generated certificates on Debian 12: SUCCESS
+- Generated certificates on Debian 13 (Trixie): SUCCESS
 - Nginx accepted new certificate format: VERIFIED
 - Backed up and replaced existing cert: TESTED
 
