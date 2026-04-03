@@ -23,7 +23,12 @@ SCOPE_NAME="forgejo-backup-$(date +%s)"
 RUN_ARGS=("$BUCKET_ID" "$STORE_LOCAL")
 [ -n "$JOB_ID" ] && RUN_ARGS+=("$JOB_ID")
 [ -n "$SYNC_ID" ] && RUN_ARGS+=("$SYNC_ID")
+# Pass ledger correlation via env as well as argv (systemd-run / argv edge cases can drop tail args).
+SETENV=()
+[ -n "$JOB_ID" ] && SETENV+=(--setenv="BACKUP_LEDGER_JOB_ID=$JOB_ID")
+[ -n "$SYNC_ID" ] && SETENV+=(--setenv="BACKUP_LEDGER_SYNC_ID=$SYNC_ID")
 # Run in background so sudo/route return immediately; backup runs in scope (separate cgroup)
 systemd-run --scope --unit="$SCOPE_NAME" --uid=www-data --gid=www-data \
+  "${SETENV[@]}" \
   "$VENV_PYTHON" "$RUNNER" "${RUN_ARGS[@]}" &
 exit 0
