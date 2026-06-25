@@ -1,0 +1,3 @@
+#!/bin/sh
+# Additive Caduceus staff launcher; preserved legacy scripts remain undisturbed.
+exec python3 -m caduceus_staff run calibre-helper "$@"
