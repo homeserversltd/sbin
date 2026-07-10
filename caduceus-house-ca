@@ -1,0 +1,9 @@
+#!/bin/bash
+# Caduceus staff house CA launcher (Python snake). Does not call sslKey.sh.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+export PYTHONPATH="${ROOT}${PYTHONPATH:+:$PYTHONPATH}"
+if [[ -x /var/lib/caduceus/venv/bin/python ]]; then
+  exec /var/lib/caduceus/venv/bin/python -m caduceus_staff.house_ca "$@"
+fi
+exec python3 -m caduceus_staff.house_ca "$@"
