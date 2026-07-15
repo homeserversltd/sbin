@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import argparse
 
-from .attendance import AttendanceStaff, KeymanAdapter, StaffSocketDaemon
+from .attendance import AttendanceStaff, KeymanAdapter, StaffSocketDaemon, redacted_journal_sink
+
+
+def production_staff(keyman_module: str) -> AttendanceStaff:
+    return AttendanceStaff(KeymanAdapter(keyman_module), audit_sink=redacted_journal_sink)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -11,7 +15,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", default="/run/caduceus/caduceus-staff.sock")
     parser.add_argument("--keyman-module", default="/opt/keyman/runtime/lib/keyman_caduceus_access.py")
     args = parser.parse_args(argv)
-    StaffSocketDaemon(AttendanceStaff(KeymanAdapter(args.keyman_module)), args.socket).serve_forever()
+    StaffSocketDaemon(production_staff(args.keyman_module), args.socket).serve_forever()
     return 0
 
 
