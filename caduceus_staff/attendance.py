@@ -13,7 +13,9 @@ import importlib.util
 import json
 import os
 import secrets
+import select
 import socket
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -105,16 +107,17 @@ def _context(purpose: str, raw: object) -> dict[str, Any]:
     fields = {"session.prove": ("ticket", "read", "method", "target"), "session.clear": ("ticket",), "capability.mint": ("ticket", "action", "target"), "pin.change": ("ticket", "action", "target")}[purpose]
     if set(raw) != set(fields):
         raise AccessRefused()
-    result = {key: _bounded_text(raw[key], maximum=512 if key == "ticket" else 256) for key in fields}
+    result = {key: _bounded_text(raw[key], maximum=4096 if key == "ticket" else 256) for key in fields}
     if purpose == "pin.change" and (result["action"], result["target"]) != (PIN_ROTATION_ACTION, PIN_ROTATION_TARGET):
         raise AccessRefused()
     return result
 
 
 class DerivedSigner(Protocol):
-    public_key: bytes
+    public_key_hex: str
     epoch: object
-    def sign(self, payload: bytes) -> bytes: ...
+    signer_epoch: object
+    def private_key(self) -> Any: ...
     def close(self) -> None: ...
 
 
@@ -126,11 +129,18 @@ class KeymanAdapter:
 
     def _load(self) -> Any:
         if self._module is None:
-            spec = importlib.util.spec_from_file_location("keyman_caduceus_access", self.module_path)
+            name = "_caduceus_keyman_" + hashlib.sha256(os.fsencode(self.module_path)).hexdigest()
+            spec = importlib.util.spec_from_file_location(name, self.module_path)
             if spec is None or spec.loader is None:
                 raise AccessRefused("unbound")
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
+            sys.modules[name] = module
+            try:
+                spec.loader.exec_module(module)
+            except Exception:
+                if sys.modules.get(name) is module:
+                    del sys.modules[name]
+                raise
             self._module = module
         return self._module
 
@@ -145,20 +155,43 @@ class KeymanAdapter:
 
 
 def _signer_public(signer: Any) -> bytes:
-    value = getattr(signer, "public_key", getattr(signer, "public_key_bytes", None))
+    value = getattr(signer, "public_key_hex", None)
     if callable(value): value = value()
-    if not isinstance(value, bytes) or len(value) != 32:
+    if not isinstance(value, str) or len(value) != 64:
         raise AccessRefused("unbound")
-    return value
+    try:
+        public = bytes.fromhex(value)
+    except ValueError as exc:
+        raise AccessRefused("unbound") from exc
+    if len(public) != 32:
+        raise AccessRefused("unbound")
+    return public
 
 
 def _signer_epoch(signer: Any) -> str:
-    value = getattr(signer, "epoch", getattr(signer, "signer_epoch", None))
-    if callable(value): value = value()
-    if isinstance(value, bytes): value = _b64u(value)
-    if not isinstance(value, (str, int)):
+    values = []
+    for name in ("signer_epoch", "epoch"):
+        value = getattr(signer, name, None)
+        if callable(value): value = value()
+        if isinstance(value, bytes): value = _b64u(value)
+        if value is not None:
+            if not isinstance(value, (str, int)):
+                raise AccessRefused("unbound")
+            values.append(str(value))
+    if not values or any(value != values[0] for value in values[1:]):
         raise AccessRefused("unbound")
-    return str(value)
+    return values[0]
+
+
+def redacted_journal_sink(event: Mapping[str, object]) -> None:
+    """Bounded Hyalos-friendly JSON line without private request material."""
+    allowed = {"operation", "outcome", "epoch", "attendance_digest", "jti_digest", "scope"}
+    safe = {key: value for key, value in event.items() if key in allowed and isinstance(value, (str, int, float, bool, type(None)))}
+    wire = _canonical(safe)
+    if len(wire) > 1024:
+        wire = b'{"operation":"audit","outcome":"redacted"}'
+    sys.stderr.buffer.write(wire + b"\n")
+    sys.stderr.flush()
 
 
 def _close(signer: Any) -> None:
@@ -239,8 +272,11 @@ class AttendanceStaff:
 
     def _token(self, claims: Mapping[str, Any]) -> str:
         self._bound("token.sign")
+        signer = self._signer
+        if signer is None:
+            raise AccessRefused()
         payload = _canonical(claims)
-        try: signature = self._signer.sign(payload)
+        try: signature = signer.private_key().sign(payload)
         except Exception as exc: raise AccessRefused() from exc
         if not isinstance(signature, bytes) or len(signature) != 64: raise AccessRefused()
         return _b64u(_canonical({"payload": _b64u(payload), "signature": _b64u(signature)}))
@@ -311,13 +347,13 @@ class AttendanceStaff:
         item = self._consume("pin.change", challenge_id, {"ticket":ticket,"action":PIN_ROTATION_ACTION,"target":PIN_ROTATION_TARGET}); attendance = self._active(ticket); self._verify(attendance, challenge_id, item, signature)
         if not all(isinstance(pin,str) and 4 <= len(pin) <= 128 for pin in (old_pin,new_pin)): raise AccessRefused()
         with self._lock:
-            self._reap(); cap = self._capabilities.get(capability)
+            self._reap(); cap = self._capabilities.pop(capability, None)
         if cap is None or (cap.parent_ticket, cap.action, cap.target) != (ticket, PIN_ROTATION_ACTION, PIN_ROTATION_TARGET):
             self._audit("pin.change", "REPLAY_OR_SCOPE", attendance=ticket); raise AccessRefused()
         try: self._keyman.change_caduceus_pin(old_pin,new_pin)
         except Exception: self._audit("pin.change","WRONG_OLD_PIN",attendance=ticket); raise AccessRefused()
-        # A successful Keyman change is the single epoch transition: only now
-        # may the old state be retired, including the one-use capability.
+        # A successful Keyman change is the epoch transition.  The capability
+        # was already spent for this single Keyman actuator attempt.
         with self._lock: self._attendances.clear(); self._challenges.clear(); self._capabilities.clear()
         old = self._signer; self._signer = None; self._posture = "STALE_DERIVED"; _close(old)
         if not self._bind_startup(): self._audit("pin.change","STALE_DERIVED"); raise AccessRefused()
@@ -358,9 +394,19 @@ class StaffSocketDaemon:
     def _handle(self, conn: socket.socket) -> None:
         with conn:
             try:
-                conn.settimeout(2); raw = conn.recv(MAX_REQUEST_BYTES + 1)
-                if len(raw) > MAX_REQUEST_BYTES or raw.count(b"\n") != 1 or not raw.endswith(b"\n"): raise AccessRefused()
-                request = json.loads(raw[:-1].decode("utf-8")); response = self.staff.dispatch(request) if isinstance(request,dict) else (_ for _ in ()).throw(AccessRefused())
+                conn.settimeout(2); raw = bytearray()
+                while b"\n" not in raw:
+                    chunk = conn.recv(MAX_REQUEST_BYTES + 1 - len(raw))
+                    if not chunk:
+                        raise AccessRefused()
+                    raw.extend(chunk)
+                    if len(raw) > MAX_REQUEST_BYTES:
+                        raise AccessRefused()
+                if raw.count(b"\n") != 1 or not raw.endswith(b"\n"):
+                    raise AccessRefused()
+                if select.select([conn], [], [], 0)[0] and conn.recv(1):
+                    raise AccessRefused()
+                request = json.loads(bytes(raw[:-1]).decode("utf-8")); response = self.staff.dispatch(request) if isinstance(request,dict) else (_ for _ in ()).throw(AccessRefused())
             except Exception as exc: response = public_error(exc)
             wire = _canonical(response) + b"\n"
             conn.sendall(wire if len(wire) <= MAX_REQUEST_BYTES else _canonical(public_error()) + b"\n")
