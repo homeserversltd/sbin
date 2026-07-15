@@ -1,0 +1,7 @@
+#!/bin/bash
+set -euo pipefail
+PYTHON_BIN="${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python}"
+if [ ! -x "$PYTHON_BIN" ]; then
+    PYTHON_BIN="/usr/bin/python3"
+fi
+exec "$PYTHON_BIN" -m caduceus_staff.network.dns "$@"
