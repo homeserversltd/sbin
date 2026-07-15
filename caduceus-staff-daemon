@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+export PYTHONPATH=/usr/local/sbin${PYTHONPATH:+:$PYTHONPATH}
 PYTHON_BIN="${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python}"
 if [ ! -x "$PYTHON_BIN" ]; then PYTHON_BIN=/usr/bin/python3; fi
 exec "$PYTHON_BIN" -m caduceus_staff.staff_daemon "$@"
