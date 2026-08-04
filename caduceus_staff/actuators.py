@@ -79,8 +79,17 @@ READ_ACTUATORS: dict[str, Actuator] = {
 }
 
 
+WRITE_ACTUATORS: dict[str, Actuator] = {
+    "network.dns.device_name.create": Actuator("network.dns.device_name.create", "network", "caduceus.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("device-name", "create"), "Owned paired Unbound A and PTR projection."),
+    "network.dns.device_name.remove": Actuator("network.dns.device_name.remove", "network", "caduceus.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("device-name", "remove"), "Owned paired Unbound A and PTR removal."),
+    "network.dns.alias.create": Actuator("network.dns.alias.create", "network", "caduceus.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("alias", "create"), "Owned DNS-only CNAME projection."),
+    "network.dns.alias.remove": Actuator("network.dns.alias.remove", "network", "caduceus.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("alias", "remove"), "Owned DNS-only CNAME removal."),
+    "network.identity.claim": Actuator("network.identity.claim", "network", "caduceus.staff.network.identity.v1", "caduceus-network-identity", "caduceus-network-identity", ("claim",), "Lock-held DHCP and DNS identity claim."),
+}
+
+
 def actuator_ids() -> set[str]:
-    return set(ACTUATORS) | set(READ_ACTUATORS)
+    return set(ACTUATORS) | set(READ_ACTUATORS) | set(WRITE_ACTUATORS)
 
 def list_actuators() -> Iterable[Actuator]:
     return ACTUATORS.values()
@@ -88,6 +97,6 @@ def list_actuators() -> Iterable[Actuator]:
 
 def get_actuator(actuator_id: str) -> Actuator:
     try:
-        return ACTUATORS.get(actuator_id) or READ_ACTUATORS[actuator_id]
+        return ACTUATORS.get(actuator_id) or READ_ACTUATORS.get(actuator_id) or WRITE_ACTUATORS[actuator_id]
     except KeyError as exc:
         raise SystemExit(f"unknown actuator: {actuator_id}") from exc
