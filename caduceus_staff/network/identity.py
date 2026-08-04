@@ -42,7 +42,19 @@ def device_list() -> list[dict[str, Any]]:
             item["mismatches"].append("reservation-ip-differs-from-observed-lease")
         if declared and not item["dns_names"]:
             item["mismatches"].append("reservation-without-dns-record")
+        if declared and declared["ip"] in dns_by_ip and not set(dns_by_ip[declared["ip"]]).intersection(item["dns_names"]):
+            item["mismatches"].append("reservation-ip-differs-from-dns-a-target")
         item["claim_state"] = "claimed" if declared and item["dns_names"] else "partial" if declared or item["dns_names"] or observed else "unclaimed"
+    declared_ips = {item["declared_reservation"]["ip"] for item in records.values() if item["declared_reservation"]}
+    for record in dns["devices"]:
+        for address in record["a"]:
+            if address not in declared_ips:
+                key = f"dns:{record['name']}:{address}"
+                records[key] = {
+                    "mac": None, "observed_lease": None, "declared_reservation": None,
+                    "dns_names": [record["name"]], "claim_state": "partial",
+                    "mismatches": ["dns-record-without-reservation"],
+                }
     return [records[key] for key in sorted(records)]
 
 
