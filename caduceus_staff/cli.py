@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Sequence
 
-from .actuators import ACTUATORS, get_actuator, list_actuators
+from .actuators import ACTUATORS, actuator_ids, get_actuator, list_actuators
 from .receipts import emit
 from .runner import run, status
 
@@ -15,10 +15,10 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="List additive staff actuators")
 
     status_p = sub.add_parser("status", help="Show actuator status receipt")
-    status_p.add_argument("actuator", choices=sorted(ACTUATORS))
+    status_p.add_argument("actuator", choices=sorted(actuator_ids()))
 
     run_p = sub.add_parser("run", help="Plan or apply an actuator")
-    run_p.add_argument("actuator", choices=sorted(ACTUATORS))
+    run_p.add_argument("actuator", choices=sorted(actuator_ids()))
     run_p.add_argument("--apply", action="store_true", help="Mutate; default is dry-run plan")
     run_p.add_argument("--legacy-bridge", action="store_true", help="With --apply, execute the preserved legacy script")
     run_p.add_argument("args", nargs=argparse.REMAINDER, help="Arguments forwarded after --")

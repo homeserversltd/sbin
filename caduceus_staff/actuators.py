@@ -68,12 +68,26 @@ ACTUATORS: dict[str, Actuator] = {
 }
 
 
+READ_ACTUATORS: dict[str, Actuator] = {
+    "network.dhcp.status": Actuator("network.dhcp.status", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("status",), "Kea service and configuration readback."),
+    "network.dhcp.leases": Actuator("network.dhcp.leases", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("leases",), "Active, MAC-normalized Kea leases."),
+    "network.dhcp.reservations": Actuator("network.dhcp.reservations", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("reservations",), "Declared Kea reservations."),
+    "network.dhcp.boundary": Actuator("network.dhcp.boundary", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("boundary",), "Loaded Kea reservation boundary."),
+    "network.dns.read": Actuator("network.dns.read", "network", "caduceus.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("read",), "Owned Unbound record readback."),
+    "network.dns.status": Actuator("network.dns.status", "network", "caduceus.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("status",), "Unbound owned include status."),
+    "network.identity.device_list": Actuator("network.identity.device_list", "network", "caduceus.staff.network.identity.v1", "caduceus-network-identity", "caduceus-network-identity", ("device-list",), "MAC-keyed declared, observed, and DNS roster."),
+}
+
+
+def actuator_ids() -> set[str]:
+    return set(ACTUATORS) | set(READ_ACTUATORS)
+
 def list_actuators() -> Iterable[Actuator]:
     return ACTUATORS.values()
 
 
 def get_actuator(actuator_id: str) -> Actuator:
     try:
-        return ACTUATORS[actuator_id]
+        return ACTUATORS.get(actuator_id) or READ_ACTUATORS[actuator_id]
     except KeyError as exc:
         raise SystemExit(f"unknown actuator: {actuator_id}") from exc
