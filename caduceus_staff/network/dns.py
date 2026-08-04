@@ -30,6 +30,9 @@ class DnsManager:
     MAX_PAYLOAD_BYTES = 8192
     ACTION = "network dns"
     INTENT_TARGET = "/api/dns/unbound/drop-in"
+    READ_INCLUDE_PATH = Path("/etc/unbound/unbound.conf.d/caduceus-local-names.conf")
+    BEGIN = "# BEGIN CADUCEUS OWNED DEVICE RECORDS"
+    END = "# END CADUCEUS OWNED DEVICE RECORDS"
 
     def __init__(
         self,
@@ -41,6 +44,7 @@ class DnsManager:
         self.root_config = Path(root_config or os.environ.get("CADUCEUS_UNBOUND_CONFIG", self.ROOT_CONFIG))
         self.dropin_dir = Path(dropin_dir or os.environ.get("CADUCEUS_UNBOUND_DROPIN_DIR", self.DROPIN_DIR))
         self.target = self.dropin_dir / self.TARGET_NAME
+        self.read_include = Path(os.environ.get("CADUCEUS_UNBOUND_INCLUDE", self.READ_INCLUDE_PATH))
         self._command_runner = command_runner or self._run
 
     @staticmethod
@@ -167,6 +171,42 @@ class DnsManager:
             "ok": True,
         }
 
+    def read_status(self) -> dict[str, Any]:
+        """Additive read-actuator view without changing the mutation membrane's status."""
+        result = self.status()
+        result["actuator"] = "network.dns.status"
+        result["read"] = self.read()
+        result["mutationPerformed"] = False
+        return result
+
+    def _owned_lines(self) -> list[str]:
+        try:
+            text = self.read_include.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            raise DnsError(f"failed to read owned include {self.read_include}: {exc}") from exc
+        if self.BEGIN not in text or self.END not in text:
+            return []
+        return text.split(self.BEGIN, 1)[1].split(self.END, 1)[0].splitlines()
+
+    def read(self) -> dict[str, Any]:
+        """Read only Caduceus-owned records; an absent include is an empty well."""
+        devices: dict[str, dict[str, Any]] = {}
+        aliases: list[dict[str, str]] = []
+        for line in self._owned_lines():
+            match = re.search(r'local-data:\s+"([^\s]+)\.?\s+IN\s+(A|PTR|CNAME)\s+([^\s"]+)"', line, re.I)
+            if not match:
+                continue
+            name, record_type, target = match.group(1).rstrip(".").lower(), match.group(2).upper(), match.group(3).rstrip(".").lower()
+            if record_type == "CNAME":
+                aliases.append({"name": name, "target": target})
+            elif record_type == "A":
+                devices.setdefault(name, {"name": name, "a": [], "ptr": []})["a"].append(target)
+            else:
+                devices.setdefault(target, {"name": target, "a": [], "ptr": []})["ptr"].append(name)
+        return {"include": str(self.read_include), "exists": self.read_include.is_file(), "devices": [devices[key] for key in sorted(devices)], "aliases": sorted(aliases, key=lambda item: item["name"]), "mutationPerformed": False, "firstMissingSignal": "none"}
+
     def apply(self, metadata: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(metadata, dict):
             raise DnsError("dns-metadata-invalid")
@@ -238,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="caduceus-network-dns")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("status")
+    commands.add_parser("read")
     intent = commands.add_parser("intent")
     intent.add_argument("method")
     intent.add_argument("target")
@@ -250,7 +291,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     manager = DnsManager()
     try:
         if args.command == "status":
-            receipt = manager.status()
+            receipt = manager.read_status()
+        elif args.command == "read":
+            receipt = {"schema": "caduceus.network.dns.v1", "actuator": "network.dns.read", "action": "read", "ok": True, "result": manager.read(), "mutationPerformed": False, "firstMissingSignal": "none"}
         else:
             if args.method != "POST" or args.target != DnsManager.INTENT_TARGET:
                 raise DnsError("dns-intent-not-admitted")

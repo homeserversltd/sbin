@@ -19,6 +19,15 @@ class DhcpError(RuntimeError):
 
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
+
+
+def normalize_mac(value: str) -> str:
+    """Return the single MAC spelling used by every read projection."""
+    mac = value.strip().lower().replace("-", ":")
+    if not MAC.fullmatch(mac):
+        raise DhcpError(f"invalid MAC address: {value}")
+    return mac
 
 
 class DhcpManager:
@@ -66,6 +75,15 @@ class DhcpManager:
             "active": active,
             "status": "active" if active else "inactive",
             "details": (details_result.stdout + details_result.stderr).strip(),
+        }
+
+    def status(self) -> dict[str, Any]:
+        """Read service and configuration validity without changing either."""
+        service = self.get_service_status()
+        return {
+            "service": {"name": self.SERVICE, "active": service["active"], "status": service["status"]},
+            "config_valid": self.validate_config(),
+            "details": service["details"],
         }
 
     def get_config(self) -> dict[str, Any]:
@@ -127,6 +145,17 @@ class DhcpManager:
             for item in subnet.get("reservations", [])
             if isinstance(item, dict)
         ]
+
+    def reservations(self) -> list[dict[str, str]]:
+        """Project declared reservations with normalized MACs and provenance."""
+        values: list[dict[str, str]] = []
+        for reservation in self.get_reservations():
+            try:
+                mac = normalize_mac(reservation["hw-address"])
+            except DhcpError:
+                continue
+            values.append({"mac": mac, "ip": reservation["ip-address"], "hostname": reservation["hostname"], "provenance": "declared"})
+        return sorted(values, key=lambda item: (item["mac"], item["ip"]))
 
     @staticmethod
     def _validate_mac_address(mac: str) -> bool:
@@ -258,6 +287,42 @@ class DhcpManager:
                 latest[mac] = {"ip-address": row.get("address", ""), "hw-address": mac, "hostname": row.get("hostname", ""), "expire": str(expires), "state": str(state), "_expire": expires}
         return [{key: value for key, value in lease.items() if key != "_expire"} for lease in latest.values()]
 
+    def leases(self) -> list[dict[str, str]]:
+        """Project the active, newest lease per normalized MAC as observed state."""
+        values: list[dict[str, str]] = []
+        for lease in self.get_leases():
+            try:
+                mac = normalize_mac(lease["hw-address"])
+            except DhcpError:
+                continue
+            values.append({"mac": mac, "ip": lease["ip-address"], "hostname": lease["hostname"], "last_activity": lease["expire"], "provenance": "observed"})
+        return sorted(values, key=lambda item: item["mac"])
+
+    def boundary(self) -> list[dict[str, str]]:
+        """Discover reservation space from every loaded subnet and pool boundary."""
+        values: list[dict[str, str]] = []
+        for subnet in self._subnets():
+            try:
+                network = ipaddress.ip_network(str(subnet.get("subnet", "")), strict=False)
+            except ValueError:
+                continue
+            ranges: list[tuple[int, int]] = []
+            pools = subnet.get("pools", [])
+            for pool in pools if isinstance(pools, list) else []:
+                text = str(pool.get("pool", "")) if isinstance(pool, dict) else ""
+                if " - " not in text:
+                    continue
+                try:
+                    start, end = (ipaddress.ip_address(part.strip()) for part in text.split(" - ", 1))
+                except ValueError:
+                    continue
+                ranges.append((int(start), int(end)))
+            if ranges:
+                low, high = int(network.network_address) + 1, min(start for start, _ in ranges) - 1
+                if low <= high:
+                    values.append({"subnet": str(network), "start": str(ipaddress.ip_address(low)), "end": str(ipaddress.ip_address(high)), "discovery": "loaded-kea-pool-boundary"})
+        return values
+
     def get_current_boundary(self) -> int:
         start, _ = self._get_pool_range()
         if start is None:
@@ -309,7 +374,11 @@ class DhcpManager:
 
 
 def _receipt(action: str, result: Any) -> dict[str, Any]:
-    return {"schema": "caduceus.staff.network.dhcp.v1", "action": action, "ok": True, "result": result, "firstMissingSignal": "none"}
+    read_actions = {"status", "reservations", "leases", "boundary"}
+    receipt = {"schema": "caduceus.staff.network.dhcp.v1", "actuator": f"network.dhcp.{action}" if action in read_actions else action, "action": action, "ok": True, "result": result, "firstMissingSignal": "none"}
+    if action in read_actions:
+        receipt["mutationPerformed"] = False
+    return receipt
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -329,9 +398,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     manager = DhcpManager()
     methods: dict[str, Callable[[], Any]] = {
-        "status": manager.get_service_status, "config": manager.get_config, "validate": manager.validate_config,
-        "reservations": manager.get_reservations, "leases": manager.get_leases,
-        "statistics": manager.get_statistics, "boundary": manager.get_current_boundary,
+        "status": manager.status, "config": manager.get_config, "validate": manager.validate_config,
+        "reservations": manager.reservations, "leases": manager.leases,
+        "statistics": manager.get_statistics, "boundary": manager.boundary,
     }
     try:
         if args.command in methods:
@@ -347,7 +416,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(_receipt(args.command, result), sort_keys=True))
         return 0
     except DhcpError as exc:
-        print(json.dumps({"schema": "caduceus.staff.network.dhcp.v1", "action": args.command, "ok": False, "firstMissingSignal": str(exc)}), flush=True)
+        print(json.dumps({"schema": "caduceus.staff.network.dhcp.v1", "actuator": f"network.dhcp.{args.command}", "action": args.command, "ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}), flush=True)
         return 1
 
 
