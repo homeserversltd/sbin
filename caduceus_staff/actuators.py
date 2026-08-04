@@ -24,6 +24,13 @@ class Actuator:
 
 
 ACTUATORS: dict[str, Actuator] = {
+    "network.dhcp.status": Actuator("network.dhcp.status", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("status",), "Kea service and configuration read."),
+    "network.dhcp.leases": Actuator("network.dhcp.leases", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("leases",), "Kea active lease read."),
+    "network.dhcp.reservations": Actuator("network.dhcp.reservations", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("reservations",), "Kea reservation read."),
+    "network.dhcp.boundary": Actuator("network.dhcp.boundary", "network", "caduceus.staff.network.dhcp.v1", "caduceus-dhcp", "caduceus-dhcp", ("boundary",), "Loaded Kea reserved-boundary read."),
+    "network.dns.read": Actuator("network.dns.read", "network", "caduceus.staff.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("read",), "Owned Unbound records read."),
+    "network.dns.status": Actuator("network.dns.status", "network", "caduceus.staff.network.dns.v1", "caduceus-network-dns", "caduceus-network-dns", ("status",), "Owned Unbound include status."),
+    "network.identity.device_list": Actuator("network.identity.device_list", "network", "caduceus.staff.network.identity.v1", "caduceus-network-identity", "caduceus-network-identity", ("device-list",), "Fused DHCP/DNS identity roster read."),
     "backblaze-recover": Actuator(
         id="backblaze-recover",
         family="backup",
