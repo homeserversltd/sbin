@@ -4,6 +4,8 @@ import sys
 import unittest
 from pathlib import Path
 
+from caduceus_staff.actuators import ACTUATORS
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -21,15 +23,45 @@ def run(*args):
 
 
 class CaduceusStaffTests(unittest.TestCase):
-    def test_lists_five_staff_actuators(self):
+    def test_lists_staff_actuators(self):
         data = run("list")
         self.assertEqual(data["schema"], "caduceus.staff.library.list.v1")
-        self.assertEqual(data["count"], 5)
         ids = {item["id"] for item in data["actuators"]}
-        self.assertLessEqual(
-            {"backblaze-recover", "forgejo-backup-b2", "forgejo-migrate", "calibre-helper", "calibre-watch"},
-            ids,
-        )
+        legacy_ids = {
+            "backblaze-recover",
+            "forgejo-backup-b2",
+            "forgejo-migrate",
+            "calibre-helper",
+            "calibre-watch",
+        }
+        self.assertLessEqual(legacy_ids, ids)
+        self.assertEqual(ids, set(ACTUATORS))
+        for actuator in data["actuators"]:
+            self.assertTrue(
+                {
+                    "id",
+                    "family",
+                    "receipt_schema",
+                    "legacy_script",
+                    "legacyPath",
+                    "launcher",
+                    "default_args",
+                    "description",
+                }.issubset(actuator)
+            )
+            for key in (
+                "id",
+                "family",
+                "receipt_schema",
+                "legacy_script",
+                "legacyPath",
+                "launcher",
+                "description",
+            ):
+                self.assertIsInstance(actuator[key], str)
+                self.assertTrue(actuator[key])
+            self.assertIsInstance(actuator["default_args"], list)
+            self.assertTrue(all(isinstance(arg, str) for arg in actuator["default_args"]))
 
     def test_status_reads_preserved_legacy_script_without_executing(self):
         data = run("status", "calibre-helper")
