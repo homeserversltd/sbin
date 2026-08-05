@@ -28,7 +28,7 @@ from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
 HARMONIA = "/usr/local/bin/harmonia"
 TOGGLE = "/usr/local/sbin/caduceus-harmonia-module-toggle"
-STATE_PATH = Path("/var/lib/harmonia/harmonia-update-modal-state.json")
+STATE_PATH = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "harmonia-update-modal/state.json"
 RECEIPT_DIR = Path("/var/lib/harmonia/receipts/update-latest")
 PROFILE_PATHS = (Path("/etc/profile.json"), Path("/etc/appliance/profile.json"))
 
@@ -342,6 +342,8 @@ class HarmoniaUpdateModal(Gtk.Window):
 
         def work() -> tuple[bool, str]:
             receipt = run([
+                "sudo",
+                "-n",
                 HARMONIA,
                 "update",
                 "--apply",
