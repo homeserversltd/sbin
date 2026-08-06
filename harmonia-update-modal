@@ -33,6 +33,128 @@ RECEIPT_DIR = Path("/var/lib/harmonia/receipts/update-latest")
 PROFILE_PATHS = (Path("/etc/profile.json"), Path("/etc/appliance/profile.json"))
 
 
+RETRO_CSS = b"""
+window.harmonia-update-modal {
+  background-color: #d4d0c8;
+  color: #202020;
+}
+
+.retro-header {
+  min-height: 30px;
+  padding: 2px 3px;
+  background-image: linear-gradient(to bottom, #c6c3bd, #aaa7a1);
+  border-top: 1px solid #f7f5ee;
+  border-left: 1px solid #f7f5ee;
+  border-bottom: 1px solid #6e6c67;
+  border-right: 1px solid #6e6c67;
+}
+
+.retro-header-title {
+  padding: 2px 6px;
+  color: #202020;
+  font-weight: bold;
+}
+
+.retro-close {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  font-weight: bold;
+}
+
+.pane-frame {
+  margin: 10px;
+  padding: 13px;
+  background-color: #d4d0c8;
+  border-top: 2px solid #808080;
+  border-left: 2px solid #808080;
+  border-bottom: 2px solid #ffffff;
+  border-right: 2px solid #ffffff;
+}
+
+.pane-title {
+  padding: 0 0 7px 0;
+  color: #202020;
+  font-weight: bold;
+}
+
+.pane-list, .pane-list row {
+  background-color: #ece9df;
+  color: #202020;
+}
+
+scrolledwindow.pane-scroll {
+  border-top: 2px solid #808080;
+  border-left: 2px solid #808080;
+  border-bottom: 2px solid #ffffff;
+  border-right: 2px solid #ffffff;
+}
+
+button {
+  min-height: 24px;
+  padding: 3px 10px;
+  border-radius: 0;
+  box-shadow: none;
+  background-image: none;
+  background-color: #d4d0c8;
+  color: #202020;
+  border-top: 2px solid #ffffff;
+  border-left: 2px solid #ffffff;
+  border-bottom: 2px solid #70706c;
+  border-right: 2px solid #70706c;
+}
+
+button:hover {
+  background-image: none;
+  background-color: #dfdcd4;
+}
+
+button:active {
+  padding: 5px 8px 1px 12px;
+  background-image: none;
+  background-color: #bebbb4;
+  border-top: 2px solid #70706c;
+  border-left: 2px solid #70706c;
+  border-bottom: 2px solid #ffffff;
+  border-right: 2px solid #ffffff;
+}
+
+button:disabled {
+  color: #7d7b76;
+  background-image: none;
+  background-color: #d4d0c8;
+}
+
+switch {
+  border-radius: 0;
+  box-shadow: none;
+  background-color: #a9a69f;
+  border-top: 2px solid #70706c;
+  border-left: 2px solid #70706c;
+  border-bottom: 2px solid #ffffff;
+  border-right: 2px solid #ffffff;
+}
+
+switch slider {
+  border-radius: 0;
+  box-shadow: none;
+  background-image: none;
+  background-color: #d4d0c8;
+  border-top: 2px solid #ffffff;
+  border-left: 2px solid #ffffff;
+  border-bottom: 2px solid #70706c;
+  border-right: 2px solid #70706c;
+}
+
+paned > separator {
+  min-width: 6px;
+  background-color: #aaa7a1;
+  border-left: 1px solid #ffffff;
+  border-right: 1px solid #70706c;
+}
+"""
+
+
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, capture_output=True, check=False)
 
@@ -105,6 +227,8 @@ class State:
 class HarmoniaUpdateModal(Gtk.Window):
     def __init__(self) -> None:
         super().__init__(title="Harmonia updates")
+        self.install_retro_css()
+        self.get_style_context().add_class("harmonia-update-modal")
         self.state = State()
         self.profile_id, self.profile = self.load_profile()
         self.modules = self.module_ids()
@@ -118,15 +242,46 @@ class HarmoniaUpdateModal(Gtk.Window):
         self.connect("key-press-event", self.on_key_press)
         self.connect("window-state-event", self.on_window_state)
 
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        root.pack_start(self.make_header(), False, False, 0)
         panes = Gtk.Paned.new(Gtk.Orientation.HORIZONTAL)
         self.panes = panes
         panes.set_wide_handle(True)
         panes.add1(self.make_modules_pane())
         panes.add2(self.make_interactables_pane())
         panes.connect("size-allocate", self.center_panes)
-        self.add(panes)
+        root.pack_start(panes, True, True, 0)
+        self.add(root)
         self.show_all()
         self.fullscreen()
+
+    @staticmethod
+    def install_retro_css() -> None:
+        provider = Gtk.CssProvider()
+        provider.load_from_data(RETRO_CSS)
+        screen = Gdk.Screen.get_default()
+        if screen is not None:
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+
+    def make_header(self) -> Gtk.Box:
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        header.get_style_context().add_class("retro-header")
+        title = Gtk.Label(label="Harmonia Update")
+        title.set_xalign(0)
+        title.set_hexpand(True)
+        title.get_style_context().add_class("retro-header-title")
+        close = Gtk.Button(label="X")
+        close.set_tooltip_text("Close")
+        close.get_style_context().add_class("retro-close")
+        close.connect("clicked", self.on_close)
+        header.pack_start(title, True, True, 0)
+        header.pack_end(close, False, False, 0)
+        return header
+
+    def on_close(self, _button: Gtk.Button) -> None:
+        self.destroy()
 
     def center_panes(self, panes: Gtk.Paned, allocation: Any) -> None:
         if allocation.width > 1 and allocation.width != self.pane_width:
@@ -219,14 +374,16 @@ class HarmoniaUpdateModal(Gtk.Window):
 
     def pane(self, title: str) -> tuple[Gtk.Box, Gtk.ListBox]:
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        box.set_border_width(24)
+        box.get_style_context().add_class("pane-frame")
         heading = Gtk.Label(label=title)
         heading.set_xalign(0)
-        heading.get_style_context().add_class("title")
+        heading.get_style_context().add_class("pane-title")
         box.pack_start(heading, False, False, 0)
         scroll = Gtk.ScrolledWindow()
+        scroll.get_style_context().add_class("pane-scroll")
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         listing = Gtk.ListBox()
+        listing.get_style_context().add_class("pane-list")
         listing.set_selection_mode(Gtk.SelectionMode.NONE)
         scroll.add(listing)
         box.pack_start(scroll, True, True, 0)
