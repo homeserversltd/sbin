@@ -23,7 +23,7 @@ import gi
 
 gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, GLib, Gtk, Pango  # noqa: E402
 
 
 HARMONIA = "/usr/local/bin/harmonia"
@@ -88,6 +88,26 @@ scrolledwindow.pane-scroll {
   border-left: 2px solid #808080;
   border-bottom: 2px solid #ffffff;
   border-right: 2px solid #ffffff;
+}
+
+frame.diff-frame {
+  padding: 2px;
+  border-top: 2px solid #808080;
+  border-left: 2px solid #808080;
+  border-bottom: 2px solid #ffffff;
+  border-right: 2px solid #ffffff;
+}
+
+textview.diff-view,
+textview.diff-view text {
+  font-family: monospace;
+  background-color: #f4f1e8;
+  color: #202020;
+}
+
+label.diff-omitted {
+  color: #7d7b76;
+  font-size: smaller;
 }
 
 button {
@@ -510,6 +530,43 @@ class HarmoniaUpdateModal(Gtk.Window):
         for child in listing.get_children():
             listing.remove(child)
 
+    @staticmethod
+    def diff_view(diff: str) -> Gtk.Frame:
+        """Render a unified diff in a bounded, locally scrollable retro frame."""
+        frame = Gtk.Frame()
+        frame.set_shadow_type(Gtk.ShadowType.IN)
+        frame.get_style_context().add_class("diff-frame")
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_min_content_height(120)
+        scroll.set_max_content_height(360)
+        scroll.set_propagate_natural_height(True)
+        view = Gtk.TextView()
+        view.set_editable(False)
+        view.set_cursor_visible(False)
+        view.set_wrap_mode(Gtk.WrapMode.NONE)
+        view.set_left_margin(6)
+        view.set_right_margin(6)
+        view.get_style_context().add_class("diff-view")
+        buffer = view.get_buffer()
+        added = buffer.create_tag("added", background="#e2f0d9")
+        removed = buffer.create_tag("removed", background="#f6dddd")
+        hunk = buffer.create_tag("hunk", background="#dedbd3", weight=Pango.Weight.BOLD)
+        for line in diff.splitlines(keepends=True):
+            start_offset = buffer.get_char_count()
+            buffer.insert(buffer.get_end_iter(), line)
+            start = buffer.get_iter_at_offset(start_offset)
+            end = buffer.get_end_iter()
+            if line.startswith("@@"):
+                buffer.apply_tag(hunk, start, end)
+            elif line.startswith("+") and not line.startswith("+++"):
+                buffer.apply_tag(added, start, end)
+            elif line.startswith("-") and not line.startswith("---"):
+                buffer.apply_tag(removed, start, end)
+        scroll.add(view)
+        frame.add(scroll)
+        return frame
+
     def interactable_row(self, item: dict[str, Any], hidden: bool) -> Gtk.ListBoxRow:
         ident = clean_text(item.get("id"))
         name = clean_text(item.get("name"), ident)
@@ -532,6 +589,14 @@ class HarmoniaUpdateModal(Gtk.Window):
         description_label.set_xalign(0)
         description_label.set_line_wrap(True)
         detail.pack_start(description_label, False, False, 0)
+        diff = item.get("diff")
+        if isinstance(diff, str) and diff:
+            detail.pack_start(self.diff_view(diff), False, True, 0)
+        elif "diff_omitted" in item:
+            omitted = Gtk.Label(label=f"diff omitted: {clean_text(item.get('diff_omitted'), 'unspecified')}")
+            omitted.set_xalign(0)
+            omitted.get_style_context().add_class("diff-omitted")
+            detail.pack_start(omitted, False, False, 0)
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         if hidden:
             unhide = Gtk.Button(label="Un-hide")
