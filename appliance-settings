@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+export PYTHONPATH=/usr/local/sbin${PYTHONPATH:+:$PYTHONPATH}
+exec /var/lib/caduceus/venv/bin/python /usr/local/sbin/caduceus_staff/gui/shell.py "$@"
