@@ -134,6 +134,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     path = f"/api/v1/settings/{family}"
     state: dict[str, Any] = {"hydrating": False, "hydrated": False, "read_generation": 0, "busy": set(), "values": {}, "status": {}}
     rows: dict[str, Any] = {}
+    status_rows: dict[str, Any] = {}
     getters: dict[str, Any] = {}
     setters: dict[str, Any] = {}
     static_signals: dict[str, str] = {}
@@ -184,12 +185,18 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             changed_signal = "apply"
         rows[field] = row
         row.set_sensitive(False)
+        group.add(row)
+        if kind == "entry":
+            status_row = Adw.ActionRow(title=f"{title} status")
+            status_rows[field] = status_row
+            group.add(status_row)
+        else:
+            status_rows[field] = row
         if signal:
             static_signals[field] = signal
-            row.set_subtitle(signal)
+            status_rows[field].set_subtitle(signal)
         else:
-            row.set_subtitle("Reading Caduceus…")
-        group.add(row)
+            status_rows[field].set_subtitle("Reading Caduceus…")
 
         def on_changed(_row: Any, _param: Any = None, selected: str = field) -> None:
             if not state["hydrated"] or state["hydrating"] or selected in state["busy"] or selected in static_signals:
@@ -200,7 +207,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 return
             state["busy"].add(selected)
             rows[selected].set_sensitive(False)
-            rows[selected].set_subtitle("Waiting for Caduceus receipt…")
+            status_rows[selected].set_subtitle("Waiting for Caduceus receipt…")
             threading.Thread(target=mutate, args=(selected, value, previous), daemon=True).start()
 
         row.connect(changed_signal, on_changed)
@@ -213,14 +220,14 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     setters[field](values[field])
                     state["values"][field] = getters[field]()
                 if field in static_signals:
-                    row.set_subtitle(static_signals[field])
+                    status_rows[field].set_subtitle(static_signals[field])
                     row.set_sensitive(False)
                 else:
                     row.set_sensitive(field not in state["busy"])
                     if field == message_field:
-                        row.set_subtitle(state["status"].get(field, "Saved"))
+                        status_rows[field].set_subtitle(state["status"].get(field, "Saved"))
                     elif field not in state["busy"]:
-                        row.set_subtitle("")
+                        status_rows[field].set_subtitle("")
         finally:
             state["hydrating"] = False
 
@@ -230,7 +237,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         if error is not None:
             for field, row in rows.items():
                 if field not in static_signals:
-                    row.set_subtitle(error)
+                    status_rows[field].set_subtitle(error)
                     row.set_sensitive(False)
             return False
         assert receipt is not None
@@ -238,7 +245,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             signal = _signal(receipt) or "Settings read refused"
             for field, row in rows.items():
                 if field not in static_signals:
-                    row.set_subtitle(signal)
+                    status_rows[field].set_subtitle(signal)
                     row.set_sensitive(False)
             return False
         state["hydrated"] = True
@@ -261,11 +268,12 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     def finish_mutation(field: str, previous: Any, receipt: dict[str, Any] | None, error: str | None) -> bool:
         state["busy"].discard(field)
         row = rows[field]
+        status_row = status_rows[field]
         if error is not None:
             state["hydrating"] = True
             try:
                 setters[field](previous)
-                row.set_subtitle(error)
+                status_row.set_subtitle(error)
                 row.set_sensitive(True)
             finally:
                 state["hydrating"] = False
@@ -279,7 +287,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         state["hydrating"] = True
         try:
             setters[field](previous)
-            row.set_subtitle(signal)
+            status_row.set_subtitle(signal)
             if signal.startswith(("unsupported:", "privilege:")):
                 static_signals[field] = signal
                 row.set_sensitive(False)
