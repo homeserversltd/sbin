@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+if [ -n "${CADUCEUS_STAFF_PYTHON:-}" ] && [ -x "$CADUCEUS_STAFF_PYTHON" ]; then
+    PYTHON="$CADUCEUS_STAFF_PYTHON"
+elif [ -x "$ROOT/.venv/bin/python" ]; then
+    PYTHON="$ROOT/.venv/bin/python"
+elif [ -x /usr/local/sbin/caduceus_staff/.venv/bin/python ]; then
+    PYTHON=/usr/local/sbin/caduceus_staff/.venv/bin/python
+else
+    PYTHON=/usr/bin/python3
+fi
+if [ -d "$ROOT/caduceus_staff" ]; then
+    export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+elif [ -d /usr/local/sbin/caduceus_staff ]; then
+    export PYTHONPATH="/usr/local/sbin${PYTHONPATH:+:$PYTHONPATH}"
+fi
+exec "$PYTHON" -m caduceus_staff.settings appearance "$@"
