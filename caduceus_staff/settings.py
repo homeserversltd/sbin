@@ -9,6 +9,7 @@ import argparse
 import configparser
 import json
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -41,8 +42,23 @@ MIME_KEYS = {
 }
 
 
+OWNER_USER = "owner"
+OWNER_HOME = Path("/home/owner")
+OWNER_SESSION_TOOLS = {"pactl", "wpctl", "hyprctl", "dunstctl", "xdg-settings"}
+
+
 def home() -> Path:
-    return Path(os.environ.get("HOME", str(Path.home()))).expanduser()
+    return Path(os.environ.get("CADUCEUS_SETTINGS_HOME", str(OWNER_HOME)))
+
+
+def owner_session_command(argv: Sequence[str]) -> tuple[list[str], dict[str, str] | None]:
+    command_argv = list(argv)
+    if os.geteuid() != 0 or not command_argv or command_argv[0] not in OWNER_SESSION_TOOLS:
+        return command_argv, None
+    owner_uid = pwd.getpwnam(OWNER_USER).pw_uid
+    environment = os.environ.copy()
+    environment["XDG_RUNTIME_DIR"] = f"/run/user/{owner_uid}"
+    return ["runuser", "-u", OWNER_USER, "--", *command_argv], environment
 
 
 def paths() -> dict[str, Path]:
@@ -57,10 +73,11 @@ def paths() -> dict[str, Path]:
 
 
 def run_command(argv: Sequence[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
+    command_argv, environment = owner_session_command(argv)
     try:
-        return subprocess.run(argv, input=input_text, capture_output=True, text=True, timeout=8, check=False)
+        return subprocess.run(command_argv, input=input_text, capture_output=True, text=True, timeout=8, check=False, env=environment)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+        return subprocess.CompletedProcess(command_argv, 127, "", str(exc))
 
 
 def command(argv: Sequence[str]) -> tuple[bool, str, subprocess.CompletedProcess[str]]:
