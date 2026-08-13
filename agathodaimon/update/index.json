@@ -2,6 +2,7 @@
   "children": [
     "update-modal",
     "module-toggle",
-    "profile-refresh"
+    "profile-refresh",
+    "sources-reseed"
   ]
 }

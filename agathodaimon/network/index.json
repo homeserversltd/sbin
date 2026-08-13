@@ -5,6 +5,7 @@
     "firewall",
     "identity",
     "child-device",
-    "wake-on-lan"
+    "wake-on-lan",
+    "linker"
   ]
 }
