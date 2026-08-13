@@ -2,4 +2,4 @@
 set -eu
 PYTHON=${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}; [ -x "$PYTHON" ] || PYTHON=python3
 STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd); export PYTHONPATH="$STAFF_SHELF"
-exec "$PYTHON" -m caduceus_staff.rebis_profile_retire "$@"
+exec "$PYTHON" -m agathodaimon.rebis_profile_retire "$@"

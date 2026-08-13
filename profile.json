@@ -19,12 +19,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-harmonia-module-toggle",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/harmonia_module_toggle.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/harmonia_module_toggle.py",
       "dependencies": [],
       "receiptFamily": "caduceus.harmonia.module-toggle.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "The sole live writer of harmonia.disabled_modules in /etc/appliance/config.json; atomically preserves a backup and all unrelated document bytes.",
-      "pythonModule": "caduceus_staff.harmonia_module_toggle"
+      "pythonModule": "agathodaimon.harmonia_module_toggle"
     },
     {
       "id": "profile-sources-reseed",
@@ -35,12 +35,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-profile-sources-reseed",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/source_map.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/source_map.py",
       "dependencies": [],
       "receiptFamily": "caduceus.profile.sources.reseed.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Consumes the fixed Harmonia-managed completed source map and atomically splices only the sources member of /etc/appliance/profile.json.",
-      "pythonModule": "caduceus_staff.source_map"
+      "pythonModule": "agathodaimon.source_map"
     },
     {
       "id": "keyman-doors",
@@ -61,12 +61,12 @@
         "/usr/local/sbin/caduceus-keyman-rotate-capability"
       ],
       "launcher": "/usr/local/sbin/caduceus-keyman",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/keyman.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/keyman.py",
       "dependencies": [],
       "receiptFamily": "caduceus.keyman.door.v1",
       "conversionStatus": "sbin-caller-admitted",
       "notes": "Thin redacting caller for the standing Vault Keyman and LUKS scripts; it never reads or writes SSH, lan.key, or authorized_keys material.",
-      "pythonModule": "caduceus_staff.keyman"
+      "pythonModule": "agathodaimon.keyman"
     },
     {
       "id": "disk-doors",
@@ -92,12 +92,12 @@
         "/usr/local/sbin/setupNAS.sh"
       ],
       "launcher": "/usr/local/sbin/caduceus-disk-doors",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/diskdoors.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/diskdoors.py",
       "dependencies": [],
       "receiptFamily": "caduceus.disk.door.v1",
       "conversionStatus": "sbin-caller-admitted",
       "notes": "Bounded format, encrypt, wipe, unlock, mount, unmount, NAS setup, and inert NAS import doors with redacted plans and authoritative disk readback; never reads or writes SSH, lan.key, or authorized_keys.",
-      "pythonModule": "caduceus_staff.diskdoors"
+      "pythonModule": "agathodaimon.diskdoors"
     },
     {
       "id": "wake-on-lan",
@@ -109,12 +109,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-wake-on-lan",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/wake_on_lan.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/wake_on_lan.py",
       "dependencies": [],
       "receiptFamily": "caduceus.wake-on-lan.door.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Dependency-free wake-on-LAN sender and ICMP reachability probe.",
-      "pythonModule": "caduceus_staff.wake_on_lan"
+      "pythonModule": "agathodaimon.wake_on_lan"
     },
     {
       "id": "service-control-doors",
@@ -134,12 +134,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-service-control",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/servicecontrol.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/servicecontrol.py",
       "dependencies": [],
       "receiptFamily": "caduceus.service.door.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Owns bounded SSH, Samba, system-power, and delayed website-reset service doors; it never reads or writes Keyman/Vault materials, SSH keys, or authorized_keys.",
-      "pythonModule": "caduceus_staff.servicecontrol"
+      "pythonModule": "agathodaimon.servicecontrol"
     },
     {
       "id": "ssh-exposure",
@@ -149,12 +149,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-ssh-exposure",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/ssh_exposure.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/ssh_exposure.py",
       "dependencies": [],
       "receiptFamily": "caduceus.ssh.exposure.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Generic post-birth SSH exposure control: literal replacement of PasswordAuthentication and PubkeyAuthentication, sshd validation, then separate enable|disable and start|stop calls for sshd.service; it never carries or changes SSH identity material.",
-      "pythonModule": "caduceus_staff.ssh_exposure"
+      "pythonModule": "agathodaimon.ssh_exposure"
     },
     {
       "id": "network-dhcp",
@@ -171,12 +171,12 @@
         "update-kea-dhcp.sh"
       ],
       "launcher": "/usr/local/sbin/caduceus-network-dhcp",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dhcp.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dhcp.py",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dhcp.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Kea DHCP readback and control execute through the typed staff Python actuator.",
-      "pythonModule": "caduceus_staff.network.dhcp"
+      "pythonModule": "agathodaimon.network.dhcp"
     },
     {
       "id": "network.dhcp.status",
@@ -187,12 +187,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dhcp",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dhcp.py#status",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dhcp.py#status",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dhcp.status.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Public read-only DHCP service and configuration status.",
-      "pythonModule": "caduceus_staff.network.dhcp"
+      "pythonModule": "agathodaimon.network.dhcp"
     },
     {
       "id": "network.dhcp.leases",
@@ -203,12 +203,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dhcp",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dhcp.py#leases",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dhcp.py#leases",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dhcp.leases.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Public read-only DHCP lease listing.",
-      "pythonModule": "caduceus_staff.network.dhcp"
+      "pythonModule": "agathodaimon.network.dhcp"
     },
     {
       "id": "network.dhcp.reservations",
@@ -219,12 +219,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dhcp",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dhcp.py#reservations",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dhcp.py#reservations",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dhcp.reservations.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Public read-only DHCP reservation listing.",
-      "pythonModule": "caduceus_staff.network.dhcp"
+      "pythonModule": "agathodaimon.network.dhcp"
     },
     {
       "id": "network.dhcp.boundary",
@@ -235,12 +235,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dhcp",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dhcp.py#boundary",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dhcp.py#boundary",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dhcp.boundary.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Public read-only DHCP allocation boundary.",
-      "pythonModule": "caduceus_staff.network.dhcp"
+      "pythonModule": "agathodaimon.network.dhcp"
     },
     {
       "id": "network.dhcp.statistics",
@@ -251,12 +251,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dhcp",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dhcp.py#statistics",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dhcp.py#statistics",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dhcp.statistics.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "DHCP aggregate statistics.",
-      "pythonModule": "caduceus_staff.network.dhcp"
+      "pythonModule": "agathodaimon.network.dhcp"
     },
     {
       "id": "network.dhcp.health",
@@ -267,12 +267,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dhcp",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dhcp.py#health",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dhcp.py#health",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dhcp.health.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Kea DHCP configuration and service health.",
-      "pythonModule": "caduceus_staff.network.dhcp"
+      "pythonModule": "agathodaimon.network.dhcp"
     },
     {
       "id": "network-firewall",
@@ -287,12 +287,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-firewall",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/firewall.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/firewall.py",
       "dependencies": [],
       "receiptFamily": "caduceus.network.firewall.apply.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Typed child DNS firewall policy uses stdin JSON and owned nft/Unbound transaction.",
-      "pythonModule": "caduceus_staff.network.firewall"
+      "pythonModule": "agathodaimon.network.firewall"
     },
     {
       "id": "child-device",
@@ -308,12 +308,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-child-device",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/child_device.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/child_device.py",
       "dependencies": [],
       "receiptFamily": "caduceus.child-device.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Plain child-device registry with observed-MAC readback and rendered nftables/Unbound enforcement; apply does not alter the live gateway without an operator-witnessed installation step.",
-      "pythonModule": "caduceus_staff.network.child_device"
+      "pythonModule": "agathodaimon.network.child_device"
     },
     {
       "id": "network-dns",
@@ -328,12 +328,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dns",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dns.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dns.py",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dns.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Managed Unbound drop-in DNS intent delegates to the typed staff Python actuator; Rust performs no live DNS/UFW work.",
-      "pythonModule": "caduceus_staff.network.dns"
+      "pythonModule": "agathodaimon.network.dns"
     },
     {
       "id": "network.dns.resolver.status",
@@ -344,12 +344,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dns",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dns.py#resolver-status",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dns.py#resolver-status",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dns.resolver.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Read-only Unbound resolver posture through typed staff Python.",
-      "pythonModule": "caduceus_staff.network.dns"
+      "pythonModule": "agathodaimon.network.dns"
     },
     {
       "id": "network-dns-resolver-control",
@@ -362,12 +362,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": ["/usr/local/lib/updates/modules/adblock/index.py"],
       "launcher": "/usr/local/sbin/caduceus-network-dns",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dns.py#resolver-control",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dns.py#resolver-control",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dns.resolver.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Bounded Unbound resolver control; only blocklist inclusion, the admitted updater, and the sole forward zone change.",
-      "pythonModule": "caduceus_staff.network.dns"
+      "pythonModule": "agathodaimon.network.dns"
     },
     {
       "id": "network.dns.status",
@@ -378,12 +378,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dns-read",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dns.py#status",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dns.py#status",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dns.status.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Public read-only DNS service status.",
-      "pythonModule": "caduceus_staff.network.dns"
+      "pythonModule": "agathodaimon.network.dns"
     },
     {
       "id": "network.dns.read",
@@ -394,12 +394,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-dns-read",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/dns.py#read",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/dns.py#read",
       "dependencies": [],
       "receiptFamily": "caduceus.network.dns.read.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Public read-only DNS configuration readback.",
-      "pythonModule": "caduceus_staff.network.dns"
+      "pythonModule": "agathodaimon.network.dns"
     },
     {
       "id": "network.identity.claim",
@@ -410,12 +410,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-identity-claim",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/identity.py#claim",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/identity.py#claim",
       "dependencies": [],
       "receiptFamily": "caduceus.network.identity.claim.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Identity claim transaction is owned by the pinned staff actuator; Rust only relays the validated public argv and terminal receipt.",
-      "pythonModule": "caduceus_staff.network.identity"
+      "pythonModule": "agathodaimon.network.identity"
     },
     {
       "id": "network.identity.device_list",
@@ -426,12 +426,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-network-device-list",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/network/identity.py#device-list",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/network/identity.py#device-list",
       "dependencies": [],
       "receiptFamily": "caduceus.network.identity.device_list.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Public read-only fused DHCP, lease, and Caduceus-owned DNS roster.",
-      "pythonModule": "caduceus_staff.network.identity"
+      "pythonModule": "agathodaimon.network.identity"
     },
     {
       "id": "file-ingress",
@@ -474,7 +474,7 @@
         "homeserver-backblaze-tab-b2-disaster-recovery.py"
       ],
       "launcher": "/usr/local/sbin/caduceus-backblaze-recover",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/runner.py#backblaze-recover",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/runner.py#backblaze-recover",
       "dependencies": [
         "b2sdk",
         "cryptography"
@@ -482,7 +482,7 @@
       "receiptFamily": "caduceus.backup.b2.recover.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "B2 disaster recovery moves out of self-bootstrapping quarry into the staff venv.",
-      "pythonModule": "caduceus_staff.runner:backblaze-recover"
+      "pythonModule": "agathodaimon.runner:backblaze-recover"
     },
     {
       "id": "backblaze-forgejo-b2-push",
@@ -495,7 +495,7 @@
         "homeserver-forgejo-backup-to-b2.sh"
       ],
       "launcher": "/usr/local/sbin/caduceus-forgejo-backup-b2",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/runner.py#forgejo-backup-b2",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/runner.py#forgejo-backup-b2",
       "dependencies": [
         "b2sdk",
         "cryptography"
@@ -503,7 +503,7 @@
       "receiptFamily": "caduceus.backup.forgejo.b2.push.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Forgejo backup-to-B2 becomes a staff-owned Python job instead of a www-data systemd-run wrapper.",
-      "pythonModule": "caduceus_staff.runner:forgejo-backup-b2"
+      "pythonModule": "agathodaimon.runner:forgejo-backup-b2"
     },
     {
       "id": "backblaze-forgejo-migrate",
@@ -516,7 +516,7 @@
         "homeserver-forgejo-migrate.py"
       ],
       "launcher": "/usr/local/sbin/caduceus-forgejo-migrate",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/runner.py#forgejo-migrate",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/runner.py#forgejo-migrate",
       "dependencies": [
         "b2sdk",
         "cryptography"
@@ -524,7 +524,7 @@
       "receiptFamily": "caduceus.backup.forgejo.migrate.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Forgejo migration/restore joins the Backblaze staff Python lane.",
-      "pythonModule": "caduceus_staff.runner:forgejo-migrate"
+      "pythonModule": "agathodaimon.runner:forgejo-migrate"
     },
     {
       "id": "backblaze-config",
@@ -540,12 +540,12 @@
         "/vault/keyman/newkey.sh"
       ],
       "launcher": "/usr/local/sbin/caduceus-backblaze-config",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/backblaze_config.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/backblaze_config.py",
       "dependencies": [],
       "receiptFamily": "caduceus.backblaze.config.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Verifies B2 credentials before Keyman custody and an atomic one-time non-secret config lock; never touches SSH, lan.key, or authorized_keys.",
-      "pythonModule": "caduceus_staff.backblaze_config"
+      "pythonModule": "agathodaimon.backblaze_config"
     },
     {
       "id": "calibre-helper-daemon",
@@ -558,14 +558,14 @@
         "calibreHelperDaemon.sh"
       ],
       "launcher": "/usr/local/sbin/caduceus-calibre-helper",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/runner.py#calibre-helper",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/runner.py#calibre-helper",
       "dependencies": [
         "psutil"
       ],
       "receiptFamily": "caduceus.service.calibre.helper.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Calibre helper becomes a typed staff Python service helper instead of a monolithic shell controller.",
-      "pythonModule": "caduceus_staff.runner:calibre-helper"
+      "pythonModule": "agathodaimon.runner:calibre-helper"
     },
     {
       "id": "calibre-watch",
@@ -578,14 +578,14 @@
         "calibreSimpleWatcher.sh"
       ],
       "launcher": "/usr/local/sbin/caduceus-calibre-watch",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/runner.py#calibre-watch",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/runner.py#calibre-watch",
       "dependencies": [
         "psutil"
       ],
       "receiptFamily": "caduceus.service.calibre.watch.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Calibre watch loop moves into staff Python with explicit status/receipt posture.",
-      "pythonModule": "caduceus_staff.runner:calibre-watch"
+      "pythonModule": "agathodaimon.runner:calibre-watch"
     },
     {
       "id": "household-time-resolve",
@@ -595,12 +595,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-household-time",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/household_time.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/household_time.py",
       "dependencies": [],
       "receiptFamily": "caduceus.household-time.receipt.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Generic no-key public-IP geoIP resolver; only validated timezone provenance is persisted.",
-      "pythonModule": "caduceus_staff.household_time"
+      "pythonModule": "agathodaimon.household_time"
     },
     {
       "id": "household-time-ensure-ntp",
@@ -610,12 +610,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-household-time",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/household_time.py#ensure_ntp",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/household_time.py#ensure_ntp",
       "dependencies": [],
       "receiptFamily": "caduceus.household-time.receipt.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Detects, enables, and proves the installed synchronization provider through timedatectl readback.",
-      "pythonModule": "caduceus_staff.household_time"
+      "pythonModule": "agathodaimon.household_time"
     },
     {
       "id": "household-time-set-timezone",
@@ -625,12 +625,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-household-time",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/household_time.py#set_timezone",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/household_time.py#set_timezone",
       "dependencies": [],
       "receiptFamily": "caduceus.household-time.receipt.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Validates installed IANA zones, debounces changes, and proves timedatectl readback.",
-      "pythonModule": "caduceus_staff.household_time"
+      "pythonModule": "agathodaimon.household_time"
     },
     {
       "id": "house-ca-ensure-root",
@@ -641,12 +641,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#ensure_root",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#ensure_root",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.ensure_root.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Converges the house root ring and refuses replacement without explicit renewal authority.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-issue-leaf",
@@ -657,12 +657,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#issue_leaf",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#issue_leaf",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.issue_leaf.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Issues a descendant leaf while preserving the current public CA bundle fingerprint.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-bundle-export",
@@ -677,12 +677,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#bundle_export",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#bundle_export",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.bundle_export.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Exports one openssl-verified CA-only trust artifact for the active root ring.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-trust-install",
@@ -693,12 +693,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#trust_install",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#trust_install",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.trust_install.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Verifies the expected CA fingerprint and proves local trust-store readback before installed is claimed.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-apply-nginx",
@@ -710,12 +710,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#apply_nginx",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#apply_nginx",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.apply_nginx.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Stages and reads back the bounded portal proxy configuration.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-constituent-lock",
@@ -726,12 +726,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#constituent_lock",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#constituent_lock",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.constituent_lock.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Declares the DHCP and DNS constituent binding plan before proxy activation.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-status",
@@ -742,12 +742,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#status",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#status",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.status.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Reads role-aware household CA state without mutation.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-state-commit",
@@ -757,12 +757,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#state_commit",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#state_commit",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.state_commit.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "The sole atomic durable-state writer for caduceus.household.tls.v1.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-portal-admit",
@@ -773,12 +773,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#portal_admit",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#portal_admit",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.portal_admit.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "HomeServer-only four-child composition with state commit last and failure hold.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "csr-sign",
@@ -789,12 +789,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#sign_csr",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#sign_csr",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.csr_sign.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Signs an exact console CSR under the stable household root; private keys and caller output paths are never accepted.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "house-ca-bundle-read",
@@ -805,12 +805,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-house-ca",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/house_ca.py#bundle_read",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/house_ca.py#bundle_read",
       "dependencies": [],
       "receiptFamily": "caduceus.staff.house_ca.bundle_read.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Auxiliary public CA-only bundle reader.",
-      "pythonModule": "caduceus_staff.house_ca"
+      "pythonModule": "agathodaimon.house_ca"
     },
     {
       "id": "forgejo-credential",
@@ -822,12 +822,12 @@
         "forgejo-credential-helper"
       ],
       "launcher": "/usr/local/sbin/caduceus-forgejo-credential",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/forgejo_credential.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/forgejo_credential.py",
       "dependencies": [],
       "receiptFamily": "caduceus.forgejo.credential.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Owner-scoped Git credential-helper protocol reads the owner token only on get; never persists or emits it outside Git credential output.",
-      "pythonModule": "caduceus_staff.forgejo_credential"
+      "pythonModule": "agathodaimon.forgejo_credential"
     },
     {
       "id": "honcho-env-converge",
@@ -839,12 +839,12 @@
         "harmonia-honcho-env-converge"
       ],
       "launcher": "/usr/local/sbin/caduceus-honcho-env",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/honcho_env.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/honcho_env.py",
       "dependencies": [],
       "receiptFamily": "caduceus.honcho.env.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Atomically converges non-secret Honcho settings and preserves the required API-key value verbatim.",
-      "pythonModule": "caduceus_staff.honcho_env"
+      "pythonModule": "agathodaimon.honcho_env"
     },
     {
       "id": "rebis-profile-retire",
@@ -856,12 +856,12 @@
         "harmonia-rebis-profile-retirement"
       ],
       "launcher": "/usr/local/sbin/caduceus-rebis-profile-retire",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/rebis_profile_retire.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/rebis_profile_retire.py",
       "dependencies": [],
       "receiptFamily": "harmonia.rebis_profile_retirement.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Timestamp-retires only the installed Rebis Harmonia profile and returns the remaining installed profile names.",
-      "pythonModule": "caduceus_staff.rebis_profile_retire"
+      "pythonModule": "agathodaimon.rebis_profile_retire"
     },
     {
       "id": "translator-toolchain",
@@ -873,12 +873,12 @@
         "harmonia-translator-toolchain"
       ],
       "launcher": "/usr/local/sbin/caduceus-translator-toolchain",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/translator_toolchain.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/translator_toolchain.py",
       "dependencies": [],
       "receiptFamily": "caduceus.translator.toolchain.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Explicit laptop-01/laptop-02 variants preserve installation-capable versus verification-only translator-toolchain behavior.",
-      "pythonModule": "caduceus_staff.translator_toolchain"
+      "pythonModule": "agathodaimon.translator_toolchain"
     },
     {
       "id": "matrix-converge",
@@ -890,12 +890,12 @@
         "harmonia-matrix-converge"
       ],
       "launcher": "/usr/local/sbin/caduceus-matrix-converge",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/matrix_converge.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/matrix_converge.py",
       "dependencies": [],
       "receiptFamily": "caduceus.matrix.converge.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Asserts the born Matrix floor and preserves Matrix nginx/Unbound material fingerprints while Caduceus remains the portal configuration writer.",
-      "pythonModule": "caduceus_staff.matrix_converge"
+      "pythonModule": "agathodaimon.matrix_converge"
     },
     {
       "id": "harmonia-profile-refresh",
@@ -908,12 +908,12 @@
         "harmonia-chia-profile-refresh"
       ],
       "launcher": "/usr/local/sbin/caduceus-harmonia-profile-refresh",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/harmonia_profile_refresh.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/harmonia_profile_refresh.py",
       "dependencies": [],
       "receiptFamily": "caduceus.harmonia.profile-refresh.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "One Chia profile-refresh actuator owns its Caduceus path/service unit install and uninstall, locks one refresh, and preserves the capsule pack/install/run-profile sequence.",
-      "pythonModule": "caduceus_staff.harmonia_profile_refresh"
+      "pythonModule": "agathodaimon.harmonia_profile_refresh"
     },
     {
       "id": "hermes-agent-maintenance",
@@ -925,12 +925,12 @@
         "hermes-agent-maintenance"
       ],
       "launcher": "/usr/local/sbin/caduceus-hermes-agent-maintenance",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/hermes_agent_maintenance.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/hermes_agent_maintenance.py",
       "dependencies": [],
       "receiptFamily": "caduceus.hermes-agent-maintenance.v1",
       "conversionStatus": "sbin-library-admitted",
       "notes": "Owns its owner-scoped user service/timer install and uninstall while preserving profile, backup, gateway, lock, and receipt semantics.",
-      "pythonModule": "caduceus_staff.hermes_agent_maintenance"
+      "pythonModule": "agathodaimon.hermes_agent_maintenance"
     },
     {
       "id": "nas-sync",
@@ -946,12 +946,12 @@
         "/usr/local/sbin/safe-nas-sync.sh"
       ],
       "launcher": "/usr/local/sbin/caduceus-nas-sync",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/nas_sync.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/nas_sync.py",
       "dependencies": [],
       "receiptFamily": "caduceus.nas.sync.v1",
       "conversionStatus": "sbin-caller-admitted",
       "notes": "Dedicated NAS Sync Now and systemd-owned Auto Sync actuator; safe-nas-sync.sh remains sole sync authority.",
-      "pythonModule": "caduceus_staff.nas_sync"
+      "pythonModule": "agathodaimon.nas_sync"
     },
     {
       "id": "linker",
@@ -992,12 +992,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-settings-display",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/settings/display.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/settings/display.py",
       "dependencies": [],
       "receiptFamily": "caduceus.settings.display.v1",
       "conversionStatus": "sbin-launcher-declared",
       "notes": "GET argv: get --json. POST argv: set followed by one or more ordered --field <allowlisted-name> --value-json <JSON-scalar-or-array> groups. Stdout is one JSON object; mutation success must include ok:true, changed:boolean, and receiptPath under /var/lib/caduceus/receipts/<run-id>/run.json.",
-      "pythonModule": "caduceus_staff.settings.display"
+      "pythonModule": "agathodaimon.settings.display"
     },
     {
       "id": "settings-appearance",
@@ -1015,12 +1015,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-settings-appearance",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/settings/appearance.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/settings/appearance.py",
       "dependencies": [],
       "receiptFamily": "caduceus.settings.appearance.v1",
       "conversionStatus": "sbin-launcher-declared",
       "notes": "GET argv: get --json. POST argv: set followed by one or more ordered --field <allowlisted-name> --value-json <JSON-scalar-or-array> groups. Stdout is one JSON object; mutation success must include ok:true, changed:boolean, and receiptPath under /var/lib/caduceus/receipts/<run-id>/run.json.",
-      "pythonModule": "caduceus_staff.settings.appearance"
+      "pythonModule": "agathodaimon.settings.appearance"
     },
     {
       "id": "settings-sound",
@@ -1038,12 +1038,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-settings-sound",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/settings/sound.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/settings/sound.py",
       "dependencies": [],
       "receiptFamily": "caduceus.settings.sound.v1",
       "conversionStatus": "sbin-launcher-declared",
       "notes": "GET argv: get --json. POST argv: set followed by one or more ordered --field <allowlisted-name> --value-json <JSON-scalar-or-array> groups. Stdout is one JSON object; mutation success must include ok:true, changed:boolean, and receiptPath under /var/lib/caduceus/receipts/<run-id>/run.json.",
-      "pythonModule": "caduceus_staff.settings.sound"
+      "pythonModule": "agathodaimon.settings.sound"
     },
     {
       "id": "settings-input",
@@ -1061,12 +1061,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-settings-input",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/settings/input.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/settings/input.py",
       "dependencies": [],
       "receiptFamily": "caduceus.settings.input.v1",
       "conversionStatus": "sbin-launcher-declared",
       "notes": "GET argv: get --json. POST argv: set followed by one or more ordered --field <allowlisted-name> --value-json <JSON-scalar-or-array> groups. Stdout is one JSON object; mutation success must include ok:true, changed:boolean, and receiptPath under /var/lib/caduceus/receipts/<run-id>/run.json.",
-      "pythonModule": "caduceus_staff.settings.input"
+      "pythonModule": "agathodaimon.settings.input"
     },
     {
       "id": "settings-notifications",
@@ -1084,12 +1084,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-settings-notifications",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/settings/notifications.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/settings/notifications.py",
       "dependencies": [],
       "receiptFamily": "caduceus.settings.notifications.v1",
       "conversionStatus": "sbin-launcher-declared",
       "notes": "GET argv: get --json. POST argv: set followed by one or more ordered --field <allowlisted-name> --value-json <JSON-scalar-or-array> groups. Stdout is one JSON object; mutation success must include ok:true, changed:boolean, and receiptPath under /var/lib/caduceus/receipts/<run-id>/run.json.",
-      "pythonModule": "caduceus_staff.settings.notifications"
+      "pythonModule": "agathodaimon.settings.notifications"
     },
     {
       "id": "settings-default-apps",
@@ -1107,12 +1107,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-settings-default-apps",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/settings/default_apps.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/settings/default_apps.py",
       "dependencies": [],
       "receiptFamily": "caduceus.settings.default-apps.v1",
       "conversionStatus": "sbin-launcher-declared",
       "notes": "GET argv: get --json. POST argv: set followed by one or more ordered --field <allowlisted-name> --value-json <JSON-scalar-or-array> groups. Stdout is one JSON object; mutation success must include ok:true, changed:boolean, and receiptPath under /var/lib/caduceus/receipts/<run-id>/run.json.",
-      "pythonModule": "caduceus_staff.settings.default_apps"
+      "pythonModule": "agathodaimon.settings.default_apps"
     },
     {
       "id": "settings-datetime",
@@ -1130,12 +1130,12 @@
       "actuatorClass": "staff-python",
       "sourceScripts": [],
       "launcher": "/usr/local/sbin/caduceus-settings-datetime",
-      "libraryEntry": "/usr/local/sbin/caduceus_staff/settings/datetime.py",
+      "libraryEntry": "/usr/local/sbin/agathodaimon/settings/datetime.py",
       "dependencies": [],
       "receiptFamily": "caduceus.settings.datetime.v1",
       "conversionStatus": "sbin-launcher-declared",
       "notes": "GET argv: get --json. POST argv: set followed by one or more ordered --field <allowlisted-name> --value-json <JSON-scalar-or-array> groups. Stdout is one JSON object; mutation success must include ok:true, changed:boolean, and receiptPath under /var/lib/caduceus/receipts/<run-id>/run.json.",
-      "pythonModule": "caduceus_staff.settings.datetime"
+      "pythonModule": "agathodaimon.settings.datetime"
     }
   ]
 }

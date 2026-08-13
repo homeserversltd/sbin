@@ -4,14 +4,14 @@ import sys
 import unittest
 from pathlib import Path
 
-from caduceus_staff.actuators import ACTUATORS
+from agathodaimon.actuators import ACTUATORS
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(*args):
     proc = subprocess.run(
-        [sys.executable, "-m", "caduceus_staff", *args],
+        [sys.executable, "-m", "agathodaimon", *args],
         cwd=ROOT,
         text=True,
         stdout=subprocess.PIPE,

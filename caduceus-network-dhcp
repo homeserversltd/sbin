@@ -5,8 +5,8 @@ PYTHON=${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}
 STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export PYTHONPATH="$STAFF_SHELF"
 case "$*" in
-  status|leases|statistics|health) exec "$PYTHON" -m caduceus_staff.network.dhcp "$1" ;;
-  "reservations list") exec "$PYTHON" -m caduceus_staff.network.dhcp reservations ;;
-  "boundary show") exec "$PYTHON" -m caduceus_staff.network.dhcp boundary ;;
+  status|leases|statistics|health) exec "$PYTHON" -m agathodaimon.network.dhcp "$1" ;;
+  "reservations list") exec "$PYTHON" -m agathodaimon.network.dhcp reservations ;;
+  "boundary show") exec "$PYTHON" -m agathodaimon.network.dhcp boundary ;;
   *) echo "usage: caduceus-network-dhcp status|leases|statistics|health|reservations list|boundary show" >&2; exit 2 ;;
 esac

@@ -5,4 +5,4 @@ PYTHON=${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}
 STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export PYTHONPATH="$STAFF_SHELF"
 [ "$#" -eq 1 ] && [ "$1" = list ] || { echo "usage: caduceus-network-device-list list" >&2; exit 2; }
-exec "$PYTHON" -m caduceus_staff.network.identity device-list
+exec "$PYTHON" -m agathodaimon.network.identity device-list
