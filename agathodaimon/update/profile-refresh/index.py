@@ -13,7 +13,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/agathodaimon/agathodaimon-harmonia-profile-refresh --refresh
+ExecStart=/usr/local/sbin/agathodaimon/cli.py update profile-refresh --refresh
 Nice=10
 IOSchedulingClass=idle
 """

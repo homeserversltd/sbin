@@ -1,7 +1,0 @@
-#!/bin/sh
-set -eu
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PYTHON=${AGATHODAIMON_PYTHON:-/var/lib/caduceus/venv/bin/python3}
-[ -x "$PYTHON" ] || PYTHON=python3
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec "$PYTHON" "$ROOT/agathodaimon/cli.py" vault keyman "$@"
