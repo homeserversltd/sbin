@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PYTHON=${AGATHODAIMON_PYTHON:-/var/lib/caduceus/venv/bin/python3}
+[ -x "$PYTHON" ] || PYTHON=python3
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+case "${1-}" in status|read) : ;; *) echo "usage: caduceus-network-dns-read status|read" >&2; exit 2 ;; esac
+exec "$PYTHON" "$ROOT/agathodaimon/cli.py" network dns "$@"
