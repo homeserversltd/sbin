@@ -1,0 +1,17 @@
+{
+  "children": [
+    "network",
+    "settings",
+    "gui",
+    "vault",
+    "cert",
+    "backup",
+    "forgejo",
+    "service",
+    "update",
+    "time",
+    "matrix",
+    "reload",
+    "lib"
+  ]
+}

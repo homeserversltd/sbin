@@ -1,0 +1,11 @@
+{
+  "children": [
+    "appearance",
+    "sound",
+    "display",
+    "input",
+    "datetime",
+    "default-apps",
+    "notifications"
+  ]
+}

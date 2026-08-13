@@ -1,0 +1,7 @@
+{
+  "children": [
+    "backblaze-config",
+    "backblaze-recover",
+    "nas-sync"
+  ]
+}

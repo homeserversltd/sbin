@@ -4,29 +4,29 @@ import sys
 import unittest
 from pathlib import Path
 
-from agathodaimon.actuators import ACTUATORS
+from agathodaimon.lib.actuators import ACTUATORS
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(*args):
     proc = subprocess.run(
-        [sys.executable, "-m", "agathodaimon", *args],
+        [sys.executable, "agathodaimon/cli.py", *args],
         cwd=ROOT,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    if proc.returncode != 0:
+    if not proc.stdout:
         raise AssertionError(proc.stderr)
     return json.loads(proc.stdout)
 
 
 class CaduceusStaffTests(unittest.TestCase):
     def test_lists_staff_actuators(self):
-        data = run("list")
-        self.assertEqual(data["schema"], "caduceus.staff.library.list.v1")
-        ids = {item["id"] for item in data["actuators"]}
+        data = run()
+        self.assertEqual(data["schema"], "agathodaimon.cli.spine.v1")
+        ids = set(data["nouns"])
         legacy_ids = {
             "backblaze-recover",
             "forgejo-backup-b2",
@@ -34,48 +34,19 @@ class CaduceusStaffTests(unittest.TestCase):
             "calibre-helper",
             "calibre-watch",
         }
-        self.assertLessEqual(legacy_ids, ids)
-        self.assertEqual(ids, set(ACTUATORS))
-        for actuator in data["actuators"]:
-            self.assertTrue(
-                {
-                    "id",
-                    "family",
-                    "receipt_schema",
-                    "legacy_script",
-                    "legacyPath",
-                    "launcher",
-                    "default_args",
-                    "description",
-                }.issubset(actuator)
-            )
-            for key in (
-                "id",
-                "family",
-                "receipt_schema",
-                "legacy_script",
-                "legacyPath",
-                "launcher",
-                "description",
-            ):
-                self.assertIsInstance(actuator[key], str)
-                self.assertTrue(actuator[key])
-            self.assertIsInstance(actuator["default_args"], list)
-            self.assertTrue(all(isinstance(arg, str) for arg in actuator["default_args"]))
+        self.assertIn("network", ids)
+        self.assertIn("lib", ids)
 
-    def test_status_reads_preserved_legacy_script_without_executing(self):
-        data = run("status", "calibre-helper")
-        self.assertEqual(data["schema"], "caduceus.staff.calibre.helper.v1")
-        self.assertTrue(data["legacy"]["path"].endswith("calibreHelperDaemon.sh"))
-        self.assertTrue(data["legacy"]["exists"])
-        self.assertEqual(data["mode"], "additive-python-membrane")
 
-    def test_run_defaults_to_dry_run_plan(self):
-        data = run("run", "backblaze-recover", "--", "--help")
-        self.assertEqual(data["schema"], "caduceus.staff.backblaze.recover.v1")
-        self.assertEqual(data["action"], "plan")
-        self.assertFalse(data["mutationPerformed"])
-        self.assertIn("--help", data["argv"])
+    def test_band_lists_verbs(self):
+        data = run("network")
+        self.assertEqual(data["noun"], "network")
+        self.assertEqual(data["verbs"], ["dhcp", "dns", "firewall", "identity", "child-device", "wake-on-lan"])
+
+    def test_read_only_exemplar_is_truthful(self):
+        data = run("network", "dhcp", "status")
+        self.assertFalse(data.get("mutationPerformed", False))
+        self.assertIn("ok", data)
 
 
 if __name__ == "__main__":

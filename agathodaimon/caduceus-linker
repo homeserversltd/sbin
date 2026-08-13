@@ -1,3 +1,0 @@
-#!/bin/sh
-set -eu
-exec /usr/local/lib/linker/venv/bin/python /usr/local/lib/linker/linker_json.py

@@ -8,8 +8,11 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
-from agathodaimon.attendance import (DOMAIN, PIN_ROTATION_ACTION, PIN_ROTATION_TARGET, AccessRefused, AttendanceStaff, KeymanAdapter, StaffSocketDaemon, challenge_message, public_error) # noqa: E402
-from agathodaimon.staff_daemon import production_staff # noqa: E402
+from agathodaimon.lib.attendance import (DOMAIN, PIN_ROTATION_ACTION, PIN_ROTATION_TARGET, AccessRefused, AttendanceStaff, KeymanAdapter, StaffSocketDaemon, challenge_message, public_error) # noqa: E402
+import importlib.util as _importlib_util
+_staff_spec = _importlib_util.spec_from_file_location("agathodaimon.service.staff_daemon_face", ROOT / "agathodaimon/service/staff-daemon/index.py")
+_staff_mod = _importlib_util.module_from_spec(_staff_spec); _staff_spec.loader.exec_module(_staff_mod)
+production_staff = _staff_mod.production_staff
 
 
 def b64(raw: bytes) -> str: return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -85,8 +88,8 @@ class AttendanceTests(unittest.TestCase):
         minted=self.mint(); ticket, attendance_id=minted["ticket"], minted["attendance_id"]; before=self.staff.attendance_current(attendance_id); self.assertTrue(before["current"])
         clear=self.challenge("session.clear",{"ticket":ticket}); self.staff.session_clear(ticket=ticket,challenge_id=clear["challenge_id"],signature=self.sign(self.key,clear)); self.assertFalse(self.staff.attendance_current(attendance_id)["current"]); self.assertFalse(AttendanceStaff(self.keyman).attendance_current(attendance_id)["current"])
         for response in (self.staff.signing_status(), minted, before): self.assertTrue(response["ok"]); self.assertRegex(response["public_key"], r"^[0-9a-f]{64}$"); self.assertRegex(response["epoch"], r"^[0-9a-f]{64}$")
-    def test_launcher_exports_harmonia_sbin_path(self):
-        self.assertIn("export PYTHONPATH=/usr/local/sbin${PYTHONPATH:+:$PYTHONPATH}", (ROOT / "agathodaimon" / "caduceus-staff-daemon").read_text())
+    def test_service_daemon_is_seated_in_service_band(self):
+        self.assertTrue((ROOT / "agathodaimon" / "service" / "staff-daemon" / "index.py").is_file())
     def test_raw_webcrypto_signature_and_32_byte_jwk_are_exact(self):
         self.assertTrue(self.mint()["ticket"])
         bad={"kty":"EC","crv":"P-256","x":b64(b"x"*31),"y":b64(b"y"*32)}

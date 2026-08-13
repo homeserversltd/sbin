@@ -11,7 +11,7 @@ from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from agathodaimon.network.dns import DnsError, DnsManager
+from agathodaimon.network.dns.index import DnsError, DnsManager
 
 PAYLOAD = '''server:
     local-data: "laptop.home.arpa. IN A 192.168.123.19"
@@ -150,7 +150,7 @@ class DnsManagerTests(unittest.TestCase):
             "CADUCEUS_UNBOUND_DROPIN_DIR": str(self.dropins),
         }
         process = subprocess.run(
-            [sys.executable, "-m", "agathodaimon.network.dns", "intent", "POST", "/api/dns/unbound/drop-in", "--metadata-json", json.dumps({"dropIn": PAYLOAD, "dryRun": True})],
+            [sys.executable, "agathodaimon/cli.py", "network", "dns", "intent", "POST", "/api/dns/unbound/drop-in", "--metadata-json", json.dumps({"dropIn": PAYLOAD, "dryRun": True})],
             cwd=ROOT, env=env, text=True, capture_output=True, check=True,
         )
         receipt = json.loads(process.stdout)
@@ -159,7 +159,7 @@ class DnsManagerTests(unittest.TestCase):
         self.assertNotIn(PAYLOAD, process.stdout)
         self.assertNotIn("dropIn", receipt)
         refused = subprocess.run(
-            [sys.executable, "-m", "agathodaimon.network.dns", "intent", "GET", "/api/dns/unbound/drop-in", "--metadata-json", "{}"],
+            [sys.executable, "agathodaimon/cli.py", "network", "dns", "intent", "GET", "/api/dns/unbound/drop-in", "--metadata-json", "{}"],
             cwd=ROOT, env=env, text=True, capture_output=True,
         )
         self.assertEqual(refused.returncode, 1)

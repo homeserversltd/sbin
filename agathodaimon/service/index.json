@@ -1,0 +1,10 @@
+{
+  "children": [
+    "service-control",
+    "staff-daemon",
+    "disk-doors",
+    "ssh-exposure",
+    "desktop-cache",
+    "rebis-profile-retire"
+  ]
+}

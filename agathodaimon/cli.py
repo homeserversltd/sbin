@@ -1,50 +1,52 @@
 from __future__ import annotations
+import importlib.util
+import json
+import sys
+from pathlib import Path
 
-import argparse
-from typing import Sequence
+ROOT = Path(__file__).resolve().parent
+if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 
-from .actuators import ACTUATORS, actuator_ids, get_actuator, list_actuators
-from .receipts import emit
-from .runner import run, status
+def _index(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
 
+def _load(path: Path):
+    rel = path.relative_to(ROOT)
+    safe = "agathodaimon.face_" + "_".join(rel.parts[:-1])
+    spec = importlib.util.spec_from_file_location(safe, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    module.__package__ = "agathodaimon"
+    sys.modules[safe] = module
+    spec.loader.exec_module(module)
+    return module
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="caduceus-staff", description="Caduceus staff Python actuators for HOMESERVER sbin")
-    sub = parser.add_subparsers(dest="command", required=True)
+def _children(path: Path) -> list[str]:
+    return list(_index(path / "index.json").get("children", []))
 
-    sub.add_parser("list", help="List additive staff actuators")
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        print(json.dumps({"schema":"agathodaimon.cli.spine.v1", "nouns":_children(ROOT)}, indent=2)); return 0
+    noun=args.pop(0); band=ROOT/noun
+    if not band.is_dir() or noun.startswith("."): print(f"unknown noun: {noun}", file=sys.stderr); return 2
+    verbs=_children(band)
+    if not args or args == ["--help"]:
+        print(json.dumps({"noun":noun,"verbs":verbs}, indent=2)); return 0
+    verb=args.pop(0); child=band/verb
+    if verb not in verbs or not child.is_dir() or not (child/"index.py").is_file():
+        print(f"unknown verb: {noun} {verb}", file=sys.stderr); return 2
+    if "--help" in args:
+        print(json.dumps({"schema":"agathodaimon.cli.help.v1","noun":noun,"verb":verb,"ok":True,"mutationPerformed":False}))
+        return 0
+    mod=_load(child/"index.py")
+    fn=getattr(mod,"main",None)
+    if fn is None:
+        print(json.dumps({"schema":"agathodaimon.read.v1","noun":noun,"verb":verb,"ok":True,"mutationPerformed":False})); return 0
+    try: return int(fn(args) or 0)
+    except TypeError as exc:
+        if "positional argument" not in str(exc) and "positional arguments" not in str(exc): raise
+        return int(fn() or 0)
 
-    status_p = sub.add_parser("status", help="Show actuator status receipt")
-    status_p.add_argument("actuator", choices=sorted(actuator_ids()))
-
-    run_p = sub.add_parser("run", help="Plan or apply an actuator")
-    run_p.add_argument("actuator", choices=sorted(actuator_ids()))
-    run_p.add_argument("--apply", action="store_true", help="Mutate; default is dry-run plan")
-    run_p.add_argument("--legacy-bridge", action="store_true", help="With --apply, execute the preserved legacy script")
-    run_p.add_argument("args", nargs=argparse.REMAINDER, help="Arguments forwarded after --")
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.command == "list":
-        return emit({
-            "schema": "caduceus.staff.library.list.v1",
-            "actuators": [a.__dict__ | {"legacyPath": str(a.legacy_path)} for a in list_actuators()],
-            "count": len(ACTUATORS),
-            "ok": True,
-            "firstMissingSignal": "none",
-        })
-    actuator = get_actuator(args.actuator)
-    if args.command == "status":
-        return status(actuator)
-    if args.command == "run":
-        forwarded = list(args.args)
-        if forwarded and forwarded[0] == "--":
-            forwarded = forwarded[1:]
-        return run(actuator, forwarded, apply=args.apply, legacy_bridge=args.legacy_bridge)
-    raise SystemExit("unreachable")
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == "__main__": raise SystemExit(main())

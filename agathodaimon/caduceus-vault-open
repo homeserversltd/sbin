@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-export PYTHONPATH="$STAFF_SHELF${PYTHONPATH:+:$PYTHONPATH}"
-exec "${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}" -m agathodaimon.vault_material
