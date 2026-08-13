@@ -4,4 +4,4 @@ PYTHON=${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}
 [ -x "$PYTHON" ] || PYTHON=python3
 STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export PYTHONPATH="$STAFF_SHELF"
-case "$*" in status|read) exec "$PYTHON" -m caduceus_staff.network.dns "$1" ;; *) echo "usage: caduceus-network-dns-read status|read" >&2; exit 2 ;; esac
+case "$*" in status|read) exec "$PYTHON" -m agathodaimon.network.dns "$1" ;; *) echo "usage: caduceus-network-dns-read status|read" >&2; exit 2 ;; esac

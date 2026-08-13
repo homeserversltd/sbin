@@ -10,9 +10,9 @@ import os
 from pathlib import Path
 from typing import Any, Sequence
 
-from caduceus_staff.network.dhcp import DhcpError, DhcpManager, normalize_mac
-from caduceus_staff.network.dns import DnsError, DnsManager
-from caduceus_staff.receipts import emit
+from agathodaimon.network.dhcp import DhcpError, DhcpManager, normalize_mac
+from agathodaimon.network.dns import DnsError, DnsManager
+from agathodaimon.receipts import emit
 
 
 class IdentityError(RuntimeError):

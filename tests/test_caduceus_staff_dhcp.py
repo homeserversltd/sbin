@@ -11,7 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from caduceus_staff.network.dhcp import DhcpError, DhcpManager
+from agathodaimon.network.dhcp import DhcpError, DhcpManager
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ def test_duplicate_and_invalid_reservations_are_rejected(dhcp: DhcpManager) -> N
 
 def test_cli_read_and_mutate_receipts(dhcp: DhcpManager) -> None:
     env = {**os.environ, "PYTHONPATH": str(ROOT), "CADUCEUS_DHCP_LEASES": str(dhcp.lease_db_path), "CADUCEUS_DHCP_UPDATE_SCRIPT": str(dhcp.update_script)}
-    read = subprocess.run([sys.executable, "-m", "caduceus_staff.network.dhcp", "reservations"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
+    read = subprocess.run([sys.executable, "-m", "agathodaimon.network.dhcp", "reservations"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
     assert json.loads(read.stdout)["result"][0]["hostname"] == "alpha"
     mutate = subprocess.run([str(ROOT / "caduceus-dhcp"), "add-reservation", "aa:bb:cc:dd:ee:05", "--hostname", "delta"], cwd=ROOT, env={**env, "CADUCEUS_STAFF_PYTHON": sys.executable}, text=True, capture_output=True, check=True)
     receipt = json.loads(mutate.stdout)

@@ -27,7 +27,7 @@ class HouseCaTests(unittest.TestCase):
         env = os.environ.copy()
         env["PYTHONPATH"] = str(ROOT)
         proc = subprocess.run(
-            [sys.executable, "-m", "caduceus_staff.house_ca", *args],
+            [sys.executable, "-m", "agathodaimon.house_ca", *args],
             check=True,
             text=True,
             capture_output=True,
@@ -55,7 +55,7 @@ class HouseCaTests(unittest.TestCase):
     def test_rotate_requires_flag_and_changes_ca(self) -> None:
         first = self._run("issue-leaf")
         denied = subprocess.run(
-            [sys.executable, "-m", "caduceus_staff.house_ca", "rotate-ca"],
+            [sys.executable, "-m", "agathodaimon.house_ca", "rotate-ca"],
             text=True,
             capture_output=True,
             env={**os.environ, "PYTHONPATH": str(ROOT)},

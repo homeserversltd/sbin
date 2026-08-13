@@ -8,8 +8,8 @@ from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(ROOT))
-from caduceus_staff.attendance import (DOMAIN, PIN_ROTATION_ACTION, PIN_ROTATION_TARGET, AccessRefused, AttendanceStaff, KeymanAdapter, StaffSocketDaemon, challenge_message, public_error) # noqa: E402
-from caduceus_staff.staff_daemon import production_staff # noqa: E402
+from agathodaimon.attendance import (DOMAIN, PIN_ROTATION_ACTION, PIN_ROTATION_TARGET, AccessRefused, AttendanceStaff, KeymanAdapter, StaffSocketDaemon, challenge_message, public_error) # noqa: E402
+from agathodaimon.staff_daemon import production_staff # noqa: E402
 
 
 def b64(raw: bytes) -> str: return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()

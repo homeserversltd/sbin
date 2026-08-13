@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -euo pipefail
-exec "${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}" -m caduceus_staff.vault_material
+exec "${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}" -m agathodaimon.vault_material

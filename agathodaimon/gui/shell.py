@@ -27,7 +27,7 @@ class Plug:
 
 
 def _load_module(path: Path) -> ModuleType:
-    name = f"caduceus_staff.gui.plugs.{path.stem}"
+    name = f"agathodaimon.gui.plugs.{path.stem}"
     spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise ValueError(f"cannot load {path.name}")

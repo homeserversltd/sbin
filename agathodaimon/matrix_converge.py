@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Sequence
 
-from caduceus_staff.reload import FingerprintGate, reload_services
+from agathodaimon.reload import FingerprintGate, reload_services
 
 SCHEMA = "caduceus.matrix.converge.v1"
 FLOOR = ("matrix-synapse-py3", "nginx", "postgresql-client", "logrotate", "openssl", "unbound", "ca-certificates", "curl", "tar", "python3")

@@ -235,7 +235,7 @@ def _receipt(*, ok: bool, changed: bool, signal: str, **fields: Any) -> dict[str
         "changed": changed,
         "certificatePath": CERTIFICATE_PATH,
         "sourceMapPath": SOURCE_MAP_PATH,
-        "writer": "caduceus_staff.source_map",
+        "writer": "agathodaimon.source_map",
         "firstMissingSignal": signal,
         **fields,
     }

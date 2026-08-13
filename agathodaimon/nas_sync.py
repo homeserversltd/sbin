@@ -1,7 +1,7 @@
 from __future__ import annotations
 import json, os, subprocess, sys, tempfile, uuid
 from pathlib import Path
-SCHEMA="caduceus.nas.sync.v1"; MODULE="caduceus_staff.nas_sync"; BASH="/usr/bin/bash"; SAFE_SYNC="/usr/local/sbin/safe-nas-sync.sh"; SYSTEMCTL="/usr/bin/systemctl"; RM="/usr/bin/rm"; UNIT_DIR="/etc/systemd/system"; SERVICE="caduceus-nas-sync.service"; TIMER="caduceus-nas-sync.timer"
+SCHEMA="caduceus.nas.sync.v1"; MODULE="agathodaimon.nas_sync"; BASH="/usr/bin/bash"; SAFE_SYNC="/usr/local/sbin/safe-nas-sync.sh"; SYSTEMCTL="/usr/bin/systemctl"; RM="/usr/bin/rm"; UNIT_DIR="/etc/systemd/system"; SERVICE="caduceus-nas-sync.service"; TIMER="caduceus-nas-sync.timer"
 class Refusal(ValueError): pass
 def root(): return Path(os.environ.get("CADUCEUS_NAS_JOB_ROOT","/var/lib/caduceus/jobs/nas-sync"))
 def atomic(path,text):
