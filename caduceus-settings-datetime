@@ -1,6 +1,0 @@
-#!/bin/sh
-set -eu
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PYTHON=/usr/bin/python3
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec "$PYTHON" "$ROOT/agathodaimon/cli.py" settings datetime "$@"

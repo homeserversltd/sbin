@@ -2,7 +2,7 @@
 """One full-screen, two-pane Harmonia update experience.
 
 The script deliberately uses only the engine surfaces discovered at runtime:
-* /usr/local/sbin/agathodaimon/agathodaimon-harmonia-module-toggle when it is deployed;
+* /usr/local/sbin/agathodaimon/cli.py update module-toggle when it is deployed;
 * /usr/local/bin/harmonia interactable list/run; and
 * /usr/local/bin/harmonia update --apply.
 
@@ -29,7 +29,8 @@ except ImportError:
 
 
 HARMONIA = "/usr/local/bin/harmonia"
-TOGGLE = "/usr/local/sbin/agathodaimon/agathodaimon-harmonia-module-toggle"
+AGATHODAIMON = "/usr/local/sbin/agathodaimon/cli.py"
+TOGGLE = (AGATHODAIMON, "update", "module-toggle")
 STATE_PATH = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "harmonia-update-modal/state.json"
 RECEIPT_DIR = Path("/var/lib/harmonia/receipts/update-latest")
 PROFILE_PATHS = (Path("/etc/profile.json"), Path("/etc/appliance/profile.json"))
@@ -415,14 +416,14 @@ class HarmoniaUpdateModal(Gtk.Window):
 
     def read_module_enabled(self) -> dict[str, bool]:
         default = {module: self.state.module_enabled(self.profile_id, module) for module in self.modules}
-        if not os.path.isfile(TOGGLE) or not os.access(TOGGLE, os.X_OK):
+        if not os.path.isfile(AGATHODAIMON) or not os.access(AGATHODAIMON, os.X_OK):
             print(
                 "harmonia-update-modal finding: module toggle actuator is not deployed; "
                 "the displayed module state is local presentation state only",
                 file=sys.stderr,
             )
             return default
-        receipt = run(["sudo", "-n", TOGGLE, "list"])
+        receipt = run(["sudo", "-n", *TOGGLE, "list"])
         try:
             value = json.loads(receipt.stdout)
         except json.JSONDecodeError:
@@ -650,9 +651,9 @@ class HarmoniaUpdateModal(Gtk.Window):
         toggle.set_sensitive(False)
 
         def work() -> tuple[bool, str]:
-            if os.path.isfile(TOGGLE) and os.access(TOGGLE, os.X_OK):
+            if os.path.isfile(AGATHODAIMON) and os.access(AGATHODAIMON, os.X_OK):
                 action = "on" if enabled else "off"
-                receipt = run(["sudo", "-n", TOGGLE, module, action])
+                receipt = run(["sudo", "-n", *TOGGLE, module, action])
                 success = receipt.returncode == 0
             else:
                 success = self.state.set_module_enabled(self.profile_id, module, enabled)

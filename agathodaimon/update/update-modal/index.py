@@ -5,7 +5,8 @@ import os
 import sys
 from typing import Sequence
 
-TARGET = "/usr/local/sbin/agathodaimon/harmonia-update-modal"
+TARGET = "/usr/local/sbin/agathodaimon/cli.py"
+TARGET_ARGS = ("gui", "update-modal")
 SESSION_ENVIRONMENT = (
     "WAYLAND_DISPLAY",
     "XDG_RUNTIME_DIR",
@@ -25,7 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         value = os.environ.get(name)
         if value is not None:
             environment[name] = value
-    os.execvpe(TARGET, [TARGET, *(argv if argv is not None else sys.argv[1:])], environment)
+    os.execvpe(TARGET, [TARGET, *TARGET_ARGS, *(argv if argv is not None else sys.argv[1:])], environment)
     return 127
 
 
