@@ -1,9 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-export PYTHONPATH="$STAFF_SHELF${PYTHONPATH:+:$PYTHONPATH}"
-PYTHON_BIN="${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python}"
-if [ ! -x "$PYTHON_BIN" ]; then
-    PYTHON_BIN="/usr/bin/python3"
-fi
-exec "$PYTHON_BIN" -m agathodaimon.network.identity "$@"

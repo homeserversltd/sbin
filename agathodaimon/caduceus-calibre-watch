@@ -1,5 +1,0 @@
-#!/bin/sh
-# Additive Caduceus staff launcher; preserved legacy scripts remain undisturbed.
-STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-export PYTHONPATH="$STAFF_SHELF${PYTHONPATH:+:$PYTHONPATH}"
-exec python3 -m agathodaimon run calibre-watch "$@"

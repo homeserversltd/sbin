@@ -1,0 +1,1 @@
+"""GUI plugs capability band."""

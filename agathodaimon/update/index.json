@@ -1,0 +1,7 @@
+{
+  "children": [
+    "update-modal",
+    "module-toggle",
+    "profile-refresh"
+  ]
+}

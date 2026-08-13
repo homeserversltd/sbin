@@ -11,7 +11,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from agathodaimon.network.dhcp import DhcpError, DhcpManager
+from agathodaimon.network.dhcp.index import DhcpError, DhcpManager
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def test_reads_config_reservations_leases_and_statistics(dhcp: DhcpManager) -> N
     assert dhcp.get_reservations()[0]["hostname"] == "alpha"
     assert dhcp.get_leases() == [{"ip-address": "192.168.123.56", "hw-address": "aa:bb:cc:dd:ee:02", "hostname": "beta-new", "expire": "2100000000", "state": "0"}]
     assert dhcp.get_current_boundary() == 48
-    assert dhcp.get_statistics() == {"homeserver_ip": "192.168.123.1", "reservations_count": 1, "reservations_total": 48, "leases_count": 1, "leases_total": 201}
+    assert dhcp.get_statistics() == {"homeserver_ip": "192.168.123.1", "reservations_count": 1, "reservations_total": 48, "leases_count": 1, "leases_total": 201, "host_count": 2, "lease_ratio": 0.004975124378109453, "pool_boundary": [{"subnet": "192.168.123.0/24", "start": "192.168.123.1", "end": "192.168.123.49", "discovery": "loaded-kea-pool-boundary"}]}
 
 
 def test_add_update_and_remove_reservation_through_atomic_script(dhcp: DhcpManager) -> None:
@@ -64,8 +64,8 @@ def test_duplicate_and_invalid_reservations_are_rejected(dhcp: DhcpManager) -> N
 
 def test_cli_read_and_mutate_receipts(dhcp: DhcpManager) -> None:
     env = {**os.environ, "PYTHONPATH": str(ROOT), "CADUCEUS_DHCP_LEASES": str(dhcp.lease_db_path), "CADUCEUS_DHCP_UPDATE_SCRIPT": str(dhcp.update_script)}
-    read = subprocess.run([sys.executable, "-m", "agathodaimon.network.dhcp", "reservations"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
+    read = subprocess.run([sys.executable, "agathodaimon/cli.py", "network", "dhcp", "reservations"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
     assert json.loads(read.stdout)["result"][0]["hostname"] == "alpha"
-    mutate = subprocess.run([str(ROOT / "agathodaimon" / "caduceus-dhcp"), "add-reservation", "aa:bb:cc:dd:ee:05", "--hostname", "delta"], cwd=ROOT, env={**env, "CADUCEUS_STAFF_PYTHON": sys.executable}, text=True, capture_output=True, check=True)
+    mutate = subprocess.run([sys.executable, str(ROOT / "agathodaimon" / "cli.py"), "network", "dhcp", "add-reservation", "aa:bb:cc:dd:ee:05", "--hostname", "delta"], cwd=ROOT, env={**env, "CADUCEUS_STAFF_PYTHON": sys.executable}, text=True, capture_output=True, check=True)
     receipt = json.loads(mutate.stdout)
     assert receipt["ok"] and receipt["action"] == "add-reservation"

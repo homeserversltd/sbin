@@ -1,0 +1,10 @@
+{
+  "children": [
+    "dhcp",
+    "dns",
+    "firewall",
+    "identity",
+    "child-device",
+    "wake-on-lan"
+  ]
+}

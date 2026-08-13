@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-PYTHON=${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}; [ -x "$PYTHON" ] || PYTHON=python3
-STAFF_SHELF=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd); export PYTHONPATH="$STAFF_SHELF"
-exec "$PYTHON" -m agathodaimon.harmonia_profile_refresh "$@"
