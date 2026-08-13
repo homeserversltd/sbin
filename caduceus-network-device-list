@@ -1,9 +1,0 @@
-#!/bin/sh
-set -eu
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PYTHON=${AGATHODAIMON_PYTHON:-/var/lib/caduceus/venv/bin/python3}
-[ -x "$PYTHON" ] || PYTHON=python3
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-[ "${1-}" = list ] && [ "$#" -eq 1 ] || { echo "usage: caduceus-network-device-list list" >&2; exit 2; }
-set -- device-list
-exec "$PYTHON" "$ROOT/agathodaimon/cli.py" network identity device-list "$@"

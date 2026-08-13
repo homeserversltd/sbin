@@ -1,7 +1,0 @@
-#!/bin/sh
-set -eu
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-PYTHON=${AGATHODAIMON_PYTHON:-/var/lib/caduceus/venv/bin/python3}
-[ -x "$PYTHON" ] || PYTHON=python3
-export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
-exec env WAYLAND_DISPLAY="${WAYLAND_DISPLAY-}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR-}" DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS-}" "$PYTHON" "$ROOT/agathodaimon/cli.py" gui update-modal "$@"
