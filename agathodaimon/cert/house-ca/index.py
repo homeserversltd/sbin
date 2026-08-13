@@ -416,7 +416,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, *, 
         raise ValueError("agathodaimon-nginx-input-invalid")
     directory = _path("CADUCEUS_NGINX_DIR", "/etc/nginx/conf.d")
     target = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
-    body = f"server {{ listen 443 ssl; server_name {portal}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; location / {{ proxy_pass {upstream}; }} }}\n"
+    body = f"server {{ listen 443 ssl; server_name {portal}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; location / {{ proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_pass {upstream}; }} }}\n"
     same = target.is_file() and target.read_text() == body
     if dry_run:
         return _receipt("apply_nginx", changed=False, dry_run=True, portal=portal, plan=["stage-nginx", "validate-nginx", "activate-nginx"])
