@@ -86,7 +86,7 @@ class AttendanceTests(unittest.TestCase):
         clear=self.challenge("session.clear",{"ticket":ticket}); self.staff.session_clear(ticket=ticket,challenge_id=clear["challenge_id"],signature=self.sign(self.key,clear)); self.assertFalse(self.staff.attendance_current(attendance_id)["current"]); self.assertFalse(AttendanceStaff(self.keyman).attendance_current(attendance_id)["current"])
         for response in (self.staff.signing_status(), minted, before): self.assertTrue(response["ok"]); self.assertRegex(response["public_key"], r"^[0-9a-f]{64}$"); self.assertRegex(response["epoch"], r"^[0-9a-f]{64}$")
     def test_launcher_exports_harmonia_sbin_path(self):
-        self.assertIn("export PYTHONPATH=/usr/local/sbin${PYTHONPATH:+:$PYTHONPATH}", (ROOT / "caduceus-staff-daemon").read_text())
+        self.assertIn("export PYTHONPATH=/usr/local/sbin${PYTHONPATH:+:$PYTHONPATH}", (ROOT / "agathodaimon" / "caduceus-staff-daemon").read_text())
     def test_raw_webcrypto_signature_and_32_byte_jwk_are_exact(self):
         self.assertTrue(self.mint()["ticket"])
         bad={"kty":"EC","crv":"P-256","x":b64(b"x"*31),"y":b64(b"y"*32)}
