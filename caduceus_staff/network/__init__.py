@@ -1,4 +1,4 @@
-"""Network actuators for the Caduceus staff library."""
+"""Typed Caduceus network staff actuators."""
 
 from .dhcp import DhcpError, DhcpManager
 from .dns import DnsError, DnsManager
