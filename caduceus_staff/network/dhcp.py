@@ -332,6 +332,13 @@ class DhcpManager:
         network = ipaddress.IPv4Network(str(subnets[0].get("subnet", "192.168.123.0/24")), strict=False)
         return max(0, min(249, int(ipaddress.IPv4Address(start)) - int(network.network_address) - 2))
 
+    def health(self) -> dict[str, Any]:
+        self.get_config()
+        service = self._command(["systemctl", "is-active", self.SERVICE], required=False)
+        if service.returncode != 0:
+            raise DhcpError("Kea DHCP service is not active")
+        return {"config_readable": True, "service_answering": True, "service": self.SERVICE}
+
     def get_statistics(self) -> dict[str, Any]:
         subnets = self._subnets()
         homeserver_ip = "192.168.123.1"
@@ -344,7 +351,8 @@ class DhcpManager:
         active = [item for item in leases if item["hw-address"].lower() not in reserved_macs]
         start, end = self._get_pool_range()
         total = int(ipaddress.IPv4Address(end)) - int(ipaddress.IPv4Address(start)) + 1 if start and end else 0
-        return {"homeserver_ip": homeserver_ip, "reservations_count": len(reservations), "reservations_total": self.get_current_boundary(), "leases_count": len(active), "leases_total": total}
+        host_macs = {item["hw-address"].lower() for item in reservations + leases}
+        return {"homeserver_ip": homeserver_ip, "reservations_count": len(reservations), "reservations_total": self.get_current_boundary(), "leases_count": len(active), "leases_total": total, "host_count": len(host_macs), "lease_ratio": len(active) / total if total else 0.0, "pool_boundary": self.boundary()}
 
     def update_pool_boundary(self, max_reservations: int) -> bool:
         if not 0 <= max_reservations <= 249:
@@ -374,7 +382,7 @@ class DhcpManager:
 
 
 def _receipt(action: str, result: Any) -> dict[str, Any]:
-    read_actions = {"status", "reservations", "leases", "boundary"}
+    read_actions = {"status", "reservations", "leases", "statistics", "health", "boundary"}
     receipt = {"schema": "caduceus.staff.network.dhcp.v1", "actuator": f"network.dhcp.{action}" if action in read_actions else action, "action": action, "ok": True, "result": result, "firstMissingSignal": "none"}
     if action in read_actions:
         receipt["mutationPerformed"] = False
@@ -384,7 +392,7 @@ def _receipt(action: str, result: Any) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="caduceus-dhcp")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "config", "validate", "reservations", "leases", "statistics", "boundary"):
+    for name in ("status", "config", "validate", "reservations", "leases", "statistics", "health", "boundary"):
         commands.add_parser(name)
     add = commands.add_parser("add-reservation")
     add.add_argument("hw_address"); add.add_argument("--ip-address"); add.add_argument("--hostname")
@@ -400,7 +408,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     methods: dict[str, Callable[[], Any]] = {
         "status": manager.status, "config": manager.get_config, "validate": manager.validate_config,
         "reservations": manager.reservations, "leases": manager.leases,
-        "statistics": manager.get_statistics, "boundary": manager.boundary,
+        "statistics": manager.get_statistics, "health": manager.health, "boundary": manager.boundary,
     }
     try:
         if args.command in methods:

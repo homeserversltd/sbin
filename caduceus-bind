@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+[ "$(id -u)" -eq 0 ] || { echo 'caduceus-staff-root-required' >&2; exit 77; }
+exec "${CADUCEUS_STAFF_PYTHON:-/var/lib/caduceus/venv/bin/python3}" -m caduceus_staff.bind_derived bind
