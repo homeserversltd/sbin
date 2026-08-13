@@ -66,6 +66,6 @@ def test_cli_read_and_mutate_receipts(dhcp: DhcpManager) -> None:
     env = {**os.environ, "PYTHONPATH": str(ROOT), "CADUCEUS_DHCP_LEASES": str(dhcp.lease_db_path), "CADUCEUS_DHCP_UPDATE_SCRIPT": str(dhcp.update_script)}
     read = subprocess.run([sys.executable, "-m", "agathodaimon.network.dhcp", "reservations"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
     assert json.loads(read.stdout)["result"][0]["hostname"] == "alpha"
-    mutate = subprocess.run([str(ROOT / "caduceus-dhcp"), "add-reservation", "aa:bb:cc:dd:ee:05", "--hostname", "delta"], cwd=ROOT, env={**env, "CADUCEUS_STAFF_PYTHON": sys.executable}, text=True, capture_output=True, check=True)
+    mutate = subprocess.run([str(ROOT / "agathodaimon" / "caduceus-dhcp"), "add-reservation", "aa:bb:cc:dd:ee:05", "--hostname", "delta"], cwd=ROOT, env={**env, "CADUCEUS_STAFF_PYTHON": sys.executable}, text=True, capture_output=True, check=True)
     receipt = json.loads(mutate.stdout)
     assert receipt["ok"] and receipt["action"] == "add-reservation"

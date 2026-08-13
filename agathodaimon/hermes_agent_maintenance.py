@@ -12,7 +12,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/caduceus-hermes-agent-maintenance --maintain
+ExecStart=/usr/local/sbin/agathodaimon/caduceus-hermes-agent-maintenance --maintain
 Nice=10
 IOSchedulingClass=idle
 """

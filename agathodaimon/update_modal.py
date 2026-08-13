@@ -5,7 +5,7 @@ import os
 import sys
 from typing import Sequence
 
-TARGET = "/usr/local/sbin/harmonia-update-modal"
+TARGET = "/usr/local/sbin/agathodaimon/harmonia-update-modal"
 SESSION_ENVIRONMENT = (
     "WAYLAND_DISPLAY",
     "XDG_RUNTIME_DIR",

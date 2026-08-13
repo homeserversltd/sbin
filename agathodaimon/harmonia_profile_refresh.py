@@ -13,7 +13,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/caduceus-harmonia-profile-refresh --refresh
+ExecStart=/usr/local/sbin/agathodaimon/caduceus-harmonia-profile-refresh --refresh
 Nice=10
 IOSchedulingClass=idle
 """

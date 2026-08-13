@@ -1,3 +1,0 @@
-#!/bin/sh
-# Additive Caduceus staff launcher; preserved legacy scripts remain undisturbed.
-exec python3 -m agathodaimon run forgejo-migrate "$@"
