@@ -8,6 +8,7 @@ import subprocess
 import threading
 import urllib.error
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -76,30 +77,43 @@ def _disabled(Gtk: Any, Adw: Any, group: Any, title: str) -> None:
     group.add(row)
 
 
-def _request(path: str, method: str = "GET", payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    headers = {"Content-Type": "application/json"} if data is not None else {}
+def _staff_envelope(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        'schema': 'caduceus.staff.v1',
+        'intent_id': f'agathodaimon-gui-{uuid.uuid4()}',
+        'transition': path,
+        'target': 'dark',
+    }
+    if payload is not None:
+        envelope['payload'] = payload
+    return envelope
+
+
+def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    data = json.dumps(_staff_envelope(path, payload)).encode('utf-8')
+    headers = {'Content-Type': 'application/json'}
     request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=headers, method=method)
+
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
-            body = response.read(256 * 1024)
+            raw = response.read(256 * 1024)
     except urllib.error.HTTPError as error:
-        body = error.read(256 * 1024)
+        raw = error.read(256 * 1024)
         try:
-            value = json.loads(body)
+            value = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError):
-            raise RuntimeError(f"Caduceus refused with HTTP {error.code}") from error
+            raise RuntimeError(f'Caduceus refused with HTTP {error.code}') from error
         if isinstance(value, dict):
             return value
-        raise RuntimeError(f"Caduceus refused with HTTP {error.code}") from error
+        raise RuntimeError(f'Caduceus refused with HTTP {error.code}') from error
     except (OSError, urllib.error.URLError) as error:
-        raise RuntimeError("Caduceus is unavailable") from error
+        raise RuntimeError('Caduceus is unavailable') from error
     try:
-        value = json.loads(body)
+        value = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError("Caduceus returned an unreadable receipt") from error
+        raise RuntimeError('Caduceus returned an unreadable receipt') from error
     if not isinstance(value, dict):
-        raise RuntimeError("Caduceus returned an invalid receipt")
+        raise RuntimeError('Caduceus returned an invalid receipt')
     return value
 
 
@@ -107,6 +121,9 @@ def _signal(receipt: dict[str, Any]) -> str:
     value = receipt.get("firstMissingSignal", receipt.get("first_missing_signal", ""))
     return value if isinstance(value, str) and value != "none" else ""
 
+
+def _receipt_ok(receipt: dict[str, Any]) -> bool:
+    return receipt.get("ok") is True
 
 def _bool(value: Any) -> bool:
     if isinstance(value, str):
@@ -241,7 +258,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     row.set_sensitive(False)
             return False
         assert receipt is not None
-        if receipt.get("ok") is not True or not isinstance(receipt.get("values"), dict):
+        if not _receipt_ok(receipt) or not isinstance(receipt.get("values"), dict):
             signal = _signal(receipt) or "Settings read refused"
             for field, row in rows.items():
                 if field not in static_signals:
@@ -279,7 +296,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 state["hydrating"] = False
             return False
         assert receipt is not None
-        if receipt.get("ok") is True:
+        if _receipt_ok(receipt):
             state["status"][field] = "Saved"
             refresh(field)
             return False
@@ -299,7 +316,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
 
     def mutate(field: str, value: Any, previous: Any) -> None:
         try:
-            receipt = _request(path, "POST", {field: value})
+            receipt = _request(path, "PATCH", {field: value})
             GLib.idle_add(finish_mutation, field, previous, receipt, None)
         except RuntimeError as error:
             GLib.idle_add(finish_mutation, field, previous, None, str(error))
