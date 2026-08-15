@@ -5,7 +5,7 @@
 # Automatically starts the systemd vault.mount unit after unlocking.
 
 # Get the valid config path using factoryFallback.sh
-config_path=$(/usr/local/sbin/factoryFallback.sh)
+config_path=$(/usr/local/sbin/agathodaimon/appliance/report/factoryFallback.sh)
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to get valid config path" >&2
     exit 1

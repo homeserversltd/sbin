@@ -1,0 +1,7 @@
+{
+  "children": [
+    "vault",
+    "backup",
+    "disk-doors"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "children": [
+    "service-control",
+    "calibre"
+  ]
+}

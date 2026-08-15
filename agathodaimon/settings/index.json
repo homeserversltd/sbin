@@ -6,6 +6,7 @@
     "input",
     "datetime",
     "default-apps",
-    "notifications"
+    "notifications",
+    "ssh"
   ]
 }

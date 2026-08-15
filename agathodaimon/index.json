@@ -1,15 +1,13 @@
 {
   "children": [
+    "appliance",
     "network",
     "settings",
     "gui",
-    "vault",
-    "cert",
-    "backup",
-    "forgejo",
-    "service",
+    "storage",
+    "admin-admittance",
+    "portals",
     "update",
-    "time",
     "matrix",
     "reload",
     "lib"
