@@ -7,7 +7,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Get the valid config path using factoryFallback.sh
-config_path=$(/usr/local/sbin/factoryFallback.sh)
+config_path=$(/usr/local/sbin/agathodaimon/appliance/factory-fallback/factoryFallback.sh)
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to get valid config path"
     exit 1

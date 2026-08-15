@@ -1,0 +1,8 @@
+{
+  "children": [
+    "keyman",
+    "open",
+    "pin",
+    "vault-material"
+  ]
+}

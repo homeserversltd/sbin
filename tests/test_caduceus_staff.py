@@ -41,7 +41,7 @@ class CaduceusStaffTests(unittest.TestCase):
     def test_band_lists_verbs(self):
         data = run("network")
         self.assertEqual(data["noun"], "network")
-        self.assertEqual(data["verbs"], ["dhcp", "dns", "firewall", "identity", "child-device", "wake-on-lan"])
+        self.assertEqual(data["verbs"], ["dhcp", "dns", "firewall", "identity", "child-device", "wake-on-lan", "linker", "cert"])
 
     def test_read_only_exemplar_is_truthful(self):
         data = run("network", "dhcp", "status")

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-SBIN_ROOT = Path(__file__).resolve().parents[1]
+SBIN_ROOT = Path(__file__).resolve().parents[3]
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ ACTUATORS: dict[str, Actuator] = {
         id="backblaze-recover",
         family="backup",
         receipt_schema="caduceus.staff.backblaze.recover.v1",
-        legacy_script="homeserver-backblaze-tab-b2-disaster-recovery.py",
+        legacy_script="agathodaimon/storage/backup/homeserver-backblaze-tab-b2-disaster-recovery.py",
         launcher="", cli_path="/usr/local/sbin/agathodaimon/cli.py", cli_noun="backup", cli_verbs=("backblaze-config",),
         description="Backblaze B2 disaster recovery membrane.",
     ),
@@ -40,23 +40,23 @@ ACTUATORS: dict[str, Actuator] = {
         id="forgejo-backup-b2",
         family="backup",
         receipt_schema="caduceus.staff.forgejo.backup_b2.v1",
-        legacy_script="homeserver-forgejo-backup-to-b2.sh",
-        launcher="", cli_path="/usr/local/sbin/agathodaimon/cli.py", cli_noun="forgejo", cli_verbs=("backup-b2",),
+        legacy_script="agathodaimon/storage/backup/homeserver-forgejo-backup-to-b2.sh",
+        launcher="", cli_path="/usr/local/sbin/agathodaimon/cli.py", cli_noun="storage", cli_verbs=("backup", "forgejo", "backup-b2"),
         description="Forgejo backup-to-B2 membrane.",
     ),
     "forgejo-migrate": Actuator(
         id="forgejo-migrate",
         family="backup",
         receipt_schema="caduceus.staff.forgejo.migrate.v1",
-        legacy_script="homeserver-forgejo-migrate.py",
-        launcher="", cli_path="/usr/local/sbin/agathodaimon/cli.py", cli_noun="forgejo", cli_verbs=("migrate",),
+        legacy_script="agathodaimon/storage/backup/homeserver-forgejo-migrate.py",
+        launcher="", cli_path="/usr/local/sbin/agathodaimon/cli.py", cli_noun="storage", cli_verbs=("backup", "forgejo", "migrate"),
         description="Forgejo export/restore/migration membrane.",
     ),
     "calibre-helper": Actuator(
         id="calibre-helper",
         family="service",
         receipt_schema="caduceus.staff.calibre.helper.v1",
-        legacy_script="calibreHelperDaemon.sh",
+        legacy_script="agathodaimon/portals/calibre/calibreHelperDaemon.sh",
         launcher="agathodaimon-calibre-helper",
         default_args=("status", "system"),
         description="Calibre feeder/watcher service helper membrane.",
@@ -65,7 +65,7 @@ ACTUATORS: dict[str, Actuator] = {
         id="calibre-watch",
         family="service",
         receipt_schema="caduceus.staff.calibre.watch.v1",
-        legacy_script="calibreSimpleWatcher.sh",
+        legacy_script="agathodaimon/portals/calibre/calibreSimpleWatcher.sh",
         launcher="agathodaimon-calibre-watch",
         description="Calibre upload watcher membrane.",
     ),

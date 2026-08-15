@@ -35,7 +35,7 @@ class DhcpManager:
 
     CONFIG_PATH = Path("/etc/kea/kea-dhcp4.conf")
     LEASE_DB_PATH = Path("/var/lib/kea/kea-leases4.csv")
-    UPDATE_SCRIPT = Path("/usr/local/sbin/update-kea-dhcp.sh")
+    UPDATE_SCRIPT = Path("/usr/local/sbin/agathodaimon/network/dhcp/update-kea-dhcp.sh")
     SERVICE = "kea-dhcp4-server"
 
     def __init__(
