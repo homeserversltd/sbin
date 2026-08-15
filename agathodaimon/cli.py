@@ -3,6 +3,13 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from io import BytesIO, StringIO
+
+class _EnvelopeStdin(StringIO):
+    @property
+    def buffer(self):
+        return BytesIO(self.getvalue().encode("utf-8"))
+
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
@@ -32,11 +39,60 @@ def _load(path: Path):
 def _help(path: Path) -> None:
     print(json.dumps({"schema":"agathodaimon.cli.help.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False}))
 
+def _slash_target(raw_path: str) -> Path | None:
+    parts = tuple(part for part in raw_path.split("/") if part)
+    if not parts or any(part in {".", ".."} for part in parts):
+        return None
+    path = ROOT
+    for part in parts:
+        if part not in _children(path):
+            return None
+        path /= part
+    target = path / "index.py"
+    return target if target.is_file() else None
+
+def _invoke_envelope(path: Path, envelope: dict) -> int:
+    mod = _load(path)
+    fn = getattr(mod, "main", None)
+    if fn is None:
+        print(json.dumps({"schema":"agathodaimon.cli.read.v1","path":str(path.parent.relative_to(ROOT)),"ok":True,"envelope":envelope,"mutationPerformed":False}))
+        return 0
+    original_stdin = sys.stdin
+    try:
+        sys.stdin = _EnvelopeStdin(json.dumps(envelope))
+        try:
+            return int(fn([]) or 0)
+        except SystemExit:
+            transition = envelope.get("transition")
+            if not isinstance(transition, str):
+                raise
+            command = transition.rstrip("/").rsplit("/", 1)[-1]
+            return int(fn([command]) or 0)
+        except Exception as exc:
+            print(json.dumps({"schema": "agathodaimon.cli.envelope.v1", "ok": False, "error": str(exc), "mutationPerformed": False}))
+            return 1
+    finally:
+        sys.stdin = original_stdin
+
 def main(argv=None):
     args=list(sys.argv[1:] if argv is None else argv)
     if not args:
         print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT)},indent=2)); return 0
     original=args[:]
+    if len(args) == 2 and "/" in args[0]:
+        try:
+            envelope = json.loads(args[1])
+        except (TypeError, json.JSONDecodeError):
+            print("invalid envelope JSON", file=sys.stderr)
+            return 2
+        if not isinstance(envelope, dict):
+            print("envelope must be a JSON object", file=sys.stderr)
+            return 2
+        target = _slash_target(args[0])
+        if target is None:
+            print(f"unknown path: {args[0]}", file=sys.stderr)
+            return 2
+        return _invoke_envelope(target, envelope)
     service_alias=args[0]=="service" and len(args)>1 and args[1] in SERVICE_ALIASES
     alias=SERVICE_ALIASES[args[1]] if service_alias else ALIASES.get(args[0],(args[0],))
     remainder=args[2:] if service_alias else args[1:]
