@@ -9,7 +9,7 @@ if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime")}
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
-    "staff-daemon": ("admin-admittance", "staff-daemon"),
+    "staff-daemon": ("python", "staff-daemon"),
     "disk-doors": ("storage", "disk-doors"),
     "ssh-exposure": ("settings", "ssh"),
     "desktop-cache": ("settings", "default-apps", "desktop-cache"),

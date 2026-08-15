@@ -9,7 +9,7 @@ CERT_DIR="/etc/ssl/home.arpa"
 CERT_FILE="$CERT_DIR/cert.pem"
 KEY_FILE="$CERT_DIR/key.pem"
 CONFIG_FILE="$CERT_DIR/openssl.conf"
-FACTORY_FALLBACK="/usr/local/sbin/agathodaimon/appliance/report/factoryFallback.sh"
+FACTORY_FALLBACK="/usr/local/sbin/agathodaimon/appliance/factory-fallback/factoryFallback.sh"
 
 # Create the directory if it doesn't exist
 if [ ! -d "$CERT_DIR" ]; then
