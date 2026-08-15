@@ -1,12 +1,19 @@
 """Harmonia Updates plug using only existing Caduceus HTTP doors."""
 from __future__ import annotations
 
-import json
-import os
 import threading
-import urllib.error
-import urllib.request
 from typing import Any
+
+try:
+    from ._common import _receipt_ok, _request, _signal
+except ImportError:
+    import importlib.util as _importlib_util
+    import sys as _sys
+    _common_spec = _importlib_util.spec_from_file_location("_common", __file__.replace(__file__.split("/")[-1], "_common.py"))
+    _common_module = _importlib_util.module_from_spec(_common_spec)
+    _sys.modules["_common"] = _common_module
+    _common_spec.loader.exec_module(_common_module)
+    from _common import _receipt_ok, _request, _signal
 
 PLUG = {
     "id": "harmonia-updates",
@@ -16,41 +23,9 @@ PLUG = {
     "parent": None,
 }
 
-CADUCEUS_URL = os.environ.get("CADUCEUS_URL", "http://127.0.0.1:8787").rstrip("/")
 STATUS_DOOR = "/api/v1/update/status"
 TIMER_DOOR = "/api/v1/update/service/status"
-UPDATE_DOOR = "/api/v1/gui/update/now"
-
-
-def _request(path: str, method: str = "GET") -> dict[str, Any]:
-    request = urllib.request.Request(CADUCEUS_URL + path, method=method)
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = response.read(256 * 1024)
-    except urllib.error.HTTPError as error:
-        body = error.read(256 * 1024)
-        try:
-            value = json.loads(body)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise RuntimeError(f"Caduceus refused with HTTP {error.code}") from error
-        if isinstance(value, dict):
-            return value
-        raise RuntimeError(f"Caduceus refused with HTTP {error.code}") from error
-    except (OSError, urllib.error.URLError) as error:
-        raise RuntimeError("Caduceus is unavailable") from error
-    try:
-        value = json.loads(body)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError("Caduceus returned an unreadable receipt") from error
-    if not isinstance(value, dict):
-        raise RuntimeError("Caduceus returned an invalid receipt")
-    return value
-
-
-def _signal(receipt: dict[str, Any]) -> str:
-    value = receipt.get("firstMissingSignal", receipt.get("first_missing_signal", ""))
-    return value if isinstance(value, str) else ""
-
+UPDATE_DOOR = "/api/v1/update/now"
 
 def build_widget() -> Any:
     import gi
@@ -91,7 +66,7 @@ def build_widget() -> Any:
             status_icon.set_from_icon_name("dialog-warning-symbolic")
             return False
         assert receipt is not None
-        ok = receipt.get("ok") is True
+        ok = _receipt_ok(receipt)
         signal = _signal(receipt)
         status_row.set_subtitle("Ready" if ok else signal or "Update service unavailable")
         status_icon.set_from_icon_name("emblem-ok-symbolic" if ok else "dialog-warning-symbolic")
@@ -129,7 +104,7 @@ def build_widget() -> Any:
             update_button.set_sensitive(True)
             return False
         assert receipt is not None
-        ok = receipt.get("ok") is True
+        ok = _receipt_ok(receipt)
         action_row.set_subtitle("Update complete" if ok else _signal(receipt) or "Update refused")
         update_button.set_sensitive(True)
         refresh()

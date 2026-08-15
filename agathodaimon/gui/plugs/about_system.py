@@ -1,15 +1,11 @@
 """Read-only appliance system information."""
 from __future__ import annotations
 
-import json
-import os
 import platform
 import socket
-import urllib.error
-import urllib.request
 
 try:
-    from ._common import _json, _page, _group, _missing, _row
+    from ._common import _json, _page, _group, _missing, _row, _receipt_ok, _request, _signal
 except ImportError:
     import importlib.util as _importlib_util
     import sys as _sys
@@ -17,21 +13,16 @@ except ImportError:
     _common_module = _importlib_util.module_from_spec(_common_spec)
     _sys.modules["_common"] = _common_module
     _common_spec.loader.exec_module(_common_module)
-    from _common import _json, _page, _group, _missing, _row
+    from _common import _json, _page, _group, _missing, _row, _receipt_ok, _request, _signal
 
 PLUG = {"id": "about-system", "title": "About System", "icon": "computer-symbolic", "order": 110, "parent": None}
-CADUCEUS_URL = os.environ.get("CADUCEUS_URL", "http://127.0.0.1:8787").rstrip("/")
 
 
 def _status() -> dict:
-    request = urllib.request.Request(CADUCEUS_URL + "/api/v1/update/status", method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = response.read(256 * 1024)
-        value = json.loads(body)
-    except (OSError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, UnicodeDecodeError, ValueError):
+        return _request('/api/v1/update/status')
+    except RuntimeError:
         return {}
-    return value if isinstance(value, dict) else {}
 
 
 def build_widget():
@@ -53,8 +44,8 @@ def build_widget():
     if not receipt:
         update_group.add(_row(Adw, "Appliance software", "Update status unavailable"))
     else:
-        ok = receipt.get("ok") is True
-        signal = receipt.get("firstMissingSignal", receipt.get("first_missing_signal"))
-        subtitle = "Ready" if ok else (str(signal) if signal else "Unavailable")
+        ok = _receipt_ok(receipt)
+        signal = _signal(receipt)
+        subtitle = "Ready" if ok else (signal or "Unavailable")
         update_group.add(_row(Adw, "Appliance software", subtitle))
     return page
