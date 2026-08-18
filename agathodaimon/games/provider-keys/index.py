@@ -103,13 +103,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agathodaimon-games-provider-keys")
     parser.add_argument("operation", choices=("status", "save"), nargs="?", default="status")
     args = parser.parse_args(argv)
+    envelope: Mapping[str, Any] | None = None
     try:
+        if argv == []:
+            raw = sys.stdin.read()
+            if raw.strip():
+                loaded = json.loads(raw)
+                if not isinstance(loaded, Mapping):
+                    raise ValueError("crossing input must be a JSON object")
+                envelope = loaded
+                if envelope.get("verb") == "save":
+                    args.operation = "save"
         if args.operation == "status":
             result = _status()
         else:
-            envelope = json.load(sys.stdin)
-            if not isinstance(envelope, Mapping):
-                raise ValueError("save input must be a JSON object")
+            if envelope is None:
+                loaded = json.load(sys.stdin)
+                if not isinstance(loaded, Mapping):
+                    raise ValueError("save input must be a JSON object")
+                envelope = loaded
             result = _save(_payload(envelope))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"schema":"arch_game_sync.provider_keys.v1","ok":False,"error":str(exc),"mutationPerformed":False}, sort_keys=True))
