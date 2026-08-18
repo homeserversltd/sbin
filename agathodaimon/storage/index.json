@@ -2,6 +2,7 @@
   "children": [
     "vault",
     "backup",
-    "disk-doors"
+    "disk-doors",
+    "upload"
   ]
 }
