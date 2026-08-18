@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+AGATHODAIMON_PYTHON=${AGATHODAIMON_PYTHON:-/var/lib/caduceus/venv/bin/python3}
+[ -x "$AGATHODAIMON_PYTHON" ] || AGATHODAIMON_PYTHON=python3
+export PYTHONPATH="$ROOT"
+exec "$AGATHODAIMON_PYTHON" -m agathodaimon.file_ingress
