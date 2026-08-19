@@ -12,6 +12,7 @@
     "reload",
     "lib",
     "python",
-    "games"
+    "games",
+    "console"
   ]
 }

@@ -430,7 +430,6 @@ def merge_shortcuts(data, games):
 
 def _sync_main():
     parser = argparse.ArgumentParser(description='Sync Arch gaming-console folders into Steam shortcuts and Steam grid artwork')
-    parser.add_argument('--no-restart', action='store_true')
     args = parser.parse_args()
     RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
     runners = json.loads(RUNNERS_PATH.read_text())
@@ -441,9 +440,8 @@ def _sync_main():
     if changed:
         write_shortcuts(shortcuts_path, data)
     artwork = [install_steam_grid_art(item['game'], item['entry'], shortcuts_path) for item in written]
-    restart = None if args.no_restart or not (changed or artwork) else run(['systemctl', 'restart', 'sddm.service'], timeout=120)
     readback = read_shortcuts(shortcuts_path)
-    receipt = {'ok': True, 'schema': 'arch_game_sync.local.receipt.v2', 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'shortcuts_path': str(shortcuts_path), 'readback_count': len(readback.get('shortcuts', {})), 'changed': changed, 'artwork': artwork, 'restart': restart, 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
+    receipt = {'ok': True, 'schema': 'arch_game_sync.local.receipt.v2', 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'shortcuts_path': str(shortcuts_path), 'readback_count': len(readback.get('shortcuts', {})), 'changed': changed, 'artwork': artwork, 'restart_recommended': 'steam', 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
     path = RECEIPT_DIR / f'arch-game-sync-{int(time.time())}.json'
     path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
     print(json.dumps({**receipt, 'receipt_path': str(path)}, sort_keys=True))
