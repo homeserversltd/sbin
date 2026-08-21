@@ -6,6 +6,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -20,6 +21,18 @@ class DhcpError(RuntimeError):
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
+KEA_EXECUTABLE_UNAVAILABLE = "kea-executable-unavailable"
+
+
+def resolve_kea_executable(name: str) -> str:
+    """Resolve a Kea binary without mutating PATH or trusting a bare argv."""
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+    fallback = Path("/usr/sbin") / name
+    if fallback.is_file() and os.access(fallback, os.X_OK):
+        return str(fallback)
+    raise DhcpError(f"{KEA_EXECUTABLE_UNAVAILABLE}:{name}")
 
 
 def normalize_mac(value: str) -> str:
@@ -79,10 +92,11 @@ class DhcpManager:
 
     def status(self) -> dict[str, Any]:
         """Read service and configuration validity without changing either."""
+        config_valid = self.validate_config()
         service = self.get_service_status()
         return {
             "service": {"name": self.SERVICE, "active": service["active"], "status": service["status"]},
-            "config_valid": self.validate_config(),
+            "config_valid": config_valid,
             "details": service["details"],
         }
 
@@ -128,7 +142,8 @@ class DhcpManager:
         return self.get_config()
 
     def validate_config(self) -> bool:
-        return self._command(["kea-dhcp4", "-t", str(self.config_path)], required=False).returncode == 0
+        executable = resolve_kea_executable("kea-dhcp4")
+        return self._command([executable, "-t", str(self.config_path)], required=False).returncode == 0
 
     def _subnets(self, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         value = (config or self.get_config())["Dhcp4"]["subnet4"]
