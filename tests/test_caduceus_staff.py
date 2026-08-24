@@ -1,4 +1,5 @@
 import json
+import stat
 import subprocess
 import sys
 import unittest
@@ -47,6 +48,22 @@ class CaduceusStaffTests(unittest.TestCase):
         data = run("network", "dhcp", "status")
         self.assertFalse(data.get("mutationPerformed", False))
         self.assertIn("ok", data)
+
+
+    def test_directly_executed_python_staff_have_shebang(self):
+        paths = [ROOT / "agathodaimon/cli.py"]
+        paths.extend(
+            sorted(
+                path
+                for path in (ROOT / "agathodaimon").rglob("*.py")
+                if path.stat().st_mode & stat.S_IXUSR
+            )
+        )
+        for path in paths:
+            self.assertTrue(
+                path.read_bytes().startswith(b"#!/usr/bin/env python3\n"),
+                path,
+            )
 
 
 if __name__ == "__main__":
