@@ -52,6 +52,19 @@ class HouseCaTests(unittest.TestCase):
         raw = Path(b["path"]).read_bytes()
         self.assertNotIn(b"PRIVATE KEY", raw)
 
+    def test_stdin_envelope_supplies_house_ca_args(self) -> None:
+        proc = subprocess.run(
+            [sys.executable, "agathodaimon/cli.py", "cert", "house-ca"],
+            input=json.dumps({"args": ["status"]}),
+            text=True,
+            capture_output=True,
+            env={**os.environ, "PYTHONPATH": str(ROOT)},
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        body = json.loads(proc.stdout)
+        self.assertIsInstance(body, dict)
+        self.assertTrue(body["ok"])
+
     def test_rotate_requires_flag_and_changes_ca(self) -> None:
         first = self._run("issue-leaf")
         denied = subprocess.run(

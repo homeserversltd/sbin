@@ -118,6 +118,12 @@ def main(argv=None):
     mod=_load(path/"index.py"); fn=getattr(mod,"main",None)
     if fn is None:
         print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False})); return 0
+    if original == ["cert", "house-ca"]:
+        try:
+            payload = json.load(sys.stdin)
+            remainder.extend(payload.get("args", []))
+        except (json.JSONDecodeError, AttributeError):
+            pass
     try: return int(fn(remainder) or 0)
     except TypeError as exc:
         if "positional argument" not in str(exc) and "positional arguments" not in str(exc): raise
