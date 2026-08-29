@@ -23,7 +23,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light"),
     "appearance": ("color_scheme", "accent_color", "wallpaper", "icon_theme", "cursor_theme", "font"),
     "sound": ("output_device", "input_device", "volume", "input_volume", "muted"),
-    "input": ("keyboard_layout", "keyboard_variant", "key_repeat", "repeat_delay_ms", "repeat_interval_ms", "natural_scroll", "tap_to_click", "pointer_speed"),
+    "input": ("keyboard_layout", "keyboard_variant", "key_repeat", "repeat_delay_ms", "repeat_interval_ms", "natural_scroll", "tap_to_click", "pointer_speed", "scroll_factor"),
     "notifications": ("enabled", "do_not_disturb", "show_banners", "show_on_lock_screen", "sound_enabled"),
     "default-apps": ("browser", "mail", "calendar", "music", "video", "photos", "text_editor", "terminal", "file_manager"),
     "datetime": ("timezone", "ntp_enabled", "automatic_timezone", "date_format", "time_format"),
@@ -301,10 +301,14 @@ def get_values(kind: str) -> dict[str, Any]:
         devices = hypr_json("devices") or {}
         keyboard = (devices.get("keyboards") or [{}])[0]
         lines = ini_read(p[kind])
-        values["keyboard_layout"] = keyboard.get("active_keymap") or keyboard.get("xkb_layout") or ini_get(lines, "kb_layout")
-        values["keyboard_variant"] = keyboard.get("xkb_variant") or ini_get(lines, "kb_variant")
-        for field, key in (("key_repeat", "repeat_rate"), ("repeat_delay_ms", "repeat_delay"), ("natural_scroll", "natural_scroll"), ("tap_to_click", "tap-to-click"), ("pointer_speed", "sensitivity")):
-            values[field] = ini_get(lines, key)
+        block = _brace_block(lines, "input")
+        values["keyboard_layout"] = keyboard.get("active_keymap") or keyboard.get("xkb_layout")
+        values["keyboard_variant"] = keyboard.get("xkb_variant")
+        if block is not None:
+            values["keyboard_layout"] = values["keyboard_layout"] or _brace_get(lines, block, "kb_layout")
+            values["keyboard_variant"] = values["keyboard_variant"] or _brace_get(lines, block, "kb_variant")
+            for field, key, nested in (("key_repeat", "repeat_rate", None), ("repeat_delay_ms", "repeat_delay", None), ("natural_scroll", "natural_scroll", "touchpad"), ("tap_to_click", "tap-to-click", "touchpad"), ("pointer_speed", "sensitivity", None), ("scroll_factor", "scroll_factor", None)):
+                values[field] = _brace_get(lines, block, key, nested)
     elif kind == "notifications":
         lines = ini_read(p[kind]); values["enabled"] = p[kind].is_file()
         good, out, _ = command(["dunstctl", "is-paused"]); values["do_not_disturb"] = ("true" in out.lower()) if good else None
@@ -380,10 +384,22 @@ def _brace_set(lines: list[str], bounds: tuple[int,int], keys: tuple[str,...], v
     lines.insert(last,f"{indent}{keys[0]} = {value}{nl}")
     return True
 
+def _brace_get(lines: list[str], bounds: tuple[int,int], key: str, nested: str | None = None) -> str | None:
+    first,last=bounds
+    if nested:
+        child=_brace_block(lines,nested,first+1)
+        if child is None or child[1] > last: return None
+        first,last=child
+    for line in lines[first+1:last]:
+        code=line.split("#",1)[0]
+        match=re.match(r"^\s*"+re.escape(key)+r"\s*=\s*(.*?)\s*$",code)
+        if match: return match.group(1).strip()
+    return None
+
 def hypr_set(receipt: Receipt, field: str, value: str) -> None:
     require("hyprctl", field); path=paths()["input"]; original=path.read_bytes() if path.exists() else b""
     lines=ini_read(path); block=_brace_block(lines,"input")
-    keymap={"keyboard_layout":("kb_layout",),"keyboard_variant":("kb_variant",),"key_repeat":("repeat_rate",),"repeat_delay_ms":("repeat_delay",),"pointer_speed":("sensitivity",)}
+    keymap={"keyboard_layout":("kb_layout",),"keyboard_variant":("kb_variant",),"key_repeat":("repeat_rate",),"repeat_delay_ms":("repeat_delay",),"pointer_speed":("sensitivity",),"scroll_factor":("scroll_factor",)}
     if block is None: raise ValueError("unsupported:"+field)
     if field in keymap: ok=_brace_set(lines,block,keymap[field],value)
     elif field == "natural_scroll": ok=_brace_set(lines,block,("natural_scroll",),value,"touchpad")

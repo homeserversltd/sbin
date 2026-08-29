@@ -12,7 +12,7 @@ from types import ModuleType
 from typing import Any, Callable
 
 PLUG_KEYS = ("id", "title", "icon", "order", "parent")
-PLUGS_DIR = Path(__file__).with_name("plugs")
+PLUGS_DIR = Path(__file__).resolve().parent.parent / "plugs"
 
 
 @dataclass(frozen=True)
@@ -65,7 +65,7 @@ def _validate(module: ModuleType, path: Path) -> Plug:
 def discover_plugs(directory: Path = PLUGS_DIR) -> dict[str, Plug]:
     registry: dict[str, Plug] = {}
     for path in sorted(directory.glob("*.py")):
-        if path.name.startswith("_"):
+        if path.name.startswith("_") or path.name == "index.py":
             continue
         plug = _validate(_load_module(path), path)
         if plug.ident in registry:
