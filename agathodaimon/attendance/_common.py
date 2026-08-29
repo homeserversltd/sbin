@@ -4,12 +4,14 @@ KEYMAN_PATH=Path(os.environ.get("AGATHODAIMON_KEYMAN_MODULE","/opt/keyman/runtim
 class MalformedInput(ValueError): pass
 class AttendanceUnprovisioned(RuntimeError): pass
 def paths(): return Path(os.environ.get("CADUCEUS_KEYMAN_KEY_DIR","/root/key")),Path(os.environ.get("CADUCEUS_KEYMAN_VAULT_DIR","/vault/.keys"))
-def ensure_provisioned(k,v):
- for p in (k/"skeleton.key",v/"service_suite.key",v/"caduceus.key"):
+def ensure_provisioned(k,v,allow_missing_caduceus=False):
+ required=(k/"skeleton.key",v/"service_suite.key")
+ if not allow_missing_caduceus: required+=(v/"caduceus.key",)
+ for p in required:
   if not p.is_file(): raise AttendanceUnprovisioned("attendance-unprovisioned")
  if not KEYMAN_PATH.is_file(): raise AttendanceUnprovisioned("attendance-unprovisioned")
-def keyman():
- k,v=paths(); ensure_provisioned(k,v)
+def keyman(*,allow_missing_caduceus=False):
+ k,v=paths(); ensure_provisioned(k,v,allow_missing_caduceus=allow_missing_caduceus)
  s=importlib.util.spec_from_file_location("attendance_keyman",KEYMAN_PATH)
  if s is None or s.loader is None: raise RuntimeError("keyman module load failure")
  m=importlib.util.module_from_spec(s)
@@ -59,34 +61,9 @@ def verify():
  try:int(p,16)
  except ValueError as e: raise MalformedInput("publicKey missing or invalid") from e
  return {"ok":True,"verified":verify_pin(text(o,"pin"),p)}
-def open_document():
- o=payload({"documentId","documentIncarnation","pin"}); i=text(o,"documentId"); n=text(o,"documentIncarnation")
- return {"ok":True,"verified":verify_pin(text(o,"pin")),"documentId":i,"documentIncarnation":n}
-def process_state(action):
- o=payload({"attendance","documentId","documentIncarnation"})
- return {"ok":True,"handled":True,"mutationPerformed":False,"action":action,"stateOwner":"caduceus","attendance":text(o,"attendance"),"documentId":text(o,"documentId"),"documentIncarnation":text(o,"documentIncarnation")}
-def change_pin():
- try:o=json.load(sys.stdin)
- except Exception as e: raise MalformedInput("invalid JSON") from e
- if not isinstance(o,dict): raise MalformedInput("invalid attendance fields")
- if set(o)=={"oldPin","newPin"}: old,new=text(o,"oldPin"),text(o,"newPin"); context={}
- elif set(o)=={"attendance","documentId","documentIncarnation","currentPin","newPin"}: context={n:text(o,n) for n in ("attendance","documentId","documentIncarnation")}; old,new=text(o,"currentPin"),text(o,"newPin")
- else: raise MalformedInput("unexpected attendance fields")
- k,v=paths(); m=keyman()
- try:m.change_caduceus_pin(old,new,key_dir=k,vault_dir=v)
- except Exception as e:
-  if not pin_refused(e): raise
-  return {"ok":False,"changed":False,"verified":False,"firstMissingSignal":"caduceus-attendance-change-failed"}
- s=m.bind_derived_caduceus(key_dir=k,vault_dir=v)
- try:p,e=public(s)
- finally:close(s)
- return {"ok":True,"changed":True,"publicKey":p,"epoch":e,**context}
 def execute(action):
  if action=="bind":return bind()
  if action=="verify":return verify()
- if action=="open":return open_document()
- if action in {"touch","invalidate"}:return process_state(action)
- if action=="change-pin":return change_pin()
  raise MalformedInput("unknown attendance verb")
 def run(action,argv=None):
  try:
