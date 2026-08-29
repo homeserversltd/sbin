@@ -2,7 +2,6 @@
   "children": [
     "shell",
     "plugs",
-    "settings-pane",
-    "update-modal"
+    "settings-pane"
   ]
 }
