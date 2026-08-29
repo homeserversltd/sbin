@@ -247,7 +247,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agathodaimon-gui-shell")
+    parser = argparse.ArgumentParser(prog="agathodaimon-gui-settings")
     parser.add_argument("--standalone-plug", metavar="ID")
     parser.add_argument("--self-check", action="store_true")
     args = parser.parse_args(argv)
@@ -259,7 +259,7 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"unknown plug: {args.standalone_plug}")
         return run_application(registry, args.standalone_plug)
     except (ImportError, ValueError) as error:
-        print(f"agathodaimon-gui-shell: {error}", file=sys.stderr)
+        print(f"agathodaimon-gui-settings: {error}", file=sys.stderr)
         return 1
 
 

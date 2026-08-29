@@ -2,6 +2,6 @@
   "children": [
     "shell",
     "plugs",
-    "settings-pane"
+    "settings"
   ]
 }

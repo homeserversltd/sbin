@@ -12,14 +12,14 @@ except ImportError:
     from _common import _receipt_ok, _request, _signal
 PLUG={"id":"harmonia-updates","title":"Updates","icon":"software-update-available-symbolic","order":10,"parent":None}
 STATUS_DOOR="/api/v1/update/status"; TIMER_DOOR="/api/v1/update/service/status"; UPDATE_DOOR="/api/v1/update/now"; MODULES_DOOR="/api/v1/update/modules"; INTERACTABLES_DOOR="/api/v1/interactables"
-STATE_PATH=Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state")))/"harmonia-update-modal/state.json"; STATE_SCHEMA="harmonia.update-modal.state.v2"
+STATE_PATH=Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state")))/"appliance-settings/harmonia-updates.json"; STATE_SCHEMA="agathodaimon.gui.settings.state.v1"
 def _text(v:Any,fallback=""): return v.strip() if isinstance(v,str) else fallback
 class State:
     def __init__(self):
         self.data={"schema":STATE_SCHEMA,"module_overrides":{},"hidden_interactables":{}}
         try:
             v=json.loads(STATE_PATH.read_text(encoding="utf-8"))
-            if isinstance(v,dict) and v.get("schema") in {"harmonia.update-modal.state.v1",STATE_SCHEMA}: self.data.update(v); self.data["schema"]=STATE_SCHEMA
+            if isinstance(v,dict) and v.get("schema") == STATE_SCHEMA: self.data.update(v)
         except (OSError,json.JSONDecodeError,TypeError,ValueError): pass
     def hidden(self):
         v=self.data.get("hidden_interactables",{})

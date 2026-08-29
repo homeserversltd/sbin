@@ -1,3 +1,3 @@
 """gui band index."""
 NOUN = 'gui'
-VERBS = ['shell', 'plugs', 'settings-pane']
+VERBS = ['shell', 'plugs', 'settings']
