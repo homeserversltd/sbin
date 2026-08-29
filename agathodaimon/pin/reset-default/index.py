@@ -29,11 +29,12 @@ def main(argv=None):
             raise MalformedInput("unexpected pin fields")
         key_dir, vault_dir = paths()
         manager = keyman(allow_missing_caduceus=True)
+        reset_caduceus_pin = getattr(manager, "reset_caduceus_pin", None)
+        if not callable(reset_caduceus_pin):
+            print(json.dumps({"ok": False, "firstMissingSignal": "keyman-reset-primitive-absent"}, separators=(",", ":")))
+            return 0
         try:
-            if (vault_dir / "caduceus.key").is_file():
-                manager.change_caduceus_pin("1", "1", key_dir=key_dir, vault_dir=vault_dir)
-            else:
-                manager.provision_caduceus("1", key_dir=key_dir, vault_dir=vault_dir)
+            reset_caduceus_pin("1", key_dir=key_dir, vault_dir=vault_dir)
         except Exception as exc:
             if not _refused(exc):
                 raise
