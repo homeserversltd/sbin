@@ -787,7 +787,7 @@ class DnsManager:
         try:
             return self.read_include.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return f"{self.BEGIN}\n{self.END}\n"
+            return f"server:\n{self.BEGIN}\n{self.END}\n"
         except OSError as exc:
             raise DnsError(f"failed to read owned include {self.read_include}: {exc}") from exc
 
@@ -840,6 +840,9 @@ class DnsManager:
             raise DnsError("dns-observed-record-collision")
 
     def _candidate_apply(self, lines: list[str], expected: list[tuple[str, str]]) -> dict[str, Any]:
+        query_tool = shutil.which("dig")
+        if query_tool is None:
+            raise DnsError("dns-live-query-tool-missing")
         candidate = self._render_owned(lines)
         previous = self.read_include.read_bytes() if self.read_include.exists() else None
         mode = self.read_include.stat().st_mode & 0o777 if self.read_include.exists() else 0o644
@@ -851,8 +854,11 @@ class DnsManager:
             self._reload_service()
             receipt["reload_outcome"] = "reloaded"
             for record_type, owner in expected:
-                result = self._command(["unbound-host", "-t", record_type, owner])
-                receipt["live_query_readback"].append({"type": record_type, "owner": owner, "output": result.stdout.strip()})
+                result = self._command([query_tool, "@127.0.0.1", owner, record_type, "+short"])
+                output = result.stdout.strip()
+                if not output:
+                    raise DnsError(f"dns-live-query-empty: {record_type} {owner}")
+                receipt["live_query_readback"].append({"type": record_type, "owner": owner, "output": output})
             receipt["mutationPerformed"] = True
             return receipt
         except DnsError as exc:
