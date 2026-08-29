@@ -6,7 +6,6 @@ import sys
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from agathodaimon.lib import keyman_caduceus_access as keyman
 from agathodaimon.lib.sacred_credential import index as sacred_credential
 
 
@@ -44,7 +43,7 @@ def _projection(signer: Any) -> dict[str, object]:
 
 
 def bind(_: Mapping[str, Any]) -> dict[str, object]:
-    with keyman.bind_derived_caduceus() as signer:
+    with sacred_credential.bind_derived_caduceus() as signer:
         return _projection(signer)
 
 
@@ -53,7 +52,7 @@ def verify(payload: Mapping[str, Any]) -> dict[str, object]:
     if not isinstance(expected_public_key, str) or not expected_public_key:
         raise ValueError("admin-admittance-public-key-required")
     try:
-        with keyman.verify_and_derive_caduceus(_pin(payload, "pin")) as signer:
+        with sacred_credential.verify_and_derive_caduceus(_pin(payload, "pin")) as signer:
             actual_public_key = getattr(signer, "public_key_hex", None)
             if not isinstance(actual_public_key, str) or not actual_public_key:
                 raise ValueError("admin-admittance-signer-projection-unavailable")
@@ -67,14 +66,14 @@ def verify(payload: Mapping[str, Any]) -> dict[str, object]:
 def change(payload: Mapping[str, Any]) -> dict[str, object]:
     current = _pin(payload, "currentPin", "oldPin")
     new = _pin(payload, "newPin")
-    keyman.change_caduceus_pin(current, new)
-    with keyman.bind_derived_caduceus() as signer:
+    sacred_credential.change_caduceus_pin(current, new)
+    with sacred_credential.bind_derived_caduceus() as signer:
         return _projection(signer)
 
 
 def reset_default(_: Mapping[str, Any]) -> dict[str, object]:
     sacred_credential.reset_caduceus_pin_to_provisioned_default()
-    with keyman.bind_derived_caduceus() as signer:
+    with sacred_credential.bind_derived_caduceus() as signer:
         return _projection(signer)
 
 
