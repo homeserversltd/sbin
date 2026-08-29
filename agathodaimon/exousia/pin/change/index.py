@@ -4,13 +4,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[3]))
-from agathodaimon.attendance._common import (  # noqa: E402
+from agathodaimon.exousia.attendance._common import (  # noqa: E402
     AttendanceUnprovisioned,
     MalformedInput,
     close,
     keyman,
     paths,
     public,
+    text,
 )
 
 
@@ -25,16 +26,13 @@ def main(argv=None):
         return 2
     try:
         value = json.load(sys.stdin)
-        if not isinstance(value, dict) or set(value) != set():
+        if not isinstance(value, dict) or set(value) != {"oldPin", "newPin"}:
             raise MalformedInput("unexpected pin fields")
+        old_pin, new_pin = text(value, "oldPin"), text(value, "newPin")
         key_dir, vault_dir = paths()
-        manager = keyman(allow_missing_caduceus=True)
-        reset_caduceus_pin = getattr(manager, "reset_caduceus_pin", None)
-        if not callable(reset_caduceus_pin):
-            print(json.dumps({"ok": False, "firstMissingSignal": "keyman-reset-primitive-absent"}, separators=(",", ":")))
-            return 0
+        manager = keyman()
         try:
-            reset_caduceus_pin("1", key_dir=key_dir, vault_dir=vault_dir)
+            manager.change_caduceus_pin(old_pin, new_pin, key_dir=key_dir, vault_dir=vault_dir)
         except Exception as exc:
             if not _refused(exc):
                 raise

@@ -14,7 +14,7 @@ class _EnvelopeStdin(StringIO):
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
-ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime")}
+ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime"), "attendance": ("exousia", "attendance"), "pin": ("exousia", "pin")}
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
     "staff-daemon": ("python", "staff-daemon"),
