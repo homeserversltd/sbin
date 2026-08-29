@@ -6,6 +6,8 @@
     "gui",
     "storage",
     "admin-admittance",
+    "attendance",
+    "pin",
     "portals",
     "update",
     "matrix",

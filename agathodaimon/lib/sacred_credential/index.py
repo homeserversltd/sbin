@@ -265,31 +265,18 @@ def bind_derived_caduceus(*, key_dir: Path | None = None, vault_dir: Path | None
 
 
 def reset_caduceus_pin_to_provisioned_default(*, key_dir: Path | None = None, vault_dir: Path | None = None) -> dict[str, object]:
-    """Restore Keyman-held Caduceus PIN from the root-provisioned default file."""
+    """Restore Keyman-held Caduceus PIN to the literal provisioned default."""
     _require_root()
-    default_path = Path(os.environ.get("CADUCEUS_PROVISIONED_DEFAULT_PIN_FILE", "/etc/caduceus/provisioned-default-pin"))
+    default = bytearray(b"1")
+    validated = _pin_bytes("1")
     try:
-        default = bytearray(default_path.read_bytes())
-    except OSError as exc:
-        raise CaduceusAccessRefused("agathodaimon-pin-default-not-provisioned") from exc
-    try:
-        if default.endswith(b"\n"):
-            default.pop()
-        if not default:
-            raise CaduceusAccessRefused("agathodaimon-pin-default-not-provisioned")
-        validated = _pin_bytes(default.decode("utf-8"))
-        try:
-            key_dir, _ = _runtime_paths(key_dir, vault_dir)
-            _require_current_credential(key_dir)
-            _keyman("reencrypt", bytearray(b"service=caduceus\nnew_password=" + bytes(default) + b"\n"))
-            return {"schema": "keyman.caduceus_access.status.v1", "ok": True, "operation": "pin-reset-default", "private_material": "[REDACTED]"}
-        finally:
-            _wipe(validated)
-    except (UnicodeDecodeError, CaduceusAccessRefused):
-        raise
+        key_dir, _ = _runtime_paths(key_dir, vault_dir)
+        _require_current_credential(key_dir)
+        _keyman("reencrypt", bytearray(b"service=caduceus\nnew_password=" + bytes(default) + b"\n"))
+        return {"schema": "keyman.caduceus_access.status.v1", "ok": True, "operation": "pin-reset-default", "private_material": "[REDACTED]"}
     finally:
+        _wipe(validated)
         _wipe(default)
-
 
 def provision_caduceus(initial_pin: str, *, key_dir: Path | None = None, vault_dir: Path | None = None) -> dict[str, object]:
     """Create the fixed Caduceus credential exactly once through Keyman."""
