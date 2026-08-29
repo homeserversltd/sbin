@@ -7,7 +7,7 @@ from _common import run
 
 
 def main(argv=None):
-    return run('bind', list(sys.argv[1:] if argv is None else argv))
+    return run('open', list(sys.argv[1:] if argv is None else argv))
 
 
 if __name__ == "__main__":
