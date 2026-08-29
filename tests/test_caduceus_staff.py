@@ -80,19 +80,25 @@ def bind_derived_caduceus(**kwargs): return S()
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(json.loads(proc.stdout), {"ok": False})
 
-    def test_pin_reset_default_provisions_when_caduceus_is_absent(self):
+    def test_pin_reset_default_resets_absent_caduceus(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             for relative in ("key/skeleton.key", "vault/service_suite.key"):
                 path = base / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("x")
+            calls = base / "calls"
             module = base / "keyman.py"
-            module.write_text("""calls = []
+            module.write_text(f"""from pathlib import Path
 class S:
     public_key_hex = 'a' * 64
     signer_epoch = 'b' * 64
-    def close(self): calls.append(("close",))
-def provision_caduceus(pin, **kwargs): calls.append(("provision", pin, kwargs))
-def bind_derived_caduceus(**kwargs): calls.append(("bind", kwargs)); return S()
+    def close(self): pass
+def reset_caduceus_pin(pin, **kwargs):
+    assert pin == "1"
+    assert not (kwargs["vault_dir"] / "caduceus.key").is_file()
+    Path({str(calls)!r}).write_text("reset")
+def change_caduceus_pin(*args, **kwargs): raise AssertionError("legacy change fallback")
+def provision_caduceus(*args, **kwargs): raise AssertionError("legacy provision fallback")
+def bind_derived_caduceus(**kwargs): return S()
 """)
             env = dict(os.environ, AGATHODAIMON_KEYMAN_MODULE=str(module), CADUCEUS_KEYMAN_KEY_DIR=str(base / "key"), CADUCEUS_KEYMAN_VAULT_DIR=str(base / "vault"))
             proc = subprocess.run(
@@ -101,19 +107,26 @@ def bind_derived_caduceus(**kwargs): calls.append(("bind", kwargs)); return S()
             )
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(json.loads(proc.stdout), {"ok": True, "publicKey": "a" * 64, "epoch": "b" * 64})
+            self.assertEqual(calls.read_text(), "reset")
 
-    def test_pin_reset_default_changes_present_caduceus_pin(self):
+    def test_pin_reset_default_resets_present_caduceus_without_old_pin_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             for relative in ("key/skeleton.key", "vault/service_suite.key", "vault/caduceus.key"):
                 path = base / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("x")
+            calls = base / "calls"
             module = base / "keyman.py"
-            module.write_text("""class S:
+            module.write_text(f"""from pathlib import Path
+class S:
     public_key_hex = 'c' * 64
     signer_epoch = 'd' * 64
     def close(self): pass
-def change_caduceus_pin(old, new, **kwargs):
-    assert (old, new) == ("1", "1")
+def reset_caduceus_pin(pin, **kwargs):
+    assert pin == "1"
+    assert kwargs["vault_dir"] / "caduceus.key" == Path({str(base / "vault" / "caduceus.key")!r})
+    Path({str(calls)!r}).write_text("reset")
+def change_caduceus_pin(*args, **kwargs): raise AssertionError("old-PIN change fallback")
+def provision_caduceus(*args, **kwargs): raise AssertionError("legacy provision fallback")
 def bind_derived_caduceus(**kwargs): return S()
 """)
             env = dict(os.environ, AGATHODAIMON_KEYMAN_MODULE=str(module), CADUCEUS_KEYMAN_KEY_DIR=str(base / "key"), CADUCEUS_KEYMAN_VAULT_DIR=str(base / "vault"))
@@ -123,14 +136,18 @@ def bind_derived_caduceus(**kwargs): return S()
             )
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(json.loads(proc.stdout), {"ok": True, "publicKey": "c" * 64, "epoch": "d" * 64})
+            self.assertEqual(calls.read_text(), "reset")
 
-    def test_pin_reset_default_refusal_is_ok_false(self):
+    def test_pin_reset_default_refusal_comes_from_reset_without_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             for relative in ("key/skeleton.key", "vault/service_suite.key"):
                 path = base / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("x")
             module = base / "keyman.py"
-            module.write_text("def provision_caduceus(pin, **kwargs): raise RuntimeError(\"agathodaimon-pin-refused\")\n")
+            module.write_text("""def reset_caduceus_pin(pin, **kwargs): raise RuntimeError("agathodaimon-pin-refused")
+def change_caduceus_pin(*args, **kwargs): raise AssertionError("legacy change fallback")
+def provision_caduceus(*args, **kwargs): raise AssertionError("legacy provision fallback")
+""")
             env = dict(os.environ, AGATHODAIMON_KEYMAN_MODULE=str(module), CADUCEUS_KEYMAN_KEY_DIR=str(base / "key"), CADUCEUS_KEYMAN_VAULT_DIR=str(base / "vault"))
             proc = subprocess.run(
                 [sys.executable, "agathodaimon/cli.py", "pin", "reset-default"], cwd=ROOT, env=env,
@@ -138,6 +155,23 @@ def bind_derived_caduceus(**kwargs): return S()
             )
             self.assertEqual(proc.returncode, 0)
             self.assertEqual(json.loads(proc.stdout), {"ok": False})
+
+    def test_pin_reset_default_reports_absent_reset_primitive_without_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            for relative in ("key/skeleton.key", "vault/service_suite.key"):
+                path = base / relative; path.parent.mkdir(parents=True, exist_ok=True); path.write_text("x")
+            module = base / "keyman.py"
+            module.write_text("""def change_caduceus_pin(*args, **kwargs): raise AssertionError("legacy change fallback")
+def provision_caduceus(*args, **kwargs): raise AssertionError("legacy provision fallback")
+""")
+            env = dict(os.environ, AGATHODAIMON_KEYMAN_MODULE=str(module), CADUCEUS_KEYMAN_KEY_DIR=str(base / "key"), CADUCEUS_KEYMAN_VAULT_DIR=str(base / "vault"))
+            proc = subprocess.run(
+                [sys.executable, "agathodaimon/cli.py", "pin", "reset-default"], cwd=ROOT, env=env,
+                text=True, input="{}", stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            self.assertEqual(proc.returncode, 0)
+            self.assertEqual(json.loads(proc.stdout), {"ok": False, "firstMissingSignal": "keyman-reset-primitive-absent"})
 
     def test_read_only_exemplar_is_truthful(self):
         data = run("network", "dhcp", "status")
