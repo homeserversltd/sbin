@@ -70,7 +70,7 @@ def verify():
 def execute(action):
  if action=="bind":return bind()
  if action=="verify":return verify()
- raise MalformedInput("unknown attendance verb")
+ raise MalformedInput("unknown exousia verb")
 def run(action,argv=None):
  try:
   if argv: raise MalformedInput("one exousia verb is required")
