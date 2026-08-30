@@ -98,15 +98,9 @@ class EnvelopeContractTests(unittest.TestCase):
 
 
 class ExousiaActuatorTests(unittest.TestCase):
-    def setUp(self):
-        self.signer = MagicMock(public_key_hex="a" * 64, signer_epoch="b" * 64)
-        self.manager = MagicMock()
-        self.manager.bind_derived_caduceus.return_value = self.signer
-        self.manager.verify_and_derive_caduceus.return_value = self.signer
-
     def test_bind_legacy_and_envelope_and_foreign(self):
         face = load_face("bind_face", "agathodaimon/exousia/bind/index.py")
-        with patch.dict(face.run.__globals__, {"keyman": lambda: self.manager, "paths": lambda: (Path("/k"), Path("/v"))}):
+        with patch.dict(face.run.__globals__, {"invoke_launcher": lambda executable, value: {"ok": True, "publicKey": "a" * 64, "epoch": "b" * 64}}):
             code, result = invoke(face.main, {})
             self.assertEqual((code, result["ok"]), (0, True)); self.assertNotIn("intent_id", result)
             value = envelope("exousia.bind", {"unknown": 1})
@@ -118,7 +112,7 @@ class ExousiaActuatorTests(unittest.TestCase):
 
     def test_verify_legacy_flags_payload_and_foreign(self):
         face = load_face("verify_face", "agathodaimon/exousia/verify/index.py")
-        with patch.dict(face.run.__globals__, {"verify_pin": lambda pin, expected: True}):
+        with patch.dict(face.run.__globals__, {"invoke_launcher": lambda executable, value: {"verified": True}}):
             for value in ({"pin": "p", "publicKey": "a" * 64, "extra": 1}, envelope("exousia.verify", {"publicKey": "a" * 64, "flags": {"exousia": {"pin": "p", "extra": 1}}})):
                 code, result = invoke(face.main, value)
                 self.assertEqual((code, result["verified"]), (0, True))
@@ -128,8 +122,7 @@ class ExousiaActuatorTests(unittest.TestCase):
 
     def test_change_and_reset_are_real_faces_with_legacy_and_envelope(self):
         change = load_face("change_face", "agathodaimon/exousia/change/index.py")
-        self.manager.change_caduceus_pin.return_value = None
-        with patch.dict(change.main.__globals__, {"keyman": lambda: self.manager, "paths": lambda: (Path("/k"), Path("/v")), "public": lambda signer: ("a" * 64, "b" * 64), "close": lambda signer: None}):
+        with patch.dict(change.main.__globals__, {"invoke_launcher": lambda executable, value: {"ok": True, "publicKey": "a" * 64, "epoch": "b" * 64}}):
             for value in ({"oldPin": "old", "newPin": "new", "extra": 1}, envelope("exousia.change", {"oldPin": "old", "newPin": "new", "extra": 1})):
                 code, result = invoke(change.main, value)
                 self.assertEqual(code, 0); self.assertTrue(result["ok"]); self.assertEqual(result.get("intent_id"), "intent-test" if value.get("schema") else None)
