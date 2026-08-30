@@ -4,20 +4,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[3]))
-from agathodaimon.exousia._common import (
-    ExousiaUnprovisioned,
-    MalformedInput,
-    close,
-    keyman,
-    paths,
-    public,
-    text,
-)
+from agathodaimon.exousia._common import ExousiaUnprovisioned, MalformedInput, invoke_launcher, text
 
 
-def _refused(exc):
-    message = str(exc).lower()
-    return "agathodaimon-pin-refused" in message or "caduceus-pin-refused" in message
+def _is_pin_refusal(signal):
+    normalized = signal.lower()
+    return "pin-refused" in normalized or normalized == "caduceus-staff-derived-key-mismatch"
 
 
 def main(argv=None):
@@ -25,30 +17,32 @@ def main(argv=None):
         print("one exousia verb is required", file=sys.stderr)
         return 2
     try:
-        value = json.load(sys.stdin)
+        try:
+            value = json.load(sys.stdin)
+        except json.JSONDecodeError as exc:
+            raise MalformedInput("invalid JSON") from exc
         if not isinstance(value, dict) or set(value) != {"oldPin", "newPin"}:
             raise MalformedInput("unexpected pin fields")
-        old_pin, new_pin = text(value, "oldPin"), text(value, "newPin")
-        key_dir, vault_dir = paths()
-        manager = keyman()
-        try:
-            manager.change_caduceus_pin(old_pin, new_pin, key_dir=key_dir, vault_dir=vault_dir)
-        except Exception as exc:
-            if not _refused(exc):
-                raise
-            print(json.dumps({"ok": False}, separators=(",", ":")))
-            return 0
-        signer = manager.bind_derived_caduceus(key_dir=key_dir, vault_dir=vault_dir)
-        try:
-            signer_public, signer_epoch = public(signer)
-            result = {"ok": True, "publicKey": signer_public, "epoch": signer_epoch}
-        finally:
-            close(signer)
+        request = {"oldPin": text(value, "oldPin"), "newPin": text(value, "newPin")}
+        result = invoke_launcher("/usr/local/sbin/caduceus-atomic-change-pin", request)
+        signal = result.get("firstMissingSignal")
+        if result.get("ok") is False and isinstance(signal, str) and signal:
+            if _is_pin_refusal(signal):
+                result = {"ok": False}
+            else:
+                raise ExousiaUnprovisioned(signal)
+        if result.get("ok") is True:
+            public_key, epoch = result.get("publicKey"), result.get("epoch")
+            if not isinstance(public_key, str) or not isinstance(epoch, str):
+                raise RuntimeError("invalid caduceus change response")
+            result = {"ok": True, "publicKey": public_key, "epoch": epoch}
+        elif result != {"ok": False}:
+            raise RuntimeError("invalid caduceus change response")
     except MalformedInput as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    except ExousiaUnprovisioned:
-        print(json.dumps({"ok": False, "firstMissingSignal": "exousia-unprovisioned"}, separators=(",", ":")))
+    except ExousiaUnprovisioned as exc:
+        print(json.dumps({"ok": False, "firstMissingSignal": str(exc)}, separators=(",", ":")))
         return 0
     except Exception:  # noqa: BLE001
         print("exousia internal failure", file=sys.stderr)

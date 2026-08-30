@@ -1,83 +1,107 @@
-import contextlib
-import importlib.util
 import json
-import os
+import subprocess
 import sys
-from pathlib import Path
 
-KEYMAN_PATH=Path(os.environ.get("AGATHODAIMON_KEYMAN_MODULE","/opt/keyman/runtime/lib/keyman_caduceus_access.py"))
-class MalformedInput(ValueError): pass
-class ExousiaUnprovisioned(RuntimeError): pass
-def paths(): return Path(os.environ.get("CADUCEUS_KEYMAN_KEY_DIR","/root/key")),Path(os.environ.get("CADUCEUS_KEYMAN_VAULT_DIR","/vault/.keys"))
-def ensure_provisioned(k,v,allow_missing_caduceus=False):
- required=(k/"skeleton.key",v/"service_suite.key")
- if not allow_missing_caduceus: required+=(v/"caduceus.key",)
- for p in required:
-  if not p.is_file(): raise ExousiaUnprovisioned("exousia-unprovisioned")
- if not KEYMAN_PATH.is_file(): raise ExousiaUnprovisioned("exousia-unprovisioned")
-def keyman(*,allow_missing_caduceus=False):
- k,v=paths(); ensure_provisioned(k,v,allow_missing_caduceus=allow_missing_caduceus)
- s=importlib.util.spec_from_file_location("exousia_keyman",KEYMAN_PATH)
- if s is None or s.loader is None: raise RuntimeError("keyman module load failure")
- m=importlib.util.module_from_spec(s)
- sys.modules[s.name]=m
- try:s.loader.exec_module(m)
- except Exception as e:
-  if sys.modules.get(s.name) is m: del sys.modules[s.name]
-  raise RuntimeError("keyman module import failure") from e
- return m
-def text(o,n):
- v=o.get(n)
- if not isinstance(v,str) or not v or len(v)>512: raise MalformedInput(n+" missing or invalid")
- return v
+
+class MalformedInput(ValueError):
+    pass
+
+
+class ExousiaUnprovisioned(RuntimeError):
+    pass
+
+
+def text(value, name):
+    item = value.get(name)
+    if not isinstance(item, str) or not item or len(item) > 512:
+        raise MalformedInput(name + " missing or invalid")
+    return item
+
+
 def payload(fields):
- try:v=json.load(sys.stdin)
- except json.JSONDecodeError as e: raise MalformedInput("invalid JSON") from e
- if not isinstance(v,dict) or set(v)!=fields: raise MalformedInput("unexpected exousia fields")
- return v
-def public(s):
- p=getattr(s,"public_key_hex",None); e=getattr(s,"signer_epoch",getattr(s,"epoch",None)); p=p() if callable(p) else p; e=e() if callable(e) else e
- if not isinstance(p,str) or len(p)!=64 or not isinstance(e,str) or len(e)!=64: raise RuntimeError("invalid signer")
- try:int(p,16); int(e,16)
- except ValueError as x: raise RuntimeError("invalid signer") from x
- return p,e
-def close(s):
- f=getattr(s,"close",None)
- if callable(f):
-  with contextlib.suppress(Exception):
-   f()
-def pin_refused(e): return "caduceus-pin-refused" in str(e).lower()
-def verify_pin(pin,expected=None):
- k,v=paths()
- try:s=keyman().verify_and_derive_caduceus(pin,key_dir=k,vault_dir=v)
- except Exception as e:
-  if not pin_refused(e): raise
-  return False
- try:p,_=public(s); return expected is None or p==expected
- finally:close(s)
+    try:
+        value = json.load(sys.stdin)
+    except json.JSONDecodeError as exc:
+        raise MalformedInput("invalid JSON") from exc
+    if not isinstance(value, dict) or set(value) != fields:
+        raise MalformedInput("unexpected exousia fields")
+    return value
+
+
+def invoke_launcher(executable, value):
+    completed = subprocess.run(
+        ["/usr/bin/sudo", "-n", executable],
+        input=json.dumps(value, separators=(",", ":")),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        result = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("invalid exousia launcher response") from exc
+    if not isinstance(result, dict):
+        raise RuntimeError("invalid exousia launcher response")
+    # The real launchers use rc=1 for valid negative JSON outcomes.
+    return result
+
+
+def _unprovisioned(result):
+    signal = result.get("firstMissingSignal")
+    if result.get("ok") is False and isinstance(signal, str) and signal:
+        raise ExousiaUnprovisioned(signal)
+
+
 def bind():
- payload(set())
- k,v=paths(); s=keyman().bind_derived_caduceus(key_dir=k,vault_dir=v)
- try:p,e=public(s); return {"ok":True,"publicKey":p,"epoch":e}
- finally:close(s)
+    payload(set())
+    result = invoke_launcher("/usr/local/sbin/caduceus-bind", {})
+    _unprovisioned(result)
+    public_key, epoch = result.get("publicKey"), result.get("epoch")
+    if result.get("ok") is not True or not isinstance(public_key, str) or not isinstance(epoch, str):
+        raise RuntimeError("invalid caduceus bind response")
+    return {"ok": True, "publicKey": public_key, "epoch": epoch}
+
+
 def verify():
- o=payload({"pin","publicKey"}); p=text(o,"publicKey")
- if len(p)!=64:
-  raise MalformedInput("publicKey missing or invalid")
- try:int(p,16)
- except ValueError as e: raise MalformedInput("publicKey missing or invalid") from e
- return {"verified":verify_pin(text(o,"pin"),p)}
+    value = payload({"pin", "publicKey"})
+    public_key = text(value, "publicKey")
+    if len(public_key) != 64:
+        raise MalformedInput("publicKey missing or invalid")
+    try:
+        int(public_key, 16)
+    except ValueError as exc:
+        raise MalformedInput("publicKey missing or invalid") from exc
+    result = invoke_launcher(
+        "/usr/local/sbin/caduceus-verify",
+        {"pin": text(value, "pin"), "publicKey": public_key},
+    )
+    verified = result.get("verified")
+    if not isinstance(verified, bool):
+        raise RuntimeError("invalid caduceus verify response")
+    return {"verified": verified}
+
+
 def execute(action):
- if action=="bind":return bind()
- if action=="verify":return verify()
- raise MalformedInput("unknown exousia verb")
-def run(action,argv=None):
- try:
-  if argv: raise MalformedInput("one exousia verb is required")
-  r=execute(action)
- except MalformedInput as e: print(str(e),file=sys.stderr); return 2
- except ExousiaUnprovisioned:
-  print(json.dumps({"ok":False,"firstMissingSignal":"exousia-unprovisioned"})); return 0
- except Exception:  # noqa: BLE001
-  print("exousia internal failure",file=sys.stderr); return 1
- print(json.dumps(r,separators=(",",":"))); return 0
+    if action == "bind":
+        return bind()
+    if action == "verify":
+        return verify()
+    raise MalformedInput("unknown exousia verb")
+
+
+def run(action, argv=None):
+    try:
+        if argv:
+            raise MalformedInput("one exousia verb is required")
+        result = execute(action)
+    except MalformedInput as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ExousiaUnprovisioned as exc:
+        print(json.dumps({"ok": False, "firstMissingSignal": str(exc)}))
+        return 0
+    except Exception:  # noqa: BLE001
+        print("exousia internal failure", file=sys.stderr)
+        return 1
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
