@@ -1,18 +1,23 @@
-import importlib.util,json,os,sys
+import contextlib
+import importlib.util
+import json
+import os
+import sys
 from pathlib import Path
+
 KEYMAN_PATH=Path(os.environ.get("AGATHODAIMON_KEYMAN_MODULE","/opt/keyman/runtime/lib/keyman_caduceus_access.py"))
 class MalformedInput(ValueError): pass
-class AttendanceUnprovisioned(RuntimeError): pass
+class ExousiaUnprovisioned(RuntimeError): pass
 def paths(): return Path(os.environ.get("CADUCEUS_KEYMAN_KEY_DIR","/root/key")),Path(os.environ.get("CADUCEUS_KEYMAN_VAULT_DIR","/vault/.keys"))
 def ensure_provisioned(k,v,allow_missing_caduceus=False):
  required=(k/"skeleton.key",v/"service_suite.key")
  if not allow_missing_caduceus: required+=(v/"caduceus.key",)
  for p in required:
-  if not p.is_file(): raise AttendanceUnprovisioned("attendance-unprovisioned")
- if not KEYMAN_PATH.is_file(): raise AttendanceUnprovisioned("attendance-unprovisioned")
+  if not p.is_file(): raise ExousiaUnprovisioned("exousia-unprovisioned")
+ if not KEYMAN_PATH.is_file(): raise ExousiaUnprovisioned("exousia-unprovisioned")
 def keyman(*,allow_missing_caduceus=False):
  k,v=paths(); ensure_provisioned(k,v,allow_missing_caduceus=allow_missing_caduceus)
- s=importlib.util.spec_from_file_location("attendance_keyman",KEYMAN_PATH)
+ s=importlib.util.spec_from_file_location("exousia_keyman",KEYMAN_PATH)
  if s is None or s.loader is None: raise RuntimeError("keyman module load failure")
  m=importlib.util.module_from_spec(s)
  sys.modules[s.name]=m
@@ -27,8 +32,8 @@ def text(o,n):
  return v
 def payload(fields):
  try:v=json.load(sys.stdin)
- except Exception as e: raise MalformedInput("invalid JSON") from e
- if not isinstance(v,dict) or set(v)!=fields: raise MalformedInput("unexpected attendance fields")
+ except json.JSONDecodeError as e: raise MalformedInput("invalid JSON") from e
+ if not isinstance(v,dict) or set(v)!=fields: raise MalformedInput("unexpected exousia fields")
  return v
 def public(s):
  p=getattr(s,"public_key_hex",None); e=getattr(s,"signer_epoch",getattr(s,"epoch",None)); p=p() if callable(p) else p; e=e() if callable(e) else e
@@ -39,8 +44,8 @@ def public(s):
 def close(s):
  f=getattr(s,"close",None)
  if callable(f):
-  try:f()
-  except Exception:pass
+  with contextlib.suppress(Exception):
+   f()
 def pin_refused(e): return "caduceus-pin-refused" in str(e).lower()
 def verify_pin(pin,expected=None):
  k,v=paths()
@@ -51,6 +56,7 @@ def verify_pin(pin,expected=None):
  try:p,_=public(s); return expected is None or p==expected
  finally:close(s)
 def bind():
+ payload(set())
  k,v=paths(); s=keyman().bind_derived_caduceus(key_dir=k,vault_dir=v)
  try:p,e=public(s); return {"ok":True,"publicKey":p,"epoch":e}
  finally:close(s)
@@ -60,18 +66,18 @@ def verify():
   raise MalformedInput("publicKey missing or invalid")
  try:int(p,16)
  except ValueError as e: raise MalformedInput("publicKey missing or invalid") from e
- return {"ok":True,"verified":verify_pin(text(o,"pin"),p)}
+ return {"verified":verify_pin(text(o,"pin"),p)}
 def execute(action):
  if action=="bind":return bind()
  if action=="verify":return verify()
  raise MalformedInput("unknown attendance verb")
 def run(action,argv=None):
  try:
-  if argv: raise MalformedInput("one attendance verb is required")
+  if argv: raise MalformedInput("one exousia verb is required")
   r=execute(action)
  except MalformedInput as e: print(str(e),file=sys.stderr); return 2
- except AttendanceUnprovisioned:
-  print(json.dumps({"ok":False,"firstMissingSignal":"attendance-unprovisioned"})); return 0
- except Exception as e:
-  print("attendance internal failure",file=sys.stderr); return 1
+ except ExousiaUnprovisioned:
+  print(json.dumps({"ok":False,"firstMissingSignal":"exousia-unprovisioned"})); return 0
+ except Exception:  # noqa: BLE001
+  print("exousia internal failure",file=sys.stderr); return 1
  print(json.dumps(r,separators=(",",":"))); return 0
