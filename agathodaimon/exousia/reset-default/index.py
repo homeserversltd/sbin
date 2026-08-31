@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import json
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parents[3]))
+from agathodaimon._envelope import EnvelopeError, attach, read
 
 
 def main(argv=None):
@@ -8,14 +11,11 @@ def main(argv=None):
         print("one exousia verb is required", file=sys.stderr)
         return 2
     try:
-        value = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        print("invalid JSON", file=sys.stderr)
+        request = read()
+    except EnvelopeError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
-    if not isinstance(value, dict) or set(value):
-        print("unexpected exousia fields", file=sys.stderr)
-        return 2
-    print(json.dumps({"ok": False, "firstMissingSignal": "keyman-default-pin-authority-absent"}, separators=(",", ":")))
+    print(json.dumps(attach({"ok": False, "firstMissingSignal": "keyman-default-pin-authority-absent"}, request), separators=(",", ":")))
     return 0
 
 if __name__ == "__main__":

@@ -52,7 +52,7 @@ def _slash_target(raw_path: str) -> Path | None:
     target = path / "index.py"
     return target if target.is_file() else None
 
-def _invoke_envelope(path: Path, envelope: dict) -> int:
+def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None) -> int:
     mod = _load(path)
     fn = getattr(mod, "main", None)
     if fn is None:
@@ -60,7 +60,7 @@ def _invoke_envelope(path: Path, envelope: dict) -> int:
         return 0
     original_stdin = sys.stdin
     try:
-        sys.stdin = _EnvelopeStdin(json.dumps(envelope))
+        sys.stdin = _EnvelopeStdin(raw_envelope if raw_envelope is not None else json.dumps(envelope))
         try:
             return int(fn([]) or 0)
         except SystemExit:
@@ -89,11 +89,12 @@ def main(argv=None):
         if not isinstance(envelope, dict):
             print("envelope must be a JSON object", file=sys.stderr)
             return 2
+        raw_envelope = args[1]
         target = _slash_target(args[0])
         if target is None:
             print(f"unknown path: {args[0]}", file=sys.stderr)
             return 2
-        return _invoke_envelope(target, envelope)
+        return _invoke_envelope(target, envelope, raw_envelope)
     service_alias=args[0]=="service" and len(args)>1 and args[1] in SERVICE_ALIASES
     alias=SERVICE_ALIASES[args[1]] if service_alias else ALIASES.get(args[0],(args[0],))
     remainder=args[2:] if service_alias else args[1:]

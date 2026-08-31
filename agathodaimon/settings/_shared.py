@@ -18,6 +18,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+from agathodaimon._envelope import EnvelopeError, attach, read
 
 FIELDS: dict[str, tuple[str, ...]] = {
     "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light"),
@@ -495,6 +496,36 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    # cli.py invokes a slash target with an empty argv and delivers the staff
+    # envelope on stdin.  Keep the ordinary command-line grammar unchanged.
+    if not argv:
+        try:
+            request = read(known_fields=tuple(field for fields in FIELDS.values() for field in fields))
+            transition = request.transition if isinstance(request.transition, str) else ""
+            parts = [part for part in re.split(r"[./:]", transition) if part]
+            kind = next((name for name in FIELDS if name in parts or (name == "default-apps" and "default-apps" in transition)), None)
+            if kind is None:
+                raise ValueError("unknown settings family")
+            operation = request.verb
+            if operation == kind or operation in {"settings", "exousia"}:
+                operation = "set" if any(k in FIELDS[kind] for k in request.payload) else "read"
+            if operation in {"read", "get", "state"}:
+                return emit(attach({"ok": True, "values": get_values(kind)}, request), 0)
+            if operation not in {"set", "change", "apply", "mutate"}:
+                return emit(attach({"ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": f"unsupported-operation:{operation}"}, request), 1)
+            changes = {field: value for field, value in request.payload.items() if field in FIELDS[kind]}
+            if not changes:
+                return emit(attach({"ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": "no-fields-supplied"}, request), 1)
+            receipt = Receipt(kind, list(changes))
+            try:
+                for field, value in changes.items():
+                    set_value(kind, field, value, receipt)
+                return emit(attach(receipt.finish(True, receipt.changed), request), 0)
+            except Exception as exc:
+                return emit(attach(receipt.finish(False, False, str(exc)), request), 1)
+        except (EnvelopeError, ValueError) as exc:
+            return emit({"ok": False, "firstMissingSignal": str(exc), "mutationPerformed": False}, 1)
     try:
         args = parser().parse_args(argv)
         if args.op == "get": return emit({"ok": True, "values": get_values(args.kind)}, 0)

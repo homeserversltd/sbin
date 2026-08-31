@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[3]))
+from agathodaimon._envelope import EnvelopeError, attach, read
 from agathodaimon.exousia._common import (
     ExousiaUnprovisioned,
     MalformedInput,
@@ -25,9 +26,11 @@ def main(argv=None):
         print("one exousia verb is required", file=sys.stderr)
         return 2
     try:
-        value = json.load(sys.stdin)
-        if not isinstance(value, dict) or set(value) != {"oldPin", "newPin"}:
-            raise MalformedInput("unexpected pin fields")
+        try:
+            request = read(known_fields=("oldPin", "newPin"), declared_flags=("oldPin", "newPin"))
+        except EnvelopeError as exc:
+            raise MalformedInput(str(exc)) from exc
+        value = request.payload
         old_pin, new_pin = text(value, "oldPin"), text(value, "newPin")
         key_dir, vault_dir = paths()
         manager = keyman()
@@ -36,7 +39,7 @@ def main(argv=None):
         except Exception as exc:
             if not _refused(exc):
                 raise
-            print(json.dumps({"ok": False}, separators=(",", ":")))
+            print(json.dumps(attach({"ok": False}, request), separators=(",", ":")))
             return 0
         signer = manager.bind_derived_caduceus(key_dir=key_dir, vault_dir=vault_dir)
         try:
@@ -53,7 +56,7 @@ def main(argv=None):
     except Exception:  # noqa: BLE001
         print("exousia internal failure", file=sys.stderr)
         return 1
-    print(json.dumps(result, separators=(",", ":")))
+    print(json.dumps(attach(result, request), separators=(",", ":")))
     return 0
 
 

@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 from typing import Any, Sequence
+from agathodaimon._envelope import EnvelopeError, attach, read
 
 SCHEMA = "caduceus.ssh.exposure.v1"
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -210,6 +211,27 @@ def toggle(state: str) -> dict[str, Any]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    request = None
+    if not argv:
+        try:
+            request = read(known_fields=("state", "action", "operation"))
+            operation = request.verb
+            state = request.payload.get("state", request.payload.get("action"))
+            if operation in {"read", "get", "status"} or state == "status":
+                receipt = status()
+            elif state in {"on", "off"}:
+                receipt = toggle(state)
+            elif operation in {"on", "off"}:
+                receipt = toggle(operation)
+            else:
+                receipt = _receipt("unknown", ok=False, changed=[], unchanged=[], readback=None, commands=[], signal="unsupported-operation")
+            receipt = attach(receipt, request)
+            print(json.dumps(receipt, sort_keys=True))
+            return 0 if receipt.get("ok") else 1
+        except EnvelopeError as error:
+            print(json.dumps({"schema": SCHEMA, "ok": False, "firstMissingSignal": str(error)}, sort_keys=True))
+            return 1
     parser = argparse.ArgumentParser(prog="agathodaimon-ssh-exposure")
     parser.add_argument("state", choices=("on", "off", "status"))
     args = parser.parse_args(argv)

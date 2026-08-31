@@ -4,10 +4,12 @@ import json
 import os
 import sys
 from pathlib import Path
+from agathodaimon._envelope import EnvelopeError, attach, read
 
 KEYMAN_PATH=Path(os.environ.get("AGATHODAIMON_KEYMAN_MODULE","/opt/keyman/runtime/lib/keyman_caduceus_access.py"))
 class MalformedInput(ValueError): pass
 class ExousiaUnprovisioned(RuntimeError): pass
+_last_request = None
 def paths(): return Path(os.environ.get("CADUCEUS_KEYMAN_KEY_DIR","/root/key")),Path(os.environ.get("CADUCEUS_KEYMAN_VAULT_DIR","/vault/.keys"))
 def ensure_provisioned(k,v,allow_missing_caduceus=False):
  required=(k/"skeleton.key",v/"service_suite.key")
@@ -31,10 +33,11 @@ def text(o,n):
  if not isinstance(v,str) or not v or len(v)>512: raise MalformedInput(n+" missing or invalid")
  return v
 def payload(fields):
- try:v=json.load(sys.stdin)
- except json.JSONDecodeError as e: raise MalformedInput("invalid JSON") from e
- if not isinstance(v,dict) or set(v)!=fields: raise MalformedInput("unexpected exousia fields")
- return v
+ global _last_request
+ try:
+  _last_request = read(known_fields=tuple(fields), declared_flags=tuple(fields))
+ except EnvelopeError as e: raise MalformedInput(str(e)) from e
+ return _last_request.payload
 def public(s):
  p=getattr(s,"public_key_hex",None); e=getattr(s,"signer_epoch",getattr(s,"epoch",None)); p=p() if callable(p) else p; e=e() if callable(e) else e
  if not isinstance(p,str) or len(p)!=64 or not isinstance(e,str) or len(e)!=64: raise RuntimeError("invalid signer")
@@ -72,12 +75,17 @@ def execute(action):
  if action=="verify":return verify()
  raise MalformedInput("unknown exousia verb")
 def run(action,argv=None):
+ global _last_request
+ _last_request = None
  try:
   if argv: raise MalformedInput("one exousia verb is required")
   r=execute(action)
+  if _last_request is not None: r=attach(r, _last_request)
  except MalformedInput as e: print(str(e),file=sys.stderr); return 2
  except ExousiaUnprovisioned:
-  print(json.dumps({"ok":False,"firstMissingSignal":"exousia-unprovisioned"})); return 0
+  r={"ok":False,"firstMissingSignal":"exousia-unprovisioned"}
+  if _last_request is not None: r=attach(r, _last_request)
+  print(json.dumps(r)); return 0
  except Exception:  # noqa: BLE001
   print("exousia internal failure",file=sys.stderr); return 1
  print(json.dumps(r,separators=(",",":"))); return 0

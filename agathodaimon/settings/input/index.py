@@ -2,7 +2,10 @@
 from __future__ import annotations
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, uuid
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[3]))
 from typing import Any
+from agathodaimon._envelope import EnvelopeError, attach, read
 SCHEMA = "caduceus.staff.settings.input.v1"
 FIELDS = ("pointer_sensitivity", "scroll_factor", "natural_scroll", "tap_to_click", "middle_button_emulation")
 KEYS = {"pointer_sensitivity": "sensitivity", "scroll_factor": "scroll_factor", "natural_scroll": "natural_scroll", "tap_to_click": "tap-to-click", "middle_button_emulation": "middle_button_emulation"}
@@ -142,7 +145,7 @@ def apply_changes(changes: dict[str, Any]) -> dict[str, Any]:
 def transition_operation(envelope: dict[str, Any]) -> str:
     for key in ("operation", "action", "transition"):
         value = envelope.get(key)
-        if isinstance(value, str) and value: return value.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+        if isinstance(value, str) and value: return re.split(r"[./:]", value.rstrip("/"))[-1]
     return "read"
 
 def emit(receipt: dict[str, Any], status: int = 0) -> int:
@@ -205,28 +208,31 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError as error:
                 return emit({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, 1)
     else:
-        try: candidate = json.load(sys.stdin)
-        except (json.JSONDecodeError, OSError): candidate = None
-        crossing_argv = candidate.get("args") if isinstance(candidate, dict) else None
+        try:
+            request = read(known_fields=tuple(FIELDS) + ("args",))
+        except EnvelopeError as error:
+            return emit({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, 1)
+        candidate = request.payload
+        crossing_argv = candidate.get("args") if not request.envelope and isinstance(candidate, dict) else None
         if isinstance(crossing_argv, list):
             if crossing_argv == ["get", "--json"]:
-                return emit({"schema": SCHEMA, "ok": True, "mutationPerformed": False, **read_values()})
+                return emit(attach({"schema": SCHEMA, "ok": True, "mutationPerformed": False, **read_values()}, request), 0)
             try:
                 receipt = apply_changes(crossing_changes(crossing_argv))
-                return emit(receipt, 0 if receipt.get("ok") else 1)
+                return emit(attach(receipt, request), 0 if receipt.get("ok") else 1)
             except ValueError as error:
-                return emit({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, 1)
-        envelope = candidate if isinstance(candidate, dict) and candidate.get("schema") == "caduceus.staff.v1" else None
-    if not argv and envelope is not None:
-        payload = envelope.get("payload"); payload = payload if isinstance(payload, dict) else {}
-        operation = transition_operation(envelope)
-        if operation == "read": return emit({"schema": SCHEMA, "ok": True, "mutationPerformed": False, **read_values()})
-        if operation != "set": return emit({"schema": SCHEMA, "ok": False, "mutationPerformed": False, "firstMissingSignal": f"unsupported-operation:{operation}"}, 1)
-        try:
-            receipt = apply_changes(payload)
-            return emit(receipt, 0 if receipt.get("ok") else 1)
-        except ValueError as error:
-            return emit({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, 1)
-    return emit({"schema": SCHEMA, "ok": False, "mutationPerformed": False, "firstMissingSignal": "cli-parse-failure"}, 2)
+                return emit(attach({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, request), 1)
+        if request.envelope:
+            operation = transition_operation(request.value)
+            if operation == "read": return emit(attach({"schema": SCHEMA, "ok": True, "mutationPerformed": False, **read_values()}, request), 0)
+            if operation not in {"set", "mutate", "change", "apply"}: return emit(attach({"schema": SCHEMA, "ok": False, "mutationPerformed": False, "firstMissingSignal": f"unsupported-operation:{operation}"}, request), 1)
+            try:
+                changes = {field: value for field, value in candidate.items() if field in FIELDS}
+                if not changes: raise ValueError("no-fields-supplied")
+                receipt = apply_changes(changes)
+                return emit(attach(receipt, request), 0 if receipt.get("ok") else 1)
+            except ValueError as error:
+                return emit(attach({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, request), 1)
+        return emit({"schema": SCHEMA, "ok": False, "mutationPerformed": False, "firstMissingSignal": "cli-parse-failure"}, 2)
 
 if __name__ == "__main__": raise SystemExit(main())
