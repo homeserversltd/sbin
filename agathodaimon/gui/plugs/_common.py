@@ -138,7 +138,7 @@ def _number(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
-def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, specs: list[dict[str, Any]]) -> Any:
+def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, specs: list[dict[str, Any]], *, required_route: str | None = None, mutation_method: str = "PATCH") -> Any:
     """Build one receipt-backed settings pane over its admitted Caduceus door."""
     import gi
 
@@ -149,6 +149,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     page = _page(Adw, plug)
     group = _group(Adw, page, group_title)
     path = f"/api/v1/settings/{family}"
+    discovery_path = "/api/v1/doors"
     state: dict[str, Any] = {"hydrating": False, "hydrated": False, "read_generation": 0, "busy": set(), "values": {}, "status": {}}
     rows: dict[str, Any] = {}
     status_rows: dict[str, Any] = {}
@@ -271,10 +272,19 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
 
     def read_door(generation: int, message_field: str | None = None) -> None:
         try:
+            if required_route is not None:
+                doors = _request(discovery_path)
+                routes = doors.get("routes", []) if isinstance(doors, dict) else []
+                admitted = isinstance(routes, list) and required_route in routes
+                if not admitted:
+                    raise RuntimeError(f"missing door: {required_route}")
             receipt = _request(path)
             GLib.idle_add(finish_read, generation, receipt, None, message_field)
         except RuntimeError as error:
-            GLib.idle_add(finish_read, generation, None, str(error), message_field)
+            message = str(error)
+            if required_route is not None and not message.startswith("missing door:"):
+                message = f"missing door: {required_route} (discovery failed: {message})"
+            GLib.idle_add(finish_read, generation, None, message, message_field)
 
     def refresh(message_field: str | None = None) -> bool:
         state["read_generation"] += 1
@@ -316,7 +326,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
 
     def mutate(field: str, value: Any, previous: Any) -> None:
         try:
-            receipt = _request(path, "PATCH", {field: value})
+            receipt = _request(path, mutation_method, {field: value})
             GLib.idle_add(finish_mutation, field, previous, receipt, None)
         except RuntimeError as error:
             GLib.idle_add(finish_mutation, field, previous, None, str(error))

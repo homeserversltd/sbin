@@ -1,4 +1,4 @@
-"""Receipt-backed input settings."""
+"""GTK Input plug for the admitted settings/input Caduceus route."""
 from __future__ import annotations
 try:
     from ._common import build_settings_widget
@@ -9,13 +9,11 @@ except ImportError:
     from _common import build_settings_widget
 PLUG={"id":"input","title":"Input","icon":"input-keyboard-symbolic","order":60,"parent":None}
 SPECS=[
- {"field":"keyboard_layout","title":"Keyboard layout"},
- {"field":"keyboard_variant","title":"Keyboard variant"},
- {"field":"key_repeat","title":"Key repeat rate","kind":"spin","minimum":1,"maximum":100,"step":1},
- {"field":"repeat_delay_ms","title":"Repeat delay (ms)","kind":"spin","minimum":100,"maximum":5000,"step":50},
- {"field":"repeat_interval_ms","title":"Repeat interval (ms)","kind":"spin","minimum":1,"maximum":1000,"step":1},
+ {"field":"pointer_sensitivity","title":"Pointer sensitivity","kind":"spin","minimum":-1,"maximum":1,"step":0.05,"digits":2},
+ {"field":"scroll_factor","title":"Scroll factor","kind":"spin","minimum":0.1,"maximum":10,"step":0.1,"digits":2},
  {"field":"natural_scroll","title":"Natural scrolling","kind":"switch"},
  {"field":"tap_to_click","title":"Tap to click","kind":"switch"},
- {"field":"pointer_speed","title":"Pointer speed","kind":"spin","minimum":-1,"maximum":1,"step":0.05,"digits":2},
+ {"field":"middle_button_emulation","title":"Middle-button emulation","kind":"switch"},
 ]
-def build_widget(): return build_settings_widget(PLUG,"input","Input configuration",SPECS)
+def build_widget():
+    return build_settings_widget(PLUG,"input","Input policy",SPECS,required_route="/api/v1/settings/input")
