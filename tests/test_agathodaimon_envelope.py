@@ -141,7 +141,7 @@ class ExousiaActuatorTests(unittest.TestCase):
         bad = envelope("exousia.reset-default", {}); bad["schema"] = "foreign.v1"
         self.assertEqual(invoke(reset.main, bad)[0], 2)
 
-    def test_cli_argv_preserves_raw_envelope_bytes(self):
+    def test_cli_legacy_argv_preserves_raw_envelope_bytes(self):
         raw = (
             '{ "payload" : { "unknown" : { "keep" : [1, 2] } }, '
             '"timestamp" : "2026-08-31T00:00:00Z", '
@@ -160,6 +160,32 @@ class ExousiaActuatorTests(unittest.TestCase):
         self.assertEqual(result["intent_id"], "intent-cli")
         self.assertEqual(result["raw_envelope"], raw)
         self.assertEqual(result["envelope"]["payload"]["unknown"], {"keep": [1, 2]})
+
+    def test_cli_stdin_preserves_raw_envelope_bytes(self):
+        raw = (
+            '{  "payload": {"unknown": [1, 2]}, '
+            '"timestamp":"2026-08-31T00:00:00Z", '
+            '"unknownKernelExtension":true, "schema":"caduceus.staff.v1", '
+            '"version":{"future":true}, "intent_id":"intent-stdin", '
+            '"transition":"exousia.reset-default" }\n'
+        )
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "agathodaimon" / "cli.py"), "exousia/reset-default"],
+            cwd=ROOT, input=raw, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(result["intent_id"], "intent-stdin")
+        self.assertEqual(result["raw_envelope"], raw)
+        self.assertEqual(result["envelope"]["payload"]["unknown"], [1, 2])
+
+    def test_cli_invalid_stdin_refuses(self):
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "agathodaimon" / "cli.py"), "exousia/reset-default"],
+            cwd=ROOT, input="{not-json", capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertEqual(completed.stderr, "invalid envelope JSON\n")
 
 
 class SettingsActuatorTests(unittest.TestCase):

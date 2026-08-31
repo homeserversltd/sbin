@@ -80,6 +80,21 @@ def main(argv=None):
     if not args:
         print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT)},indent=2)); return 0
     original=args[:]
+    if len(args) == 1 and "/" in args[0]:
+        raw_envelope = sys.stdin.read()
+        try:
+            envelope = json.loads(raw_envelope)
+        except (TypeError, json.JSONDecodeError):
+            print("invalid envelope JSON", file=sys.stderr)
+            return 2
+        if not isinstance(envelope, dict):
+            print("envelope must be a JSON object", file=sys.stderr)
+            return 2
+        target = _slash_target(args[0])
+        if target is None:
+            print(f"unknown path: {args[0]}", file=sys.stderr)
+            return 2
+        return _invoke_envelope(target, envelope, raw_envelope)
     if len(args) == 2 and "/" in args[0]:
         try:
             envelope = json.loads(args[1])
