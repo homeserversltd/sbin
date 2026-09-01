@@ -1,0 +1,15 @@
+when:
+  event:
+    - push
+
+steps:
+  - name: release-publish
+    image: python:3.12-alpine
+    when:
+      - event: push
+        branch: main
+    environment:
+      FORGEJO_TOKEN:
+        from_secret: FORGEJO_TOKEN
+    commands:
+      - python3 ci/release_publish.py
