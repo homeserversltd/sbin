@@ -1,13 +1,10 @@
 when:
-  event:
-    - push
+  - event: push
+    branch: main
 
 steps:
   - name: release-publish
     image: python:3.12-alpine
-    when:
-      - event: push
-        branch: main
     environment:
       FORGEJO_TOKEN:
         from_secret: FORGEJO_TOKEN
