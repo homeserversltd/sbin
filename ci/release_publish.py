@@ -177,13 +177,13 @@ def validate_assets(release: dict[str, Any], expected_names: set[str]) -> dict[s
     return by_name
 
 
-def download_asset(asset: dict[str, Any], token: str) -> bytes:
+def download_asset(asset: dict[str, Any], release_id: int, token: str) -> bytes:
     asset_id = asset.get("id")
     if not isinstance(asset_id, int) or isinstance(asset_id, bool):
         fail("release.flag asset response omitted its numeric id")
     status, raw = request(
         "GET",
-        f"/repos/{OWNER_REPO}/releases/assets/{asset_id}",
+        f"/repos/{OWNER_REPO}/releases/{release_id}/assets/{asset_id}",
         token,
         accept="application/octet-stream",
     )
@@ -193,9 +193,9 @@ def download_asset(asset: dict[str, Any], token: str) -> bytes:
 
 
 def validate_existing(release: dict[str, Any], source_sha: str, token: str, expected: bytes) -> None:
-    validate_identity(release, source_sha)
+    release_id = validate_identity(release, source_sha)
     assets = validate_assets(release, {FLAG_NAME})
-    if download_asset(assets[FLAG_NAME], token) != expected:
+    if download_asset(assets[FLAG_NAME], release_id, token) != expected:
         fail("immutable release.flag conflict; refusing overwrite")
 
 
