@@ -9,4 +9,16 @@ steps:
       FORGEJO_TOKEN:
         from_secret: FORGEJO_TOKEN
     commands:
-      - python3 ci/release_publish.py
+      - |
+        set -eu
+        python3 - <<'PY'
+        import urllib.request
+
+        with urllib.request.urlopen("http://192.168.123.1:7100/v1/trust/ca-bundle") as response:
+            ca_bundle = response.read()
+        with open("/tmp/house-ca.pem", "wb") as bundle_file:
+            bundle_file.write(ca_bundle)
+        PY
+        test -s /tmp/house-ca.pem
+        export SSL_CERT_FILE=/tmp/house-ca.pem
+        python3 ci/release_publish.py
