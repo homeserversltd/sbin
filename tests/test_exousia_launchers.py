@@ -35,7 +35,7 @@ class ExousiaLauncherTests(unittest.TestCase):
             returncode = 1 if not verified else 0
             with self.subTest(verified=verified), patch.object(_common.subprocess, "run", return_value=self.completed({"verified": verified}, returncode)) as run:
                 with patch("sys.stdin", io.StringIO(json.dumps({"pin": "1234", "publicKey": public_key}))):
-                    self.assertEqual(_common.verify(), {"verified": verified})
+                    self.assertEqual(_common.verify(), {"ok": True, "verified": verified})
             run.assert_called_once_with(
                 ["/usr/bin/sudo", "-n", "/usr/local/sbin/caduceus-verify"],
                 input=json.dumps({"pin": "1234", "publicKey": public_key}, separators=(",", ":")),

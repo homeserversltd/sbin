@@ -82,7 +82,7 @@ def verify():
     verified = result.get("verified")
     if not isinstance(verified, bool):
         raise RuntimeError("invalid caduceus verify response")
-    return {"verified": verified}
+    return {"ok": True, "verified": verified}
 
 
 def execute(action):
