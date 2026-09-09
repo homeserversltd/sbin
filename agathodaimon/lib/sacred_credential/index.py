@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
 import re
 import shutil
@@ -265,18 +266,47 @@ def bind_derived_caduceus(*, key_dir: Path | None = None, vault_dir: Path | None
 
 
 def reset_caduceus_pin_to_provisioned_default(*, key_dir: Path | None = None, vault_dir: Path | None = None) -> dict[str, object]:
-    """Restore Keyman-held Caduceus PIN to the literal provisioned default."""
+    """Restore the Keyman-held Caduceus PIN from the birth-sealed factory config."""
     _require_root()
-    default = bytearray(b"1")
-    validated = _pin_bytes("1")
+    factory_path = Path("/etc/appliance/config.factory")
+    try:
+        factory_raw = factory_path.read_bytes()
+    except FileNotFoundError as exc:
+        raise CaduceusAccessRefused("agathodaimon-config-factory-unavailable") from exc
+    except OSError as exc:
+        raise CaduceusAccessRefused("agathodaimon-config-factory-unreadable") from exc
+    try:
+        factory = json.loads(factory_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CaduceusAccessRefused("agathodaimon-config-factory-malformed") from exc
+    if not isinstance(factory, dict):
+        raise CaduceusAccessRefused("agathodaimon-config-factory-malformed")
+    global_config = factory.get("global")
+    if global_config is None:
+        raise CaduceusAccessRefused("agathodaimon-config-factory-pin-absent")
+    if not isinstance(global_config, dict):
+        raise CaduceusAccessRefused("agathodaimon-config-factory-pin-malformed")
+    admin_config = global_config.get("admin")
+    if admin_config is None:
+        raise CaduceusAccessRefused("agathodaimon-config-factory-pin-absent")
+    if not isinstance(admin_config, dict):
+        raise CaduceusAccessRefused("agathodaimon-config-factory-pin-malformed")
+    pin = admin_config.get("pin")
+    if pin is None:
+        raise CaduceusAccessRefused("agathodaimon-config-factory-pin-absent")
+    if not isinstance(pin, str):
+        raise CaduceusAccessRefused("agathodaimon-config-factory-pin-malformed")
+    try:
+        validated = _pin_bytes(pin)
+    except CaduceusAccessRefused as exc:
+        raise CaduceusAccessRefused("agathodaimon-config-factory-pin-malformed") from exc
     try:
         key_dir, _ = _runtime_paths(key_dir, vault_dir)
         _require_current_credential(key_dir)
-        _keyman("reencrypt", bytearray(b"service=caduceus\nnew_password=" + bytes(default) + b"\n"))
+        _keyman("reencrypt", bytearray(b"service=caduceus\nnew_password=" + bytes(validated) + b"\n"))
         return {"schema": "keyman.caduceus_access.status.v1", "ok": True, "operation": "pin-reset-default", "private_material": "[REDACTED]"}
     finally:
         _wipe(validated)
-        _wipe(default)
 
 def provision_caduceus(initial_pin: str, *, key_dir: Path | None = None, vault_dir: Path | None = None) -> dict[str, object]:
     """Create the fixed Caduceus credential exactly once through Keyman."""
