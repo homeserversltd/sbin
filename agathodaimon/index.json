@@ -13,6 +13,7 @@
     "lib",
     "python",
     "games",
-    "console"
+    "console",
+    "xenos"
   ]
 }
