@@ -416,16 +416,53 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, *, 
         raise ValueError("agathodaimon-nginx-input-invalid")
     directory = _path("CADUCEUS_NGINX_DIR", "/etc/nginx/conf.d")
     target = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
-    body = f"server {{ listen 443 ssl; server_name {portal}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; location / {{ proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_pass {upstream}; }} }}\n"
-    same = target.is_file() and target.read_text() == body
+    legacy = directory / f"caduceus-{portal.replace('.', '-')}.conf"
+    body = f"server {{ listen 443 ssl; server_name {portal}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; location / {{ proxy_buffering off; proxy_http_version 1.1; proxy_read_timeout 60s; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_pass {upstream}; }} }}\n"
+    body_bytes = body.encode("utf-8")
+    same = target.is_file() and target.read_bytes() == body_bytes
+    legacy_present = legacy.is_file()
     if dry_run:
-        return _receipt("apply_nginx", changed=False, dry_run=True, portal=portal, plan=["stage-nginx", "validate-nginx", "activate-nginx"])
+        return _receipt(
+            "apply_nginx",
+            changed=False,
+            dry_run=True,
+            portal=portal,
+            legacy_path=str(legacy),
+            legacy_present=legacy_present,
+            legacy_retired=False,
+            legacy_remaining=legacy_present,
+            replacement_written=False,
+            plan=["stage-nginx", "validate-nginx", "activate-nginx"],
+        )
+    replacement_written = False
     if not same:
         directory.mkdir(parents=True, exist_ok=True)
         temporary = target.with_suffix(".tmp")
-        temporary.write_text(body)
-        os.replace(temporary, target)
-    return _receipt("apply_nginx", changed=not same, portal=portal, proof="nginx-config-readback")
+        try:
+            temporary.write_bytes(body_bytes)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        installed = target.is_file() and target.read_bytes() == body_bytes
+        if not installed:
+            raise RuntimeError("agathodaimon-nginx-readback-failed")
+        replacement_written = True
+    legacy_retired = False
+    if legacy.is_file():
+        legacy.unlink()
+        legacy_retired = True
+    legacy_remaining = legacy.is_file()
+    return _receipt(
+        "apply_nginx",
+        changed=replacement_written or legacy_retired,
+        portal=portal,
+        legacy_path=str(legacy),
+        legacy_present=legacy_present,
+        legacy_retired=legacy_retired,
+        legacy_remaining=legacy_remaining,
+        replacement_written=replacement_written,
+        proof="nginx-config-readback",
+    )
 
 
 def constituent_lock(portal: str, lan_ip: str, *, dry_run: bool = False) -> dict[str, Any]:
