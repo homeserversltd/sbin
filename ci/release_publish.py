@@ -127,12 +127,20 @@ def flag_bytes(source_sha: str, pipeline_url: str) -> bytes:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+def release_tag(source_sha: str) -> str:
+    if not FULL_SHA.fullmatch(source_sha):
+        fail("CI_COMMIT_SHA must be exactly 40 lowercase hexadecimal characters")
+    return f"sha-{source_sha}"
+
+
 def release_tag_url(source_sha: str) -> str:
-    return f"/repos/{OWNER_REPO}/releases/tags/{urllib.parse.quote(source_sha, safe='')}"
+    tag = release_tag(source_sha)
+    return f"/repos/{OWNER_REPO}/releases/tags/{urllib.parse.quote(tag, safe='')}"
 
 
 def release_page_url(source_sha: str) -> str:
-    return f"{WEB}/{OWNER_REPO}/releases/tag/{urllib.parse.quote(source_sha, safe='')}"
+    tag = release_tag(source_sha)
+    return f"{WEB}/{OWNER_REPO}/releases/tag/{urllib.parse.quote(tag, safe='')}"
 
 
 def read_release(source_sha: str, token: str) -> dict[str, Any] | None:
@@ -149,9 +157,10 @@ def read_release(source_sha: str, token: str) -> dict[str, Any] | None:
 
 def validate_identity(release: dict[str, Any], source_sha: str) -> int:
     if (
-        release.get("tag_name") != source_sha
+        release.get("tag_name") != release_tag(source_sha)
         or release.get("name") != f"sbin {source_sha[:8]}"
         or release.get("target_commitish") != source_sha
+        or ("target_commit" in release and release["target_commit"] != source_sha)
     ):
         fail("release identity conflicts with CI_COMMIT_SHA")
     release_id = release.get("id")
@@ -212,7 +221,7 @@ def multipart_flag(content: bytes) -> tuple[bytes, str]:
 def create_release(source_sha: str, token: str) -> tuple[dict[str, Any], bool]:
     payload = json.dumps(
         {
-            "tag_name": source_sha,
+            "tag_name": release_tag(source_sha),
             "target_commitish": source_sha,
             "name": f"sbin {source_sha[:8]}",
             "body": "",
@@ -292,7 +301,7 @@ def main() -> int:
         json.dumps(
             {
                 "status": status,
-                "tag": source_sha,
+                "tag": release_tag(source_sha),
                 "name": f"sbin {source_sha[:8]}",
                 "assets": [FLAG_NAME],
                 "release_url": url,
