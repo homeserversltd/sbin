@@ -366,12 +366,14 @@ def _release_order(release: dict[str, Any]) -> tuple[datetime.datetime, int]:
     return order
 
 
-def _verify_tag_absent(tag: str, token: str) -> None:
+def _verify_tag_absent(tag: str, token: str) -> bool:
     path = _repo_path() + "/git/refs/tags/" + urllib.parse.quote(tag, safe="")
-    status, raw = request("GET", path, token)
+    status, _ = request("GET", path, token)
     if status == 404:
-        return
-    fail(f"tag ref {tag} remains or cannot be verified: GET returned HTTP {status}")
+        return True
+    if status == 200:
+        return False
+    fail(f"tag ref {tag} cannot be verified: GET returned HTTP {status}")
 
 
 def retention_plan(
@@ -404,6 +406,7 @@ def apply_retention(token: str, protected_id: int) -> dict[str, Any]:
     plan = retention_plan(token, protected_id)
     deleted_ids: list[int] = []
     deleted_tags: list[str] = []
+    remaining_tag_refs: list[str] = []
     base = _repo_path()
     attempted_id: int | None = None
     attempted_tag: str | None = None
@@ -415,6 +418,7 @@ def apply_retention(token: str, protected_id: int) -> dict[str, Any]:
             "kept_count": len(plan["kept_ids"]),
             "deleted_ids": deleted_ids,
             "deleted_tags": deleted_tags,
+            "remaining_tag_refs": remaining_tag_refs,
             "attempted": {"id": attempted_id, "tag": attempted_tag, "phase": phase},
             "boundary": plan["boundary"],
         }
@@ -444,8 +448,10 @@ def apply_retention(token: str, protected_id: int) -> dict[str, Any]:
                 fail(f"tag deletion for {tag} returned HTTP {status}")
 
             phase = "tag_verify"
-            _verify_tag_absent(tag, token)
-            deleted_tags.append(tag)
+            if _verify_tag_absent(tag, token):
+                deleted_tags.append(tag)
+            else:
+                remaining_tag_refs.append(tag)
     except ReleaseError as exc:
         raise RetentionFailure(str(exc), receipt()) from exc
 
@@ -455,6 +461,7 @@ def apply_retention(token: str, protected_id: int) -> dict[str, Any]:
         "kept_ids": plan["kept_ids"],
         "deleted_ids": deleted_ids,
         "deleted_tags": deleted_tags,
+        "remaining_tag_refs": remaining_tag_refs,
         "boundary": plan["boundary"],
     }
 
