@@ -9,9 +9,7 @@ import os
 import re
 import secrets
 import ssl
-import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,7 +18,7 @@ from typing import Any, NoReturn
 API = "https://git.home.arpa/api/v1"
 WEB = "https://git.home.arpa"
 OWNER_REPO = "HOMESERVERSLTD/sbin"
-RETENTION_REPOS = {"HOMESERVERSLTD/sbin", "HOMESERVERSLTD/caduceus", "HOMESERVERSLTD/kether"}
+
 RELEASE_RETENTION = 20
 RELEASE_PAGE_LIMIT = 50
 FLAG_NAME = "release.flag"
@@ -300,14 +298,14 @@ def publish(source_sha: str, token: str, expected: bytes) -> tuple[str, str]:
     return "published", release_page_url(source_sha)
 
 
-def _repo_path(repo: str) -> str:
-    if repo not in RETENTION_REPOS:
-        fail("retention repo must be one of the declared public repositories")
-    return "/repos/" + "/".join(urllib.parse.quote(part, safe="") for part in repo.split("/"))
+def _repo_path() -> str:
+    return "/repos/" + "/".join(
+        urllib.parse.quote(part, safe="") for part in OWNER_REPO.split("/")
+    )
 
 
-def list_releases(repo: str, token: str) -> list[dict[str, Any]]:
-    base = _repo_path(repo) + "/releases"
+def list_releases(token: str) -> list[dict[str, Any]]:
+    base = _repo_path() + "/releases"
     releases: list[dict[str, Any]] = []
     seen_pages: set[str] = set()
     seen_ids: set[int] = set()
@@ -368,48 +366,18 @@ def _release_order(release: dict[str, Any]) -> tuple[datetime.datetime, int]:
     return order
 
 
-def _verify_tag_absent(repo: str, tag: str, token: str) -> bool:
-    path = _repo_path(repo) + "/git/refs/tags/" + urllib.parse.quote(tag, safe="")
+def _verify_tag_absent(tag: str, token: str) -> None:
+    path = _repo_path() + "/git/refs/tags/" + urllib.parse.quote(tag, safe="")
     status, raw = request("GET", path, token)
     if status == 404:
-        return True
-    if status != 200:
-        fail(f"tag ref verification for {tag} returned HTTP {status}")
-    value = decode_json(raw, f"tag ref verification for {tag}")
-    if isinstance(value, list):
-        return len(value) == 0
-    if isinstance(value, dict):
-        return False
-    fail(f"tag ref verification for {tag} returned an unexpected shape")
-    raise AssertionError("unreachable")
-
-
-def _git_delete_tag(repo: str, tag: str) -> None:
-    askpass = "#!/bin/sh\ncase \"$1\" in\n  *Username*) printf '%s\\n' token ;;\n  *) printf '%s\\n' \"$FORGEJO_TOKEN\" ;;\nesac\n"
-    with tempfile.TemporaryDirectory(prefix="release-retention-") as directory:
-        helper = os.path.join(directory, "askpass")
-        with open(helper, "w", encoding="utf-8") as output:
-            output.write(askpass)
-        os.chmod(helper, 0o700)
-        env = os.environ.copy()
-        env.update({"GIT_ASKPASS": helper, "GIT_TERMINAL_PROMPT": "0"})
-        remote = f"https://git.home.arpa/{repo}.git"
-        try:
-            result = subprocess.run(
-                ["git", "-c", "credential.helper=", "push", remote, f":refs/tags/{tag}"],
-                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL, check=False,
-            )
-        except OSError as exc:
-            fail(f"git fallback for deleting tag {tag} could not run: {type(exc).__name__}")
-        if result.returncode != 0:
-            fail(f"git fallback failed to delete tag {tag} (exit {result.returncode})")
+        return
+    fail(f"tag ref {tag} remains or cannot be verified: GET returned HTTP {status}")
 
 
 def retention_plan(
-    repo: str, token: str, protected_id: int | None = None, *, protected_tag: str | None = None
+    token: str, protected_id: int | None = None, *, protected_tag: str | None = None
 ) -> dict[str, Any]:
-    eligible = [item for item in list_releases(repo, token) if _eligible_release(item) is not None]
+    eligible = [item for item in list_releases(token) if _eligible_release(item) is not None]
     if protected_tag is not None:
         matching = [item for item in eligible if item.get("tag_name") == protected_tag]
         if matching:
@@ -432,11 +400,11 @@ def retention_plan(
     }
 
 
-def apply_retention(repo: str, token: str, protected_id: int) -> dict[str, Any]:
-    plan = retention_plan(repo, token, protected_id)
+def apply_retention(token: str, protected_id: int) -> dict[str, Any]:
+    plan = retention_plan(token, protected_id)
     deleted_ids: list[int] = []
     deleted_tags: list[str] = []
-    base = _repo_path(repo)
+    base = _repo_path()
     attempted_id: int | None = None
     attempted_tag: str | None = None
     phase = "start"
@@ -472,16 +440,11 @@ def apply_retention(repo: str, token: str, protected_id: int) -> dict[str, Any]:
             status, _ = request(
                 "DELETE", f"{base}/tags/{urllib.parse.quote(tag, safe='')}", token
             )
-            if status not in (200, 204, 404):
+            if status not in (204, 404):
                 fail(f"tag deletion for {tag} returned HTTP {status}")
 
             phase = "tag_verify"
-            if not _verify_tag_absent(repo, tag, token):
-                phase = "tag_git_delete"
-                _git_delete_tag(repo, tag)
-                phase = "tag_git_verify"
-                if not _verify_tag_absent(repo, tag, token):
-                    fail(f"tag ref {tag} remains after API and git deletion")
+            _verify_tag_absent(tag, token)
             deleted_tags.append(tag)
     except ReleaseError as exc:
         raise RetentionFailure(str(exc), receipt()) from exc
@@ -496,8 +459,8 @@ def apply_retention(repo: str, token: str, protected_id: int) -> dict[str, Any]:
     }
 
 
-def dry_run_retention(repo: str, token: str, protected_tag: str | None = None) -> dict[str, Any]:
-    plan = retention_plan(repo, token, protected_tag=protected_tag)
+def dry_run_retention(token: str, protected_tag: str | None = None) -> dict[str, Any]:
+    plan = retention_plan(token, protected_tag=protected_tag)
     return {
         "mode": "dry-run",
         "kept_count": len(plan["kept_ids"]),
@@ -511,25 +474,19 @@ def dry_run_retention(repo: str, token: str, protected_tag: str | None = None) -
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publish sbin release.flag and retain newest releases")
     parser.add_argument("--dry-run", action="store_true", help="GET-only retention plan (no publishing or deletion)")
-    parser.add_argument("--repo", default=OWNER_REPO, help="declared public repo for --dry-run")
     args = parser.parse_args()
-    if args.repo != OWNER_REPO and not args.dry_run:
-        print(json.dumps({"status": "error", "error": "--repo is only available with --dry-run"}, separators=(",", ":")))
-        return 1
     token = os.environ.get("FORGEJO_TOKEN", "").strip()
     if not token:
         print(json.dumps({"status": "error", "error": "FORGEJO_TOKEN is required"}, separators=(",", ":")))
         return 1
     try:
         if args.dry_run:
-            if args.repo not in RETENTION_REPOS:
-                fail("retention repo must be one of the declared public repositories")
             protected_tag = None
             source_sha = os.environ.get("CI_COMMIT_SHA", "")
-            if args.repo == OWNER_REPO and FULL_SHA.fullmatch(source_sha):
+            if FULL_SHA.fullmatch(source_sha):
                 protected_tag = release_tag(source_sha)
-            result = dry_run_retention(args.repo, token, protected_tag)
-            print(json.dumps({"status": "ok", "repo": args.repo, "retention": result}, separators=(",", ":")))
+            result = dry_run_retention(token, protected_tag)
+            print(json.dumps({"status": "ok", "repo": OWNER_REPO, "retention": result}, separators=(",", ":")))
             return 0
         source_sha = os.environ.get("CI_COMMIT_SHA", "")
         expected = flag_bytes(source_sha, os.environ.get("CI_PIPELINE_URL", ""))
@@ -541,7 +498,7 @@ def main() -> int:
                 fail("published release disappeared before retention")
             protected_id = validate_identity(release, source_sha)
             validate_existing(release, source_sha, token, expected)
-            retention = apply_retention(OWNER_REPO, token, protected_id)
+            retention = apply_retention(token, protected_id)
     except ReleaseError as exc:
         error: dict[str, Any] = {"status": "error", "error": str(exc)}
         if isinstance(exc, RetentionFailure):
