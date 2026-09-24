@@ -11,6 +11,7 @@ steps:
     commands:
       - |
         set -eu
+        apk add --no-cache git
         python3 - <<'PY'
         import urllib.request
 
