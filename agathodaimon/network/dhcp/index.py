@@ -327,36 +327,34 @@ class DhcpManager:
         rows = payload.get("result")
         if not isinstance(rows, list):
             raise DhcpError("caduceus-leases-malformed:result-must-be-list")
-        latest: dict[str, dict[str, Any]] = {}
+        leases: list[dict[str, Any]] = []
         for row in rows:
             if not isinstance(row, dict):
                 raise DhcpError("caduceus-leases-malformed:row-must-be-object")
-            expiry_value = row.get("expire", row.get("expires"))
-            state_value = row.get("state")
-            if expiry_value is None or state_value is None:
-                raise DhcpError("caduceus-leases-malformed:missing-state-or-expiry")
-            try:
-                expires = int(expiry_value)
-                state = int(state_value)
-            except (TypeError, ValueError) as exc:
-                raise DhcpError("caduceus-leases-malformed:invalid-state-or-expiry") from exc
-            mac = str(row.get("hw-address", row.get("mac", ""))).lower()
-            address = row.get("ip-address", row.get("address", row.get("ip", "")))
-            if not mac or not address:
-                raise DhcpError("caduceus-leases-malformed:missing-address-or-hardware-address")
-            if state == 0 and expires > int(self._now()) and mac and expires > latest.get(mac, {}).get("_expire", -1):
-                latest[mac] = {"ip-address": str(address), "hw-address": mac, "hostname": str(row.get("hostname", "")), "expire": str(expires), "state": str(state), "_expire": expires}
-        return [{key: value for key, value in lease.items() if key != "_expire"} for lease in latest.values()]
+            mac = row.get("mac")
+            address = row.get("ip")
+            if not isinstance(mac, str) or not mac.strip():
+                raise DhcpError("caduceus-leases-malformed:missing-mac")
+            if not isinstance(address, str) or not address.strip():
+                raise DhcpError("caduceus-leases-malformed:missing-ip")
+            leases.append({
+                "hw-address": mac.lower(),
+                "ip-address": address,
+                "hostname": str(row.get("hostname", "")),
+                "last_activity": str(row.get("last_activity", "")),
+                "provenance": str(row.get("provenance", "")),
+            })
+        return leases
 
     def leases(self) -> list[dict[str, str]]:
-        """Project the active, newest lease per normalized MAC as observed state."""
+        """Project native Caduceus lease rows as observed state."""
         values: list[dict[str, str]] = []
         for lease in self.get_leases():
             try:
                 mac = normalize_mac(lease["hw-address"])
             except DhcpError:
                 continue
-            values.append({"mac": mac, "ip": lease["ip-address"], "hostname": lease["hostname"], "last_activity": lease["expire"], "provenance": "observed"})
+            values.append({"mac": mac, "ip": lease["ip-address"], "hostname": lease["hostname"], "last_activity": lease["last_activity"], "provenance": lease["provenance"]})
         return sorted(values, key=lambda item: item["mac"])
 
     def boundary(self) -> list[dict[str, str]]:
