@@ -74,8 +74,6 @@ ACTUATORS: dict[str, Actuator] = {
 
 READ_ACTUATORS: dict[str, Actuator] = {
     "network.dhcp.status": Actuator("network.dhcp.status", "network", "caduceus.staff.network.dhcp.v1", "agathodaimon/cli.py", "network dhcp", ("status",), "Kea service and configuration readback."),
-    "network.dhcp.leases": Actuator("network.dhcp.leases", "network", "caduceus.staff.network.dhcp.v1", "agathodaimon/cli.py", "network dhcp", ("leases",), "Active, MAC-normalized Kea leases."),
-    "network.dhcp.reservations": Actuator("network.dhcp.reservations", "network", "caduceus.staff.network.dhcp.v1", "agathodaimon/cli.py", "network dhcp", ("reservations",), "Declared Kea reservations."),
     "network.dhcp.boundary": Actuator("network.dhcp.boundary", "network", "caduceus.staff.network.dhcp.v1", "agathodaimon/cli.py", "network dhcp", ("boundary",), "Loaded Kea reservation boundary."),
     "network.dns.read": Actuator("network.dns.read", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("read",), "Owned Unbound record readback."),
     "network.dns.status": Actuator("network.dns.status", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("status",), "Unbound owned include status."),
