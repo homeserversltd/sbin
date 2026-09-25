@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import ipaddress
 import json
 import os
@@ -10,9 +9,10 @@ import shutil
 import subprocess
 import tempfile
 import time
-from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 
 class DhcpError(RuntimeError):
@@ -47,21 +47,21 @@ class DhcpManager:
     """Read and mutate Kea DHCP state through the preserved atomic updater."""
 
     CONFIG_PATH = Path("/etc/kea/kea-dhcp4.conf")
-    LEASE_DB_PATH = Path("/var/lib/kea/kea-leases4.csv")
+    APPLIANCE_CONFIG_PATH = Path("/etc/appliance/config.json")
+    LEASES_PATH = "/api/v1/network/dhcp/leases"
     UPDATE_SCRIPT = Path("/usr/local/sbin/agathodaimon/network/dhcp/update-kea-dhcp.sh")
     SERVICE = "kea-dhcp4-server"
 
     def __init__(
         self,
         config_path: str | Path | None = None,
-        lease_db_path: str | Path | None = None,
         update_script: str | Path | None = None,
         *,
         command_runner: CommandRunner | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
         self.config_path = Path(config_path or os.environ.get("CADUCEUS_DHCP_CONFIG", self.CONFIG_PATH))
-        self.lease_db_path = Path(lease_db_path or os.environ.get("CADUCEUS_DHCP_LEASES", self.LEASE_DB_PATH))
+        self.appliance_config_path = Path(os.environ.get("CADUCEUS_APPLIANCE_CONFIG", self.APPLIANCE_CONFIG_PATH))
         self.update_script = Path(update_script or os.environ.get("CADUCEUS_DHCP_UPDATE_SCRIPT", self.UPDATE_SCRIPT))
         self._command_runner = command_runner or self._run
         self._now = now
@@ -286,20 +286,66 @@ class DhcpManager:
 
     def get_leases(self) -> list[dict[str, Any]]:
         try:
-            raw = self.lease_db_path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return []
-        except OSError as exc:
-            raise DhcpError(f"failed to read leases {self.lease_db_path}: {exc}") from exc
+            appliance = json.loads(self.appliance_config_path.read_text(encoding="utf-8"))
+            bind = appliance["caduceus"]["bind"]
+            if not isinstance(bind, str) or not bind.strip():
+                raise ValueError("caduceus.bind must be a non-empty string")
+            bind = bind.strip()
+            if "://" not in bind:
+                bind = "http://" + bind
+            from urllib.parse import urlsplit
+            parsed = urlsplit(bind)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or not parsed.port:
+                raise ValueError("caduceus.bind must identify an HTTP host and port")
+            host = parsed.hostname
+            if host in {"0.0.0.0", "::", "[::]"}:
+                host = "127.0.0.1"
+            elif host != "localhost":
+                try:
+                    address = ipaddress.ip_address(host)
+                except ValueError as exc:
+                    raise ValueError("caduceus.bind must identify a local listener") from exc
+                if not address.is_loopback:
+                    raise ValueError("caduceus.bind must identify a local listener")
+            url = f"{parsed.scheme}://127.0.0.1:{parsed.port}{self.LEASES_PATH}"
+            with urlopen(url, timeout=10) as response:
+                envelope = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError) as exc:
+            raise DhcpError(f"caduceus-leases-unavailable:{exc}") from exc
+        except (OSError, KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DhcpError(f"caduceus-leases-unavailable:{exc}") from exc
+        if not isinstance(envelope, dict):
+            raise DhcpError("caduceus-leases-malformed:envelope-must-be-object")
+        payload = envelope.get("payload", envelope)
+        if not isinstance(payload, dict):
+            raise DhcpError("caduceus-leases-malformed:payload-must-be-object")
+        if envelope.get("ok") is False or payload.get("ok") is False:
+            signal = payload.get("firstMissingSignal", envelope.get("firstMissingSignal"))
+            raise DhcpError(f"caduceus-leases-unavailable:{signal or 'door-reported-failure'}")
+        if envelope.get("ok") is not True and payload.get("ok") is not True:
+            raise DhcpError("caduceus-leases-malformed:ok-signal-missing")
+        rows = payload.get("result")
+        if not isinstance(rows, list):
+            raise DhcpError("caduceus-leases-malformed:result-must-be-list")
         latest: dict[str, dict[str, Any]] = {}
-        for row in csv.DictReader(StringIO(raw)):
+        for row in rows:
+            if not isinstance(row, dict):
+                raise DhcpError("caduceus-leases-malformed:row-must-be-object")
+            expiry_value = row.get("expire", row.get("expires"))
+            state_value = row.get("state")
+            if expiry_value is None or state_value is None:
+                raise DhcpError("caduceus-leases-malformed:missing-state-or-expiry")
             try:
-                expires, state = int(row.get("expire", "0")), int(row.get("state", "1"))
-            except ValueError:
-                continue
-            mac = row.get("hwaddr", "").lower()
+                expires = int(expiry_value)
+                state = int(state_value)
+            except (TypeError, ValueError) as exc:
+                raise DhcpError("caduceus-leases-malformed:invalid-state-or-expiry") from exc
+            mac = str(row.get("hw-address", row.get("mac", ""))).lower()
+            address = row.get("ip-address", row.get("address", row.get("ip", "")))
+            if not mac or not address:
+                raise DhcpError("caduceus-leases-malformed:missing-address-or-hardware-address")
             if state == 0 and expires > int(self._now()) and mac and expires > latest.get(mac, {}).get("_expire", -1):
-                latest[mac] = {"ip-address": row.get("address", ""), "hw-address": mac, "hostname": row.get("hostname", ""), "expire": str(expires), "state": str(state), "_expire": expires}
+                latest[mac] = {"ip-address": str(address), "hw-address": mac, "hostname": str(row.get("hostname", "")), "expire": str(expires), "state": str(state), "_expire": expires}
         return [{key: value for key, value in lease.items() if key != "_expire"} for lease in latest.values()]
 
     def leases(self) -> list[dict[str, str]]:
@@ -397,7 +443,7 @@ class DhcpManager:
 
 
 def _receipt(action: str, result: Any) -> dict[str, Any]:
-    read_actions = {"status", "reservations", "leases", "statistics", "health", "boundary"}
+    read_actions = {"status", "statistics", "health", "boundary"}
     receipt = {"schema": "caduceus.staff.network.dhcp.v1", "actuator": f"network.dhcp.{action}" if action in read_actions else action, "action": action, "ok": True, "result": result, "firstMissingSignal": "none"}
     if action in read_actions:
         receipt["mutationPerformed"] = False
@@ -407,8 +453,10 @@ def _receipt(action: str, result: Any) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agathodaimon-dhcp")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "config", "validate", "reservations", "leases", "statistics", "health", "boundary"):
+    for name in ("status", "config", "validate", "statistics", "health"):
         commands.add_parser(name)
+    boundary = commands.add_parser("boundary")
+    boundary.add_argument("boundary_action", nargs="?", choices=("show",), default="show")
     add = commands.add_parser("add-reservation")
     add.add_argument("hw_address"); add.add_argument("--ip-address"); add.add_argument("--hostname")
     remove = commands.add_parser("remove-reservation"); remove.add_argument("identifier")
@@ -422,12 +470,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     manager = DhcpManager()
     methods: dict[str, Callable[[], Any]] = {
         "status": manager.status, "config": manager.get_config, "validate": manager.validate_config,
-        "reservations": manager.reservations, "leases": manager.leases,
         "statistics": manager.get_statistics, "health": manager.health, "boundary": manager.boundary,
     }
     try:
+        active_leases_count = None
         if args.command in methods:
             result = methods[args.command]()
+            active_leases_count = len(manager.get_leases()) if args.command == "boundary" else None
         elif args.command == "add-reservation":
             result = manager.add_reservation(args.hw_address, args.ip_address, args.hostname)
         elif args.command == "remove-reservation":
@@ -436,7 +485,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = manager.update_reservation_ip(args.identifier, args.new_ip)
         else:
             result = manager.update_pool_boundary(args.max_reservations)
-        print(json.dumps(_receipt(args.command, result), sort_keys=True))
+        response = _receipt(args.command, result)
+        if args.command == "boundary":
+            response["active_leases_count"] = active_leases_count
+        print(json.dumps(response, sort_keys=True))
         return 0
     except DhcpError as exc:
         print(json.dumps({"schema": "caduceus.staff.network.dhcp.v1", "actuator": f"network.dhcp.{args.command}", "action": args.command, "ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}), flush=True)

@@ -5,6 +5,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -15,12 +17,24 @@ from agathodaimon.network.dhcp.index import DhcpError, DhcpManager
 
 
 @pytest.fixture
-def dhcp(tmp_path: Path) -> DhcpManager:
+def dhcp(tmp_path: Path):
     fixtures = ROOT / "tests" / "fixtures" / "dhcp"
     config = tmp_path / "kea-dhcp4.conf"
-    leases = tmp_path / "kea-leases4.csv"
     shutil.copyfile(fixtures / config.name, config)
-    shutil.copyfile(fixtures / leases.name, leases)
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"ok": True, "payload": {"result": [{"ip-address": "192.168.123.56", "hw-address": "aa:bb:cc:dd:ee:02", "hostname": "beta-new", "expire": "2100000000", "state": "0"}]}}).encode())
+        def log_message(self, format, *args):
+            pass
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    appliance = tmp_path / "appliance.json"
+    appliance.write_text(json.dumps({"caduceus": {"bind": f"0.0.0.0:{server.server_port}"}}), encoding="utf-8")
+    os.environ["CADUCEUS_APPLIANCE_CONFIG"] = str(appliance)
     updater = tmp_path / "update.py"
     updater.write_text(
         "#!/usr/bin/python3\nimport os,shutil,sys\nshutil.copyfile(sys.argv[1], os.environ['CADUCEUS_DHCP_CONFIG'])\n",
@@ -28,7 +42,11 @@ def dhcp(tmp_path: Path) -> DhcpManager:
     )
     updater.chmod(0o755)
     os.environ["CADUCEUS_DHCP_CONFIG"] = str(config)
-    return DhcpManager(config, leases, updater, now=lambda: 1_900_000_000)
+    manager = DhcpManager(config, updater, now=lambda: 1_900_000_000)
+    yield manager
+    server.shutdown()
+    thread.join(timeout=2)
+    server.server_close()
 
 
 def test_reads_config_reservations_leases_and_statistics(dhcp: DhcpManager) -> None:
@@ -63,9 +81,13 @@ def test_duplicate_and_invalid_reservations_are_rejected(dhcp: DhcpManager) -> N
 
 
 def test_cli_read_and_mutate_receipts(dhcp: DhcpManager) -> None:
-    env = {**os.environ, "PYTHONPATH": str(ROOT), "CADUCEUS_DHCP_LEASES": str(dhcp.lease_db_path), "CADUCEUS_DHCP_UPDATE_SCRIPT": str(dhcp.update_script)}
-    read = subprocess.run([sys.executable, "agathodaimon/cli.py", "network", "dhcp", "reservations"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
-    assert json.loads(read.stdout)["result"][0]["hostname"] == "alpha"
+    env = {**os.environ, "PYTHONPATH": str(ROOT), "CADUCEUS_APPLIANCE_CONFIG": str(dhcp.appliance_config_path), "CADUCEUS_DHCP_UPDATE_SCRIPT": str(dhcp.update_script)}
+    read = subprocess.run([sys.executable, "agathodaimon/cli.py", "network", "dhcp", "statistics"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
+    assert json.loads(read.stdout)["result"]["leases_count"] == 1
+    boundary = subprocess.run([sys.executable, "agathodaimon/cli.py", "network", "dhcp", "boundary", "show"], cwd=ROOT, env=env, text=True, capture_output=True, check=True)
+    boundary_receipt = json.loads(boundary.stdout)
+    assert boundary_receipt["result"] == dhcp.boundary()
+    assert boundary_receipt["active_leases_count"] == 1
     mutate = subprocess.run([sys.executable, str(ROOT / "agathodaimon" / "cli.py"), "network", "dhcp", "add-reservation", "aa:bb:cc:dd:ee:05", "--hostname", "delta"], cwd=ROOT, env={**env, "CADUCEUS_STAFF_PYTHON": sys.executable}, text=True, capture_output=True, check=True)
     receipt = json.loads(mutate.stdout)
     assert receipt["ok"] and receipt["action"] == "add-reservation"

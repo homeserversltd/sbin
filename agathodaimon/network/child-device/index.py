@@ -7,7 +7,6 @@ implicit side effect of a Crown request.
 from __future__ import annotations
 
 import argparse
-import csv
 import ipaddress
 import json
 import os
@@ -18,9 +17,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
+from agathodaimon.network.dhcp.index import DhcpError, DhcpManager
+
 SCHEMA = "caduceus.child-device.v1"
 DEFAULT_STATE = Path("/var/lib/caduceus/child-devices.json")
-DEFAULT_KEA_LEASES = Path("/var/lib/kea/kea-leases4.csv")
 DEFAULT_KEA_CONFIG = Path("/etc/kea/kea-dhcp4.conf")
 MAC = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$")
 HOST = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
@@ -98,26 +98,6 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
             pass
 
 
-def _csv_observed(path: Path) -> Iterable[dict[str, str]]:
-    try:
-        with path.open(encoding="utf-8", newline="") as handle:
-            for row in csv.DictReader(handle):
-                raw_mac = row.get("hwaddr") or row.get("hw-address") or row.get("mac")
-                if not raw_mac:
-                    continue
-                try:
-                    item = {"mac": mac(raw_mac)}
-                except Refused:
-                    continue
-                if row.get("address"):
-                    item["ip"] = row["address"]
-                if row.get("hostname"):
-                    item["hostname"] = row["hostname"]
-                yield item
-    except OSError:
-        return
-
-
 def _neighbors() -> Iterable[dict[str, str]]:
     try:
         process = subprocess.run(["ip", "-j", "neigh", "show"], text=True, capture_output=True, timeout=5, check=False)
@@ -135,14 +115,24 @@ def _neighbors() -> Iterable[dict[str, str]]:
             continue
 
 
-def observed(leases: Path) -> list[dict[str, Any]]:
+def observed() -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
-    for item in list(_csv_observed(leases)) + list(_neighbors()):
+    try:
+        lease_rows = DhcpManager().get_leases()
+    except DhcpError as exc:
+        raise Refused(str(exc)) from exc
+    lease_observed: list[dict[str, Any]] = []
+    for row in lease_rows:
+        try:
+            lease_observed.append({"mac": mac(row["hw-address"]), "ip": row["ip-address"], "hostname": row["hostname"]})
+        except (Refused, KeyError):
+            continue
+    for item, source in [(row, "kea-lease") for row in lease_observed] + [(row, "neighbor") for row in _neighbors()]:
         prior = merged.setdefault(item["mac"], {"mac": item["mac"], "ip": None, "hostname": None, "sources": []})
         for field in ("ip", "hostname"):
             if item.get(field):
                 prior[field] = item[field]
-        prior["sources"].append("kea-lease" if item.get("hostname") else "neighbor")
+        prior["sources"].append(source)
     return [{**value, "sources": sorted(set(value["sources"]))} for _, value in sorted(merged.items())]
 
 
@@ -204,10 +194,10 @@ def _hosts_value(values: dict[str, Any]) -> str:
     raise Refused("child-device-whitelist-hosts-invalid")
 
 
-def _dispatch(action: str, values: dict[str, Any], state_path: Path, kea_leases: Path, kea_config: Path) -> dict[str, Any]:
+def _dispatch(action: str, values: dict[str, Any], state_path: Path, kea_config: Path) -> dict[str, Any]:
     if action == "observed":
         if values: raise Refused("child-device-request-invalid")
-        devices = observed(kea_leases)
+        devices = observed()
         return receipt("observed", devices=devices, count=len(devices), message="Observed MAC addresses from Kea leases and the neighbor table.")
     if action == "list":
         if values: raise Refused("child-device-request-invalid")
@@ -252,14 +242,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not raw_argv:
         try:
             action, values = _envelope()
-            output = _dispatch(action, values, Path(os.environ.get("CADUCEUS_CHILD_DEVICE_STATE", DEFAULT_STATE)), Path(os.environ.get("CADUCEUS_KEA_LEASES", DEFAULT_KEA_LEASES)), Path(os.environ.get("CADUCEUS_KEA_CONFIG", DEFAULT_KEA_CONFIG)))
+            output = _dispatch(action, values, Path(os.environ.get("CADUCEUS_CHILD_DEVICE_STATE", DEFAULT_STATE)), Path(os.environ.get("CADUCEUS_KEA_CONFIG", DEFAULT_KEA_CONFIG)))
         except Refused as error:
             output = receipt("invalid", False, error=str(error))
         print(json.dumps(output, indent=2, sort_keys=True))
         return 0 if output["ok"] else 1
     parser = argparse.ArgumentParser(prog="caduceus child-device", description="Caduceus child-device registry and policy renderer")
     parser.add_argument("--state", type=Path, default=Path(os.environ.get("CADUCEUS_CHILD_DEVICE_STATE", DEFAULT_STATE)))
-    parser.add_argument("--kea-leases", type=Path, default=Path(os.environ.get("CADUCEUS_KEA_LEASES", DEFAULT_KEA_LEASES)))
     parser.add_argument("--kea-config", type=Path, default=Path(os.environ.get("CADUCEUS_KEA_CONFIG", DEFAULT_KEA_CONFIG)))
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("observed"); commands.add_parser("list")
@@ -276,7 +265,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if hasattr(args, "mac"): values["mac"] = args.mac
         if args.command == "register" and args.name is not None: values["name"] = args.name
         if action == "whitelist set": values["hosts"] = args.hosts
-        output = _dispatch(action, values, args.state, args.kea_leases, args.kea_config)
+        output = _dispatch(action, values, args.state, args.kea_config)
     except Refused as error:
         output = receipt(getattr(args, "command", "invalid"), False, error=str(error))
     print(json.dumps(output, indent=2, sort_keys=True))
