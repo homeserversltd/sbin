@@ -2,12 +2,14 @@
 
 `caduceus-xenos-run` acts on a seated clone at `/var/lib/xenia/<id>/`. It consumes that clone in place. It never installs the clone, its staff, or its `permissions/xenia` grant table.
 
-The launcher has exactly two verbs:
+The launcher has four verbs:
 
 - `caduceus-xenos-run <id> band <band>` runs `<clone>/staff/cli.py <band>` after clearing supplementary groups and dropping to `caduceus:caduceus`. The guest receives the original stdin, clone cwd, `HOME=/var/lib/caduceus`, and only the declared Xenia environment.
 - `caduceus-xenos-run <id> exec <absolute-path> [literal-args...]` remains root only long enough to validate the clone's in-place `permissions/xenia` table, require an exact command-and-arguments grant, and run that one command. Invalid files, sudoers syntax, grantees, paths, wildcards, and argument mismatches refuse; they never warn and continue.
+- `caduceus-xenos-run seat <id>` validates the id against `/etc/appliance/xenia.json` `xenoi`, reads the owner only from that entry's `install.owner`, and creates or corrects the real `/var/lib/xenia/<id>` directory to mode `0750` and that non-root passwd account's uid/gid. It takes no owner argument. Its JSON receipt reports `ok`, `id`, `path`, `owner`, and whether state changed; an already-converged seat reports `changed: false`.
+- `caduceus-xenos-run census <id>` requires a registered xenos and observes only `<id>.service`'s systemd ControlGroup, its recursive `cgroup.procs`, those processes' socket fd inodes, and matching LISTEN rows in `/proc/net/tcp`, `tcp6`, and `unix`. It returns only loopback listeners with numeric inodes (`port: null` for Unix sockets). A missing unit or non-process xenos returns an empty listener list; a failed observation returns a named `firstMissingSignal` refusal and a nonzero status.
 
-The POSIX shell entry point is intentionally thin. Python owns bounded sudoers parsing, `lstat` checks, exact argv comparison, process-group timeout, captured output, and the explicit `setgroups`/`setgid`/`setuid` privilege drop. This avoids depending on `setpriv` in an appliance image. `visudo` is resolved at run time from `/usr/sbin/visudo` and then `/usr/bin/visudo`; absence refuses.
+The POSIX shell entry point is intentionally thin. Python owns bounded sudoers parsing, `lstat` checks, exact argv comparison, process-group timeout, captured output, and the explicit `setgroups`/`setgid`/`setuid` privilege drop. This avoids depending on `setpriv` in an appliance image. `visudo` is resolved at run time from `/usr/sbin/visudo` and then `/usr/bin/visudo`; absence refuses. The shell entry point remains unchanged; these verbs add no systemd unit or sudoers grant.
 
 ## Guest staff kit
 
