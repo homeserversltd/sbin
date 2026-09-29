@@ -675,10 +675,38 @@ def _process_socket_inodes(pids: set[int]) -> set[int]:
         os.close(proc_fd)
 
 
-def _proc_socket_rows() -> list[dict[str, object]]:
+def _proc_net_namespace(pid: int) -> str:
+    proc_fd = _open_absolute_directory(
+        PROC_ROOT,
+        "xenos-proc-root-missing",
+        "xenos-proc-root-invalid",
+        "xenos-proc-root-unavailable",
+    )
+    try:
+        pid_fd = _open_child_directory(proc_fd, str(pid), "xenos-proc-pid-unavailable")
+        try:
+            namespace_fd = _open_child_directory(
+                pid_fd, "ns", "xenos-proc-netns-unavailable"
+            )
+            try:
+                try:
+                    return os.readlink("net", dir_fd=namespace_fd)
+                except OSError as exc:
+                    raise Refusal("xenos-proc-netns-unreadable") from exc
+            finally:
+                os.close(namespace_fd)
+        finally:
+            os.close(pid_fd)
+    finally:
+        os.close(proc_fd)
+
+
+def _proc_socket_rows(pid: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for name, ipv6 in (("tcp", False), ("tcp6", True)):
-        text = _read_relative_file(PROC_ROOT, ("net", name), f"xenos-proc-{name}-unreadable")
+        text = _read_relative_file(
+            PROC_ROOT, (str(pid), "net", name), f"xenos-proc-{name}-unreadable"
+        )
         for line in text.splitlines()[1:]:
             fields = line.split()
             if len(fields) < 10:
@@ -720,7 +748,9 @@ def _proc_socket_rows() -> list[dict[str, object]]:
                 }
             )
 
-    text = _read_relative_file(PROC_ROOT, ("net", "unix"), "xenos-proc-unix-unreadable")
+    text = _read_relative_file(
+        PROC_ROOT, (str(pid), "net", "unix"), "xenos-proc-unix-unreadable"
+    )
     for line in text.splitlines()[1:]:
         fields = line.split()
         if len(fields) < 7:
@@ -753,10 +783,21 @@ def census_xenos(xenos_id: str) -> dict[str, object]:
         return {"ok": True, "id": xenos_id, "listeners": []}
     control_group, active_state = observed
     pids = _cgroup_pids(control_group, active_state)
-    inodes = _process_socket_inodes(pids) if pids else set()
+    if not pids:
+        return {"ok": True, "id": xenos_id, "listeners": []}
+    inodes = _process_socket_inodes(pids)
+    namespace_pids: dict[str, int] = {}
+    for pid in sorted(pids):
+        namespace = _proc_net_namespace(pid)
+        namespace_pids.setdefault(namespace, pid)
+    rows = [
+        row
+        for pid in namespace_pids.values()
+        for row in _proc_socket_rows(pid)
+    ]
     listeners = [
         row
-        for row in _proc_socket_rows()
+        for row in rows
         if row["loopback"] and row["inode"] in inodes
     ]
     return {"ok": True, "id": xenos_id, "listeners": listeners}
