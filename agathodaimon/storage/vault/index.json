@@ -3,6 +3,7 @@
     "keyman",
     "open",
     "pin",
+    "policy",
     "vault-material"
   ]
 }

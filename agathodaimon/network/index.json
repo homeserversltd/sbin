@@ -7,6 +7,7 @@
     "child-device",
     "wake-on-lan",
     "linker",
-    "cert"
+    "cert",
+    "wifi"
   ]
 }

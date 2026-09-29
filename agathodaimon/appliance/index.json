@@ -1,5 +1,6 @@
 {
   "children": [
-    "factory-fallback"
+    "factory-fallback",
+    "service"
   ]
 }
