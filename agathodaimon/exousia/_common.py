@@ -14,6 +14,36 @@ class ExousiaUnprovisioned(RuntimeError):
 
 
 _last_request = None
+_last_request_pin = None
+_REDACTED = "<redacted>"
+_SAFE_LAUNCHER_MESSAGE = object()
+
+
+def _safe_stderr_line(stderr, secrets):
+    if not isinstance(stderr, str):
+        return _REDACTED
+    line = next((line for line in reversed(stderr.splitlines()) if line.strip()), "")
+    for secret in secrets:
+        if isinstance(secret, str) and secret:
+            line = line.replace(secret, _REDACTED)
+    return line[:512]
+
+
+def _safe_exception_details(exc):
+    exception_class = " ".join(type(exc).__name__.splitlines())
+    message = str(exc)
+    if getattr(exc, "_exousia_safe_message", None) is not _SAFE_LAUNCHER_MESSAGE:
+        if isinstance(_last_request_pin, str) and _last_request_pin:
+            message = message.replace(_last_request_pin, _REDACTED)
+    # Keep the generic diagnostic on one line, followed by run()'s fixed line.
+    message = " ".join(message.splitlines())
+    return exception_class, message[:512]
+
+
+def _launcher_error(message):
+    error = RuntimeError(message)
+    setattr(error, "_exousia_safe_message", _SAFE_LAUNCHER_MESSAGE)
+    return error
 
 
 def text(value, name):
@@ -24,15 +54,19 @@ def text(value, name):
 
 
 def payload(fields):
-    global _last_request
+    global _last_request, _last_request_pin
     try:
         _last_request = read(known_fields=tuple(fields), declared_flags=tuple(fields))
     except EnvelopeError as exc:
         raise MalformedInput(str(exc)) from exc
+    pin = _last_request.payload.get("pin")
+    _last_request_pin = pin if isinstance(pin, str) and pin else None
     return _last_request.payload
 
 
 def invoke_launcher(executable, value):
+    pin = value.get("pin")
+    secrets = [pin] if isinstance(pin, str) and pin else []
     completed = subprocess.run(
         ["/usr/bin/sudo", "-n", executable],
         input=json.dumps(value, separators=(",", ":")),
@@ -40,12 +74,17 @@ def invoke_launcher(executable, value):
         text=True,
         check=False,
     )
+    response_error = (
+        "invalid exousia launcher response "
+        f"exit={completed.returncode} "
+        f"stderr={_safe_stderr_line(completed.stderr, secrets)}"
+    )
     try:
         result = json.loads(completed.stdout)
     except (TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("invalid exousia launcher response") from exc
+        raise _launcher_error(response_error) from exc
     if not isinstance(result, dict):
-        raise RuntimeError("invalid exousia launcher response")
+        raise _launcher_error(response_error)
     # The real launchers use rc=1 for valid negative JSON outcomes.
     return result
 
@@ -94,8 +133,9 @@ def execute(action):
 
 
 def run(action, argv=None):
-    global _last_request
+    global _last_request, _last_request_pin
     _last_request = None
+    _last_request_pin = None
     try:
         if argv:
             raise MalformedInput("one exousia verb is required")
@@ -111,7 +151,12 @@ def run(action, argv=None):
             result = attach(result, _last_request)
         print(json.dumps(result, separators=(",", ":")))
         return 0
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
+        exception_class, message = _safe_exception_details(exc)
+        print(
+            f"exousia internal failure: {exception_class}: {message}",
+            file=sys.stderr,
+        )
         print("exousia internal failure", file=sys.stderr)
         return 1
     print(json.dumps(result, separators=(",", ":")))
