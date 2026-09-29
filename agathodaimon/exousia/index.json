@@ -1,1 +1,1 @@
-{"children":["bind","verify","change","reset-default"]}
+{"children":["bind","verify","change","reset-default","forgejo-credential"]}

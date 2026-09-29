@@ -1,5 +1,6 @@
 {
   "children": [
-    "staff-daemon"
+    "staff-daemon",
+    "staff-path"
   ]
 }
