@@ -78,7 +78,7 @@ def _command_output(stdout: bytes, stderr: bytes) -> str:
 
 
 def _run_systemctl(*args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(["systemctl", *args], capture_output=True, check=False)
+    return subprocess.run(["/usr/bin/systemctl", *args], capture_output=True, check=False)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -103,6 +103,8 @@ def main(argv: list[str] | None = None) -> int:
         return _emit(_receipt(first_missing_signal="portal-service-name-invalid"))
     assert isinstance(service, str)
     systemd_service = normalize_systemd_service(service)
+    if systemd_service.startswith("-"):
+        return _emit(_receipt(first_missing_signal="portal-service-name-invalid"))
 
     try:
         allowed = _portal_service_allowlist()
@@ -112,7 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         return _emit(_receipt(first_missing_signal="portal-service-not-allowed"))
 
     try:
-        command = _run_systemctl(action, systemd_service)
+        command = _run_systemctl(action, "--", systemd_service)
     except (OSError, subprocess.SubprocessError) as error:
         return _emit(
             _receipt(
@@ -123,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output = _command_output(command.stdout, command.stderr)
     try:
-        active_result = _run_systemctl("is-active", systemd_service)
+        active_result = _run_systemctl("is-active", "--", systemd_service)
     except (OSError, subprocess.SubprocessError):
         return _emit(
             _receipt(

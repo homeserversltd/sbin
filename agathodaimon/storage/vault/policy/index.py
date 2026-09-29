@@ -17,11 +17,19 @@ _UNLOCKS = {"crypttab_keyfile", "manual_passphrase"}
 _OCTAL_ESCAPE = re.compile(r"\\([0-7]{3})")
 
 
-def _receipt(ok: bool, mountpoint: str | None, signal: str) -> dict[str, Any]:
+def _receipt(
+    ok: bool,
+    op: str | None,
+    mountpoint: str | None,
+    unlock: str | None,
+    signal: str,
+) -> dict[str, Any]:
     return {
         "schema": _SCHEMA,
         "ok": ok,
+        "op": op,
         "mountpoint": mountpoint,
+        "unlock": unlock,
         "firstMissingSignal": signal,
     }
 
@@ -166,16 +174,18 @@ def _install_policy(parent_fd: int, document: dict[str, Any], metadata: os.stat_
                 pass
 
 
-def _apply(mapper: str, unlock: str) -> dict[str, Any]:
+def _apply(mapper: str, op: str, unlock: str | None = None) -> dict[str, Any]:
     mapper_path = f"/dev/mapper/{mapper}"
     try:
         mapper_stat = os.stat(mapper_path)
     except OSError:
-        return _receipt(False, None, "vault-policy-mapper-not-open")
+        return _receipt(False, op, None, None, "vault-policy-mapper-not-open")
 
     mountpoint = _find_mountpoint(mapper_path, mapper_stat)
     if mountpoint is None:
-        return _receipt(False, None, "vault-policy-mountpoint-ambiguous")
+        return _receipt(False, op, None, None, "vault-policy-mountpoint-ambiguous")
+
+    io_failure = "vault-policy-read-failed" if op == "read" else "vault-policy-write-failed"
 
     parent_fd: int | None = None
     try:
@@ -184,45 +194,74 @@ def _apply(mapper: str, unlock: str) -> dict[str, Any]:
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
         )
         if not stat.S_ISDIR(os.fstat(parent_fd).st_mode):
-            return _receipt(False, mountpoint, "vault-policy-write-failed")
+            return _receipt(False, op, mountpoint, None, io_failure)
     except OSError:
         if parent_fd is not None:
             os.close(parent_fd)
-        return _receipt(False, mountpoint, "vault-policy-write-failed")
+        return _receipt(False, op, mountpoint, None, io_failure)
 
     try:
         loaded = _read_policy(parent_fd)
         if loaded is None:
-            return _receipt(False, mountpoint, "vault-policy-document-invalid")
+            return _receipt(False, op, mountpoint, None, "vault-policy-document-invalid")
         document, metadata = loaded
+        if op == "read":
+            observed_unlock = document.get("unlock")
+            if not isinstance(observed_unlock, str) or observed_unlock not in _UNLOCKS:
+                observed_unlock = None
+            return _receipt(True, op, mountpoint, observed_unlock, "none")
+
+        assert unlock is not None
         document["unlock"] = unlock
         try:
             _install_policy(parent_fd, document, metadata)
         except (OSError, ValueError, TypeError):
-            return _receipt(False, mountpoint, "vault-policy-write-failed")
-        return _receipt(True, mountpoint, "none")
+            return _receipt(False, op, mountpoint, None, "vault-policy-write-failed")
+        return _receipt(True, op, mountpoint, unlock, "none")
     finally:
         os.close(parent_fd)
 
 
 def _dispatch(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
-        return _receipt(False, None, "vault-policy-mapper-invalid")
+        return _receipt(False, None, None, None, "vault-policy-mapper-invalid")
     payload = value.get("payload") if "schema" in value else value
     if not isinstance(payload, dict):
-        return _receipt(False, None, "vault-policy-mapper-invalid")
-    if set(payload) != {"mapper", "unlock"}:
-        if "mapper" not in payload or set(payload) - {"mapper", "unlock"}:
-            return _receipt(False, None, "vault-policy-mapper-invalid")
-        return _receipt(False, None, "vault-policy-unlock-invalid")
+        return _receipt(False, None, None, None, "vault-policy-mapper-invalid")
+
+    op = payload.get("op")
+    if not isinstance(op, str) or op not in {"read", "write"}:
+        return _receipt(False, None, None, None, "vault-policy-op-invalid")
 
     mapper = payload.get("mapper")
     if not isinstance(mapper, str) or _MAPPER.fullmatch(mapper) is None:
-        return _receipt(False, None, "vault-policy-mapper-invalid")
-    unlock = payload.get("unlock")
-    if not isinstance(unlock, str) or unlock not in _UNLOCKS:
-        return _receipt(False, None, "vault-policy-unlock-invalid")
-    return _apply(mapper, unlock)
+        return _receipt(False, op, None, None, "vault-policy-mapper-invalid")
+
+    if op == "read":
+        if "unlock" in payload:
+            return _receipt(False, op, None, None, "vault-policy-unlock-invalid")
+        allowed_fields = {"op", "mapper"}
+        unlock = None
+    else:
+        unlock = payload.get("unlock")
+        if not isinstance(unlock, str) or unlock not in _UNLOCKS:
+            return _receipt(False, op, None, None, "vault-policy-unlock-invalid")
+        allowed_fields = {"op", "mapper", "unlock"}
+
+    if set(payload) != allowed_fields:
+        return _receipt(False, op, None, None, "vault-policy-mapper-invalid")
+    return _apply(mapper, op, unlock)
+
+
+def _op_hint(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    payload = value.get("payload") if "schema" in value else value
+    if isinstance(payload, dict):
+        op = payload.get("op")
+        if isinstance(op, str) and op in {"read", "write"}:
+            return op
+    return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -230,12 +269,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         value = json.load(sys.stdin)
     except Exception:
-        receipt = _receipt(False, None, "vault-policy-mapper-invalid")
+        receipt = _receipt(False, None, None, None, "vault-policy-op-invalid")
     else:
         try:
             receipt = _dispatch(value)
         except Exception:
-            receipt = _receipt(False, None, "vault-policy-write-failed")
+            op = _op_hint(value)
+            if op is None:
+                receipt = _receipt(False, None, None, None, "vault-policy-op-invalid")
+            else:
+                signal = "vault-policy-read-failed" if op == "read" else "vault-policy-write-failed"
+                receipt = _receipt(False, op, None, None, signal)
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["ok"] else 1
 

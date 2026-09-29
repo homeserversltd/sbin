@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import os
 import re
 import subprocess
 import sys
@@ -129,13 +128,6 @@ def _ipv4_modify_args(uuid: str, payload: dict[str, Any]) -> list[str]:
     return args
 
 
-def _nmcli_program() -> str:
-    # Caduceus fixture runs may supply a fake executable; production is pinned.
-    if os.environ.get("CADUCEUS_ROOT") is not None:
-        return os.environ.get("CADUCEUS_NMCLI", "/usr/bin/nmcli")
-    return "/usr/bin/nmcli"
-
-
 def _stop(process: subprocess.Popen[bytes]) -> None:
     try:
         process.kill()
@@ -150,7 +142,7 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
 def _run_nmcli(args: Sequence[str], password: str | None = None) -> str:
     try:
         process = subprocess.Popen(
-            [_nmcli_program(), *args],
+            ["/usr/bin/nmcli", *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
