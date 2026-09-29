@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -15,6 +16,28 @@ from agathodaimon.lib.receipts.index import emit
 
 DEFAULT_OWNER_HOME = "/home/owner"
 DEFAULT_RECEIPT_ROOT = "/var/lib/caduceus/receipts"
+REFRESH_STDERR_MAX_LINES = 20
+REFRESH_STDERR_MAX_CHARS = 4096
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b(password|passwd|token|secret|api[_-]?key|access[_-]?key|credential|pin)\b"
+    r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+)
+_BEARER_VALUE = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+/=-]+")
+_BASIC_VALUE = re.compile(r"(?i)\b(Basic\s+)[A-Za-z0-9+/=]+")
+_URL_USERINFO = re.compile(r"(?i)(https?://)[^\s/@]+@")
+
+
+def bounded_stderr_tail(stderr: bytes | str | None) -> str | None:
+    if not stderr:
+        return None
+    text = stderr.decode("utf-8", errors="replace") if isinstance(stderr, bytes) else stderr
+    tail = "\n".join(text.splitlines()[-REFRESH_STDERR_MAX_LINES :])
+    tail = _SECRET_ASSIGNMENT.sub(r"\1\2[redacted]", tail)
+    tail = _BEARER_VALUE.sub(r"\1[redacted]", tail)
+    tail = _BASIC_VALUE.sub(r"\1[redacted]", tail)
+    tail = _URL_USERINFO.sub(r"\1[redacted]@", tail)
+    tail = tail[-REFRESH_STDERR_MAX_CHARS :]
+    return tail or None
 
 
 def owner_home() -> Path:
@@ -109,6 +132,7 @@ def _apply() -> int:
     final_blocker: str | None = None
     refresh_error: str | None = None
     refresh_exit: int | None = None
+    refresh_stderr_tail: str | None = None
     touched_paths: list[str] = []
     steps: list[dict] = []
 
@@ -123,14 +147,15 @@ def _apply() -> int:
         command = refresh_command()
         result = subprocess.run(command, check=False, capture_output=True)
         refresh_exit = result.returncode
-        touched_paths.append(str(cache_directory()))
-        steps.append(
-            {
-                "name": "owner-scoped-refresh",
-                "outcome": "succeeded" if refresh_exit == 0 else "failed",
-                "exit": refresh_exit,
-            }
-        )
+        refresh_stderr_tail = bounded_stderr_tail(result.stderr)
+        refresh_step = {
+            "name": "owner-scoped-refresh",
+            "outcome": "succeeded" if refresh_exit == 0 else "failed",
+            "exit": refresh_exit,
+        }
+        if refresh_stderr_tail is not None:
+            refresh_step["stderr_tail"] = refresh_stderr_tail
+        steps.append(refresh_step)
     except (OSError, ValueError) as error:
         refresh_error = str(error)
         steps.append({"name": "owner-scoped-refresh", "outcome": "failed"})
@@ -141,6 +166,9 @@ def _apply() -> int:
     except (OSError, ValueError) as error:
         final_blocker = str(error)
         steps.append({"name": "observe-after", "outcome": "failed"})
+
+    if refresh_exit == 0 and final == "Empty":
+        touched_paths.append(str(cache_directory()))
 
     changed = before != final if before is not None and final is not None else None
     converged = final == "Empty"
@@ -185,6 +213,8 @@ def _apply() -> int:
         print(refresh_error, file=sys.stderr)
     if refresh_exit not in (None, 0):
         print("launcher cache refresh failed", file=sys.stderr)
+        if refresh_stderr_tail is not None:
+            print(refresh_stderr_tail, file=sys.stderr)
     if final == "Different":
         print("launcher cache remains missing or stale after refresh", file=sys.stderr)
     if final_blocker is not None:

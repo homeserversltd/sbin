@@ -216,6 +216,16 @@ def apply_changes() -> tuple[bool, list[dict], list[str]]:
         steps.append(_not_attempted("set-system-helper"))
         return False, steps, touched_paths
 
+    helpers = system_helpers()
+    if helpers is None:
+        steps.append({"name": "observe-system-helper", "outcome": "failed"})
+        steps.append(_not_attempted("set-system-helper"))
+        return False, steps, touched_paths
+    steps.append({"name": "observe-system-helper", "outcome": "succeeded"})
+    if helpers == [HELPER_PATH]:
+        steps.append({"name": "set-system-helper", "outcome": "not-needed"})
+        return True, steps, touched_paths
+
     result = run_git(["config", "--system", "--replace-all", "credential.helper", HELPER_PATH])
     if result is None or result.returncode != 0:
         steps.append({"name": "set-system-helper", "outcome": "failed"})
