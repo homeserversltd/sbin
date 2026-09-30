@@ -119,7 +119,6 @@
     ["service", "ssh-exposure"],
     ["service", "staff-daemon"],
     ["settings", "appearance"],
-    ["settings", "datetime"],
     ["settings", "default-apps"],
     ["settings", "display"],
     ["settings", "input"],

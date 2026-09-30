@@ -23,12 +23,32 @@ def _receipt(ok: bool, present: bool, signal: str) -> dict[str, Any]:
     return {"schema": _SCHEMA, "ok": ok, "present": present, "firstMissingSignal": signal}
 
 
+def _unlock_receipt(
+    ok: bool,
+    present: bool,
+    signal: str,
+    *,
+    already_open: bool = False,
+    mounted: bool = False,
+    mapper_closed: bool = False,
+) -> dict[str, Any]:
+    return {
+        "schema": _SCHEMA,
+        "ok": ok,
+        "present": present,
+        "already_open": already_open,
+        "mounted": mounted,
+        "mapper_closed": mapper_closed,
+        "firstMissingSignal": signal,
+    }
+
+
 def _wipe(value: bytearray) -> None:
     for index in range(len(value)):
         value[index] = 0
 
 
-def open_from_seated_record(payload: object) -> dict[str, Any]:
+def open_from_seated_record(payload: object, *, device_fd: int | None = None) -> dict[str, Any]:
     """Preserve the existing Keyman-seated {device, mapper} operation."""
     if not isinstance(payload, dict) or set(payload) != {"device", "mapper"}:
         return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
@@ -46,13 +66,15 @@ def open_from_seated_record(payload: object) -> dict[str, Any]:
     material = bytearray()
     try:
         material = sacred_credential.read_seated_service_password(_SERVICE)
+        device_path = f"/proc/self/fd/{device_fd}" if device_fd is not None else device
         result = subprocess.run(
-            [_CRYPTSETUP, "open", "--batch-mode", "--key-file", "-", device, mapper],
+            [_CRYPTSETUP, "open", "--batch-mode", "--key-file", "-", device_path, mapper],
             input=bytes(material),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=30,
+            pass_fds=(device_fd,) if device_fd is not None else (),
         )
         return _receipt(
             result.returncode == 0,
@@ -203,44 +225,116 @@ def _walk_mountpoint(parts: tuple[str, ...], *, create: bool) -> int | None:
                     pass
 
 
-def _unlock(payload: Any) -> dict[str, Any]:
-    required = {"op", "mapper", "device", "mountpoint", "passphrase"}
-    if not isinstance(payload, dict) or set(payload) != required or payload.get("op") != "unlock":
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    mapper, device, mountpoint, passphrase = (
-        payload.get("mapper"), payload.get("device"), payload.get("mountpoint"), payload.get("passphrase")
-    )
-    if os.geteuid() != 0 or not isinstance(passphrase, str):
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    if not isinstance(mapper, str) or _MAPPER.fullmatch(mapper) is None:
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    if not isinstance(device, str):
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    if not isinstance(mountpoint, str):
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    parts = _mountpoint_parts(mountpoint)
-    if parts is None or not _mountpoint_is_safe(parts):
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    device_fd = _open_block_device(device)
-    if device_fd is None:
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    secret = bytearray()
+def _mapper_is_open(mapper: str) -> bool | None:
     try:
-        secret = bytearray(passphrase.encode("utf-8"))
-        opened = subprocess.run(
-            [_CRYPTSETUP, "open", "--batch-mode", "--key-file", "-", f"/proc/self/fd/{device_fd}", mapper],
-            input=bytes(secret),
+        metadata = os.stat(f"/dev/mapper/{mapper}")
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    return True if stat.S_ISBLK(metadata.st_mode) else None
+
+
+def _close_mapper(mapper: str) -> bool:
+    try:
+        result = subprocess.run(
+            [_CRYPTSETUP, "close", mapper],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
             timeout=30,
-            pass_fds=(device_fd,),
         )
-        if opened.returncode != 0:
-            return _receipt(False, True, "agathodaimon-vault-unlock-refused")
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _unlock(
+    payload: Any,
+    secret: bytearray | None,
+    passphrase_valid: bool,
+) -> dict[str, Any]:
+    required = {"op", "mapper", "device", "mountpoint"}
+    present = secret is not None
+    invalid = _unlock_receipt(False, present, "agathodaimon-vault-open-request-invalid")
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != required
+        or payload.get("op") != "unlock"
+        or not passphrase_valid
+    ):
+        return invalid
+    mapper, device, mountpoint = payload.get("mapper"), payload.get("device"), payload.get("mountpoint")
+    if os.geteuid() != 0:
+        return invalid
+    if not isinstance(mapper, str) or _MAPPER.fullmatch(mapper) is None:
+        return invalid
+    if not isinstance(device, str) or not isinstance(mountpoint, str):
+        return invalid
+    parts = _mountpoint_parts(mountpoint)
+    if parts is None or not _mountpoint_is_safe(parts):
+        return invalid
+    device_fd = _open_block_device(device)
+    if device_fd is None:
+        return invalid
+
+    already_open = False
+    opened_here = False
+    mapper_closed = False
+    mount_fd: int | None = None
+
+    def refuse(signal: str) -> dict[str, Any]:
+        nonlocal opened_here, mapper_closed
+        if opened_here:
+            mapper_closed = _close_mapper(mapper)
+            opened_here = False
+        return _unlock_receipt(
+            False,
+            present,
+            signal,
+            already_open=already_open,
+            mapper_closed=mapper_closed,
+        )
+
+    try:
+        mapper_state = _mapper_is_open(mapper)
+        if mapper_state is None:
+            return refuse("agathodaimon-vault-unlock-refused")
+        already_open = mapper_state
+        if already_open:
+            present = True
+        if not already_open:
+            if secret is None:
+                keyed = open_from_seated_record({"device": device, "mapper": mapper}, device_fd=device_fd)
+                if not keyed["present"]:
+                    return _unlock_receipt(
+                        False,
+                        False,
+                        "agathodaimon-vault-open-key-absent",
+                        already_open=already_open,
+                    )
+                present = True
+                if not keyed["ok"]:
+                    return refuse(keyed["firstMissingSignal"])
+                opened_here = True
+            else:
+                opened = subprocess.run(
+                    [_CRYPTSETUP, "open", "--batch-mode", "--key-file", "-", f"/proc/self/fd/{device_fd}", mapper],
+                    input=bytes(secret),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=30,
+                    pass_fds=(device_fd,),
+                )
+                if opened.returncode != 0:
+                    return refuse("agathodaimon-vault-unlock-refused")
+                opened_here = True
+
         mount_fd = _walk_mountpoint(parts, create=True)
         if mount_fd is None:
-            return _receipt(False, True, "agathodaimon-vault-mountpoint-refused")
+            return refuse("agathodaimon-vault-mountpoint-refused")
         try:
             mounted = subprocess.run(
                 ["/usr/bin/mount", "--", f"/dev/mapper/{mapper}", f"/proc/self/fd/{mount_fd}"],
@@ -253,15 +347,24 @@ def _unlock(payload: Any) -> dict[str, Any]:
             )
         finally:
             os.close(mount_fd)
-        return _receipt(
-            mounted.returncode == 0,
+            mount_fd = None
+        if mounted.returncode != 0:
+            return refuse("agathodaimon-vault-mount-refused")
+        return _unlock_receipt(
             True,
-            "none" if mounted.returncode == 0 else "agathodaimon-vault-mount-refused",
+            present,
+            "none",
+            already_open=already_open,
+            mounted=True,
         )
     except (OSError, UnicodeError, subprocess.SubprocessError):
-        return _receipt(False, True, "agathodaimon-vault-unlock-refused")
+        return refuse("agathodaimon-vault-unlock-refused")
     finally:
-        _wipe(secret)
+        if mount_fd is not None:
+            try:
+                os.close(mount_fd)
+            except OSError:
+                pass
         try:
             os.close(device_fd)
         except OSError:
@@ -275,7 +378,21 @@ def _dispatch(value: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
     if payload.get("op") == "unlock":
-        return _unlock(payload)
+        passphrase = payload.pop("passphrase", None)
+        passphrase_valid = passphrase is None or isinstance(passphrase, str)
+        secret: bytearray | None = None
+        if isinstance(passphrase, str):
+            try:
+                secret = bytearray(passphrase.encode("utf-8"))
+            except UnicodeError:
+                passphrase_valid = False
+            finally:
+                del passphrase
+        try:
+            return _unlock(payload, secret, passphrase_valid)
+        finally:
+            if secret is not None:
+                _wipe(secret)
     return open_from_seated_record(payload)
 
 
@@ -285,10 +402,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         receipt = _receipt(False, True, "agathodaimon-vault-open-request-invalid")
     else:
         try:
-            raw = sys.stdin.buffer.read(131073)
-            if len(raw) > 131072:
-                raise ValueError
-            value = json.loads(raw.decode("utf-8"))
+            raw = bytearray()
+            try:
+                raw.extend(sys.stdin.buffer.read(131073))
+                if len(raw) > 131072:
+                    raise ValueError
+                value = json.loads(raw.decode("utf-8"))
+            finally:
+                _wipe(raw)
             receipt = _dispatch(value)
         except Exception:
             receipt = _receipt(False, True, "agathodaimon-vault-open-request-invalid")

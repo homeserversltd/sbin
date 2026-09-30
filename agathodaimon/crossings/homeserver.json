@@ -4,8 +4,6 @@
   "bands": [
     "appliance/journal-vacuum",
     "appliance/service",
-    "games/provider-keys",
-    "games/sync",
     "network/child-device",
     "network/dhcp",
     "network/dns",
@@ -27,7 +25,6 @@
     ["exousia", "reset-default"],
     ["exousia", "verify"],
     ["settings", "appearance"],
-    ["settings", "datetime"],
     ["settings", "default-apps"],
     ["settings", "display"],
     ["settings", "notifications"],

@@ -79,7 +79,6 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
         sys.stdin = original_stdin
 
 _CROSSING_SCHEMA = "agathodaimon.crossings.v1"
-_CROSSING_PROFILES = {"homeserver", "homeconsole", "tv", "lab"}
 _CROSSING_PART = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 _CROSSING_JSON_LIMIT = 1024 * 1024
 
@@ -128,16 +127,25 @@ def _profile_for_crossing() -> tuple[str, bool]:
     if not isinstance(value, dict) or not isinstance(value.get("profile"), str):
         return "unknown", False
     profile = value["profile"]
-    label = profile if len(profile) <= 64 and _CROSSING_PART.fullmatch(profile) else "unknown"
-    return label, profile in _CROSSING_PROFILES
+    valid = len(profile) <= 64 and _CROSSING_PART.fullmatch(profile) is not None
+    return (profile if valid else "unknown"), valid
 
 
 def _crossing_publication(profile: str) -> tuple[set[str], set[tuple[str, str]]] | None:
+    seat_profile = profile
     try:
         value = _read_json_nofollow(ROOT / "crossings" / f"{profile}.json")
+    except FileNotFoundError:
+        if profile == "lab":
+            return None
+        try:
+            value = _read_json_nofollow(ROOT / "crossings" / "lab.json")
+            seat_profile = "lab"
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            return None
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return None
-    if not isinstance(value, dict) or value.get("schema") != _CROSSING_SCHEMA or value.get("profile") != profile:
+    if not isinstance(value, dict) or value.get("schema") != _CROSSING_SCHEMA or value.get("profile") != seat_profile:
         return None
     bands = value.get("bands")
     verbs = value.get("verbs")
@@ -163,6 +171,8 @@ def _crossing_publication(profile: str) -> tuple[set[str], set[tuple[str, str]]]
             or len(pair) != 2
             or not all(isinstance(part, str) and _CROSSING_PART.fullmatch(part) for part in pair)
         ):
+            return None
+        if pair[0] == "lib":
             return None
         clean_verbs.add((pair[0], pair[1]))
     return clean_bands, clean_verbs
@@ -227,12 +237,13 @@ def _refuse_crossing(profile: str, requested: str) -> int:
 def _admit_caduceus_crossing(args: list[str]) -> bool:
     profile, profile_ok = _profile_for_crossing()
     form, request_key, requested, first_is_lib = _crossing_request(args)
+    resolved_target = _crossing_resolved_target(args) if form == "verb" else None
+    resolved_is_lib = bool(resolved_target and resolved_target.split("/", 1)[0] == "lib")
     publication = _crossing_publication(profile) if profile_ok else None
-    if not profile_ok or publication is None or first_is_lib:
+    if not profile_ok or publication is None or first_is_lib or resolved_is_lib:
         _refuse_crossing(profile, requested)
         return False
     bands, verbs = publication
-    resolved_target = _crossing_resolved_target(args) if form == "verb" else None
     published_verb_targets = {
         target
         for pair in verbs

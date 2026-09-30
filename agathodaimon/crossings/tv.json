@@ -23,7 +23,6 @@
     ["exousia", "reset-default"],
     ["exousia", "verify"],
     ["settings", "appearance"],
-    ["settings", "datetime"],
     ["settings", "default-apps"],
     ["settings", "display"],
     ["settings", "notifications"],
