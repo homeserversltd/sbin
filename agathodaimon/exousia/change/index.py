@@ -5,12 +5,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[3]))
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.exousia._common import ExousiaUnprovisioned, MalformedInput, invoke_launcher, text
+from agathodaimon.exousia._common import ExousiaUnprovisioned, MalformedInput, invoke_library, text
 
 
 def _is_pin_refusal(signal):
     normalized = signal.lower()
-    return "pin-refused" in normalized or normalized == "caduceus-staff-derived-key-mismatch"
+    return "pin-refused" in normalized or normalized in {
+        "agathodaimon-staff-derived-key-mismatch",
+        "caduceus-staff-derived-key-mismatch",
+    }
 
 
 def main(argv=None):
@@ -24,7 +27,7 @@ def main(argv=None):
             raise MalformedInput(str(exc)) from exc
         value = request.payload
         old_pin, new_pin = text(value, "oldPin"), text(value, "newPin")
-        result = invoke_launcher("/usr/local/sbin/caduceus-atomic-change-pin", {"oldPin": old_pin, "newPin": new_pin})
+        result = invoke_library("atomic-change-pin", {"oldPin": old_pin, "newPin": new_pin})
         signal = result.get("firstMissingSignal")
         if result.get("ok") is False and isinstance(signal, str) and signal:
             if _is_pin_refusal(signal):
