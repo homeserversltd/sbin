@@ -5,22 +5,28 @@ HOMESERVER Forgejo backup and restore (migrate) CLI.
 Full-instance export: stop forgejo, pg_dump database forgejo, forgejo dump as git user,
 then start forgejo. Output: DB dump SQL + Forgejo dump zip in --output-dir.
 
-Full-instance restore: stop forgejo, restore Postgres from dump, extract Forgejo dump
-zip into /opt/forgejo, chown git:git, start forgejo, optional forgejo doctor.
+Full-instance restore: validate the dump before stopping forgejo, ensure the database role
+from the dump's app.ini is ready, restore PostgreSQL, extract the Forgejo dump into its work
+directory and configured repository root, chown restored files to git, regenerate hooks and
+keys, start forgejo, then report the optional doctor result.
 
 restore-from-b2: download encrypted forgejo backup (zip + sql) from a Backblaze B2 bucket,
 decrypt with skeleton key (FAK), then restore. Same encryption as Backblaze tab (salt
 backblazetab_forgejo_backup_salt). Requires b2sdk and cryptography (script bootstraps
 a venv on first use if needed).
 
-Requires root/sudo. Fixed paths for bare-metal Forgejo install (binary, config, work dir).
+Export and restore require root/sudo; file-only preflight does not.
 """
 
 from __future__ import annotations
 
 import argparse
+import configparser
 import logging
 import os
+import re
+import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -28,7 +34,8 @@ import tarfile
 import tempfile
 import venv
 import zipfile
-from pathlib import Path
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 # Bootstrap b2sdk/cryptography when restore-from-b2 or restore-from-encrypted is used (reuse disaster-recovery venv)
@@ -72,6 +79,362 @@ SERVICE_NAME = "forgejo"
 FORGEJO_BACKUP_SALT = b"backblazetab_forgejo_backup_salt"
 
 
+class RestorePreflightError(Exception):
+    """A safe, user-facing reason why a restore cannot proceed."""
+
+
+@dataclass(frozen=True)
+class _RestorePlan:
+    zip_path: Path
+    sql_path: Path
+    app_ini: bytes = field(repr=False)
+    database_user: str
+    database_password: Optional[str] = field(repr=False)
+    repository_root: Path
+
+
+def _sql_identifier(value: str) -> str:
+    if not value or "\x00" in value or len(value.encode("utf-8")) > 63:
+        raise RestorePreflightError("dump app.ini [database] USER is not a valid PostgreSQL role name")
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _sql_literal(value: str) -> str:
+    if "\x00" in value:
+        raise RestorePreflightError("dump app.ini [database] PASSWD contains an unsupported NUL byte")
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _expand_ini_value(parser: configparser.ConfigParser, section: str, raw: str) -> str:
+    """Expand Forgejo-style %(name)s values across app.ini sections."""
+    pattern = re.compile(r"%\(([^)]+)\)s")
+    value = raw
+    for _ in range(10):
+        matches = list(pattern.finditer(value))
+        if not matches:
+            return value
+
+        def replace(match: re.Match[str]) -> str:
+            key = match.group(1)
+            candidates = [section, "server", "DEFAULT", *parser.sections()]
+            for candidate in candidates:
+                if candidate == "DEFAULT":
+                    found = parser.defaults().get(parser.optionxform(key))
+                    if found is not None:
+                        return found
+                elif parser.has_section(candidate) and parser.has_option(candidate, key):
+                    return parser.get(candidate, key, raw=True)
+            raise RestorePreflightError(
+                f"dump app.ini [repository] ROOT has an unresolved value: {key}"
+            )
+
+        value = pattern.sub(replace, value)
+    raise RestorePreflightError("dump app.ini [repository] ROOT interpolation is recursive")
+
+
+def _reject_symlink_components(path: Path, description: str) -> None:
+    """Reject existing symlinks in a destination path without resolving through them."""
+    candidate = Path(os.path.abspath(path))
+    current = Path(candidate.anchor)
+    for index, component in enumerate(candidate.parts[1:], start=1):
+        current /= component
+        try:
+            component_stat = current.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise RestorePreflightError(
+                f"{description} could not be inspected at {current}"
+            ) from exc
+        if stat.S_ISLNK(component_stat.st_mode):
+            raise RestorePreflightError(
+                f"{description} contains a symlink path component: {current}"
+            )
+        if index < len(candidate.parts) - 1 and not stat.S_ISDIR(component_stat.st_mode):
+            raise RestorePreflightError(
+                f"{description} has a non-directory path component: {current}"
+            )
+
+
+def _repository_root_from_app_ini(parser: configparser.ConfigParser) -> Path:
+    default_root = "/opt/forgejo/repositories"
+    try:
+        raw_root = (
+            parser.get("repository", "root", raw=True)
+            if parser.has_section("repository") and parser.has_option("repository", "root")
+            else default_root
+        )
+        root = _expand_ini_value(parser, "repository", raw_root).strip()
+    except (configparser.Error, ValueError) as exc:
+        raise RestorePreflightError("dump app.ini [repository] ROOT could not be read") from exc
+    if not root:
+        raise RestorePreflightError("dump app.ini [repository] ROOT is empty")
+
+    root_path = Path(root)
+    if not root_path.is_absolute():
+        root_path = Path(FORGEJO_WORK_DIR) / root_path
+    root_path = Path(os.path.abspath(root_path))
+    work_dir = Path(os.path.abspath(FORGEJO_WORK_DIR))
+    config_path = Path(os.path.abspath(FORGEJO_CONFIG))
+    _reject_symlink_components(root_path, "dump app.ini [repository] ROOT")
+    if root_path == Path(root_path.anchor) or root_path == work_dir or work_dir.is_relative_to(root_path):
+        raise RestorePreflightError("dump app.ini [repository] ROOT would replace the Forgejo work directory or an ancestor")
+    if root_path == config_path or config_path.is_relative_to(root_path):
+        raise RestorePreflightError("dump app.ini [repository] ROOT would replace the installed Forgejo config")
+    return root_path
+
+
+def _file_preflight(dump_zip: str | Path, db_dump: str | Path) -> _RestorePlan:
+    zip_path = Path(dump_zip)
+    sql_path = Path(db_dump)
+    if not zip_path.exists() or not zip_path.is_file():
+        raise RestorePreflightError(f"dump zip does not exist or is not a file: {zip_path}")
+    if not sql_path.exists() or not sql_path.is_file():
+        raise RestorePreflightError(f"DB dump does not exist or is not a file: {sql_path}")
+    try:
+        with sql_path.open("rb") as sql_file:
+            sql_file.read(1)
+    except OSError as exc:
+        raise RestorePreflightError(f"DB dump is not readable by the restore loader: {sql_path}") from exc
+
+    work_dir = Path(os.path.abspath(FORGEJO_WORK_DIR))
+    _reject_symlink_components(work_dir, "Forgejo archive extraction destination")
+    _reject_symlink_components(Path(FORGEJO_CONFIG), "Forgejo config destination")
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            infos = zf.infolist()
+            names: set[str] = set()
+            for info in infos:
+                name = info.filename
+                member_path = PurePosixPath(name)
+                if (
+                    not name
+                    or "\x00" in name
+                    or "\\" in name
+                    or name.startswith("/")
+                    or re.match(r"^[A-Za-z]:", name)
+                    or any(part in (".", "..") for part in name.split("/"))
+                    or member_path.is_absolute()
+                ):
+                    raise RestorePreflightError("dump zip contains an unsafe member path")
+                destination = work_dir.joinpath(*member_path.parts)
+                _reject_symlink_components(
+                    destination, "Forgejo archive extraction destination"
+                )
+                if name in names:
+                    raise RestorePreflightError("dump zip contains duplicate member paths")
+                names.add(name)
+
+            for required_dir in ("repos/", "custom/"):
+                if not any(
+                    info.filename == required_dir or info.filename.startswith(required_dir)
+                    for info in infos
+                ):
+                    raise RestorePreflightError(f"dump zip is missing required {required_dir} content")
+
+            app_ini_info = next((info for info in infos if info.filename == "app.ini"), None)
+            if app_ini_info is None or app_ini_info.is_dir():
+                raise RestorePreflightError("dump zip is missing its top-level app.ini")
+            if stat.S_ISLNK((app_ini_info.external_attr >> 16) & 0xFFFF):
+                raise RestorePreflightError("dump zip top-level app.ini is not a regular file")
+
+            bad_member = zf.testzip()
+            if bad_member is not None:
+                raise RestorePreflightError(f"dump zip member failed its integrity check: {bad_member}")
+            app_ini = zf.read(app_ini_info)
+    except RestorePreflightError:
+        raise
+    except Exception as exc:
+        raise RestorePreflightError("dump zip could not be opened or read completely") from exc
+
+    try:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read_string(app_ini.decode("utf-8-sig"))
+        database_user = parser.get("database", "user", raw=True).strip()
+        database_password = parser.get("database", "passwd", raw=True, fallback=None)
+        if database_password is not None:
+            _sql_literal(database_password)
+    except (UnicodeDecodeError, configparser.Error, ValueError) as exc:
+        raise RestorePreflightError("dump top-level app.ini is invalid or lacks [database] USER") from exc
+    _sql_identifier(database_user)
+    repository_root = _repository_root_from_app_ini(parser)
+    return _RestorePlan(
+        zip_path=zip_path,
+        sql_path=sql_path,
+        app_ini=app_ini,
+        database_user=database_user,
+        database_password=database_password,
+        repository_root=repository_root,
+    )
+
+
+def _postgres_command(database: str) -> list[str]:
+    return [
+        "/usr/bin/sudo",
+        "-u",
+        "postgres",
+        PSQL,
+        "-X",
+        "-q",
+        "-A",
+        "-t",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-d",
+        database,
+    ]
+
+
+def _run_postgres_query(script: str, description: str) -> Optional[str]:
+    logger.info("Running: %s", description)
+    try:
+        result = subprocess.run(
+            _postgres_command("postgres") + ["-F", "|"],
+            input=script,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        logger.error("%s could not be run", description)
+        return None
+    if result.returncode != 0:
+        logger.error("%s failed (exit %s; output suppressed)", description, result.returncode)
+        return None
+    return result.stdout.strip()
+
+
+def _role_status(database_user: str) -> tuple[Optional[str], bool]:
+    user_literal = _sql_literal(database_user)
+    script = f"""SET standard_conforming_strings = on;
+SELECT CASE
+    WHEN NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {user_literal}) THEN 'missing'
+    WHEN EXISTS (
+        SELECT 1 FROM pg_roles
+        WHERE rolname = {user_literal}
+          AND rolcanlogin
+          AND (rolvaliduntil IS NULL OR rolvaliduntil > CURRENT_TIMESTAMP)
+    ) THEN 'ready'
+    ELSE 'unready'
+END || '|' || CASE
+    WHEN EXISTS (
+        SELECT 1 FROM pg_roles
+        WHERE rolname = current_user AND (rolsuper OR rolcreaterole)
+    ) THEN 'yes'
+    ELSE 'no'
+END;
+"""
+    output = _run_postgres_query(script, "query Forgejo database role readiness")
+    if output is None:
+        return None, False
+    parts = output.split("|", 1)
+    if len(parts) != 2 or parts[0] not in {"missing", "ready", "unready"}:
+        logger.error("query Forgejo database role readiness returned an invalid result")
+        return None, False
+    return parts[0], parts[1] == "yes"
+
+
+def _run_postgres_script(script: str, description: str) -> bool:
+    logger.info("Running: %s", description)
+    try:
+        result = subprocess.run(
+            _postgres_command("postgres"),
+            input=script,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        logger.error("%s could not be run", description)
+        return False
+    if result.returncode != 0:
+        logger.error("%s failed (exit %s; output suppressed)", description, result.returncode)
+        return False
+    logger.info("%s succeeded", description)
+    return True
+
+
+def _run_postgres_dump(sql_path: Path) -> bool:
+    description = "restore Postgres from dump"
+    logger.info("Running: %s", description)
+    try:
+        # Open as this process and pass the descriptor to psql; postgres need not
+        # open or have filesystem permissions on the dump path.
+        with sql_path.open("rb") as sql_file:
+            result = subprocess.run(
+                _postgres_command(FORGEJO_DB_NAME),
+                stdin=sql_file,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except OSError:
+        logger.error("%s failed because the SQL dump could not be opened", description)
+        return False
+    if result.returncode != 0:
+        logger.error("%s failed (exit %s; output suppressed)", description, result.returncode)
+        return False
+    logger.info("%s succeeded", description)
+    return True
+
+
+def _run_checked_silent(
+    cmd: list[str],
+    description: str,
+    env: Optional[dict[str, str]] = None,
+    cwd: Optional[str] = None,
+) -> bool:
+    logger.info("Running: %s", description)
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            cwd=cwd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except OSError:
+        logger.error("%s could not be run", description)
+        return False
+    if result.returncode != 0:
+        logger.error("%s failed (exit %s; output suppressed)", description, result.returncode)
+        return False
+    logger.info("%s succeeded", description)
+    return True
+
+
+def _restart_after_pre_destructive_failure(step: str) -> int:
+    logger.error("Restore failed during %s before database replacement; no database drop was attempted.", step)
+    if _start_forgejo():
+        logger.info("Forgejo was restarted after the pre-destructive restore failure.")
+    else:
+        logger.error("Forgejo was not confirmed running after the restore failure; inspect or start it manually.")
+    return 1
+
+
+def _fail_after_destructive(step: str) -> int:
+    logger.error(
+        "Restore failed during %s after destructive work began; Forgejo was not restarted and remains stopped.",
+        step,
+    )
+    return 1
+
+
+def _position_repositories(plan: _RestorePlan) -> None:
+    source = Path(FORGEJO_WORK_DIR) / "repos"
+    target = plan.repository_root
+    _reject_symlink_components(target, "configured repository ROOT")
+    if source.resolve(strict=False) == target:
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    shutil.move(str(source), str(target))
+
+
 def _require_root() -> None:
     if os.geteuid() != 0:
         logger.error("This script must be run as root (e.g. sudo)")
@@ -99,7 +462,11 @@ def _run_log(
     cwd: Optional[str] = None,
 ) -> bool:
     logger.info("Running: %s", description)
-    result = _run(cmd, env=env, cwd=cwd)
+    try:
+        result = _run(cmd, env=env, cwd=cwd)
+    except OSError as exc:
+        logger.error("%s could not be run: %s", description, exc)
+        return False
     if result.returncode != 0:
         logger.error(
             "%s failed (exit %s): %s",
@@ -427,17 +794,34 @@ def do_export(output_dir: str) -> int:
             sys.exit(1)
 
 
+def _doctor_error_total(output: str) -> Optional[int]:
+    """Read an explicit doctor summary total, not counts embedded in prose."""
+    patterns = (
+        r"(?im)^\s*(?:doctor\s+)?found\s+(\d+)\s+errors?\b[^\n]*$",
+        r"(?im)^\s*(\d+)\s+errors?\s+(?:found|detected|reported)\b[^\n]*$",
+        r"(?im)^\s*(?:total\s+)?errors?\s*(?:count)?\s*[:=]\s*(\d+)\b[^\n]*$",
+        r"(?im)^\s*total\s*[:=]\s*(\d+)\s+errors?\b[^\n]*$",
+        r"(?im)^\s*(\d+)\s+errors?\s*$",
+    )
+    for pattern in patterns:
+        matches = re.findall(pattern, output)
+        if matches:
+            return int(matches[-1])
+    return None
+
+
+def _doctor_error_lines(output: str) -> int:
+    """Count line-level doctor error markers when no summary total is available."""
+    return len(
+        re.findall(
+            r"(?im)^\s*(?:(?:-\s*)?\[E\](?:\s|$)|ERROR\b|error\s*:|FAIL(?:ED)?\b).*$",
+            output,
+        )
+    )
+
+
 def do_restore(dump_zip: str, db_dump: str, no_doctor: bool, yes: bool) -> int:
     _require_root()
-    zip_path = Path(dump_zip)
-    sql_path = Path(db_dump)
-    if not zip_path.exists() or not zip_path.is_file():
-        logger.error("Dump zip does not exist or is not a file: %s", dump_zip)
-        return 1
-    if not sql_path.exists() or not sql_path.is_file():
-        logger.error("DB dump does not exist or is not a file: %s", db_dump)
-        return 1
-
     if not yes:
         logger.error(
             "Restore will REPLACE the current Forgejo instance (database and files in %s). "
@@ -446,125 +830,236 @@ def do_restore(dump_zip: str, db_dump: str, no_doctor: bool, yes: bool) -> int:
         )
         return 1
 
-    logger.info("Forgejo restore started; dump_zip=%s db_dump=%s", dump_zip, db_dump)
-    logger.info("Current instance will be replaced; Forgejo will be stopped then started after restore.")
-
-    if not _stop_forgejo():
+    try:
+        plan = _file_preflight(dump_zip, db_dump)
+    except RestorePreflightError as exc:
+        logger.error("Restore preflight failed: %s; Forgejo was not stopped and no restore changes were made.", exc)
         return 1
 
+    role_status, can_create_role = _role_status(plan.database_user)
+    if role_status is None:
+        logger.error("Restore preflight failed: could not establish database role readiness; Forgejo was not stopped.")
+        return 1
+    role_missing = role_status == "missing"
+    if role_status == "unready":
+        logger.error(
+            "Restore preflight failed: dump database role exists but is not login-ready; Forgejo was not stopped."
+        )
+        return 1
+    if role_missing and not plan.database_password:
+        logger.error(
+            "Restore preflight failed: dump app.ini [database] PASSWD must be non-empty to create its absent USER role; Forgejo was not stopped."
+        )
+        return 1
+    if role_missing and not can_create_role:
+        logger.error(
+            "Restore preflight failed: PostgreSQL cannot create the dump database role; Forgejo was not stopped."
+        )
+        return 1
+
+    logger.info("Forgejo restore started; dump_zip=%s db_dump=%s", dump_zip, db_dump)
+    logger.info("Current instance will be replaced after all file and role preflight checks pass.")
+
+    if not _stop_forgejo():
+        logger.error("Forgejo stop failed before database replacement; attempting to leave Forgejo running.")
+        if _start_forgejo():
+            logger.info("Forgejo was started after the failed stop; the database and files were not replaced.")
+        else:
+            logger.error("Forgejo state is uncertain after the failed stop; inspect or start it manually.")
+        return 1
+
+    if role_missing:
+        assert plan.database_password is not None
+        create_role_sql = (
+            "SET standard_conforming_strings = on;\n"
+            f"CREATE ROLE {_sql_identifier(plan.database_user)} LOGIN "
+            f"PASSWORD {_sql_literal(plan.database_password)};\n"
+        )
+        if not _run_postgres_script(create_role_sql, "create dump database role"):
+            return _restart_after_pre_destructive_failure("database role creation")
+        logger.info("Created the absent database role from dump app.ini; password output is suppressed.")
+
+    role_status, _ = _role_status(plan.database_user)
+    if role_status != "ready":
+        return _restart_after_pre_destructive_failure("database role readiness verification")
+
+    # Terminating sessions can change live database state, so all later failures
+    # leave Forgejo stopped rather than starting it against a partial restore.
+    terminate_sql = (
+        "SET standard_conforming_strings = on;\n"
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        f"WHERE datname = {_sql_literal(FORGEJO_DB_NAME)} AND pid <> pg_backend_pid();\n"
+    )
+    if not _run_postgres_script(terminate_sql, "terminate Forgejo database connections"):
+        return _fail_after_destructive("database connection termination")
+
+    drop_cmd = [
+        "/usr/bin/sudo",
+        "-u",
+        "postgres",
+        PSQL,
+        "-X",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-d",
+        "postgres",
+        "-c",
+        f"DROP DATABASE IF EXISTS {FORGEJO_DB_NAME};",
+    ]
+    if not _run_log(drop_cmd, "drop forgejo database"):
+        return _fail_after_destructive("database drop")
+
+    create_cmd = [
+        "/usr/bin/sudo",
+        "-u",
+        "postgres",
+        PSQL,
+        "-X",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-d",
+        "postgres",
+        "-c",
+        f"CREATE DATABASE {FORGEJO_DB_NAME} OWNER {_sql_identifier(plan.database_user)};",
+    ]
+    if not _run_log(create_cmd, "create forgejo database"):
+        return _fail_after_destructive("database creation")
+
+    if not _run_postgres_dump(plan.sql_path):
+        return _fail_after_destructive("database load")
+
     try:
-        # Terminate connections to forgejo DB, then drop and recreate
-        term_cmd = [
-            "/usr/bin/sudo",
-            "-u",
-            "postgres",
-            PSQL,
-            "-d",
-            "postgres",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid();"
-            % repr(FORGEJO_DB_NAME),
-        ]
-        _run(term_cmd)
-
-        drop_cmd = [
-            "/usr/bin/sudo",
-            "-u",
-            "postgres",
-            PSQL,
-            "-d",
-            "postgres",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            f"DROP DATABASE IF EXISTS {FORGEJO_DB_NAME};",
-        ]
-        if not _run_log(drop_cmd, "drop forgejo database"):
-            return 1
-
-        create_cmd = [
-            "/usr/bin/sudo",
-            "-u",
-            "postgres",
-            PSQL,
-            "-d",
-            "postgres",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-c",
-            f"CREATE DATABASE {FORGEJO_DB_NAME} OWNER {FORGEJO_USER};",
-        ]
-        if not _run_log(create_cmd, "create forgejo database"):
-            return 1
-
-        restore_cmd = [
-            "/usr/bin/sudo",
-            "-u",
-            "postgres",
-            PSQL,
-            "-d",
-            FORGEJO_DB_NAME,
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-f",
-            str(sql_path),
-        ]
-        if not _run_log(restore_cmd, "restore Postgres from dump"):
-            return 1
-
-        # Extract zip into /opt/forgejo (Forgejo dump format: archive members are under work dir)
         logger.info("Extracting dump zip into %s", FORGEJO_WORK_DIR)
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(FORGEJO_WORK_DIR)
-        logger.info("Extract succeeded")
-
-        if not _run_log(
-            [CHOWN, "-R", f"{FORGEJO_USER}:{FORGEJO_USER}", FORGEJO_WORK_DIR],
-            "chown git:git /opt/forgejo",
-        ):
-            return 1
-
-        if not _start_forgejo():
-            return 1
-
-        if not no_doctor:
-            _run_log(
-                [
-                    "/usr/bin/sudo",
-                    "-u",
-                    FORGEJO_USER,
-                    "env",
-                    f"FORGEJO_WORK_DIR={FORGEJO_WORK_DIR}",
-                    FORGEJO_BINARY,
-                    "doctor",
-                    "check",
-                    "--all",
-                    "--config",
-                    FORGEJO_CONFIG,
-                ],
-                "forgejo doctor check --all",
+        Path(FORGEJO_WORK_DIR).mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(plan.zip_path, "r") as zf:
+            zf.extractall(
+                FORGEJO_WORK_DIR,
+                members=(
+                    info
+                    for info in zf.infolist()
+                    if info.filename not in {"app.ini", "custom/conf/app.ini"}
+                ),
             )
+        config_path = Path(FORGEJO_CONFIG)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_fd, config_tmp = tempfile.mkstemp(
+            prefix=".app.ini.", dir=config_path.parent
+        )
+        try:
+            with os.fdopen(config_fd, "wb") as config_file:
+                os.fchmod(config_file.fileno(), 0o600)
+                config_file.write(plan.app_ini)
+            os.replace(config_tmp, config_path)
+        finally:
+            Path(config_tmp).unlink(missing_ok=True)
+        _position_repositories(plan)
+        logger.info("Dump files extracted; app.ini installed and repositories positioned at %s", plan.repository_root)
+    except Exception as exc:
+        logger.error("Restore file placement failed after database replacement: %s", exc)
+        return _fail_after_destructive("file extraction or placement")
 
-        logger.info("Restore complete")
+    chown_paths = [FORGEJO_WORK_DIR]
+    work_dir = Path(FORGEJO_WORK_DIR).resolve(strict=False)
+    if not plan.repository_root.is_relative_to(work_dir):
+        chown_paths.append(str(plan.repository_root))
+    if not _run_log(
+        [CHOWN, "-R", f"{FORGEJO_USER}:{FORGEJO_USER}", *chown_paths],
+        "chown restored Forgejo files to git:git",
+    ):
+        return _fail_after_destructive("restored file ownership")
+
+    for operation in ("hooks", "keys"):
+        if not _run_checked_silent(
+            [
+                "/usr/bin/sudo",
+                "-u",
+                FORGEJO_USER,
+                "env",
+                f"FORGEJO_WORK_DIR={FORGEJO_WORK_DIR}",
+                FORGEJO_BINARY,
+                "admin",
+                "regenerate",
+                operation,
+                "--config",
+                FORGEJO_CONFIG,
+            ],
+            f"forgejo admin regenerate {operation}",
+        ):
+            return _fail_after_destructive(f"Forgejo {operation} regeneration")
+
+    if not _start_forgejo():
+        logger.error("Restore steps completed, but Forgejo was not confirmed running; inspect or start it manually.")
+        return 1
+
+    if no_doctor:
+        logger.info("Doctor result: skipped by --no-doctor")
         return 0
-    finally:
-        # If we exited early, try to start Forgejo so instance is not left stopped
-        if not _start_forgejo():
-            logger.error("Forgejo was left stopped; start it manually: systemctl start forgejo")
-            sys.exit(1)
+
+    try:
+        doctor = _run(
+            [
+                "/usr/bin/sudo",
+                "-u",
+                FORGEJO_USER,
+                "env",
+                f"FORGEJO_WORK_DIR={FORGEJO_WORK_DIR}",
+                FORGEJO_BINARY,
+                "doctor",
+                "check",
+                "--all",
+                "--config",
+                FORGEJO_CONFIG,
+            ]
+        )
+    except (OSError, UnicodeError):
+        logger.error(
+            "Doctor result: at least 1 error (count unavailable; doctor command could not be run or its output could not be read)"
+        )
+        return 1
+    doctor_output = f"{doctor.stdout or ''}\n{doctor.stderr or ''}"
+    error_total = _doctor_error_total(doctor_output)
+    error_lines = _doctor_error_lines(doctor_output)
+    command_failed = doctor.returncode != 0
+    has_findings = error_lines > 0 or (error_total is not None and error_total > 0)
+    if command_failed or has_findings:
+        if error_total is not None and error_total > 0:
+            result = f"{error_total} error{'s' if error_total != 1 else ''}"
+        elif error_lines:
+            result = f"{error_lines} error{'s' if error_lines != 1 else ''}"
+        else:
+            result = "at least 1 error (count unavailable)"
+        logger.error("Doctor result: %s", result)
+        return 1
+
+    logger.info("Doctor result: clean")
+    return 0
+
+
+def do_preflight(dump_zip: str, db_dump: str) -> int:
+    """Safe, file-only preflight; does not query PostgreSQL or touch the service."""
+    try:
+        plan = _file_preflight(dump_zip, db_dump)
+    except RestorePreflightError as exc:
+        logger.error("Restore preflight failed: %s", exc)
+        return 1
+    logger.info(
+        "File-only restore preflight passed: database_user=%s repository_root=%s; no service or PostgreSQL operations ran.",
+        plan.database_user,
+        plan.repository_root,
+    )
+    return 0
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     prog_name = "homeserver-forgejo-migrate.py"
     parser = argparse.ArgumentParser(
         prog=prog_name,
-        description="HOMESERVER Forgejo backup and restore (export/restore full instance). Requires root.",
+        description="HOMESERVER Forgejo backup and restore CLI. Export and restore commands require root; file-only preflight does not.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 export: stop forgejo, pg_dump + forgejo dump, start forgejo.
-restore: from local dump zip + sql; stop forgejo, restore Postgres, extract zip, chown, start forgejo.
+restore: preflight local dump zip + sql; replace Forgejo from the dump.
+preflight: file-only restore preflight; does not query PostgreSQL or touch Forgejo.
 restore-from-b2: download encrypted backup from B2, decrypt with skeleton key (FAK), then restore.
 restore-from-encrypted: from local encrypted zip + sql (e.g. GUI upload), decrypt with FAK, then restore.
 
@@ -576,7 +1071,7 @@ Examples:
 """,
     )
     subparsers = parser.add_subparsers(
-        dest="command", required=True, help="export, restore, restore-from-b2, or restore-from-encrypted"
+        dest="command", required=True, help="export, restore, preflight, restore-from-b2, or restore-from-encrypted"
     )
 
     export_parser = subparsers.add_parser("export", help="Export Forgejo instance to output directory")
@@ -604,7 +1099,7 @@ Examples:
     restore_parser.add_argument(
         "--yes",
         action="store_true",
-        help="Confirm restore; required. Restore replaces the current database and /opt/forgejo contents.",
+        help="Confirm restore; required. Replaces the database, work-dir files, and configured repository ROOT.",
     )
     restore_parser.add_argument(
         "--no-doctor",
@@ -612,6 +1107,13 @@ Examples:
         help="Skip forgejo doctor check --all after restore",
     )
     restore_parser.set_defaults(func=do_restore)
+
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Validate restore files only; does not query PostgreSQL or touch Forgejo",
+    )
+    preflight_parser.add_argument("--dump-zip", required=True, help="Path to forgejo-dump zip")
+    preflight_parser.add_argument("--db-dump", required=True, help="Path to forgejo SQL dump")
 
     b2_parser = subparsers.add_parser(
         "restore-from-b2",
@@ -699,6 +1201,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             getattr(args, "no_doctor", False),
             getattr(args, "yes", False),
         )
+    if args.command == "preflight":
+        return do_preflight(args.dump_zip, args.db_dump)
     if args.command == "restore-from-b2":
         skeleton_key = getattr(args, "skeleton_key", None) or ""
         skeleton_key_file = getattr(args, "skeleton_key_file", None)
