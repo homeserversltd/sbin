@@ -1,0 +1,36 @@
+{
+  "schema": "agathodaimon.crossings.v1",
+  "profile": "homeserver",
+  "bands": [
+    "appliance/journal-vacuum",
+    "appliance/service",
+    "games/provider-keys",
+    "games/sync",
+    "network/child-device",
+    "network/dhcp",
+    "network/dns",
+    "network/firewall",
+    "network/identity",
+    "network/wifi",
+    "settings/datetime",
+    "settings/input",
+    "storage/backup/forgejo/credential",
+    "storage/upload/force-permissions",
+    "storage/upload/ingress",
+    "storage/vault/open",
+    "storage/vault/policy"
+  ],
+  "verbs": [
+    ["cert", "house-ca"],
+    ["exousia", "bind"],
+    ["exousia", "change"],
+    ["exousia", "reset-default"],
+    ["exousia", "verify"],
+    ["settings", "appearance"],
+    ["settings", "datetime"],
+    ["settings", "default-apps"],
+    ["settings", "display"],
+    ["settings", "notifications"],
+    ["settings", "sound"]
+  ]
+}

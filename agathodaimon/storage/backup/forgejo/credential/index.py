@@ -1,7 +1,7 @@
 """Owner-scoped Forgejo Git credential-helper actuator."""
 from __future__ import annotations
 
-import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -33,10 +33,26 @@ def get() -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agathodaimon-forgejo-credential")
-    parser.add_argument("operation", nargs="?", default="get")
-    args = parser.parse_args(argv)
-    return get() if args.operation == "get" else 0
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args == ["get"]:
+        return get()
+    if args:
+        return 1
+    if sys.stdin.isatty():
+        return get()
+    try:
+        raw = sys.stdin.read(65537)
+        if len(raw) > 65536:
+            return 1
+        if not raw:
+            return get()
+        envelope = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return 1
+    payload = envelope.get("payload") if isinstance(envelope, dict) and "schema" in envelope else envelope
+    if not isinstance(payload, dict) or payload not in ({}, {"op": "get"}, {"operation": "get"}):
+        return 1
+    return get()
 
 
 if __name__ == "__main__":

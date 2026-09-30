@@ -1,6 +1,7 @@
 {
   "children": [
     "factory-fallback",
+    "journal-vacuum",
     "service"
   ]
 }

@@ -1,8 +1,10 @@
-"""Private Keyman-to-cryptsetup hook for the fixed HomeConsole vault record."""
+"""Caduceus vault opener for Keyman and explicit passphrase requests."""
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import subprocess
 import sys
 from typing import Any, Sequence
@@ -14,6 +16,7 @@ _SERVICE = "homeconsole-vault"
 _CRYPTSETUP = "/usr/sbin/cryptsetup"
 _DEVICE = re.compile(r"^/dev/[A-Za-z0-9._-]+$")
 _MAPPER = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 
 
 def _receipt(ok: bool, present: bool, signal: str) -> dict[str, Any]:
@@ -26,14 +29,15 @@ def _wipe(value: bytearray) -> None:
 
 
 def open_from_seated_record(payload: object) -> dict[str, Any]:
+    """Preserve the existing Keyman-seated {device, mapper} operation."""
     if not isinstance(payload, dict) or set(payload) != {"device", "mapper"}:
         return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
     device, mapper = payload.get("device"), payload.get("mapper")
     if (
         not isinstance(device, str)
-        or not _DEVICE.fullmatch(device)
+        or _DEVICE.fullmatch(device) is None
         or not isinstance(mapper, str)
-        or not _MAPPER.fullmatch(mapper)
+        or _MAPPER.fullmatch(mapper) is None
     ):
         return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
     if not sacred_credential.seated_service_record_present(_SERVICE):
@@ -61,14 +65,235 @@ def open_from_seated_record(payload: object) -> dict[str, Any]:
         _wipe(material)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    del argv
+def _open_block_device(path: str) -> int | None:
+    if not path.startswith("/dev/") or path.startswith("//") or path.endswith("/"):
+        return None
+    parts = path.split("/")[1:]
+    if len(parts) < 2 or parts[0] != "dev" or any(part in {"", ".", ".."} for part in parts):
+        return None
+    parent_fd: int | None = None
+    current_fd: int | None = None
+    device_fd: int | None = None
     try:
-        value = open_from_seated_record(json.load(sys.stdin))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        value = _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    print(json.dumps(value, sort_keys=True))
-    return 0 if value["ok"] else 1
+        parent_fd = os.open("/", _DIR_FLAGS)
+        current_fd = os.open("dev", _DIR_FLAGS, dir_fd=parent_fd)
+        os.close(parent_fd)
+        parent_fd = None
+        for part in parts[1:-1]:
+            next_fd = os.open(part, _DIR_FLAGS, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+        device_flags = getattr(os, "O_PATH", os.O_RDONLY) | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+        device_fd = os.open(parts[-1], device_flags, dir_fd=current_fd)
+        if not stat.S_ISBLK(os.fstat(device_fd).st_mode):
+            return None
+        pinned_fd = device_fd
+        device_fd = None
+        return pinned_fd
+    except OSError:
+        return None
+    finally:
+        for fd in (device_fd, current_fd, parent_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def _mountpoint_parts(path: Any) -> tuple[str, ...] | None:
+    if not isinstance(path, str) or not path.startswith("/") or path in {"", "/"} or "\x00" in path:
+        return None
+    if path.startswith("//") or path.endswith("/"):
+        return None
+    parts = tuple(path[1:].split("/"))
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    if parts[0] not in {"mnt", "vault"} and len(parts) != 1:
+        return None
+    return parts
+
+
+def _mountpoint_is_safe(parts: tuple[str, ...]) -> bool:
+    """Check existing components without following links or creating anything."""
+    root_fd: int | None = None
+    current_fd: int | None = None
+    try:
+        root_fd = os.open("/", _DIR_FLAGS)
+        if parts[0] in {"mnt", "vault"}:
+            current_fd = os.open(parts[0], _DIR_FLAGS, dir_fd=root_fd)
+            os.close(root_fd)
+            root_fd = None
+            for part in parts[1:]:
+                try:
+                    next_fd = os.open(part, _DIR_FLAGS, dir_fd=current_fd)
+                except FileNotFoundError:
+                    return True
+                os.close(current_fd)
+                current_fd = next_fd
+            return True
+        try:
+            os.stat(parts[0], dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return True
+        return False
+    except OSError:
+        return False
+    finally:
+        for fd in (current_fd, root_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def _walk_mountpoint(parts: tuple[str, ...], *, create: bool) -> int | None:
+    """Open/create allowed mountpoint components without following symlinks."""
+    root_fd: int | None = None
+    current_fd: int | None = None
+    try:
+        root_fd = os.open("/", _DIR_FLAGS)
+        if parts[0] in {"mnt", "vault"}:
+            current_fd = os.open(parts[0], _DIR_FLAGS, dir_fd=root_fd)
+            os.close(root_fd)
+            root_fd = None
+            rest = parts[1:]
+        else:
+            # A new direct child of / is allowed; overlaying an existing root
+            # directory is not. This keeps the root allowance from replacing
+            # system mountpoints such as /etc or /var.
+            if create:
+                try:
+                    os.mkdir(parts[0], 0o755, dir_fd=root_fd)
+                except FileExistsError:
+                    return None
+                current_fd = os.open(parts[0], _DIR_FLAGS, dir_fd=root_fd)
+                os.close(root_fd)
+                root_fd = None
+                return current_fd
+            try:
+                os.stat(parts[0], dir_fd=root_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return None
+            return None
+        for part in rest:
+            if create:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=current_fd)
+                except FileExistsError:
+                    pass
+            try:
+                next_fd = os.open(part, _DIR_FLAGS, dir_fd=current_fd)
+            except FileNotFoundError:
+                return None
+            os.close(current_fd)
+            current_fd = next_fd
+        result_fd = current_fd
+        current_fd = None
+        return result_fd
+    except OSError:
+        return None
+    finally:
+        for fd in (current_fd, root_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def _unlock(payload: Any) -> dict[str, Any]:
+    required = {"op", "mapper", "device", "mountpoint", "passphrase"}
+    if not isinstance(payload, dict) or set(payload) != required or payload.get("op") != "unlock":
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    mapper, device, mountpoint, passphrase = (
+        payload.get("mapper"), payload.get("device"), payload.get("mountpoint"), payload.get("passphrase")
+    )
+    if os.geteuid() != 0 or not isinstance(passphrase, str):
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    if not isinstance(mapper, str) or _MAPPER.fullmatch(mapper) is None:
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    if not isinstance(device, str):
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    if not isinstance(mountpoint, str):
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    parts = _mountpoint_parts(mountpoint)
+    if parts is None or not _mountpoint_is_safe(parts):
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    device_fd = _open_block_device(device)
+    if device_fd is None:
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    secret = bytearray()
+    try:
+        secret = bytearray(passphrase.encode("utf-8"))
+        opened = subprocess.run(
+            [_CRYPTSETUP, "open", "--batch-mode", "--key-file", "-", f"/proc/self/fd/{device_fd}", mapper],
+            input=bytes(secret),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=30,
+            pass_fds=(device_fd,),
+        )
+        if opened.returncode != 0:
+            return _receipt(False, True, "agathodaimon-vault-unlock-refused")
+        mount_fd = _walk_mountpoint(parts, create=True)
+        if mount_fd is None:
+            return _receipt(False, True, "agathodaimon-vault-mountpoint-refused")
+        try:
+            mounted = subprocess.run(
+                ["/usr/bin/mount", "--", f"/dev/mapper/{mapper}", f"/proc/self/fd/{mount_fd}"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=30,
+                pass_fds=(mount_fd,),
+            )
+        finally:
+            os.close(mount_fd)
+        return _receipt(
+            mounted.returncode == 0,
+            True,
+            "none" if mounted.returncode == 0 else "agathodaimon-vault-mount-refused",
+        )
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return _receipt(False, True, "agathodaimon-vault-unlock-refused")
+    finally:
+        _wipe(secret)
+        try:
+            os.close(device_fd)
+        except OSError:
+            pass
+
+
+def _dispatch(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    payload = value.get("payload") if "schema" in value else value
+    if not isinstance(payload, dict):
+        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    if payload.get("op") == "unlock":
+        return _unlock(payload)
+    return open_from_seated_record(payload)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args:
+        receipt = _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    else:
+        try:
+            raw = sys.stdin.buffer.read(131073)
+            if len(raw) > 131072:
+                raise ValueError
+            value = json.loads(raw.decode("utf-8"))
+            receipt = _dispatch(value)
+        except Exception:
+            receipt = _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    print(json.dumps(receipt, separators=(",", ":")))
+    return 0 if receipt["ok"] else 1
 
 
 if __name__ == "__main__":

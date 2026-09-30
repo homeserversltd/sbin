@@ -9,7 +9,8 @@ from typing import Any
 
 SCHEMA = "caduceus.staff.appliance-service.v1"
 CONFIG_PATH = Path("/etc/appliance/config.json")
-ACTIONS = {"start", "stop", "restart", "enable", "disable", "status"}
+ACTIONS = {"start", "stop", "restart", "reload", "enable", "disable", "status"}
+CERT_DEPENDENTS = {"forgejo.service": "restart", "nginx.service": "reload"}
 
 
 def safe_service_name(value: Any) -> bool:
@@ -106,12 +107,13 @@ def main(argv: list[str] | None = None) -> int:
     if systemd_service.startswith("-"):
         return _emit(_receipt(first_missing_signal="portal-service-name-invalid"))
 
-    try:
-        allowed = _portal_service_allowlist()
-    except ValueError:
-        return _emit(_receipt(first_missing_signal="portal-service-registry-unreadable"))
-    if systemd_service not in allowed:
-        return _emit(_receipt(first_missing_signal="portal-service-not-allowed"))
+    if CERT_DEPENDENTS.get(systemd_service) != action:
+        try:
+            allowed = _portal_service_allowlist()
+        except ValueError:
+            return _emit(_receipt(first_missing_signal="portal-service-registry-unreadable"))
+        if systemd_service not in allowed:
+            return _emit(_receipt(first_missing_signal="portal-service-not-allowed"))
 
     try:
         command = _run_systemctl(action, "--", systemd_service)
