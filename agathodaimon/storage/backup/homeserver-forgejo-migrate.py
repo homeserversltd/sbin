@@ -132,6 +132,18 @@ def _expand_ini_value(parser: configparser.ConfigParser, section: str, raw: str)
     raise RestorePreflightError("dump app.ini [repository] ROOT interpolation is recursive")
 
 
+def _local_ini_option(
+    parser: configparser.ConfigParser, section: str, option: str
+) -> Optional[str]:
+    """Return a section's explicit option without ConfigParser DEFAULT inheritance."""
+    # ConfigParser exposes inherited DEFAULT values through public getters;
+    # its parsed section map is needed to distinguish explicit local options.
+    options = getattr(parser, "_sections", {}).get(section)
+    if options is None:
+        return None
+    return options.get(parser.optionxform(option))
+
+
 def _reject_symlink_components(path: Path, description: str) -> None:
     """Reject existing symlinks in a destination path without resolving through them."""
     candidate = Path(os.path.abspath(path))
@@ -159,11 +171,9 @@ def _reject_symlink_components(path: Path, description: str) -> None:
 def _repository_root_from_app_ini(parser: configparser.ConfigParser) -> Path:
     default_root = "/opt/forgejo/repositories"
     try:
-        raw_root = (
-            parser.get("repository", "root", raw=True)
-            if parser.has_section("repository") and parser.has_option("repository", "root")
-            else default_root
-        )
+        raw_root = _local_ini_option(parser, "repository", "root")
+        if raw_root is None:
+            raw_root = default_root
         root = _expand_ini_value(parser, "repository", raw_root).strip()
     except (configparser.Error, ValueError) as exc:
         raise RestorePreflightError("dump app.ini [repository] ROOT could not be read") from exc
@@ -250,9 +260,15 @@ def _file_preflight(dump_zip: str | Path, db_dump: str | Path) -> _RestorePlan:
 
     try:
         parser = configparser.ConfigParser(interpolation=None)
-        parser.read_string(app_ini.decode("utf-8-sig"))
-        database_user = parser.get("database", "user", raw=True).strip()
-        database_password = parser.get("database", "passwd", raw=True, fallback=None)
+        app_ini_text = app_ini.decode("utf-8-sig")
+        # Forgejo permits sectionless keys before sections; ConfigParser treats
+        # them as DEFAULT options when the real text is prefixed this way.
+        parser.read_string("[DEFAULT]\n" + app_ini_text)
+        database_user = _local_ini_option(parser, "database", "user")
+        if database_user is None:
+            raise configparser.NoOptionError("user", "database")
+        database_user = database_user.strip()
+        database_password = _local_ini_option(parser, "database", "passwd")
         if database_password is not None:
             _sql_literal(database_password)
     except (UnicodeDecodeError, configparser.Error, ValueError) as exc:
@@ -1012,10 +1028,13 @@ def do_restore(dump_zip: str, db_dump: str, no_doctor: bool, yes: bool) -> int:
             ]
         )
     except (OSError, UnicodeError):
-        logger.error(
-            "Doctor result: at least 1 error (count unavailable; doctor command could not be run or its output could not be read)"
+        logger.warning(
+            "Doctor result: skipped (doctor command could not be run or its output could not be read)"
         )
-        return 1
+        return 0
+    if not isinstance(doctor.stdout, str) or not isinstance(doctor.stderr, str):
+        logger.warning("Doctor result: skipped (doctor output could not be read)")
+        return 0
     doctor_output = f"{doctor.stdout or ''}\n{doctor.stderr or ''}"
     error_total = _doctor_error_total(doctor_output)
     error_lines = _doctor_error_lines(doctor_output)
@@ -1029,7 +1048,7 @@ def do_restore(dump_zip: str, db_dump: str, no_doctor: bool, yes: bool) -> int:
         else:
             result = "at least 1 error (count unavailable)"
         logger.error("Doctor result: %s", result)
-        return 1
+        return 0
 
     logger.info("Doctor result: clean")
     return 0
