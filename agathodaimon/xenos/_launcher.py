@@ -1,6 +1,7 @@
 """Root-only, consumed-in-place launcher for a Xenia guest clone."""
 from __future__ import annotations
 
+import grp
 import ipaddress
 import json
 import os
@@ -95,9 +96,18 @@ def _staff_identity() -> pwd.struct_passwd:
         raise Refusal("xenos-staff-identity-missing") from exc
 
 
-def _drop_to_staff(staff: pwd.struct_passwd) -> Callable[[], None]:
+def _xenia_group_identity() -> grp.struct_group:
+    try:
+        return grp.getgrnam(XENIA_USER)
+    except KeyError as exc:
+        raise Refusal("xenos-xenia-group-missing") from exc
+
+
+def _drop_to_staff(
+    staff: pwd.struct_passwd, xenia: grp.struct_group
+) -> Callable[[], None]:
     def drop() -> None:
-        os.setgroups([])
+        os.setgroups([xenia.gr_gid])
         os.setgid(staff.pw_gid)
         os.setuid(staff.pw_uid)
 
@@ -186,13 +196,14 @@ def run_band(xenos_id: str, band: str, stdin_bytes: bytes) -> dict[str, object]:
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise Refusal("xenos-staff-cli-invalid")
     staff = _staff_identity()
+    xenia = _xenia_group_identity()
     try:
         returncode, stdout, stderr, timed_out = _run(
             [PYTHON3, str(cli), band],
             stdin_bytes,
             cwd=clone,
             environment=_minimal_environment(xenos_id, clone, STAFF_HOME),
-            preexec_fn=_drop_to_staff(staff),
+            preexec_fn=_drop_to_staff(staff, xenia),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise Refusal("xenos-band-launch-failed") from exc
