@@ -55,7 +55,7 @@ def open_from_seated_record(payload: object, *, device_fd: int | None = None) ->
     device, mapper = payload.get("device"), payload.get("mapper")
     if (
         not isinstance(device, str)
-        or _DEVICE.fullmatch(device) is None
+        or (device_fd is None and _DEVICE.fullmatch(device) is None)
         or not isinstance(mapper, str)
         or _MAPPER.fullmatch(mapper) is None
     ):

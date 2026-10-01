@@ -120,6 +120,7 @@
     ["service", "staff-daemon"],
     ["settings", "appearance"],
     ["settings", "default-apps"],
+    ["settings", "datetime"],
     ["settings", "display"],
     ["settings", "input"],
     ["settings", "notifications"],

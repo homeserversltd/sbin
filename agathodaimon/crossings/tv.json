@@ -3,6 +3,7 @@
   "profile": "tv",
   "bands": [
     "appliance/journal-vacuum",
+    "appliance/service",
     "network/child-device",
     "network/dhcp",
     "network/dns",
@@ -24,6 +25,7 @@
     ["exousia", "verify"],
     ["settings", "appearance"],
     ["settings", "default-apps"],
+    ["settings", "datetime"],
     ["settings", "display"],
     ["settings", "notifications"],
     ["settings", "sound"]

@@ -3,6 +3,7 @@
   "profile": "homeconsole",
   "bands": [
     "appliance/journal-vacuum",
+    "appliance/service",
     "console/restart",
     "games/provider-keys",
     "games/sync",
@@ -27,6 +28,7 @@
     ["exousia", "verify"],
     ["settings", "appearance"],
     ["settings", "default-apps"],
+    ["settings", "datetime"],
     ["settings", "display"],
     ["settings", "notifications"],
     ["settings", "sound"]
