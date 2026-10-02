@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import importlib.util
+import getpass
 import json
 import os
 import re
 import stat
 import sys
+import warnings
 from pathlib import Path
 from io import BytesIO, StringIO
 
@@ -80,6 +82,10 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
 
 _CROSSING_SCHEMA = "agathodaimon.crossings.v1"
 _CROSSING_PART = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+_CROSSING_ROUTE_SEGMENT = r"(?:[a-z0-9][a-z0-9_.-]*|:[a-z][a-z0-9_]*)"
+_CROSSING_API_ROUTE = re.compile(
+    rf"^/api/v1/{_CROSSING_ROUTE_SEGMENT}(?:/{_CROSSING_ROUTE_SEGMENT})*$"
+)
 _CROSSING_JSON_LIMIT = 1024 * 1024
 
 
@@ -131,7 +137,9 @@ def _profile_for_crossing() -> tuple[str, bool]:
     return (profile if valid else "unknown"), valid
 
 
-def _crossing_publication(profile: str) -> tuple[set[str], set[tuple[str, str]]] | None:
+def _crossing_publication(
+    profile: str,
+) -> tuple[set[str], set[tuple[str, str]], set[str], set[tuple[str, str]], set[str]] | None:
     seat_profile = profile
     try:
         value = _read_json_nofollow(ROOT / "crossings" / f"{profile}.json")
@@ -175,7 +183,58 @@ def _crossing_publication(profile: str) -> tuple[set[str], set[tuple[str, str]]]
         if pair[0] == "lib":
             return None
         clean_verbs.add((pair[0], pair[1]))
-    return clean_bands, clean_verbs
+    published_routes = value.get("routes")
+    if not isinstance(published_routes, list):
+        return None
+    clean_routes: set[str] = set()
+    for route in published_routes:
+        if not isinstance(route, str) or _CROSSING_API_ROUTE.fullmatch(route) is None:
+            return None
+        clean_routes.add(route)
+
+    administrative = value.get("administrative")
+    if not isinstance(administrative, dict) or set(administrative) != {"bands", "verbs", "routes"}:
+        return None
+    admin_bands = administrative.get("bands")
+    admin_verbs = administrative.get("verbs")
+    admin_routes = administrative.get("routes")
+    if not isinstance(admin_bands, list) or not isinstance(admin_verbs, list) or not isinstance(admin_routes, list):
+        return None
+
+    clean_admin_bands: set[str] = set()
+    for band in admin_bands:
+        if (
+            not isinstance(band, str)
+            or not band
+            or band.startswith("/")
+            or band.endswith("/")
+            or any(not _CROSSING_PART.fullmatch(part) for part in band.split("/"))
+            or band.split("/", 1)[0] == "lib"
+            or band not in clean_bands
+        ):
+            return None
+        clean_admin_bands.add(band)
+
+    clean_admin_verbs: set[tuple[str, str]] = set()
+    for pair in admin_verbs:
+        if (
+            not isinstance(pair, list)
+            or len(pair) != 2
+            or not all(isinstance(part, str) and _CROSSING_PART.fullmatch(part) for part in pair)
+            or pair[0] == "lib"
+        ):
+            return None
+        verb = (pair[0], pair[1])
+        if verb not in clean_verbs:
+            return None
+        clean_admin_verbs.add(verb)
+
+    clean_admin_routes: set[str] = set()
+    for route in admin_routes:
+        if not isinstance(route, str) or _CROSSING_API_ROUTE.fullmatch(route) is None or route not in clean_routes:
+            return None
+        clean_admin_routes.add(route)
+    return clean_bands, clean_verbs, clean_admin_bands, clean_admin_verbs, clean_admin_routes
 
 
 def _crossing_request(args: list[str]) -> tuple[str, str | tuple[str, str] | None, str, bool]:
@@ -243,7 +302,7 @@ def _admit_caduceus_crossing(args: list[str]) -> bool:
     if not profile_ok or publication is None or first_is_lib or resolved_is_lib:
         _refuse_crossing(profile, requested)
         return False
-    bands, verbs = publication
+    bands, verbs, _admin_bands, _admin_verbs, _admin_routes = publication
     published_verb_targets = {
         target
         for pair in verbs
@@ -261,16 +320,284 @@ def _admit_caduceus_crossing(args: list[str]) -> bool:
         return False
     return True
 
+
+def _pin_required() -> bool:
+    try:
+        value = _read_json_nofollow(Path("/etc/appliance/config.json"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return False
+    global_config = value.get("global") if isinstance(value, dict) else None
+    admin = global_config.get("admin") if isinstance(global_config, dict) else None
+    return isinstance(admin, dict) and admin.get("pin_required") is True
+
+
+def _take_envelope_pin(value: object) -> tuple[bool, object]:
+    """Remove the secret flag from every supported Alkahest carrier location."""
+    if not isinstance(value, dict):
+        return False, None
+    found = False
+    pin = None
+    for container in (value.get("payload"), value):
+        if not isinstance(container, dict):
+            continue
+        flags = container.get("flags")
+        exousia = flags.get("exousia") if isinstance(flags, dict) else None
+        if isinstance(exousia, dict) and "pin" in exousia:
+            candidate = exousia.pop("pin")
+            if not found:
+                found, pin = True, candidate
+    return found, pin
+
+
+def _argv_envelope_has_pin(args: list[str]) -> bool:
+    for argument in args:
+        if not isinstance(argument, str) or not argument.lstrip().startswith("{"):
+            continue
+        try:
+            envelope = json.loads(argument)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        found, _pin = _take_envelope_pin(envelope)
+        if found:
+            return True
+    return False
+
+
+def _capture_piped_envelope() -> tuple[dict | None, bool, object]:
+    """Buffer piped stdin once, scrub a PIN, then restore the consumer stream."""
+    try:
+        if sys.stdin.isatty():
+            return None, False, None
+        raw = sys.stdin.read()
+    except (AttributeError, OSError, UnicodeError):
+        return None, False, None
+    envelope = None
+    pin_present = False
+    pin = None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        parsed = None
+    if isinstance(parsed, dict):
+        envelope = parsed
+        pin_present, pin = _take_envelope_pin(envelope)
+        if pin_present:
+            raw = json.dumps(envelope, separators=(",", ":"))
+    sys.stdin = _EnvelopeStdin(raw)
+    return envelope, pin_present, pin
+
+
+def _cli_target(args: list[str]) -> tuple[str | None, list[str]]:
+    """Resolve slash, noun/verb, and declared service aliases to one band path."""
+    if not args:
+        return None, []
+    if "/" in args[0]:
+        raw = args[0]
+        if (
+            raw.startswith("/")
+            or raw.endswith("/")
+            or not all(_CROSSING_PART.fullmatch(part) for part in raw.split("/"))
+            or len(args) not in {1, 2}
+            or (len(args) == 2 and not args[1].lstrip().startswith("{"))
+        ):
+            return None, []
+        return raw, []
+    service_alias = args[0] == "service" and len(args) > 1 and args[1] in SERVICE_ALIASES
+    alias = SERVICE_ALIASES[args[1]] if service_alias else ALIASES.get(args[0], (args[0],))
+    remainder = args[2:] if service_alias else args[1:]
+    path = ROOT
+    try:
+        for part in alias:
+            if part not in _children(path):
+                return None, []
+            path /= part
+        while remainder and remainder[0] in _children(path):
+            path /= remainder.pop(0)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None, []
+    return path.relative_to(ROOT).as_posix(), remainder
+
+
+def _administrative_target(target: str, publication) -> bool:
+    if publication is None:
+        return False
+    _bands, _verbs, admin_bands, admin_verbs, _routes = publication
+    targets = {
+        resolved
+        for pair in admin_verbs
+        if (resolved := _crossing_resolved_target(list(pair))) is not None
+    }
+    return any(
+        target == published or target.startswith(published + "/")
+        for published in admin_bands | targets
+    )
+
+
+def _administrative_candidate(target: str | None) -> bool:
+    if target is None:
+        return False
+    return (
+        target in {
+            "appliance/service",
+            "appliance/sudo-passwordless",
+            "network/child-device",
+            "network/dns",
+            "portals/service-control",
+            "storage/vault/open",
+            "storage/vault/policy",
+        }
+        or target.startswith("settings/")
+        or target in {"exousia/change", "exousia/reset-default"}
+    )
+
+
+def _envelope_operation(envelope: dict | None, remainder: list[str]) -> str | None:
+    if remainder:
+        if remainder[0] == "whitelist" and len(remainder) > 1:
+            return f"whitelist {remainder[1]}"
+        if remainder[0] in {"resolver", "device-name", "alias"} and len(remainder) > 1:
+            return remainder[1].lower()
+        return remainder[0].lower()
+    if not isinstance(envelope, dict):
+        return None
+    payload = envelope.get("payload")
+    containers = [payload, envelope]
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        metadata = container.get("metadata")
+        if isinstance(metadata, dict):
+            containers.append(metadata)
+        for key in ("action", "op", "operation", "verb"):
+            value = container.get(key)
+            if isinstance(value, str) and value:
+                return value.lower()
+    transition = envelope.get("transition")
+    if isinstance(transition, str) and transition:
+        parts = [part for part in re.split(r"[./:]", transition) if part]
+        if parts:
+            return parts[-1].lower()
+    return None
+
+
+def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | None) -> bool:
+    operation = _envelope_operation(envelope, remainder)
+    read_only = {"get", "read", "status", "list", "show", "observed", "validate", "verify"}
+    mutation = {"set", "change", "apply", "mutate", "write", "create", "remove", "update", "start", "stop", "restart", "enable", "disable", "reset-default", "unlock", "open", "register", "unregister"}
+    if target.startswith("settings/"):
+        if operation in read_only:
+            return False
+        if operation in mutation:
+            return True
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        if not isinstance(payload, dict) and isinstance(envelope, dict):
+            payload = envelope
+        return isinstance(payload, dict) and any(key not in {"flags", "rooms", "stamps"} for key in payload)
+    if target == "storage/vault/policy":
+        return operation != "read"
+    if target == "network/dns":
+        return operation not in {"read", "status"}
+    if target == "network/child-device":
+        return operation not in read_only and operation != "whitelist get"
+    if target == "appliance/service":
+        return operation not in {"read", "get", "show", "list", "observed", "status"}
+    if target == "portals/service-control":
+        return operation not in read_only and not (operation and operation.endswith("-status"))
+    if target == "appliance/sudo-passwordless":
+        return operation not in {"read", "status", "get"}
+    return True
+
+
+def _prompt_administrative_pin() -> tuple[bool, str | None]:
+    try:
+        tty_fd = os.open("/dev/tty", os.O_RDWR | getattr(os, "O_NOCTTY", 0))
+    except OSError:
+        return False, None
+    os.close(tty_fd)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            return True, getpass.getpass("Appliance PIN: ")
+    except (EOFError, OSError, getpass.GetPassWarning):
+        return False, None
+
+
+def _verify_administrative_pin(pin: object) -> bool:
+    if not isinstance(pin, str):
+        return False
+    try:
+        module = _load(ROOT / "lib" / "sacred_credential" / "index.py")
+        verify = getattr(module, "verify_and_derive_caduceus", None)
+        if not callable(verify):
+            return False
+        derived = verify(pin)
+        close = getattr(derived, "close", None)
+        if callable(close):
+            close()
+        return True
+    except Exception:
+        return False
+
+
+def _refuse_administrative(signal: str) -> int:
+    print(json.dumps({
+        "schema": "agathodaimon.front-door.v1",
+        "ok": False,
+        "firstMissingSignal": signal,
+    }, separators=(",", ":")))
+    return 1
+
+
+def _administrative_pin_admits(
+    target: str | None,
+    remainder: list[str],
+    envelope: dict | None,
+    pin_required: bool,
+    caduceus_root: bool,
+    pin_present: bool,
+    pin: object,
+    publication,
+) -> bool:
+    if not pin_required or caduceus_root or target is None:
+        return True
+    is_admin = (
+        _administrative_candidate(target)
+        if publication is None
+        else _administrative_target(target, publication)
+    )
+    if not is_admin or not _admin_mutation_request(target, remainder, envelope):
+        return True
+    if not pin_present:
+        tty_available, pin = _prompt_administrative_pin()
+        if not tty_available:
+            _refuse_administrative("agathodaimon-administrative-pin-required")
+            return False
+    if not _verify_administrative_pin(pin):
+        pin = None
+        _refuse_administrative("agathodaimon-administrative-pin-wrong")
+        return False
+    pin = None
+    return True
+
+
 def main(argv=None):
     args=list(sys.argv[1:] if argv is None else argv)
-    if os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0:
+    caduceus_root = os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0
+    if caduceus_root:
         if not _admit_caduceus_crossing(args):
             return 1
         for name in ("SUDO_USER", "SUDO_UID", "SUDO_GID", "SUDO_COMMAND"):
             os.environ.pop(name, None)
+    if _argv_envelope_has_pin(args):
+        return _refuse_administrative("agathodaimon-administrative-pin-required")
     if not args:
         print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT)},indent=2)); return 0
     original=args[:]
+    pin_required = _pin_required()
+    publication = None
+    if pin_required:
+        profile, profile_ok = _profile_for_crossing()
+        publication = _crossing_publication(profile) if profile_ok else None
     if len(args) == 1 and "/" in args[0]:
         raw_envelope = sys.stdin.read()
         try:
@@ -281,10 +608,21 @@ def main(argv=None):
         if not isinstance(envelope, dict):
             print("envelope must be a JSON object", file=sys.stderr)
             return 2
+        pin_present, pin = _take_envelope_pin(envelope)
+        if pin_present:
+            raw_envelope = json.dumps(envelope, separators=(",", ":"))
         target = _slash_target(args[0])
         if target is None:
             print(f"unknown path: {args[0]}", file=sys.stderr)
             return 2
+        cli_target, remainder = _cli_target(args)
+        admitted = _administrative_pin_admits(
+            cli_target, remainder, envelope, pin_required, caduceus_root,
+            pin_present, pin, publication,
+        )
+        pin = None
+        if not admitted:
+            return 1
         return _invoke_envelope(target, envelope, raw_envelope)
     if len(args) == 2 and "/" in args[0]:
         try:
@@ -300,6 +638,12 @@ def main(argv=None):
         if target is None:
             print(f"unknown path: {args[0]}", file=sys.stderr)
             return 2
+        cli_target, remainder = _cli_target(args)
+        if not _administrative_pin_admits(
+            cli_target, remainder, envelope, pin_required, caduceus_root,
+            False, None, publication,
+        ):
+            return 1
         return _invoke_envelope(target, envelope, raw_envelope)
     service_alias=args[0]=="service" and len(args)>1 and args[1] in SERVICE_ALIASES
     alias=SERVICE_ALIASES[args[1]] if service_alias else ALIASES.get(args[0],(args[0],))
@@ -325,6 +669,15 @@ def main(argv=None):
     mod=_load(path/"index.py"); fn=getattr(mod,"main",None)
     if fn is None:
         print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False})); return 0
+    envelope, pin_present, pin = _capture_piped_envelope()
+    cli_target = path.relative_to(ROOT).as_posix()
+    admitted = _administrative_pin_admits(
+        cli_target, remainder, envelope, pin_required, caduceus_root,
+        pin_present, pin, publication,
+    )
+    pin = None
+    if not admitted:
+        return 1
     if original == ["cert", "house-ca"]:
         try:
             payload = json.load(sys.stdin)
