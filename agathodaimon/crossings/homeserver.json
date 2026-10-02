@@ -4,6 +4,7 @@
   "bands": [
     "appliance/journal-vacuum",
     "appliance/service",
+    "appliance/sudo-passwordless",
     "network/child-device",
     "network/dhcp",
     "network/dns",

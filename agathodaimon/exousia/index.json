@@ -1,1 +1,1 @@
-{"children":["bind","verify","change","reset-default","forgejo-credential","pam-gate","pam-verify"]}
+{"children":["bind","verify","change","reset-default","forgejo-credential"]}

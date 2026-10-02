@@ -2,6 +2,7 @@
   "children": [
     "factory-fallback",
     "journal-vacuum",
-    "service"
+    "service",
+    "sudo-passwordless"
   ]
 }
