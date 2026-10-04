@@ -20,7 +20,6 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 
 ### Storage & NAS Management
 - **`setupNAS.sh`** - Comprehensive NAS setup script that mirrors backend route `/api/admin/diskman/apply-permissions`
-- **`websiteMountVault.sh`** - Non-interactive LUKS vault unlocking with systemd integration
 
 ### Hardware Testing & Validation
 - **`harddrive_test.sh`** - Comprehensive hard drive testing including badblocks, filesystem checks, and LUKS support

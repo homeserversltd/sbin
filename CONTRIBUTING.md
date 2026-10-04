@@ -329,7 +329,6 @@ We aim to review PRs within **1 week**. Simple bug fixes may be reviewed faster.
 
 **Storage Management:**
 - `setupNAS.sh` - NAS configuration and permissions
-- `websiteMountVault.sh` - LUKS vault mounting
 
 **Hardware Testing:**
 - `harddrive_test.sh` - Drive testing and validation
