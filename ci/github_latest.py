@@ -23,6 +23,7 @@ GITHUB_API = "https://api.github.com"
 GITHUB_UPLOADS = "https://uploads.github.com"
 FORGEJO_GIT = "https://git.home.arpa/HOMESERVERSLTD/sbin.git"
 OWNER_REPO = "HOMESERVERSLTD/sbin"
+FORGEJO_PUSH_MIRRORS_SYNC_PATH = f"/repos/{OWNER_REPO}/push_mirrors-sync"
 SOURCE_TAG_PREFIX = "sha-"
 LATEST_TAG = "latest"
 FLAG_NAME = "release.flag"
@@ -669,14 +670,14 @@ def github_ref_points_to_sha(ref: dict[str, Any] | None, source_sha: str) -> boo
 
 
 def wait_for_github_mirror(source_sha: str) -> tuple[str, dict[str, Any] | None]:
-    for attempt in range(24):
+    for attempt in range(37):
         main_sha = read_github_main_sha()
         ref = read_github_ref()
         if main_sha == source_sha and github_ref_points_to_sha(ref, source_sha):
             return main_sha, ref
-        if attempt < 23:
+        if attempt < 36:
             time.sleep(5)
-    fail("GitHub main and latest tag did not mirror CI_COMMIT_SHA within 120 seconds")
+    fail("GitHub main and latest tag did not mirror CI_COMMIT_SHA within 180 seconds")
 
 
 def push_forgejo_tag(source_sha: str, expected_object_sha: str | None, token: str) -> None:
@@ -754,6 +755,28 @@ def ensure_forgejo_latest_tag(source_sha: str, token: str) -> dict[str, Any]:
         "action": "force-move" if changed else "keep",
         "readback_object_sha": after["object"]["sha"],
     }
+
+
+def sync_forgejo_push_mirrors(token: str) -> int:
+    status, _ = request(
+        "POST", FORGEJO_PUSH_MIRRORS_SYNC_PATH, token, service="forgejo", body=b""
+    )
+    print(
+        json.dumps(
+            {
+                "step": "github-latest-sbin",
+                "operation": "push_mirrors-sync",
+                "http_status": status,
+            },
+            separators=(",", ":"),
+        )
+    )
+    if not 200 <= status < 300:
+        fail(
+            "github-latest-sbin refusal: Forgejo push_mirrors-sync returned "
+            f"HTTP {status}"
+        )
+    return status
 
 
 def read_github_release(release_id: int, token: str) -> dict[str, Any]:
@@ -994,6 +1017,12 @@ def get_plan(
                 ),
                 "assets": asset_summary(expected),
             },
+            "push_mirrors_sync": {
+                "method": "POST",
+                "path": FORGEJO_PUSH_MIRRORS_SYNC_PATH,
+                "body": "empty",
+                "action": "pending",
+            },
         },
         "github": {
             "main_sha": main_sha,
@@ -1032,6 +1061,7 @@ def publish(source_sha: str, expected: dict[str, bytes], forgejo_token: str, git
     # A conflicting release inventory blocks all writes, including the source-tag move.
     latest = require_single_latest_release(list_github_releases(github_token))
     forgejo_tag = ensure_forgejo_latest_tag(source_sha, forgejo_token)
+    mirror_sync_http_status = sync_forgejo_push_mirrors(forgejo_token)
     wait_for_github_mirror(source_sha)
 
     latest = require_single_latest_release(list_github_releases(github_token))
@@ -1054,7 +1084,11 @@ def publish(source_sha: str, expected: dict[str, bytes], forgejo_token: str, git
         "status": "published",
         "repo": OWNER_REPO,
         "source_sha": source_sha,
-        "forgejo": {"tag": f"refs/tags/{LATEST_TAG}", **forgejo_tag},
+        "forgejo": {
+            "tag": f"refs/tags/{LATEST_TAG}",
+            **forgejo_tag,
+            "push_mirrors_sync_http_status": mirror_sync_http_status,
+        },
         "github": {
             "main_sha": main_sha,
             "mirror_tag": {
