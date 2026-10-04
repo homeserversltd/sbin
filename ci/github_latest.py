@@ -79,15 +79,10 @@ def tls_context() -> ssl.SSLContext:
     if not ca_path or not Path(ca_path).is_file() or Path(ca_path).stat().st_size == 0:
         fail("SSL_CERT_FILE must name the installed non-empty house CA bundle")
 
-    # Load the platform trust store independently, then add the house CA.
-    previous = os.environ.pop("SSL_CERT_FILE", None)
-    try:
-        context = ssl.create_default_context()
-    finally:
-        if previous is not None:
-            os.environ["SSL_CERT_FILE"] = previous
-    context.load_verify_locations(cafile=ca_path)
-    return context
+    # The complete Kether bundle already has public roots and the house CA;
+    # avoid platform-first loading, whose duplicate-certificate selection order
+    # is ambiguous.
+    return ssl.create_default_context(cafile=ca_path)
 
 
 def request(
