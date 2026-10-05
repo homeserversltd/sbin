@@ -792,15 +792,21 @@ def delete_release_assets(release_id: int, release: dict[str, Any], token: str) 
     for name, asset in sorted(assets.items()):
         status, _ = request(
             "DELETE",
-            github_api_path(f"releases/{release_id}/assets/{asset['id']}"),
+            github_api_path(f"releases/assets/{asset['id']}"),
             token,
             service="github",
         )
         if status not in (204, 404):
             fail(f"GitHub asset deletion for {name} returned HTTP {status}")
         reread = read_github_release(release_id, token)
-        if name in github_asset_map(reread):
+        reread_assets = github_asset_map(reread)
+        if name in reread_assets:
             fail(f"GitHub asset deletion for {name} was not verified")
+        if any(
+            reread_asset["id"] == asset["id"]
+            for reread_asset in reread_assets.values()
+        ):
+            fail(f"GitHub asset deletion for {name} left its id present")
     reread = read_github_release(release_id, token)
     if reread.get("tag_name") != LATEST_TAG or github_asset_map(reread):
         fail("GitHub latest release still has assets after replacement preparation")
