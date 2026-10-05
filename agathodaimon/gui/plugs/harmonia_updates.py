@@ -11,7 +11,7 @@ except ImportError:
     _spec=_importlib_util.spec_from_file_location("_common",__file__.replace(__file__.split("/")[-1],"_common.py")); _mod=_importlib_util.module_from_spec(_spec); _sys.modules["_common"]=_mod; _spec.loader.exec_module(_mod)
     from _common import _receipt_ok, _request, _signal
 PLUG={"id":"harmonia-updates","title":"Updates","icon":"software-update-available-symbolic","order":10,"parent":None}
-STATUS_DOOR="/api/v1/update/status"; TIMER_DOOR="/api/v1/update/service/status"; UPDATE_DOOR="/api/v1/update/now"; MODULES_DOOR="/api/v1/update/modules"; INTERACTABLES_DOOR="/api/v1/interactables"
+STATUS_DOOR="/api/v1/update/status"; TIMER_DOOR="/api/v1/update/service/status"; TIMER_TOGGLE_DOOR="/api/v1/update/service/toggle"; UPDATE_DOOR="/api/v1/update/now"; MODULES_DOOR="/api/v1/update/modules"; INTERACTABLES_DOOR="/api/v1/interactables"
 STATE_PATH=Path(os.environ.get("XDG_STATE_HOME",str(Path.home()/".local/state")))/"appliance-settings/harmonia-updates.json"; STATE_SCHEMA="agathodaimon.gui.settings.state.v1"
 def _text(v:Any,fallback=""): return v.strip() if isinstance(v,str) else fallback
 class State:
@@ -50,9 +50,9 @@ class State:
 def build_widget()->Any:
     import gi; gi.require_version("Gtk","4.0"); gi.require_version("Adw","1")
     from gi.repository import Adw,GLib,Gtk
-    page=Adw.PreferencesPage(title="Updates",icon_name=PLUG["icon"]); state=State(); data={"busy":False,"modules":[],"interactables":[]}
+    page=Adw.PreferencesPage(title="Updates",icon_name=PLUG["icon"]); state=State(); data={"busy":False,"modules":[],"interactables":[],"timer_mutation_busy":False,"timer_generation":0,"timer_confirmed_subtitle":"Update timer · unknown"}
     sg=Adw.PreferencesGroup(title="Update status"); sr=Adw.ActionRow(title="Appliance software",subtitle="Reading Caduceus…"); icon=Gtk.Image.new_from_icon_name("content-loading-symbolic"); sr.add_prefix(icon); sg.add(sr); page.add(sg)
-    tg=Adw.PreferencesGroup(title="Automatic updates"); tr=Adw.ActionRow(title="Update timer",subtitle="Reading Caduceus…"); tg.add(tr); page.add(tg)
+    tg=Adw.PreferencesGroup(title="Automatic updates"); tr=Adw.ActionRow(title="Automatic updates",subtitle="Reading Caduceus…"); timer_switch=Gtk.Switch(valign=Gtk.Align.CENTER); timer_switch.set_sensitive(False); tr.add_suffix(timer_switch); tg.add(tr); page.add(tg)
     mg=Adw.PreferencesGroup(title="Update modules"); mbox=Gtk.Box(orientation=Gtk.Orientation.VERTICAL); mg.add(mbox); page.add(mg)
     pg=Adw.PreferencesGroup(title="Pending updates"); pbox=Gtk.Box(orientation=Gtk.Orientation.VERTICAL); pg.add(pbox); page.add(pg)
     hg=Adw.PreferencesGroup(title="Hidden updates"); hbox=Gtk.Box(orientation=Gtk.Orientation.VERTICAL); hg.add(hbox); page.add(hg)
@@ -82,10 +82,35 @@ def build_widget()->Any:
     def status(r,e):
         if e: sr.set_subtitle(e); icon.set_from_icon_name("dialog-warning-symbolic"); button.set_sensitive(False); return False
         ok=_receipt_ok(r or {}); sr.set_subtitle("Ready" if ok else _signal(r or {}) or "Update service unavailable"); icon.set_from_icon_name("emblem-ok-symbolic" if ok else "dialog-warning-symbolic"); button.set_sensitive(ok and not data["busy"]); return False
-    def timer(r,e):
-        if e: tr.set_subtitle(e)
-        else: tr.set_title(str((r or {}).get("timer","Update timer"))); tr.set_subtitle(str((r or {}).get("timerState","unknown")))
-        return False
+    def set_timer_active(active):
+        timer_switch.handler_block(timer_switch_handler)
+        try: timer_switch.set_active(active); timer_switch.set_state(active)
+        finally: timer_switch.handler_unblock(timer_switch_handler)
+    def timer(r,e,generation):
+        if generation != data["timer_generation"] or data["timer_mutation_busy"]: return False
+        if e: signal=e
+        elif not isinstance(r,dict) or not _receipt_ok(r): signal=_signal(r or {}) or "Timer read refused"
+        else:
+            timer_state=r.get("timerState")
+            if "enabled" in r and type(r.get("enabled")) is not bool: signal=_signal(r) or "Timer status invalid"
+            else:
+                enabled=r["enabled"] if "enabled" in r else timer_state == "active"
+                subtitle=f"{_text(r.get('timer'),'Update timer')} · {_text(timer_state) or 'unknown'}"
+                data["timer_confirmed_subtitle"]=subtitle; tr.set_subtitle(subtitle); set_timer_active(enabled); timer_switch.set_sensitive(True); return False
+        timer_switch.set_sensitive(False); tr.set_subtitle(f"{data['timer_confirmed_subtitle']} — {signal}"); return False
+    def toggle_timer(sw,enabled):
+        if data["timer_mutation_busy"] or not sw.get_sensitive() or type(enabled) is not bool: return True
+        previous_state=sw.get_state(); previous_subtitle=data["timer_confirmed_subtitle"]
+        if enabled == previous_state: return True
+        data["timer_generation"] += 1; generation=data["timer_generation"]; data["timer_mutation_busy"]=True; sw.set_sensitive(False)
+        payload={"state":"on" if enabled else "off"}
+        def done(r,e):
+            if not data["timer_mutation_busy"] or generation != data["timer_generation"]: return False
+            data["timer_mutation_busy"]=False
+            if e or not _receipt_ok(r or {}):
+                signal=e or _signal(r or {}) or "Timer change refused"; set_timer_active(previous_state); tr.set_subtitle(f"{previous_subtitle} — {signal}"); sw.set_sensitive(True); return False
+            sw.set_sensitive(False); refresh(); return False
+        threading.Thread(target=mutate,args=(TIMER_TOGGLE_DOOR,payload,done),daemon=True).start(); return True
     def modules(r,e):
         if e: clear(mbox); empty(mbox,e); return False
         if not isinstance(r,dict) or r.get("ok") is not True:
@@ -96,11 +121,13 @@ def build_widget()->Any:
         if not isinstance(r,dict) or r.get("ok") is not True:
             clear(pbox); empty(pbox,_signal(r or {}) or "Interactable read refused"); set_label(); return False
         v=(r or {}).get("interactables"); data["interactables"]=[x for x in v if isinstance(x,dict) and _text(x.get("id"))] if isinstance(v,list) else []; render_interactables(); return False
-    def read(path,done):
-        try: GLib.idle_add(done,_request(path),None)
-        except RuntimeError as e: GLib.idle_add(done,None,str(e))
+    def read(path,done,*done_args):
+        try: GLib.idle_add(done,_request(path),None,*done_args)
+        except RuntimeError as e: GLib.idle_add(done,None,str(e),*done_args)
     def refresh():
-        for path,done in ((STATUS_DOOR,status),(TIMER_DOOR,timer),(MODULES_DOOR,modules),(INTERACTABLES_DOOR,interactables)): threading.Thread(target=read,args=(path,done),daemon=True).start()
+        for path,done in ((STATUS_DOOR,status),(MODULES_DOOR,modules),(INTERACTABLES_DOOR,interactables)): threading.Thread(target=read,args=(path,done),daemon=True).start()
+        if not data["timer_mutation_busy"]:
+            data["timer_generation"] += 1; generation=data["timer_generation"]; threading.Thread(target=read,args=(TIMER_DOOR,timer,generation),daemon=True).start()
     def periodic_refresh():
         refresh(); return True
     def mutate(path,payload,done):
@@ -123,4 +150,5 @@ def build_widget()->Any:
     def update(_b):
         if data["busy"]: return
         data["busy"]=True; button.set_sensitive(False); set_label("updating"); threading.Thread(target=mutate,args=(UPDATE_DOOR,None,finish_update),daemon=True).start()
+    timer_switch_handler=timer_switch.connect("state-set",toggle_timer)
     button.connect("clicked",update); refresh(); GLib.timeout_add_seconds(30,periodic_refresh); return page
