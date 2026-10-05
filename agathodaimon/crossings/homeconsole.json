@@ -19,7 +19,8 @@
     "storage/upload/force-permissions",
     "storage/upload/ingress",
     "storage/vault/open",
-    "storage/vault/policy"
+    "storage/vault/policy",
+    "update/service"
   ],
   "verbs": [
     [

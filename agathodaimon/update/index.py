@@ -1,3 +1,3 @@
 """update band index."""
 NOUN = 'update'
-VERBS = ['module-toggle', 'profile-refresh', 'sources-reseed', 'profile-retire']
+VERBS = ['module-toggle', 'profile-refresh', 'sources-reseed', 'profile-retire', 'service']

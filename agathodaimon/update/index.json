@@ -3,6 +3,7 @@
     "module-toggle",
     "profile-refresh",
     "sources-reseed",
-    "profile-retire"
+    "profile-retire",
+    "service"
   ]
 }

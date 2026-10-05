@@ -70,6 +70,7 @@
     "update/module-toggle",
     "update/profile-refresh",
     "update/profile-retire",
+    "update/service",
     "update/sources-reseed",
     "xenos/run"
   ],
