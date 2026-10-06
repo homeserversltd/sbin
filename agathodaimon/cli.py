@@ -19,6 +19,7 @@ class _EnvelopeStdin(StringIO):
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
+from agathodaimon._envelope import appliance_runtime_path
 ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime"), "attendance": ("exousia", "attendance"), "pin": ("exousia", "pin")}
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
@@ -123,7 +124,10 @@ def _read_json_nofollow(path: Path):
 
 
 def _profile_for_crossing() -> tuple[str, bool]:
-    profile_path = Path("/etc/appliance/profile.json")
+    try:
+        profile_path = appliance_runtime_path("profile")
+    except ValueError:
+        return "unknown", False
     try:
         value = _read_json_nofollow(profile_path)
     except FileNotFoundError:
@@ -323,7 +327,7 @@ def _admit_caduceus_crossing(args: list[str]) -> bool:
 
 def _pin_required() -> bool:
     try:
-        value = _read_json_nofollow(Path("/etc/appliance/config.json"))
+        value = _read_json_nofollow(appliance_runtime_path("config"))
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
         return False
     global_config = value.get("global") if isinstance(value, dict) else None

@@ -3,19 +3,18 @@ from __future__ import annotations
 
 import argparse
 
-from agathodaimon.lib.attendance.index import AttendanceStaff, KeymanAdapter, StaffSocketDaemon, redacted_journal_sink
+from agathodaimon.lib.attendance.index import AttendanceStaff, StaffSocketDaemon, redacted_journal_sink
 
 
-def production_staff(keyman_module: str) -> AttendanceStaff:
-    return AttendanceStaff(KeymanAdapter(keyman_module), audit_sink=redacted_journal_sink)
+def production_staff() -> AttendanceStaff:
+    return AttendanceStaff(audit_sink=redacted_journal_sink)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agathodaimon-staff-daemon")
     parser.add_argument("--socket", default="/run/caduceus/agathodaimon-staff.sock")
-    parser.add_argument("--keyman-module", default="/opt/keyman/runtime/lib/keyman_caduceus_access.py")
     args = parser.parse_args(argv)
-    StaffSocketDaemon(production_staff(args.keyman_module), args.socket).serve_forever()
+    StaffSocketDaemon(production_staff(), args.socket).serve_forever()
     return 0
 
 

@@ -1,9 +1,7 @@
-"""Caduceus SacredCredential bind and PIN verification launcher.
+"""Caduceus config-seat PIN binding and verification launcher.
 
-The fixed Keyman credential ``/vault/.keys/caduceus.key`` is the sole PIN
-truth.  Its username is the SHA-256 identity of raw skeleton bytes and its
-password is the operator PIN.  Binding reads the current Keyman credential as
-root, holds the Ed25519 signer only in staff memory, and projects public data.
+Binding reads the current appliance PIN and raw skeleton identity as root,
+holds the Ed25519 signer only in staff memory, and projects public data.
 """
 from __future__ import annotations
 
@@ -38,10 +36,7 @@ def private_key(identity: str, pin: str) -> Ed25519PrivateKey:
 
 
 def _unbound_signal(exc: Exception) -> str:
-    signal = str(exc) or "agathodaimon-derived-unbound"
-    if signal in {"agathodaimon-key-unavailable", "agathodaimon-key-malformed", "agathodaimon-key-corrupt"}:
-        return "agathodaimon-pin-not-yet-provisioned"
-    return signal
+    return str(exc) or "agathodaimon-derived-unbound"
 
 
 def _project(signer: sacred_credential.DerivedCaduceusSigner, *, operation: str) -> dict[str, Any]:
@@ -59,7 +54,7 @@ def _project(signer: sacred_credential.DerivedCaduceusSigner, *, operation: str)
 
 
 def bind_derived() -> dict[str, Any]:
-    """Read current Keyman custody and replace the in-memory signing seat."""
+    """Read the config PIN seat and replace the in-memory signing seat."""
     global _BOUND
     try:
         fresh = sacred_credential.bind_derived_caduceus()
@@ -122,7 +117,7 @@ def verify_derived(pin: str, expected_public_key: str | None = None) -> dict[str
 
 
 def atomic_change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
-    """Verify old PIN, atomically rotate Keyman credential password, then rebind."""
+    """Compare the live config PIN, atomically change it, then rebind."""
     if not new_pin:
         return {
             "schema": "caduceus.staff.sacred-credential.v1",
@@ -131,9 +126,6 @@ def atomic_change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
             "posture": "DERIVED_BOUND" if _BOUND else "UNBOUND",
             "firstMissingSignal": "agathodaimon-staff-new-pin-missing",
         }
-    verified = verify_derived(old_pin)
-    if not verified.get("ok"):
-        return {**verified, "operation": "atomic-change-pin"}
     try:
         sacred_credential.change_caduceus_pin(old_pin, new_pin)
     except sacred_credential.CaduceusAccessRefused as exc:
@@ -141,7 +133,8 @@ def atomic_change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
             "schema": "caduceus.staff.sacred-credential.v1",
             "ok": False,
             "operation": "atomic-change-pin",
-            "posture": "STALE_DERIVED",
+            "posture": "DERIVED_BOUND" if _BOUND else "UNBOUND",
+            "verified": False,
             "firstMissingSignal": _unbound_signal(exc),
         }
     rebound = bind_derived()
@@ -151,7 +144,7 @@ def atomic_change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
 
 
 def reset_default_pin() -> dict[str, Any]:
-    """Restore the current Keyman credential to the root-provisioned default."""
+    """Restore the config PIN seat from the birth-sealed factory default."""
     try:
         sacred_credential.reset_caduceus_pin_to_provisioned_default()
     except sacred_credential.CaduceusAccessRefused as exc:
