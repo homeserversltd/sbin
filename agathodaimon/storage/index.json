@@ -3,6 +3,7 @@
     "vault",
     "backup",
     "disk-doors",
+    "nas",
     "upload"
   ]
 }

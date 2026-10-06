@@ -14,6 +14,7 @@
     "settings/datetime",
     "settings/input",
     "storage/backup/forgejo/credential",
+    "storage/nas/setup",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
     "storage/vault/open",
@@ -196,6 +197,7 @@
     "/api/v1/staff/actuators",
     "/api/v1/storage/disk/census",
     "/api/v1/storage/disk/test/progress",
+    "/api/v1/storage/nas/setup",
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/status",
     "/api/v1/storage/vault/unlock",
@@ -226,6 +228,7 @@
       "network/dns",
       "settings/datetime",
       "settings/input",
+      "storage/nas/setup",
       "storage/vault/open",
       "storage/vault/policy"
     ],
@@ -299,6 +302,7 @@
       "/api/v1/settings/input",
       "/api/v1/settings/notifications",
       "/api/v1/settings/sound",
+      "/api/v1/storage/nas/setup",
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/storage/vault/unlock"
     ]

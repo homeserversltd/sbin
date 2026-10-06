@@ -331,8 +331,8 @@ We aim to review PRs within **1 week**. Simple bug fixes may be reviewed faster.
 - `siteSecretKey.sh` - Encryption key management
 - `createCertBundle.sh` - Client certificate bundles
 
-**Storage Management:**
-- `setupNAS.sh` - NAS configuration and permissions
+- NAS setup transaction: `agathodaimon/storage/nas/setup`, exposed through Caduceus at `/api/v1/storage/nas/setup`
+- Retained disk-door operations: `wipe`, `unlock`, `mount`, and `unmount`
 
 **Hardware Testing:**
 - `harddrive_test.sh` - Drive testing and validation

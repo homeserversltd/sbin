@@ -22,7 +22,8 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 - **`createCertBundle.sh`** - Platform-specific certificate bundle creation for Windows, Android, ChromeOS, Linux, and macOS clients
 
 ### Storage & NAS Management
-- **`setupNAS.sh`** - Comprehensive NAS setup script that mirrors backend route `/api/admin/diskman/apply-permissions`
+- **`agathodaimon/storage/nas/setup`** - Root-only, transactional NAS provisioning staff operation; requests enter through Caduceus at `/api/v1/storage/nas/setup`.
+- **`agathodaimon/storage/disk-doors`** - Retained `unlock`, `mount`, and `unmount` operations for existing consumers; separate from NAS setup. The source references include Coronatio's `src/bands/caduceus.rs:203-205` and `src/bands/full-rust-routes.rs:49,52-53` (unlock/mount/unmount), plus the retained external helpers `vault/init.sh:349,440,469` (`mountDrive`), `mountDrive.sh:322,362` (`exportNAS`) and `:346,363` (`closeNAS`), and `unmountDrive.sh:252` (`closeNAS`). These are source-retention references, not claims of live callers or authorization to retire or deploy helpers; the Dove owns installed-helper cleanup and bench-door green. `wipe` is outside this retained list.
 
 ### Hardware Testing & Validation
 - **`harddrive_test.sh`** - Comprehensive hard drive testing including badblocks, filesystem checks, and LUKS support
@@ -68,10 +69,8 @@ sudo chmod +x /usr/local/sbin/*
 sudo /usr/local/sbin/sslKey.sh
 ```
 
-### Setup NAS Permissions
-```bash
-sudo /usr/local/sbin/agathodaimon/storage/disk-doors/setupNAS.sh
-```
+### NAS Provisioning
+Submit a root-only whole-disk device and `primary` or `backup` role through Caduceus at `/api/v1/storage/nas/setup`; the caller must obtain the owner's typed erasure confirmation. Disk initialization is destructive and returns per-step readbacks. There is no direct shell setup helper in this source candidate. Removing legacy setup source is not live deletion; the Dove owns bench-door green and installed-helper cleanup.
 
 ### Test Hard Drive
 ```bash

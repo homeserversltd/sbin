@@ -2,203 +2,262 @@
 from __future__ import annotations
 import json, os, posixpath, re, subprocess, sys
 from typing import Any, Sequence
-SCHEMA="caduceus.disk.door.v1"; MAX_INPUT_BYTES=64*1024
-EXPORT_NAS="/vault/scripts/exportNAS.sh"; MOUNT_DRIVE="/vault/scripts/mountDrive.sh"; UNMOUNT_DRIVE="/vault/scripts/unmountDrive.sh"
-CRYPTSETUP="/usr/sbin/cryptsetup"; FINDMNT="/usr/bin/findmnt"; BASH="/usr/bin/bash"; TEST="/usr/bin/test"
-SETUP_NAS="/usr/local/sbin/agathodaimon/storage/disk-doors/setupNAS.sh"; DU="/usr/bin/du"; MKDIR="/usr/bin/mkdir"; CHOWN="/usr/bin/chown"; RSYNC="/usr/bin/rsync"
-WIPEFS="/usr/sbin/wipefs"; SGDISK="/usr/sbin/sgdisk"; UDEVADM="/usr/bin/udevadm"; MKFS_XFS="/usr/sbin/mkfs.xfs"
-_COMPONENT=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"); _MAPPER=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}_crypt$"); _FORBIDDEN=re.compile(r"(?:ssh|lan\.key|authorized_keys)",re.I)
-_SAFE_STEP=re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+
+SCHEMA = "caduceus.disk.door.v1"
+MAX_INPUT_BYTES = 64 * 1024
+EXPORT_NAS = "/vault/scripts/exportNAS.sh"
+MOUNT_DRIVE = "/vault/scripts/mountDrive.sh"
+UNMOUNT_DRIVE = "/vault/scripts/unmountDrive.sh"
+CRYPTSETUP = "/usr/sbin/cryptsetup"
+FINDMNT = "/usr/bin/findmnt"
+BASH = "/usr/bin/bash"
+TEST = "/usr/bin/test"
+WIPEFS = "/usr/sbin/wipefs"
+_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_MAPPER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}_crypt$")
+_FORBIDDEN = re.compile(r"(?:ssh|lan\.key|authorized_keys)", re.I)
+_SAFE_STEP = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
+
+
 class Refusal(ValueError):
- def __init__(self,signal:str,failed_step:str|None=None,return_code:int|None=None):
-  super().__init__(signal); self.signal=signal; self.failed_step=failed_step; self.return_code=return_code
-def _sudo(a:Sequence[str])->list[str]: return ["sudo","-n",*a]
-def _step_name(a:list[str])->str:
- i=2 if len(a)>2 and a[:2]==["sudo","-n"] else 0
- executable=os.path.basename(a[i]) if len(a)>i else "unknown"
- if executable in {"bash","sh"} and len(a)>i+1 and a[i+1].startswith("/"): executable=os.path.basename(a[i+1])
- return executable if _SAFE_STEP.fullmatch(executable) else "unknown"
-def _run(a:list[str], secret: str|None=None)->subprocess.CompletedProcess[str]:
- try: return subprocess.run(a,input=secret,text=True,capture_output=True,check=False)
- except OSError: raise Refusal("agathodaimon-disk-command-start-refused",_step_name(a))
-def _check(r:subprocess.CompletedProcess[str],signal:str,a:list[str])->subprocess.CompletedProcess[str]:
- if r.returncode!=0: raise Refusal(signal,_step_name(a),int(r.returncode))
- return r
-def _receipt(action:str,planned:bool,commands:list[list[str]],**extra:Any)->dict[str,Any]: return {"schema":SCHEMA,"ok":True,"action":action,"planned":planned,"mutationPerformed":not planned,"commands":commands,"firstMissingSignal":"none",**extra}
-def _fail(signal:str,failed_step:str|None=None,return_code:int|None=None)->dict[str,Any]:
- failure={"schema":SCHEMA,"ok":False,"action":"unknown","planned":False,"mutationPerformed":False,"commands":[],"firstMissingSignal":signal}
- if failed_step is not None: failure["failedStep"]=failed_step
- if return_code is not None: failure["returnCode"]=return_code
- return failure
-def _device(v:Any)->str:
- if not isinstance(v,str) or not v.startswith("/dev/") or "\x00" in v or "/" in v[5:] or not _COMPONENT.fullmatch(v[5:]): raise Refusal("agathodaimon-disk-device-invalid")
- return v
-def _is_partition_name(n:str)->bool: return bool(re.fullmatch(r"(?:[a-z]+\d+|nvme\d+n\d+p\d+|mmcblk\d+p\d+)",n))
-def _whole_disk(v:Any)->str:
- d=_device(v)
- if not re.fullmatch(r"(?:sd[a-z]+|nvme\d+n\d+)",d[5:]): raise Refusal("agathodaimon-disk-whole-disk-required")
- return d
-def _partition(d:str)->str: return f"{d}p1" if re.fullmatch(r"(?:nvme\d+n\d+|mmcblk\d+)",d[5:]) else f"{d}1"
-_NAS_PARTITION=re.compile(r"(?:sd[a-z]+\d+|nvme\d+n\d+p\d+|mmcblk\d+p\d+)$")
-def _nas_target(v:Any)->tuple[str,str,str]:
- d=_device(v); n=d[5:]
- if re.fullmatch(r"(?:sd[a-z]+|nvme\d+n\d+)",n): return d,d,"1"
- if not _NAS_PARTITION.fullmatch(n): raise Refusal("agathodaimon-disk-nas-device-invalid")
- if n.startswith("nvme") or n.startswith("mmcblk"): disk=re.sub(r"p\d+$","",d)
- else: disk=re.sub(r"\d+$","",d)
- part=n[len(disk)-5:] if disk.startswith("/dev/") else ""
- if part.startswith("p"): part=part[1:]
- if not part.isdigit(): raise Refusal("agathodaimon-disk-nas-device-invalid")
- return d,disk,part
-def assign_nas(p:dict[str,Any],planned:bool,role:str,label:str)->dict[str,Any]:
- device,disk,partition=_nas_target(p.get("device")); cmd=_sudo([SGDISK,"-c",f"{partition}:{label}",disk]); trigger=_sudo([UDEVADM,"trigger","--subsystem-match=block","--action=change"]); cmds=[cmd,trigger]
- if planned:return _receipt(role,True,cmds,device=device,disk=disk,partition=partition,partlabel=label,roleBinding="PARTLABEL")
- _check(_run(cmd),"agathodaimon-disk-nas-role-refused",cmd); _check(_run(trigger),"agathodaimon-disk-nas-role-refused",trigger)
- return _receipt(role,False,cmds,device=device,disk=disk,partition=partition,partlabel=label,roleBinding="PARTLABEL")
-def _mapper(v:Any)->str:
- if not isinstance(v,str) or not _MAPPER.fullmatch(v): raise Refusal("agathodaimon-disk-mapper-invalid")
- return v
-def _mountpoint(v:Any)->str:
- if not isinstance(v,str) or "\x00" in v or not v.startswith("/mnt/") or posixpath.normpath(v)!=v: raise Refusal("agathodaimon-disk-mountpoint-invalid")
- if any(not _COMPONENT.fullmatch(x) for x in v[5:].split("/")): raise Refusal("agathodaimon-disk-mountpoint-invalid")
- return v
-def _forbid(v:Any)->None:
- if isinstance(v,dict):
-  for k,x in v.items():
-   if _FORBIDDEN.search(str(k)): raise Refusal("agathodaimon-disk-secret-path-forbidden")
-   _forbid(x)
- elif isinstance(v,list):
-  for x in v: _forbid(x)
+    def __init__(self, signal: str, failed_step: str | None = None, return_code: int | None = None):
+        super().__init__(signal)
+        self.signal = signal
+        self.failed_step = failed_step
+        self.return_code = return_code
 
-def _find(m:str)->list[str]: return _sudo([FINDMNT,"-n","-o","SOURCE,TARGET","--target",m])
-def _mapper_path(m:str)->str: return f"/dev/mapper/{m}"
-def _mapper_cmd(m:str)->list[str]: return _sudo([TEST,"-e",_mapper_path(m)])
-def _mapper_readback(m:str)->dict[str,Any]: return {"path":_mapper_path(m),"exists":os.path.exists(_mapper_path(m))}
-def _mount_readback(r:subprocess.CompletedProcess[str],m:str)->dict[str,Any]:
- f=r.stdout.strip().split(None,1) if r.returncode==0 else []
- if len(f)==2:
-  source,target=f; mounted=bool(source) and target==m
-  return {"mountpoint":m,"mounted":mounted,"source":source if mounted else None,"target":target}
- return {"mountpoint":m,"mounted":False,"source":None,"target":None}
-def _observed_mount(m:str)->dict[str,Any]: return _mount_readback(_run(_find(m)),m)
-def unlock(p:dict[str,Any],planned:bool)->dict[str,Any]:
- d=_device(p.get("device")); mapper=_mapper(f"{posixpath.basename(d)}_crypt")
- export=_sudo([BASH,EXPORT_NAS]); op=_sudo([CRYPTSETUP,"open",d,mapper]); mr=_mapper_cmd(mapper); cmds=[export,op,mr]
- if planned:return _receipt("unlock",True,cmds,device=d,mapper=mapper,mapperReadback={"path":_mapper_path(mapper),"exists":None,"planned":True})
- r=_check(_run(export),"agathodaimon-disk-vault-export-failed",export); secret=r.stdout.strip()
- if not secret: raise Refusal("agathodaimon-disk-vault-export-failed")
- opened=_run(op,secret); readback=_mapper_readback(mapper)
- _check(opened,"agathodaimon-disk-cryptsetup-open-refused",op)
- if not readback["exists"]: raise Refusal("agathodaimon-disk-mapper-readback-missing")
- return _receipt("unlock",False,cmds,device=d,mapper=mapper,mapperReadback=readback)
 
-def _mount_device(v:Any)->tuple[str,str|None]:
- if isinstance(v,str) and v.startswith("/dev/mapper/"): return v,_mapper(v[12:])
- return _device(v),None
-def mount(p:dict[str,Any],planned:bool)->dict[str,Any]:
- d,embedded=_mount_device(p.get("device")); m=_mountpoint(p.get("mountpoint")); mv=p.get("mapper"); mapper=_mapper(mv) if mv is not None else embedded
- cmd=_sudo([BASH,MOUNT_DRIVE,"mount",d,m]+([mapper] if mapper else [])); rb=_find(m); cmds=[cmd,rb]
- planned_rb={"mountpoint":m,"mounted":True,"source":d,"target":m,"planned":True}
- if planned:return _receipt("mount",True,cmds,device=d,mountpoint=m,mapper=mapper,mountReadback=planned_rb)
- _check(_run(cmd),"agathodaimon-disk-mount-refused",cmd)
- rb_result=_run(rb); _check(rb_result,"agathodaimon-disk-mount-readback-missing",rb); readback=_mount_readback(rb_result,m)
- if not readback["mounted"] or readback["target"]!=m: raise Refusal("agathodaimon-disk-mount-readback-missing")
- return _receipt("mount",False,cmds,device=d,mountpoint=m,mapper=mapper,mountReadback=readback)
+def _sudo(argv: Sequence[str]) -> list[str]:
+    return ["sudo", "-n", *argv]
 
-def unmount(p:dict[str,Any],planned:bool)->dict[str,Any]:
- d=_device(p.get("device")); m=_mountpoint(p.get("mountpoint")); mv=p.get("mapper"); mapper=_mapper(mv) if mv is not None else None
- um=_sudo([BASH,UNMOUNT_DRIVE,d,m]+([mapper] if mapper else [])); rb=_find(m); cmds=[um,rb]
- if mapper: cmds += [_mapper_cmd(mapper),_sudo([CRYPTSETUP,"close",mapper]),_mapper_cmd(mapper)]
- planned_mount={"mountpoint":m,"mounted":False,"source":None,"target":None,"planned":True}
- planned_mapper={"path":_mapper_path(mapper),"exists":False,"planned":True} if mapper else None
- if planned:return _receipt("unmount",True,cmds,device=d,mountpoint=m,mapper=mapper,mountReadback=planned_mount,mapperReadback=planned_mapper)
- script=_run(um); find_cmd=_find(m); observed=_run(find_cmd)
- if observed.returncode not in {0,1}: raise Refusal("agathodaimon-disk-mount-readback-missing",_step_name(find_cmd),int(observed.returncode))
- mount_readback=_mount_readback(observed,m)
- if mount_readback["mounted"]:
-  if script.returncode!=0: raise Refusal("agathodaimon-disk-mount-remains",_step_name(um),int(script.returncode))
-  raise Refusal("agathodaimon-disk-mount-remains")
- mapper_readback=None
- if mapper:
-  mapper_readback=_mapper_readback(mapper)
-  if mapper_readback["exists"]:
-   close=_sudo([CRYPTSETUP,"close",mapper]); _check(_run(close),"agathodaimon-disk-cryptsetup-close-refused",close)
-   mapper_readback=_mapper_readback(mapper)
-   if mapper_readback["exists"]: raise Refusal("agathodaimon-disk-mapper-remains")
- return _receipt("unmount",False,cmds,device=d,mountpoint=m,mapper=mapper,mountReadback=mount_readback,mapperReadback=mapper_readback)
 
-def _format_commands(d:str)->list[list[str]]:
- return [_sudo([WIPEFS,"-a",d]),_sudo([SGDISK,"-o",d]),_sudo([SGDISK,"-n","1:0:0",d]),_sudo([SGDISK,"-t","1:8300",d]),_sudo([UDEVADM,"trigger","--subsystem-match=block","--action=change"]),_sudo([TEST,"-b",_partition(d)]),_sudo([MKFS_XFS,"-f",_partition(d)])]
-def format_disk(p:dict[str,Any],planned:bool)->dict[str,Any]:
- d=_whole_disk(p.get("device")); cmds=_format_commands(d)
- if planned:return _receipt("format",True,cmds,device=d,target=_partition(d),partition=_partition(d))
- for cmd in cmds:
-  _check(_run(cmd),"agathodaimon-disk-format-refused",cmd)
- return _receipt("format",False,cmds,device=d,target=_partition(d),partition=_partition(d))
-def _encrypt_target(v:Any)->tuple[str,list[list[str]],str]:
- d=_device(v); n=d[5:]
- if not _is_partition_name(n):
-  target=_partition(d)
-  return target,[_sudo([WIPEFS,"-a",d]),_sudo([SGDISK,"-o",d]),_sudo([SGDISK,"-n","1:0:0",d]),_sudo([SGDISK,"-t","1:8300",d]),_sudo([UDEVADM,"trigger","--subsystem-match=block","--action=change"]),_sudo([TEST,"-b",target])],d
- return d,[_sudo([WIPEFS,"-a",d])],d
+def _step_name(argv: list[str]) -> str:
+    index = 2 if len(argv) > 2 and argv[:2] == ["sudo", "-n"] else 0
+    executable = os.path.basename(argv[index]) if len(argv) > index else "unknown"
+    if executable in {"bash", "sh"} and len(argv) > index + 1 and argv[index + 1].startswith("/"):
+        executable = os.path.basename(argv[index + 1])
+    return executable if _SAFE_STEP.fullmatch(executable) else "unknown"
 
-def encrypt_disk(p:dict[str,Any],planned:bool)->dict[str,Any]:
- target,prep,requested=_encrypt_target(p.get("device")); mapper=_mapper(f"{posixpath.basename(target)}_crypt")
- export=_sudo([BASH,EXPORT_NAS]); key=["--key-file","-"]; luks=_sudo([CRYPTSETUP,"luksFormat","--type","luks2",*key,target,"-q","--batch-mode"]); op=_sudo([CRYPTSETUP,"open",*key,target,mapper]); mkfs=_sudo([MKFS_XFS,"-f",_mapper_path(mapper)])
- cmds=prep+[export,luks,op,mkfs,_mapper_cmd(mapper)]
- if planned:return _receipt("encrypt",True,cmds,device=requested,target=target,mapper=mapper,keyMaterial="redacted",keyInput="stdin",mapperReadback={"path":_mapper_path(mapper),"exists":None,"planned":True})
- for cmd in prep: _check(_run(cmd),"agathodaimon-disk-encrypt-refused",cmd)
- secret_proc=_check(_run(export),"agathodaimon-disk-vault-export-failed",export); secret=secret_proc.stdout.strip()
- if not isinstance(secret,str) or not secret: raise Refusal("agathodaimon-disk-vault-export-failed")
- _check(_run(luks,secret),"agathodaimon-disk-encrypt-refused",luks)
- _check(_run(op,secret),"agathodaimon-disk-encrypt-refused",op)
- _check(_run(mkfs),"agathodaimon-disk-encrypt-refused",mkfs)
- if not _mapper_readback(mapper)["exists"]: raise Refusal("agathodaimon-disk-mapper-readback-missing")
- return _receipt("encrypt",False,cmds,device=requested,target=target,mapper=mapper,keyMaterial="redacted",keyInput="stdin",mapperReadback=_mapper_readback(mapper))
-def wipe_disk(p:dict[str,Any],planned:bool)->dict[str,Any]:
- d=_device(p.get("device")); cmds=[_sudo([WIPEFS,"-a",d])]
- if planned:return _receipt("wipe",True,cmds,device=d,target=d)
- _check(_run(cmds[0]),"agathodaimon-disk-wipe-refused",cmds[0])
- return _receipt("wipe",False,cmds,device=d,target=d)
 
-def setup_nas(p:dict[str,Any],planned:bool)->dict[str,Any]:
- d=_device(p.get("device")); apps=p.get("apps",[])
- if not isinstance(apps,list) or any(not isinstance(app,str) or not _COMPONENT.fullmatch(app) for app in apps): raise Refusal("agathodaimon-disk-nas-apps-invalid")
- cmd=_sudo([BASH,SETUP_NAS,*apps])
- if planned:return _receipt("setup-nas",True,[cmd],device=d,apps=apps)
- _check(_run(cmd),"agathodaimon-disk-nas-setup-refused",cmd)
- return _receipt("setup-nas",False,[cmd],device=d,apps=apps)
+def _run(argv: list[str], secret: str | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(argv, input=secret, text=True, capture_output=True, check=False)
+    except OSError:
+        raise Refusal("agathodaimon-disk-command-start-refused", _step_name(argv))
 
-def import_to_nas(p:dict[str,Any])->dict[str,Any]:
- source=_device(p.get("sourceDevice")); destination=_mountpoint(p.get("destination")); temp=_mountpoint(p.get("temporaryMountpoint","/mnt/agathodaimon-import"))
- owner=p.get("owner","caduceus"); group=p.get("group","caduceus")
- if not isinstance(owner,str) or not _COMPONENT.fullmatch(owner) or not isinstance(group,str) or not _COMPONENT.fullmatch(group): raise Refusal("agathodaimon-disk-nas-owner-invalid")
- mount=_sudo([BASH,MOUNT_DRIVE,"mount",source,temp]); estimate=_sudo([DU,"-sx","--bytes",temp]); mkdir=_sudo([MKDIR,"-p",destination]); chown=_sudo([CHOWN,"-R",f"{owner}:{group}",destination]); rsync=_sudo([RSYNC,"-a",f"{temp}/",f"{destination}/"]); unmount=_sudo([BASH,UNMOUNT_DRIVE,"unmount",source,temp]); cmds=[mount,estimate,mkdir,chown,rsync,unmount]
- return _receipt("import-to-nas",True,cmds,sourceDevice=source,temporaryMountpoint=temp,destination=destination,owner=owner,group=group,estimatedBytes=None,cleanupRequired=True)
 
-def dispatch(x:dict[str,Any])->dict[str,Any]:
- if set(x)-{"actuator","metadata"} or not isinstance(x.get("metadata"),dict): raise Refusal("agathodaimon-disk-request-invalid")
- p=x["metadata"]; _forbid(p); a=p.get("action"); planned=p.get("dryRun",p.get("planned",False))
- if not isinstance(planned,bool): raise Refusal("agathodaimon-disk-planned-invalid")
- if a=="format": return format_disk(p,planned)
- if a=="encrypt": return encrypt_disk(p,planned)
- if a=="wipe": return wipe_disk(p,planned)
- if a=="unlock": return unlock(p,planned)
- if a=="mount": return mount(p,planned)
- if a=="unmount": return unmount(p,planned)
- if a=="assign-primary-nas": return assign_nas(p,planned,a,"homeserver-primary-nas")
- if a=="assign-nas-backup": return assign_nas(p,planned,a,"homeserver-backup-nas")
- if a=="unassign-nas": return assign_nas(p,planned,a,"data")
- if a=="setup-nas": return setup_nas(p,planned)
- if a=="import-to-nas": return import_to_nas(p)
- raise Refusal("agathodaimon-disk-action-invalid")
-def main(argv:Sequence[str]|None=None)->int:
- del argv
- try:
-  raw=sys.stdin.buffer.read(MAX_INPUT_BYTES+1)
-  if len(raw)>MAX_INPUT_BYTES: raise Refusal("agathodaimon-disk-request-too-large")
-  x=json.loads(raw.decode()); receipt=dispatch(x) if isinstance(x,dict) else _fail("agathodaimon-disk-request-invalid")
- except Refusal as e: receipt=_fail(e.signal,e.failed_step,e.return_code)
- except (UnicodeDecodeError,json.JSONDecodeError): receipt=_fail("agathodaimon-disk-request-invalid")
- print(json.dumps(receipt,sort_keys=True)); return 0 if receipt["ok"] else 1
-if __name__=="__main__": raise SystemExit(main())
+def _check(result: subprocess.CompletedProcess[str], signal: str,
+           argv: list[str]) -> subprocess.CompletedProcess[str]:
+    if result.returncode != 0:
+        raise Refusal(signal, _step_name(argv), int(result.returncode))
+    return result
+
+
+def _receipt(action: str, planned: bool, commands: list[list[str]], **extra: Any) -> dict[str, Any]:
+    return {"schema": SCHEMA, "ok": True, "action": action, "planned": planned,
+            "mutationPerformed": not planned, "commands": commands, "firstMissingSignal": "none", **extra}
+
+
+def _fail(signal: str, failed_step: str | None = None, return_code: int | None = None) -> dict[str, Any]:
+    failure = {"schema": SCHEMA, "ok": False, "action": "unknown", "planned": False,
+               "mutationPerformed": False, "commands": [], "firstMissingSignal": signal}
+    if failed_step is not None:
+        failure["failedStep"] = failed_step
+    if return_code is not None:
+        failure["returnCode"] = return_code
+    return failure
+
+
+def _device(value: Any) -> str:
+    if not isinstance(value, str) or not value.startswith("/dev/") or "\x00" in value or "/" in value[5:] or not _COMPONENT.fullmatch(value[5:]):
+        raise Refusal("agathodaimon-disk-device-invalid")
+    return value
+
+
+def _mapper(value: Any) -> str:
+    if not isinstance(value, str) or not _MAPPER.fullmatch(value):
+        raise Refusal("agathodaimon-disk-mapper-invalid")
+    return value
+
+
+def _mountpoint(value: Any) -> str:
+    if not isinstance(value, str) or "\x00" in value or not value.startswith("/mnt/") or posixpath.normpath(value) != value:
+        raise Refusal("agathodaimon-disk-mountpoint-invalid")
+    if any(not _COMPONENT.fullmatch(part) for part in value[5:].split("/")):
+        raise Refusal("agathodaimon-disk-mountpoint-invalid")
+    return value
+
+
+def _forbid(value: Any) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if _FORBIDDEN.search(str(key)):
+                raise Refusal("agathodaimon-disk-secret-path-forbidden")
+            _forbid(item)
+    elif isinstance(value, list):
+        for item in value:
+            _forbid(item)
+
+
+def _find(mountpoint: str) -> list[str]:
+    return _sudo([FINDMNT, "-n", "-o", "SOURCE,TARGET", "--target", mountpoint])
+
+
+def _mapper_path(mapper: str) -> str:
+    return f"/dev/mapper/{mapper}"
+
+
+def _mapper_cmd(mapper: str) -> list[str]:
+    return _sudo([TEST, "-e", _mapper_path(mapper)])
+
+
+def _mapper_readback(mapper: str) -> dict[str, Any]:
+    return {"path": _mapper_path(mapper), "exists": os.path.exists(_mapper_path(mapper))}
+
+
+def _mount_readback(result: subprocess.CompletedProcess[str], mountpoint: str) -> dict[str, Any]:
+    fields = result.stdout.strip().split(None, 1) if result.returncode == 0 else []
+    if len(fields) == 2:
+        source, target = fields
+        mounted = bool(source) and target == mountpoint
+        return {"mountpoint": mountpoint, "mounted": mounted,
+                "source": source if mounted else None, "target": target}
+    return {"mountpoint": mountpoint, "mounted": False, "source": None, "target": None}
+
+
+def unlock(payload: dict[str, Any], planned: bool) -> dict[str, Any]:
+    device = _device(payload.get("device"))
+    mapper = _mapper(f"{posixpath.basename(device)}_crypt")
+    export = _sudo([BASH, EXPORT_NAS])
+    open_command = _sudo([CRYPTSETUP, "open", device, mapper])
+    mapper_check = _mapper_cmd(mapper)
+    commands = [export, open_command, mapper_check]
+    if planned:
+        return _receipt("unlock", True, commands, device=device, mapper=mapper,
+                        mapperReadback={"path": _mapper_path(mapper), "exists": None, "planned": True})
+    result = _check(_run(export), "agathodaimon-disk-vault-export-failed", export)
+    secret = result.stdout.strip()
+    if not secret:
+        raise Refusal("agathodaimon-disk-vault-export-failed")
+    opened = _run(open_command, secret)
+    readback = _mapper_readback(mapper)
+    _check(opened, "agathodaimon-disk-cryptsetup-open-refused", open_command)
+    if not readback["exists"]:
+        raise Refusal("agathodaimon-disk-mapper-readback-missing")
+    return _receipt("unlock", False, commands, device=device, mapper=mapper, mapperReadback=readback)
+
+
+def _mount_device(value: Any) -> tuple[str, str | None]:
+    if isinstance(value, str) and value.startswith("/dev/mapper/"):
+        return value, _mapper(value[12:])
+    return _device(value), None
+
+
+def mount(payload: dict[str, Any], planned: bool) -> dict[str, Any]:
+    device, embedded = _mount_device(payload.get("device"))
+    mountpoint = _mountpoint(payload.get("mountpoint"))
+    mapper_value = payload.get("mapper")
+    mapper = _mapper(mapper_value) if mapper_value is not None else embedded
+    command = _sudo([BASH, MOUNT_DRIVE, "mount", device, mountpoint] + ([mapper] if mapper else []))
+    read_command = _find(mountpoint)
+    commands = [command, read_command]
+    planned_readback = {"mountpoint": mountpoint, "mounted": True, "source": device,
+                        "target": mountpoint, "planned": True}
+    if planned:
+        return _receipt("mount", True, commands, device=device, mountpoint=mountpoint,
+                        mapper=mapper, mountReadback=planned_readback)
+    _check(_run(command), "agathodaimon-disk-mount-refused", command)
+    read_result = _run(read_command)
+    _check(read_result, "agathodaimon-disk-mount-readback-missing", read_command)
+    readback = _mount_readback(read_result, mountpoint)
+    if not readback["mounted"] or readback["target"] != mountpoint:
+        raise Refusal("agathodaimon-disk-mount-readback-missing")
+    return _receipt("mount", False, commands, device=device, mountpoint=mountpoint,
+                    mapper=mapper, mountReadback=readback)
+
+
+def unmount(payload: dict[str, Any], planned: bool) -> dict[str, Any]:
+    device = _device(payload.get("device"))
+    mountpoint = _mountpoint(payload.get("mountpoint"))
+    mapper_value = payload.get("mapper")
+    mapper = _mapper(mapper_value) if mapper_value is not None else None
+    unmount_command = _sudo([BASH, UNMOUNT_DRIVE, device, mountpoint] + ([mapper] if mapper else []))
+    read_command = _find(mountpoint)
+    commands = [unmount_command, read_command]
+    if mapper:
+        commands.extend([_mapper_cmd(mapper), _sudo([CRYPTSETUP, "close", mapper]), _mapper_cmd(mapper)])
+    planned_mount = {"mountpoint": mountpoint, "mounted": False, "source": None,
+                     "target": None, "planned": True}
+    planned_mapper = {"path": _mapper_path(mapper), "exists": False, "planned": True} if mapper else None
+    if planned:
+        return _receipt("unmount", True, commands, device=device, mountpoint=mountpoint,
+                        mapper=mapper, mountReadback=planned_mount, mapperReadback=planned_mapper)
+    script_result = _run(unmount_command)
+    observed = _run(read_command)
+    if observed.returncode not in {0, 1}:
+        raise Refusal("agathodaimon-disk-mount-readback-missing", _step_name(read_command), int(observed.returncode))
+    mount_readback = _mount_readback(observed, mountpoint)
+    if mount_readback["mounted"]:
+        if script_result.returncode != 0:
+            raise Refusal("agathodaimon-disk-mount-remains", _step_name(unmount_command), int(script_result.returncode))
+        raise Refusal("agathodaimon-disk-mount-remains")
+    mapper_readback = None
+    if mapper:
+        mapper_readback = _mapper_readback(mapper)
+        if mapper_readback["exists"]:
+            close_command = _sudo([CRYPTSETUP, "close", mapper])
+            _check(_run(close_command), "agathodaimon-disk-cryptsetup-close-refused", close_command)
+            mapper_readback = _mapper_readback(mapper)
+            if mapper_readback["exists"]:
+                raise Refusal("agathodaimon-disk-mapper-remains")
+    return _receipt("unmount", False, commands, device=device, mountpoint=mountpoint,
+                    mapper=mapper, mountReadback=mount_readback, mapperReadback=mapper_readback)
+
+
+def wipe_disk(payload: dict[str, Any], planned: bool) -> dict[str, Any]:
+    device = _device(payload.get("device"))
+    commands = [_sudo([WIPEFS, "-a", device])]
+    if planned:
+        return _receipt("wipe", True, commands, device=device, target=device)
+    _check(_run(commands[0]), "agathodaimon-disk-wipe-refused", commands[0])
+    return _receipt("wipe", False, commands, device=device, target=device)
+
+
+def dispatch(value: dict[str, Any]) -> dict[str, Any]:
+    if set(value) - {"actuator", "metadata"} or not isinstance(value.get("metadata"), dict):
+        raise Refusal("agathodaimon-disk-request-invalid")
+    payload = value["metadata"]
+    _forbid(payload)
+    action = payload.get("action")
+    planned = payload.get("dryRun", payload.get("planned", False))
+    if not isinstance(planned, bool):
+        raise Refusal("agathodaimon-disk-planned-invalid")
+    if action == "wipe":
+        return wipe_disk(payload, planned)
+    if action == "unlock":
+        return unlock(payload, planned)
+    if action == "mount":
+        return mount(payload, planned)
+    if action == "unmount":
+        return unmount(payload, planned)
+    raise Refusal("agathodaimon-disk-action-invalid")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    del argv
+    try:
+        raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
+        if len(raw) > MAX_INPUT_BYTES:
+            raise Refusal("agathodaimon-disk-request-too-large")
+        value = json.loads(raw.decode())
+        receipt = dispatch(value) if isinstance(value, dict) else _fail("agathodaimon-disk-request-invalid")
+    except Refusal as error:
+        receipt = _fail(error.signal, error.failed_step, error.return_code)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        receipt = _fail("agathodaimon-disk-request-invalid")
+    print(json.dumps(receipt, sort_keys=True))
+    return 0 if receipt["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
