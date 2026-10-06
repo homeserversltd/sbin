@@ -285,7 +285,7 @@ def _update_config_pin(
                 _wipe(current)
         admin_config["pin"] = new_pin
         try:
-            encoded = json.dumps(document, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+            encoded = (json.dumps(document, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
         except (TypeError, ValueError, UnicodeEncodeError) as exc:
             raise CaduceusAccessRefused("agathodaimon-config-malformed") from exc
         if len(encoded) > _MAX_CONFIG_BYTES:
