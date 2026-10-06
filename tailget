@@ -1,33 +1,37 @@
 #!/bin/bash
-# tailget - Extract tailnet from homeserver.json configuration
-# Usage: ./tailget [path_to_homeserver.json]
-# Default path: /var/www/homeserver/src/config/homeserver.json
+# tailget - Extract the declared tailnet from the canonical appliance config.
+# Usage: ./tailget
 
 set -e
+CONFIG_JSON="/etc/appliance/config.json"
 
-# Default path if not provided
-HOMESERVER_JSON="${1:-/var/www/homeserver/src/config/homeserver.json}"
+if [ "$#" -ne 0 ]; then
+    echo "Usage: tailget (reads /etc/appliance/config.json)" >&2
+    exit 2
+fi
 
-# Check if jq is installed
 if ! command -v jq >/dev/null 2>&1; then
     echo "Error: jq is required but not installed" >&2
     exit 1
 fi
 
-# Check if file exists
-if [ ! -f "$HOMESERVER_JSON" ]; then
-    echo "Error: homeserver.json not found at $HOMESERVER_JSON" >&2
+if [ ! -f "$CONFIG_JSON" ]; then
+    echo "Error: canonical appliance config is missing at /etc/appliance/config.json" >&2
     exit 1
 fi
 
-# Extract tailnet from CORS allowed_origins (primary source)
-echo "Checking allowed_origins..." >&2
-tailnet=$(jq -r '.global.cors.allowed_origins[]' "$HOMESERVER_JSON" | grep -o 'home\.[a-zA-Z0-9-]*\.ts\.net' | head -n1 | cut -d. -f2)
+if ! jq -e 'type == "object" and (.global | type == "object")' "$CONFIG_JSON" >/dev/null 2>&1; then
+    echo "Error: canonical appliance config has no valid global object" >&2
+    exit 1
+fi
 
-# Output result
+# Extract tailnet from CORS allowed_origins (primary source).
+echo "Checking declared allowed origins..." >&2
+tailnet=$(jq -r '.global.cors.allowed_origins[]?' "$CONFIG_JSON" | grep -o 'home\.[a-zA-Z0-9-]*\.ts\.net' | head -n1 | cut -d. -f2 || true)
+
 if [[ -z "$tailnet" ]]; then
-    echo "Error: Could not determine tailnet from $HOMESERVER_JSON" >&2
+    echo "Error: no declared tailnet could be determined from appliance config" >&2
     exit 1
-else
-    echo "$tailnet"
 fi
+
+printf '%s\n' "$tailnet"

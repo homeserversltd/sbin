@@ -9,7 +9,8 @@
 #
 # The update system can fail catastrophically, leaving the website completely
 # broken. This script restores the core website files (backend, src, public)
-# from the GitHub repository while preserving user configurations.
+# from the GitHub repository while preserving website themes when requested.
+# Appliance configuration is not part of this website restoration path.
 
 set -o errexit
 set -o nounset
@@ -28,6 +29,7 @@ LOG_PREFIX="[WEBSITE-EMERGENCY]"
 DRY_RUN=false
 PRESERVE_CONFIG=false
 REPO_URL="$DEFAULT_REPO_URL"
+THEME_BACKUP_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -46,7 +48,7 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [--dry-run] [--preserve-config] [--repo-url URL]"
             echo "  --dry-run        Show what would be done without making changes"
-            echo "  --preserve-config Preserve existing user configurations"
+            echo "  --preserve-config Preserve website themes; appliance config is untouched"
             echo "  --repo-url       Custom repository URL (default: $DEFAULT_REPO_URL)"
             exit 0
             ;;
@@ -87,36 +89,18 @@ check_website_dir() {
     log "Website directory found: $WEBSITE_DIR"
 }
 
-# Backup user configurations if requested
-backup_user_config() {
+# Backup website themes if requested
+backup_website_themes() {
     if [ "$PRESERVE_CONFIG" = "true" ]; then
-        log "Backing up user configurations..."
-        
-        local config_backup_dir="/tmp/website_config_backup_$(date +%s)"
-        mkdir -p "$config_backup_dir"
-        
-        # Backup homeserver.json
-        if [ -f "$WEBSITE_DIR/src/config/homeserver.json" ]; then
-            cp "$WEBSITE_DIR/src/config/homeserver.json" "$config_backup_dir/"
-            log "Backed up homeserver.json"
-        fi
-        
-        # Backup themes directory
+        log "Backing up website themes..."
+        THEME_BACKUP_DIR="/tmp/website_themes_backup_$(date +%s)"
+        mkdir -p "$THEME_BACKUP_DIR"
         if [ -d "$WEBSITE_DIR/src/config/themes" ]; then
-            cp -r "$WEBSITE_DIR/src/config/themes" "$config_backup_dir/"
+            cp -r "$WEBSITE_DIR/src/config/themes" "$THEME_BACKUP_DIR/"
             log "Backed up themes directory"
         fi
-        
-        # Backup any other user configs
-        if [ -d "$WEBSITE_DIR/src/config" ]; then
-            find "$WEBSITE_DIR/src/config" -name "*.json" -not -name "homeserver.json" -exec cp {} "$config_backup_dir/" \;
-            log "Backed up additional config files"
-        fi
-        
-        echo "$config_backup_dir"
     else
-        log "Skipping user config backup (--preserve-config not specified)"
-        echo ""
+        log "Skipping website theme backup (--preserve-config not specified)"
     fi
 }
 
@@ -171,9 +155,9 @@ verify_repository() {
 # Restore core directories
 restore_core_directories() {
     log "Restoring core directories..."
-    
+
     local core_dirs=("backend" "src" "public")
-    
+
     for dir in "${core_dirs[@]}"; do
         if [ "$DRY_RUN" = "true" ]; then
             log "DRY RUN: Would restore $dir directory"
@@ -182,7 +166,12 @@ restore_core_directories() {
             if [ -d "$WEBSITE_DIR/$dir" ]; then
                 rm -rf "$WEBSITE_DIR/$dir"
             fi
-            cp -r "$TEMP_DIR/$dir" "$WEBSITE_DIR/"
+            if [ "$dir" = "src" ]; then
+                mkdir -p "$WEBSITE_DIR/src"
+                tar -C "$TEMP_DIR/src" --no-wildcards-match-slash --exclude='./config/*.json' -cf - . | tar -C "$WEBSITE_DIR/src" -xf -
+            else
+                cp -r "$TEMP_DIR/$dir" "$WEBSITE_DIR/"
+            fi
             log "Restored $dir directory"
         fi
     done
@@ -208,34 +197,20 @@ restore_essential_files() {
     done
 }
 
-# Restore user configurations
-restore_user_config() {
-    local config_backup_dir="$1"
-    
-    if [ -n "$config_backup_dir" ] && [ -d "$config_backup_dir" ]; then
-        log "Restoring user configurations..."
-        
+# Restore website themes
+restore_website_themes() {
+    local theme_backup_dir="$1"
+
+    if [ -n "$theme_backup_dir" ] && [ -d "$theme_backup_dir" ]; then
+        log "Restoring website themes..."
         if [ "$DRY_RUN" = "true" ]; then
-            log "DRY RUN: Would restore user configurations from $config_backup_dir"
-        else
-            # Restore homeserver.json
-            if [ -f "$config_backup_dir/homeserver.json" ]; then
-                cp "$config_backup_dir/homeserver.json" "$WEBSITE_DIR/src/config/"
-                log "Restored homeserver.json"
-            fi
-            
-            # Restore themes directory
-            if [ -d "$config_backup_dir/themes" ]; then
-                cp -r "$config_backup_dir/themes" "$WEBSITE_DIR/src/config/"
-                log "Restored themes directory"
-            fi
-            
-            # Restore other config files
-            find "$config_backup_dir" -name "*.json" -not -name "homeserver.json" -exec cp {} "$WEBSITE_DIR/src/config/" \;
-            log "Restored additional config files"
+            log "DRY RUN: Would restore website themes"
+        elif [ -d "$theme_backup_dir/themes" ]; then
+            cp -r "$theme_backup_dir/themes" "$WEBSITE_DIR/src/config/"
+            log "Restored themes directory"
         fi
     else
-        log "No user config backup to restore"
+        log "No website theme backup to restore"
     fi
 }
 
@@ -304,7 +279,7 @@ verify_restoration() {
     fi
     
     # Check if essential files exist
-    local essential_files=("$WEBSITE_DIR/src/config/homeserver.json" "$WEBSITE_DIR/package.json" "$WEBSITE_DIR/main.py")
+    local essential_files=("$WEBSITE_DIR/package.json" "$WEBSITE_DIR/main.py")
     
     for file in "${essential_files[@]}"; do
         if [ ! -f "$file" ]; then
@@ -335,7 +310,7 @@ cleanup() {
     
     if [ -n "$1" ] && [ -d "$1" ]; then
         rm -rf "$1"
-        log "Removed config backup directory: $1"
+        log "Removed website theme backup directory"
     fi
 }
 
@@ -347,9 +322,8 @@ main() {
     check_root
     check_website_dir
     
-    # Backup user config if requested
-    local config_backup_dir
-    config_backup_dir=$(backup_user_config)
+    # Preserve website themes if requested; appliance configuration is untouched.
+    backup_website_themes
     
     # Clone repository
     if ! clone_repository; then
@@ -360,7 +334,7 @@ main() {
     # Verify repository
     if ! verify_repository; then
         log_error "Repository verification failed"
-        cleanup "$config_backup_dir"
+        cleanup "$THEME_BACKUP_DIR"
         exit 1
     fi
     
@@ -370,8 +344,8 @@ main() {
     # Restore essential files
     restore_essential_files
     
-    # Restore user configurations
-    restore_user_config "$config_backup_dir"
+    # Restore website themes
+    restore_website_themes "$THEME_BACKUP_DIR"
     
     # Fix permissions
     fix_permissions
@@ -379,26 +353,26 @@ main() {
     # Build frontend
     if ! build_frontend; then
         log_error "Frontend build failed"
-        cleanup "$config_backup_dir"
+        cleanup "$THEME_BACKUP_DIR"
         exit 1
     fi
     
     # Restart services
     if ! restart_services; then
         log_error "Service restart failed"
-        cleanup "$config_backup_dir"
+        cleanup "$THEME_BACKUP_DIR"
         exit 1
     fi
     
     # Verify restoration
     if ! verify_restoration; then
         log_error "Restoration verification failed"
-        cleanup "$config_backup_dir"
+        cleanup "$THEME_BACKUP_DIR"
         exit 1
     fi
     
     # Cleanup
-    cleanup "$config_backup_dir"
+    cleanup "$THEME_BACKUP_DIR"
     
     log "Website emergency restoration completed successfully!"
     log "Website should now be accessible at: https://home.arpa"

@@ -79,7 +79,9 @@ git checkout -b fix/issue-description
 - **Backward compatibility**: Don't break existing functionality
 - **Error handling**: Check return codes, provide meaningful errors
 - **Logging**: Use consistent logging patterns
-- **Configuration**: Use `factoryFallback.sh` for config access
+- **Config access**: Use `factoryFallback.sh` only when read-only factory fallback is intended; direct readers use `/etc/appliance/config.json`
+- **Appliance config writes**: Caduceus is the sole writer of `/etc/appliance/config.json`; `/etc/appliance/config.factory` is read-only
+- **Tailnet changes**: `tailnetName` follows the declared value and refuses a different explicit value; use Caduceus settings to change it
 - **Documentation**: Update comments and README
 - **POSIX compliance**: When possible, write portable code
 
@@ -94,8 +96,8 @@ git checkout -b fix/issue-description
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
-# Source configuration helper if needed
-CONFIG_JSON=$(factoryFallback.sh) || exit 1
+# Use the resolver only when this script needs the read-only factory fallback
+CONFIG_JSON=$(/usr/local/sbin/agathodaimon/appliance/factory-fallback/factoryFallback.sh) || exit 1
 
 # Functions
 function_name() {
@@ -169,16 +171,18 @@ validate_device() {
 }
 ```
 
-**Configuration Access:**
+**Configuration Access:** Caduceus is the sole writer of `/etc/appliance/config.json`; `/etc/appliance/config.factory` is a read-only birth fallback. Direct live readers use the canonical config, while the resolver selects canonical config first for consumers that need the fallback.
 ```bash
-# GOOD: Use configuration helper
-get_tailnet_name() {
+# GOOD: Use the resolver for a NAS setting that may come from the factory fallback
+get_nas_base_path() {
     local config_file
-    config_file=$(factoryFallback.sh) || return 1
+    config_file=$(/usr/local/sbin/agathodaimon/appliance/factory-fallback/factoryFallback.sh) || return 1
     
-    jq -r '.tailscale.tailnet' "$config_file"
+    jq -r '.global.permissions.nas.basePath // empty' "$config_file"
 }
 ```
+
+`tailget` and `tailnetName` read `/etc/appliance/config.json` directly. `tailnetName` will not change the declared setting; use Caduceus settings for that.
 
 **Cross-Platform Considerations:**
 ```bash
@@ -340,7 +344,7 @@ We aim to review PRs within **1 week**. Simple bug fixes may be reviewed faster.
 
 ### Integration Points
 
-- **Configuration**: All scripts use `factoryFallback.sh` for config access
+- **Configuration**: Factory-fallback consumers use the read-only resolver; `tailget` and `tailnetName` are direct readers of the canonical appliance config
 - **Systemd**: Many scripts integrate with systemd services
 - **LUKS**: Storage scripts work with encrypted partitions
 - **Nginx**: Certificate scripts integrate with web server

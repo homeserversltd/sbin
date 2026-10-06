@@ -1,19 +1,7 @@
 #!/usr/bin/env python3
 """
-Update Nginx homeserver site configs with new tailnet name.
-Handles all homeserver-* files in /etc/nginx/sites-available.
-Includes backup and rollback functionality.
-
-Usage:
-    tailnetName [tailnet_name]
-    
-    If tailnet_name is provided as a command-line argument, it will:
-        1. Update homeserver.json with the new tailnet name
-        2. Update nginx configuration files
-        3. Regenerate SSL certificate
-        4. Restart nginx
-    
-    Otherwise, the script will read the tailnet name from homeserver.json and proceed.
+Update Nginx site configs only for the tailnet already declared in appliance settings.
+The optional argument must match that declaration; change the setting through Caduceus.
 """
 import json
 import re
@@ -21,7 +9,6 @@ import subprocess
 import sys
 import shutil
 import glob
-import tempfile
 import os
 import time
 from pathlib import Path
@@ -29,7 +16,7 @@ from typing import Optional, List, Tuple
 
 # Configuration
 NGINX_SITES_DIR = "/etc/nginx/sites-available"
-HOMESERVER_JSON = "/var/www/homeserver/src/config/homeserver.json"
+APPLIANCE_CONFIG = "/etc/appliance/config.json"
 BACKUP_DIR = "/etc/nginx/sites-available/backup"
 
 def check_nginx_running() -> bool:
@@ -44,83 +31,25 @@ def check_nginx_running() -> bool:
         print(f"Error checking nginx status: {e}")
         return False
 
-def get_tailnet_from_json() -> Optional[str]:
-    """Extract tailnet name from homeserver.json."""
+def get_declared_tailnet() -> Optional[str]:
+    """Extract the declared tailnet from the canonical appliance config."""
     try:
-        with open(HOMESERVER_JSON, 'r') as f:
+        with open(APPLIANCE_CONFIG, 'r') as f:
             config = json.load(f)
-        
-        # Extract tailnet from CORS allowed_origins (primary source)
-        origins = config.get('global', {}).get('cors', {}).get('allowed_origins', [])
+        global_config = config.get('global', {}) if isinstance(config, dict) else {}
+        cors = global_config.get('cors', {}) if isinstance(global_config, dict) else {}
+        origins = cors.get('allowed_origins', []) if isinstance(cors, dict) else []
+        if not isinstance(origins, list):
+            return None
         for origin in origins:
-            if '.ts.net' in origin:
-                match = re.search(r'https://home\.([a-zA-Z0-9-]+)\.ts\.net', origin)
+            if isinstance(origin, str):
+                match = re.search(r'https://home[.]([a-zA-Z0-9-]+)[.]ts[.]net', origin)
                 if match:
                     return match.group(1)
-        
         return None
-    except Exception as e:
-        print(f"Error reading homeserver.json: {e}")
+    except (OSError, json.JSONDecodeError):
+        print("Error reading canonical appliance config.")
         return None
-
-def update_homeserver_json(new_tailnet: str) -> bool:
-    """Update tailnet name in homeserver.json configuration."""
-    try:
-        print(f"Updating homeserver.json with new tailnet: {new_tailnet}")
-        
-        # Read current config
-        with open(HOMESERVER_JSON, 'r') as f:
-            config = json.load(f)
-        
-        # Update CORS origins
-        cors_origins = config.get('global', {}).get('cors', {}).get('allowed_origins', [])
-        updated_cors = False
-        
-        for i, origin in enumerate(cors_origins):
-            if '.ts.net' in origin:
-                cors_origins[i] = f"https://home.{new_tailnet}.ts.net"
-                updated_cors = True
-        
-        if not updated_cors:
-            cors_origins.append(f"https://home.{new_tailnet}.ts.net")
-        
-        # Ensure config structure exists
-        if 'global' not in config:
-            config['global'] = {}
-        if 'cors' not in config['global']:
-            config['global']['cors'] = {}
-        config['global']['cors']['allowed_origins'] = cors_origins
-        
-        # Update portal remoteURLs
-        portals = config.get('tabs', {}).get('portals', {}).get('data', {}).get('portals', [])
-        for portal in portals:
-            if 'remoteURL' in portal and '.ts.net' in portal['remoteURL']:
-                # Preserve path/port after .ts.net
-                portal['remoteURL'] = f"https://home.{new_tailnet}.ts.net{portal['remoteURL'].split('.ts.net')[-1]}"
-        
-        # Write to temp file first for atomic update
-        with tempfile.NamedTemporaryFile(mode='w', delete=False, dir=os.path.dirname(HOMESERVER_JSON)) as temp_file:
-            json.dump(config, temp_file, indent=2)
-            temp_path = temp_file.name
-        
-        # Set proper permissions on temp file (readable by www-data)
-        os.chmod(temp_path, 0o644)
-        
-        # Move temp file to final location (atomic write)
-        shutil.move(temp_path, HOMESERVER_JSON)
-        
-        # Ensure final file has correct ownership (www-data:www-data)
-        try:
-            os.chown(HOMESERVER_JSON, os.getuid(), os.getgid())
-        except PermissionError:
-            # If we can't change ownership, at least ensure permissions are correct
-            os.chmod(HOMESERVER_JSON, 0o644)
-        
-        print("Successfully updated homeserver.json configuration")
-        return True
-    except Exception as e:
-        print(f"Error updating homeserver.json: {e}")
-        return False
 
 def find_homeserver_files() -> List[str]:
     """Find all homeserver-* files in nginx sites-available directory."""
@@ -332,35 +261,36 @@ def regenerate_ssl_certificate() -> bool:
         return False
 
 def main() -> int:
-    """Main function."""
-    # Check if nginx is running
+    """Update retained Nginx/certificate surfaces for the declared tailnet."""
+    if len(sys.argv) > 2:
+        print("Usage: tailnetName [tailnet_name]")
+        return 2
+
+    declared_tailnet = get_declared_tailnet()
+    if not declared_tailnet:
+        print("Could not determine the declared tailnet from appliance config.")
+        return 2
+
+    if len(sys.argv) == 2:
+        requested_tailnet = sys.argv[1]
+        if not re.fullmatch(r'[a-zA-Z0-9-]+', requested_tailnet):
+            print("Invalid tailnet name format.")
+            print("Tailnet name must contain only letters, numbers, and hyphens.")
+            return 2
+        if requested_tailnet != declared_tailnet:
+            print("Requested tailnet differs from the value declared in appliance config.")
+            print("Change the tailnet through Caduceus settings; no certificate, Nginx, or service work was performed.")
+            return 2
+        new_tailnet = requested_tailnet
+        print("Using the tailnet already declared in appliance config.")
+    else:
+        new_tailnet = declared_tailnet
+        print("Detected tailnet from appliance config.")
+
+    # Reject a different requested value before any Nginx, certificate, or service work.
     if not check_nginx_running():
         print("Nginx is not running. Exiting.")
         return 1
-
-    # Get new tailnet name - check command line argument first, then fall back to homeserver.json
-    if len(sys.argv) > 1:
-        new_tailnet = sys.argv[1]
-        # Validate tailnet name format
-        if not re.match(r'^[a-zA-Z0-9-]+$', new_tailnet):
-            print(f"Invalid tailnet name format: {new_tailnet}")
-            print("Tailnet name must contain only letters, numbers, and hyphens.")
-            return 2
-        print(f"Using tailnet name from command line: {new_tailnet}")
-        
-        # Update homeserver.json first when using command-line argument
-        if not update_homeserver_json(new_tailnet):
-            print("Failed to update homeserver.json. Exiting.")
-            return 4
-    else:
-        new_tailnet = get_tailnet_from_json()
-        if not new_tailnet:
-            print("Could not determine tailnet from homeserver.json. Exiting.")
-            print("Usage: tailnetName [tailnet_name]")
-            print("  If tailnet_name is provided, it will update homeserver.json first, then proceed.")
-            print("  Otherwise, the script will read from homeserver.json")
-            return 2
-        print(f"Detected tailnet from homeserver.json: {new_tailnet}")
 
     # Find all homeserver files
     homeserver_files = find_homeserver_files()
@@ -445,14 +375,14 @@ def main() -> int:
     for file_path in homeserver_files:
         print(f"  - {Path(file_path).name}")
     
-    # STEP 5: Restart gunicorn to apply CORS changes from updated homeserver.json
-    print("Restarting gunicorn to apply CORS configuration changes...")
+    # STEP 5: Retain the existing gunicorn restart after the Nginx update
+    print("Restarting gunicorn after the Nginx update...")
     if not restart_gunicorn():
-        print("Warning: Failed to restart gunicorn. CORS changes may not be applied until manual restart.")
+        print("Warning: Failed to restart gunicorn; a manual service restart may be needed.")
         print("You may need to manually restart gunicorn: systemctl restart gunicorn.service")
         # Don't fail the script - nginx and configs are updated, gunicorn restart is nice-to-have
     else:
-        print("Gunicorn restarted successfully with updated CORS configuration")
+        print("Gunicorn restarted successfully.")
     
     return 0
 

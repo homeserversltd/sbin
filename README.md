@@ -9,9 +9,12 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 ## Scripts
 
 ### Configuration Management
-- **`factoryFallback.sh`** - Intelligent configuration fallback system that validates and selects between `homeserver.json` and `homeserver.factory` configurations
-- **`tailnetName`** - Python script for updating Nginx configurations with new Tailscale tailnet names, including backup/rollback functionality
+- **`factoryFallback.sh`** - Selects `/etc/appliance/config.json` first; uses `/etc/appliance/config.factory` only as a read-only fallback. It requires a JSON object with a `global` object and allows `tabs` to be absent or an object.
+- **`tailnetName`** - Reads the canonical appliance config and updates existing Nginx/certificate surfaces only for its declared tailnet. A different explicit value is refused; change it through Caduceus settings.
 - **`update-kea-dhcp.sh`** - Atomic Kea DHCP configuration update script with validation, backup, and rollback capabilities
+
+### Website Restoration
+- **`fdwebsite --preserve-config`** - Preserves website themes only; appliance configuration is untouched.
 
 ### Security & Certificates
 - **`sslKey.sh`** - Generate self-signed SSL certificates for nginx with Tailscale integration and cross-platform compatibility
@@ -27,7 +30,7 @@ The HOMESERVER platform requires sophisticated system administration tools to ma
 
 ### Tailscale Integration
 - **`tailUp`** - Extract Tailscale login URLs for authentication URL generation
-- **`tailget`** - Extract tailnet information from homeserver.json configuration
+- **`tailget`** - Extract the declared tailnet from `/etc/appliance/config.json` only
 
 ### Disaster Recovery (BackblazeTab B2)
 - **`agathodaimon/storage/backup/homeserver-backblaze-tab-b2-disaster-recovery.py`** - Standalone recovery for Backblaze B2 chunked backups. Reconstructs files from a chunk database + skeleton key + B2 credentials into a local zip. Self-contained: on first run creates a venv under `~/.local/share/homeserver-backblaze-recovery/venv` and installs b2sdk and cryptography, then runs. Use after a disaster (e.g. fire) on any machine—clone this sbin repo and run the script; no HOMESERVER or Backblaze tab required. Requires: chunk database (plain or `_chunk_database_backup_*.encrypted.db` from B2), skeleton key (FAK), B2 key_id and application_key, bucket name.
@@ -124,7 +127,7 @@ sudo /usr/local/sbin/agathodaimon/storage/backup/homeserver-forgejo-migrate.py r
 
 These scripts are designed to integrate with the HOMESERVER platform's configuration management system:
 
-- **Configuration Source**: Scripts use `factoryFallback.sh` to determine active configuration
+- **Configuration ownership**: Caduceus is the sole writer of `/etc/appliance/config.json`. `factoryFallback.sh` reads it first and may read `/etc/appliance/config.factory` as a read-only fallback; neither file is modified by the resolver. `tailget` and `tailnetName` read the canonical live config directly, so not every script uses the resolver.
 - **Logging**: Integrated with system logging and HOMESERVER-specific log files
 - **Error Handling**: Comprehensive error handling with rollback capabilities
 - **State Management**: Integration with HOMESERVER's state management system
@@ -134,7 +137,7 @@ These scripts are designed to integrate with the HOMESERVER platform's configura
 - All scripts require appropriate privilege escalation
 - Certificate generation includes proper permission setting
 - LUKS operations include proper cleanup on failure
-- Configuration validation prevents invalid deployments
+- Configuration resolution accepts the baseline appliance object shape without legacy UI, CORS, version, or theme gates
 
 ## Contributing
 
