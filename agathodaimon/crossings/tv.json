@@ -41,12 +41,28 @@
       "verify"
     ],
     [
-      "settings",
-      "appearance"
+      "network",
+      "child-device"
+    ],
+    [
+      "network",
+      "dhcp"
+    ],
+    [
+      "network",
+      "dns"
+    ],
+    [
+      "network",
+      "firewall"
+    ],
+    [
+      "network",
+      "identity"
     ],
     [
       "settings",
-      "default-apps"
+      "appearance"
     ],
     [
       "settings",
@@ -54,7 +70,15 @@
     ],
     [
       "settings",
+      "default-apps"
+    ],
+    [
+      "settings",
       "display"
+    ],
+    [
+      "settings",
+      "input"
     ],
     [
       "settings",
@@ -63,6 +87,18 @@
     [
       "settings",
       "sound"
+    ],
+    [
+      "upload",
+      "force-permissions"
+    ],
+    [
+      "upload",
+      "ingress"
+    ],
+    [
+      "vault",
+      "open"
     ]
   ],
   "routes": [
