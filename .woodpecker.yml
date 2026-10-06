@@ -13,33 +13,14 @@ steps:
         git archive --format=tar.gz --prefix="sbin-${CI_COMMIT_SHA}/" "$CI_COMMIT_SHA" > dist/sbin-source.tar.gz
         digest="$(sha256sum dist/sbin-source.tar.gz | cut -d ' ' -f 1)"
         printf '%s  sbin-source.tar.gz\n' "$digest" > dist/sbin-source.tar.gz.sha256
-  - name: release-publish
+  - name: pool-publish-sbin
     image: python:3.12-alpine
-    environment:
-      FORGEJO_TOKEN:
-        from_secret: FORGEJO_TOKEN
-    commands:
-      - |
-        set -eu
-        python3 - <<'PY'
-        import urllib.request
-
-        with urllib.request.urlopen("http://192.168.123.1:7100/v1/trust/ca-bundle") as response:
-            ca_bundle = response.read()
-        with open("/tmp/house-ca.pem", "wb") as bundle_file:
-            bundle_file.write(ca_bundle)
-        PY
-        test -s /tmp/house-ca.pem
-        export SSL_CERT_FILE=/tmp/house-ca.pem
-        python3 ci/release_publish.py
-  - name: github-latest-sbin
-    image: python:3.12-alpine
-    failure: ignore
     environment:
       FORGEJO_TOKEN:
         from_secret: FORGEJO_TOKEN
       GITHUB_TOKEN:
         from_secret: github_token
+      WUKONG_STAFF_SHA: 58f29bee09ca30e5b61d5ccef08b28c1941d91c7
     commands:
       - |
         set -eu
@@ -54,7 +35,14 @@ steps:
         PY
         test -s /tmp/house-ca.pem
         export SSL_CERT_FILE=/tmp/house-ca.pem
-        python3 ci/github_latest.py
+        export GIT_SSL_CAINFO=/tmp/house-ca.pem
+        export GIT_CONFIG_COUNT=1
+        export GIT_CONFIG_KEY_0=credential.https://git.home.arpa.helper
+        export GIT_CONFIG_VALUE_0='!f() { if [ "$${1}" = get ]; then printf "username=x-token\npassword=%s\n" "$${FORGEJO_TOKEN}"; fi; }; f'
+        git clone --no-checkout --depth 1 https://git.home.arpa/HOMESERVERSLTD/wukong-staff.git wukong-staff
+        git -C wukong-staff fetch --depth 1 origin "$${WUKONG_STAFF_SHA}"
+        git -C wukong-staff checkout --detach "$${WUKONG_STAFF_SHA}"
+        WUKONG_MEMBER_ROOT=$${PWD} exec sh wukong-staff/ci/sbin/pipeline.sh
   - name: ci-outcome-sbin
     image: python:3.12-alpine
     backend_options:
