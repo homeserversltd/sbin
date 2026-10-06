@@ -43,6 +43,10 @@
       "verify"
     ],
     [
+      "nas",
+      "setup"
+    ],
+    [
       "network",
       "child-device"
     ],
