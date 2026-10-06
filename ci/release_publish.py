@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -22,7 +23,11 @@ OWNER_REPO = "HOMESERVERSLTD/sbin"
 RELEASE_RETENTION = 20
 RELEASE_PAGE_LIMIT = 50
 FLAG_NAME = "release.flag"
+SOURCE_TARBALL_NAME = "sbin-source.tar.gz"
+SOURCE_TARBALL_SHA256_NAME = f"{SOURCE_TARBALL_NAME}.sha256"
+EXPECTED_ASSETS = (FLAG_NAME, SOURCE_TARBALL_NAME, SOURCE_TARBALL_SHA256_NAME)
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+SHA256_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 RELEASE_TAG = re.compile(r"^sha-([0-9a-fA-F]{40})$")
 UNIX_TIMESTAMP = re.compile(r"^[0-9]+$")
 
@@ -125,9 +130,11 @@ def flagged_at() -> str:
     return value.isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def flag_bytes(source_sha: str, pipeline_url: str) -> bytes:
+def flag_bytes(source_sha: str, pipeline_url: str, source_digest: str) -> bytes:
     if not FULL_SHA.fullmatch(source_sha):
         fail("CI_COMMIT_SHA must be exactly 40 lowercase hexadecimal characters")
+    if not SHA256_DIGEST.fullmatch(source_digest):
+        fail("source tarball SHA-256 must be exactly 64 lowercase hexadecimal characters")
     if not pipeline_url:
         fail("CI_PIPELINE_URL is required")
     payload = {
@@ -136,8 +143,43 @@ def flag_bytes(source_sha: str, pipeline_url: str) -> bytes:
         "source_sha": source_sha,
         "flagged_at": flagged_at(),
         "pipeline_url": pipeline_url,
+        "sha256": source_digest,
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def read_source_artifacts() -> tuple[dict[str, bytes], str]:
+    try:
+        with open(f"dist/{SOURCE_TARBALL_NAME}", "rb") as source_file:
+            source_tarball = source_file.read()
+        with open(f"dist/{SOURCE_TARBALL_SHA256_NAME}", "rb") as sidecar_file:
+            sidecar = sidecar_file.read()
+    except OSError as exc:
+        fail(f"cannot read required source release artifact: {type(exc).__name__}")
+    digest = hashlib.sha256(source_tarball).hexdigest()
+    expected_sidecar = f"{digest}  {SOURCE_TARBALL_NAME}\n".encode("ascii")
+    if sidecar != expected_sidecar:
+        fail("source tarball SHA-256 sidecar does not exactly match the artifact")
+    return {
+        SOURCE_TARBALL_NAME: source_tarball,
+        SOURCE_TARBALL_SHA256_NAME: sidecar,
+    }, digest
+
+
+def validate_expected_assets(expected: dict[str, bytes]) -> str:
+    if set(expected) != set(EXPECTED_ASSETS):
+        fail("release assets do not match the release.flag contract")
+    source_digest = hashlib.sha256(expected[SOURCE_TARBALL_NAME]).hexdigest()
+    expected_sidecar = f"{source_digest}  {SOURCE_TARBALL_NAME}\n".encode("ascii")
+    if expected[SOURCE_TARBALL_SHA256_NAME] != expected_sidecar:
+        fail("source tarball SHA-256 sidecar does not exactly match the artifact")
+    try:
+        flag = json.loads(expected[FLAG_NAME])
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        fail("release.flag is invalid JSON")
+    if not isinstance(flag, dict) or flag.get("sha256") != source_digest:
+        fail("release.flag sha256 does not match the source tarball")
+    return source_digest
 
 
 def release_tag(source_sha: str) -> str:
@@ -214,18 +256,32 @@ def download_asset(asset: dict[str, Any], token: str) -> bytes:
     return raw
 
 
-def validate_existing(release: dict[str, Any], source_sha: str, token: str, expected: bytes) -> None:
+def validate_existing(
+    release: dict[str, Any], source_sha: str, token: str, expected: dict[str, bytes]
+) -> None:
     validate_identity(release, source_sha)
-    assets = validate_assets(release, {FLAG_NAME})
-    if download_asset(assets[FLAG_NAME], token) != expected:
-        fail("immutable release.flag conflict; refusing overwrite")
+    source_digest = validate_expected_assets(expected)
+    assets = validate_assets(release, set(EXPECTED_ASSETS))
+    for name in EXPECTED_ASSETS:
+        downloaded = download_asset(assets[name], token)
+        if name == SOURCE_TARBALL_NAME and hashlib.sha256(downloaded).hexdigest() != source_digest:
+            fail("downloaded source tarball SHA-256 does not match release.flag")
+        if downloaded != expected[name]:
+            if name == FLAG_NAME:
+                fail("immutable release.flag conflict; refusing overwrite")
+            fail(f"immutable release asset conflict for {name}; refusing overwrite")
 
 
-def multipart_flag(content: bytes) -> tuple[bytes, str]:
+def multipart_asset(name: str, content: bytes) -> tuple[bytes, str]:
     boundary = "sbin-release-" + secrets.token_hex(16)
+    content_type = {
+        FLAG_NAME: "application/json; charset=utf-8",
+        SOURCE_TARBALL_NAME: "application/gzip",
+        SOURCE_TARBALL_SHA256_NAME: "text/plain; charset=utf-8",
+    }[name]
     header = (
         f'--{boundary}\r\nContent-Disposition: form-data; name="attachment"; '
-        f'filename="{FLAG_NAME}"\r\nContent-Type: application/json; charset=utf-8\r\n\r\n'
+        f'filename="{name}"\r\nContent-Type: {content_type}\r\n\r\n'
     ).encode("ascii")
     trailer = f"\r\n--{boundary}--\r\n".encode("ascii")
     return header + content + trailer, f"multipart/form-data; boundary={boundary}"
@@ -265,7 +321,8 @@ def create_release(source_sha: str, token: str) -> tuple[dict[str, Any], bool]:
     return value, False
 
 
-def publish(source_sha: str, token: str, expected: bytes) -> tuple[str, str]:
+def publish(source_sha: str, token: str, expected: dict[str, bytes]) -> tuple[str, str]:
+    validate_expected_assets(expected)
     existing = read_release(source_sha, token)
     if existing is not None:
         validate_existing(existing, source_sha, token, expected)
@@ -279,17 +336,18 @@ def publish(source_sha: str, token: str, expected: bytes) -> tuple[str, str]:
     if release.get("assets") != []:
         validate_assets(release, set())
 
-    body, content_type = multipart_flag(expected)
-    status, _ = request(
-        "POST",
-        f"/repos/{OWNER_REPO}/releases/{release_id}/assets?"
-        + urllib.parse.urlencode({"name": FLAG_NAME}),
-        token,
-        body=body,
-        content_type=content_type,
-    )
-    if status != 201:
-        fail(f"release.flag upload returned HTTP {status}")
+    for name in EXPECTED_ASSETS:
+        body, content_type = multipart_asset(name, expected[name])
+        status, _ = request(
+            "POST",
+            f"/repos/{OWNER_REPO}/releases/{release_id}/assets?"
+            + urllib.parse.urlencode({"name": name}),
+            token,
+            body=body,
+            content_type=content_type,
+        )
+        if status != 201:
+            fail(f"{name} upload returned HTTP {status}")
 
     reread = read_release(source_sha, token)
     if reread is None:
@@ -496,7 +554,15 @@ def main() -> int:
             print(json.dumps({"status": "ok", "repo": OWNER_REPO, "retention": result}, separators=(",", ":")))
             return 0
         source_sha = os.environ.get("CI_COMMIT_SHA", "")
-        expected = flag_bytes(source_sha, os.environ.get("CI_PIPELINE_URL", ""))
+        source_assets, source_digest = read_source_artifacts()
+        expected = {
+            FLAG_NAME: flag_bytes(
+                source_sha,
+                os.environ.get("CI_PIPELINE_URL", ""),
+                source_digest,
+            ),
+            **source_assets,
+        }
         status, url = publish(source_sha, token, expected)
         retention = None
         if os.environ.get("CI_COMMIT_BRANCH") == "main":
@@ -518,7 +584,8 @@ def main() -> int:
                 "status": status,
                 "tag": release_tag(source_sha),
                 "name": f"sbin {source_sha[:8]}",
-                "assets": [FLAG_NAME],
+                "assets": list(EXPECTED_ASSETS),
+                "source_tarball_sha256": source_digest,
                 "release_url": url,
                 "retention": retention,
             },

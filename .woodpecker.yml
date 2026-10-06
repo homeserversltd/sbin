@@ -3,6 +3,16 @@ when:
     branch: main
 
 steps:
+  - name: build-sbin-source
+    image: python:3.12-alpine
+    commands:
+      - |
+        set -eu
+        apk add --no-cache git
+        mkdir -p dist
+        git archive --format=tar.gz --prefix="sbin-${CI_COMMIT_SHA}/" "$CI_COMMIT_SHA" > dist/sbin-source.tar.gz
+        digest="$(sha256sum dist/sbin-source.tar.gz | cut -d ' ' -f 1)"
+        printf '%s  sbin-source.tar.gz\n' "$digest" > dist/sbin-source.tar.gz.sha256
   - name: release-publish
     image: python:3.12-alpine
     environment:
