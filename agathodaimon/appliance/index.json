@@ -1,6 +1,7 @@
 {
   "children": [
     "factory-fallback",
+    "harmonia-press",
     "journal-vacuum",
     "service",
     "sudo-passwordless"

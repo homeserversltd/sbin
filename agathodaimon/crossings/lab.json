@@ -57,6 +57,7 @@
     "storage/backup/forgejo/migrate",
     "storage/backup/nas-sync",
     "storage/disk-doors",
+    "storage/disk/test",
     "storage/upload",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
@@ -516,6 +517,7 @@
       "settings/notifications",
       "settings/sound",
       "settings/ssh",
+      "storage/disk/test",
       "storage/vault/open",
       "storage/vault/policy"
     ],

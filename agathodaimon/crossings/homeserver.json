@@ -2,9 +2,11 @@
   "schema": "agathodaimon.crossings.v1",
   "profile": "homeserver",
   "bands": [
+    "appliance/harmonia-press",
     "appliance/journal-vacuum",
     "appliance/service",
     "appliance/sudo-passwordless",
+    "network/cert/refresh",
     "network/child-device",
     "network/dhcp",
     "network/dns",
@@ -14,6 +16,7 @@
     "settings/datetime",
     "settings/input",
     "storage/backup/forgejo/credential",
+    "storage/disk/test",
     "storage/nas/setup",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
@@ -262,12 +265,15 @@
   ],
   "administrative": {
     "bands": [
+      "appliance/harmonia-press",
       "appliance/service",
       "appliance/sudo-passwordless",
+      "network/cert/refresh",
       "network/child-device",
       "network/dns",
       "settings/datetime",
       "settings/input",
+      "storage/disk/test",
       "storage/nas/setup",
       "storage/vault/open",
       "storage/vault/policy"
