@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
+from agathodaimon.lib.keyman_export import KeymanExportError, export_key
 
 SCHEMA = "caduceus.nas.setup.v1"
 MAX_INPUT = 65536
@@ -29,7 +30,6 @@ MOUNTINFO = Path("/proc/self/mountinfo")
 UNIT_DIR = Path("/etc/systemd/system")
 KEYMAN_CREATE = "/vault/keyman/keyman-crypto"
 KEYMAN_DELETE = "/vault/keyman/deletekey.sh"
-EXPORT_NAS = "/vault/scripts/exportNAS.sh"
 MOUNT_DRIVE = "/vault/scripts/mountDrive.sh"
 SGDISK = "/usr/sbin/sgdisk"
 UDEVADM = "/usr/bin/udevadm"
@@ -72,6 +72,24 @@ class Refusal(Exception):
 
 class Interrupted(Refusal):
     pass
+
+
+_KEYMAN_SIGNAL_MAP = {
+    "non-root": "agathodaimon-nas-root-required",
+    "uninitialized-system": "agathodaimon-nas-keyman-uninitialized-system",
+    "missing-key": "agathodaimon-nas-keyman-missing-key",
+    "malformed-key-file": "agathodaimon-nas-keyman-malformed-key-file",
+    "preflight-unobservable": "agathodaimon-nas-keyman-preflight-unobservable",
+    "service-name-invalid": "agathodaimon-nas-keyman-service-invalid",
+    "exchange-artifact-preexisting": "agathodaimon-nas-keyman-exchange-preexisting",
+    "exchange-artifact-malformed": "agathodaimon-nas-key-export-invalid",
+    "exchange-artifact-raced": "agathodaimon-nas-keyman-exchange-raced",
+    "exchange-cleanup-failed": "agathodaimon-nas-keyman-exchange-cleanup-failed",
+    "export-failed": "agathodaimon-nas-key-export-failed",
+    "export-timeout": "agathodaimon-nas-key-export-failed",
+    "export-unavailable": "agathodaimon-nas-key-export-failed",
+    "scratch-context-invalid": "agathodaimon-nas-key-export-failed",
+}
 
 
 def _safe_step(value: str) -> str:
@@ -141,6 +159,23 @@ def _run(argv: Sequence[str], input_data: bytes | None = None, timeout: int = 60
 
 def _record(receipt: dict[str, Any], step: str, ok: bool, **readback: Any) -> None:
     receipt["steps"].append({"step": _safe_step(step), "ok": bool(ok), "readback": readback})
+
+
+def _export_named_key(receipt: dict[str, Any], service_name: str, step: str) -> bytearray:
+    try:
+        material = export_key(service_name)
+    except KeymanExportError as failure:
+        signal_name = _KEYMAN_SIGNAL_MAP.get(failure.signal, "agathodaimon-nas-key-export-failed")
+        readback: dict[str, Any] = {"observed": signal_name}
+        if failure.return_code is not None:
+            readback["rc"] = failure.return_code
+        _record(receipt, step, False, **readback)
+        raise Refusal(signal_name, step, failure.return_code) from None
+    except Exception:
+        _record(receipt, step, False, observed="export-unavailable")
+        raise Refusal("agathodaimon-nas-key-export-failed", step) from None
+    _record(receipt, step, True, present=True, bytes=len(material))
+    return material
 
 
 def _command(receipt: dict[str, Any], step: str, argv: Sequence[str], input_data: bytes | None = None,
@@ -934,17 +969,7 @@ def _create_key(receipt: dict[str, Any], service_role: str, info: dict[str, Any]
     existing = _read_key_file(path)
     if existing is not None:
         _record(receipt, "key-preflight", True, present=True, regular=True)
-        exported = _run([BASH, EXPORT_NAS, service_role], step="key-export")
-        if exported.returncode != 0 or not exported.stdout:
-            _record(receipt, "key-export", False, rc=exported.returncode)
-            raise Refusal("agathodaimon-nas-key-export-failed", "key-export", exported.returncode)
-        material = bytearray(exported.stdout.rstrip(b"\r\n"))
-        if not material or b"\x00" in material:
-            _zero(material)
-            _record(receipt, "key-export", False, observed="invalid")
-            raise Refusal("agathodaimon-nas-key-export-invalid", "key-export")
-        _record(receipt, "key-export", True, present=True, bytes=len(material))
-        return material, None
+        return _export_named_key(receipt, service_role, "key-export"), None
     _record(receipt, "key-preflight", True, present=False, regular=False)
     password = secrets.token_hex(32)
     input_data = f"service={service_role}\nusername=nas\npassword={password}\n".encode("utf-8")
@@ -961,15 +986,7 @@ def _create_key(receipt: dict[str, Any], service_role: str, info: dict[str, Any]
             rc=result.returncode, created=created is not None, regular=created is not None)
     if result.returncode != 0 or created is None:
         raise Refusal("agathodaimon-nas-key-create-failed", "key-create", result.returncode)
-    exported = _run([BASH, EXPORT_NAS, service_role], step="key-export")
-    if exported.returncode != 0 or not exported.stdout:
-        raise Refusal("agathodaimon-nas-key-export-failed", "key-export", exported.returncode)
-    material = bytearray(exported.stdout.rstrip(b"\r\n"))
-    if not material or b"\x00" in material:
-        _zero(material)
-        raise Refusal("agathodaimon-nas-key-export-invalid", "key-export")
-    _record(receipt, "key-export", True, present=True, bytes=len(material))
-    return material, created_identity
+    return _export_named_key(receipt, service_role, "key-export"), created_identity
 
 
 def _zero(value: bytearray) -> None:
@@ -1051,6 +1068,106 @@ def _unit_values(path: Path) -> dict[str, str]:
     return values
 
 
+def _shell_script(value: str) -> str | None:
+    try:
+        argv = shlex.split(value)
+    except ValueError:
+        return None
+    if not argv or os.path.basename(argv[0]) not in {"bash", "sh"} or argv.count("-c") != 1:
+        return None
+    index = argv.index("-c")
+    return argv[index + 1] if index + 1 < len(argv) else None
+
+
+def _shell_command(value: str) -> list[str] | None:
+    current_text = value
+    for _ in range(8):
+        try:
+            argv = shlex.split(current_text)
+        except ValueError:
+            return None
+        if not argv:
+            return None
+        if os.path.basename(argv[0]) not in {"bash", "sh"}:
+            return argv
+        if argv.count("-c") != 1:
+            return None
+        index = argv.index("-c")
+        if index + 1 >= len(argv):
+            return None
+        current_text = argv[index + 1]
+    return None
+
+
+def _pipeline_parts(command: list[str] | None) -> tuple[list[str], list[str]] | None:
+    if command is None or command.count("|") != 1:
+        return None
+    if any(token in {";", "&&", "||", "&", ">", "<"} for token in command):
+        return None
+    split = command.index("|")
+    if split == 0 or split == len(command) - 1:
+        return None
+    return command[:split], command[split + 1:]
+
+
+def _mountdrive_producer_pipeline(info: dict[str, Any]) -> list[str] | None:
+    try:
+        raw, _metadata = _read_regular_nofollow(MOUNT_DRIVE, maximum=1024 * 1024)
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError):
+        return None
+    candidates = []
+    required = ("$NAS_KEY_NAME", "$DEVICE", "$MAPPER_NAME", "luksOpen")
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if (separator and key.strip() == "ExecStart"
+                and all(token in value for token in required)):
+            candidates.append(value.strip())
+    if len(candidates) != 1:
+        return None
+    command = _shell_script(candidates[0])
+    if command is None:
+        return None
+    replacements = {
+        "$NAS_KEY_NAME": info["serviceRole"],
+        "$DEVICE": info["partition"],
+        "$MAPPER_NAME": info["mapper"],
+    }
+    for token, value in replacements.items():
+        if command.count(token) != 1:
+            return None
+        command = command.replace(token, value)
+    if "$" in command:
+        return None
+    try:
+        pipeline = _pipeline_parts(shlex.split(command))
+    except ValueError:
+        return None
+    if pipeline is None:
+        return None
+    export_command, open_command = pipeline
+    if (not export_command or export_command[-1] != info["serviceRole"]
+            or open_command.count("luksOpen") != 1
+            or info["partition"] not in open_command or info["mapper"] not in open_command):
+        return None
+    return export_command + ["|"] + open_command
+
+
+def _partition_unit_pipeline(raw: bytes) -> list[str] | None:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeError:
+        return None
+    values = []
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "ExecStart":
+            values.append(value.strip())
+    if len(values) != 1:
+        return None
+    return _shell_command(values[0])
+
+
 def _helper_unit_readback(receipt: dict[str, Any], info: dict[str, Any], paths: dict[str, Path]) -> None:
     observed: dict[str, tuple[dict[str, Any], bytes] | None] = {}
     for name, path in paths.items():
@@ -1073,43 +1190,23 @@ def _helper_unit_readback(receipt: dict[str, Any], info: dict[str, Any], paths: 
         fingerprint, raw = identity
         values = _unit_values(path)
         if name == "partition":
-            try:
-                text = raw.decode("utf-8")
-            except UnicodeError:
-                text = ""
+            expected_pipeline = _mountdrive_producer_pipeline(info)
+            actual_pipeline = _partition_unit_pipeline(raw)
+            expected_parts = _pipeline_parts(expected_pipeline)
+            actual_parts = _pipeline_parts(actual_pipeline)
             service = info["serviceRole"]
-            commands = []
-            for line in text.splitlines():
-                key, sep, value = line.partition("=")
-                if sep and key.strip() in {"ExecStart", "ExecStartPre", "ExecStartPost"}:
-                    try:
-                        argv = shlex.split(value.strip())
-                    except ValueError:
-                        commands.append([])
-                        continue
-                    layers = [argv]
-                    current = argv
-                    for _ in range(8):
-                        if not current or os.path.basename(current[0]) not in {"bash", "sh"}:
-                            break
-                        try:
-                            command_index = current.index("-c")
-                            nested = shlex.split(current[command_index + 1])
-                        except (ValueError, IndexError):
-                            break
-                        if not nested:
-                            break
-                        layers.append(nested)
-                        current = nested
-                    commands.extend(layers)
-            partition = info["partition"]
-            mapper = info["mapper"]
-            has_export = any(EXPORT_NAS in command and service in command for command in commands)
-            has_open = any("luksOpen" in command and partition in command
-                            and (mapper in command or f"/dev/mapper/{mapper}" in command) for command in commands)
-            _record(receipt, "helper-unit-readback", has_export and has_open, unit=path.name,
-                    exportRole=has_export, luksOpenMatches=has_open, partition=partition, mapper=mapper)
-            if not has_export or not has_open:
+            has_export = (expected_parts is not None and actual_parts is not None
+                          and expected_parts[0][-1] == service
+                          and actual_parts[0] == expected_parts[0])
+            has_open = (expected_parts is not None and actual_parts is not None
+                        and "luksOpen" in expected_parts[1]
+                        and actual_parts[1] == expected_parts[1])
+            pipeline_matches = (expected_pipeline is not None and actual_pipeline == expected_pipeline)
+            okay = has_export and has_open and pipeline_matches
+            _record(receipt, "helper-unit-readback", okay, unit=path.name,
+                    exportRole=has_export, luksOpenMatches=has_open, partition=info["partition"],
+                    mapper=info["mapper"])
+            if not okay:
                 raise Refusal("agathodaimon-nas-helper-boot-command-mismatch", "helper-unit-readback")
         else:
             expected_where = info["mountpoint"]
@@ -2378,16 +2475,7 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
 
 
 def _export_again(receipt: dict[str, Any], service_role: str) -> bytearray:
-    result = _run([BASH, EXPORT_NAS, service_role], step="key-export-for-open")
-    if result.returncode != 0 or not result.stdout:
-        _record(receipt, "key-export-for-open", False, rc=result.returncode)
-        raise Refusal("agathodaimon-nas-key-export-failed", "key-export-for-open", result.returncode)
-    material = bytearray(result.stdout.rstrip(b"\r\n"))
-    if not material or b"\x00" in material:
-        _zero(material)
-        raise Refusal("agathodaimon-nas-key-export-invalid", "key-export-for-open")
-    _record(receipt, "key-export-for-open", True, present=True, bytes=len(material))
-    return material
+    return _export_named_key(receipt, service_role, "key-export-for-open")
 
 
 def _rollback_receipt(receipt: dict[str, Any], info: dict[str, Any], key_identity: dict[str, Any] | None,

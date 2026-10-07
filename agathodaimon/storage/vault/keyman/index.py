@@ -11,11 +11,11 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
+from agathodaimon.lib.keyman_export import KEYMAN, KeymanExportError, export_key
+
 SCHEMA = "caduceus.keyman.door.v1"
 MAX_INPUT_BYTES = 64 * 1024
 VAULT_NEWKEY = "/vault/keyman/newkey.sh"
-EXPORT_NAS = "/vault/scripts/exportNAS.sh"
-EXPORT_SUITE = "/vault/scripts/exportServiceSuite.sh"
 CHANGE_SUITE = "/vault/keyman/change_service_suite_key.sh"
 CAPABILITY_ROTATE = "/usr/local/sbin/agathodaimon-keyman-rotate-capability"
 CRYPTSETUP = "/usr/sbin/cryptsetup"
@@ -50,10 +50,63 @@ def _redacted(argv: Sequence[str]) -> list[str]:
     return redacted
 
 
-def _run(argv: list[str], *, secret_input: str | None = None) -> subprocess.CompletedProcess[str]:
-    # Secrets go only to the child's stdin or its required script arguments; neither
-    # argv nor child output is serialized into a Caduceus receipt or log record.
-    return subprocess.run(argv, input=secret_input, text=True, capture_output=True, check=False)
+def _run(argv: list[str], *, secret_input: str | bytes | bytearray | None = None) -> subprocess.CompletedProcess[Any]:
+    input_data: str | bytes | None = bytes(secret_input) if isinstance(secret_input, bytearray) else secret_input
+    return subprocess.run(argv, input=input_data, text=not isinstance(input_data, bytes),
+                          capture_output=True, check=False)
+
+
+def _password_bytes(value: str | bytes | bytearray) -> bytes:
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, bytes):
+        return value
+    try:
+        return value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise Refusal("agathodaimon-keyman-password-encoding-invalid") from None
+
+
+def _password_input(*values: str | bytes | bytearray) -> str | bytes:
+    if all(isinstance(value, str) for value in values):
+        return "".join(str(value) + "\n" for value in values)
+    return b"".join(_password_bytes(value) + b"\n" for value in values)
+
+
+def _zero(value: bytearray) -> None:
+    for index in range(len(value)):
+        value[index] = 0
+
+
+_EXPORT_FAILURE_SUFFIX = {
+    "non-root": "non-root",
+    "uninitialized-system": "uninitialized-system",
+    "missing-key": "missing-key",
+    "malformed-key-file": "malformed-key-file",
+    "preflight-unobservable": "preflight-unobservable",
+    "service-name-invalid": "service-invalid",
+    "exchange-artifact-preexisting": "exchange-preexisting",
+    "exchange-artifact-malformed": "exchange-malformed",
+    "exchange-artifact-raced": "exchange-raced",
+    "exchange-cleanup-failed": "exchange-cleanup-failed",
+    "export-failed": "refused",
+    "export-timeout": "refused",
+    "export-unavailable": "refused",
+    "scratch-context-invalid": "refused",
+}
+
+
+def _export_named_key(service_name: str, *, planned: bool) -> bytearray:
+    if planned:
+        return bytearray()
+    label = "service-suite" if service_name == "service_suite" else "nas"
+    try:
+        return export_key(service_name)
+    except KeymanExportError as failure:
+        suffix = _EXPORT_FAILURE_SUFFIX.get(failure.signal, "refused")
+        raise Refusal(f"agathodaimon-keyman-{label}-export-{suffix}") from None
+    except Exception:
+        raise Refusal(f"agathodaimon-keyman-{label}-export-refused") from None
 
 
 def _required(payload: dict[str, Any], name: str) -> str:
@@ -100,7 +153,9 @@ def _enabled_slots(luks_dump: str) -> set[int]:
     return slots
 
 
-def _apply_strategy(device: str, strategy: str, current_password: str, new_password: str, *, flexible_option: Any, key_slot: Any, planned: bool) -> list[list[str]]:
+def _apply_strategy(device: str, strategy: str, current_password: str | bytes | bytearray,
+                    new_password: str | bytes | bytearray, *, flexible_option: Any,
+                    key_slot: Any, planned: bool) -> list[list[str]]:
     status_commands, dump = _luks_dump(device, planned=planned)
     commands = status_commands
     slots = _enabled_slots(dump)
@@ -123,7 +178,7 @@ def _apply_strategy(device: str, strategy: str, current_password: str, new_passw
                 _must(_run(_sudo([CRYPTSETUP, "luksKillSlot", device, "1"]), secret_input=current_password), "agathodaimon-keyman-slot-remove-refused")
         commands.append(_redacted(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", "1"])))
         if not planned:
-            _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", "1"]), secret_input=f"{current_password}\n{new_password}\n{new_password}\n"), "agathodaimon-keyman-slot-add-refused")
+            _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", "1"]), secret_input=_password_input(current_password, new_password, new_password)), "agathodaimon-keyman-slot-add-refused")
         return commands
     if not isinstance(flexible_option, str) or flexible_option not in {"manual", "random"}:
         raise Refusal("agathodaimon-keyman-flexible-option-required")
@@ -140,17 +195,18 @@ def _apply_strategy(device: str, strategy: str, current_password: str, new_passw
     commands.append(_redacted(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", str(slot)])))
     if not planned:
         _must(_run(_sudo([CRYPTSETUP, "luksKillSlot", device, str(slot)]), secret_input=current_password), "agathodaimon-keyman-slot-remove-refused")
-        _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", str(slot)]), secret_input=f"{current_password}\n{new_password}\n{new_password}\n"), "agathodaimon-keyman-slot-add-refused")
+        _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", str(slot)]), secret_input=_password_input(current_password, new_password, new_password)), "agathodaimon-keyman-slot-add-refused")
     return commands
 
 
-def _execute_primary(device: str, slots: set[int], current_password: str, new_password: str) -> None:
+def _execute_primary(device: str, slots: set[int], current_password: str | bytes | bytearray,
+                     new_password: str | bytes | bytearray) -> None:
     if 1 in slots:
         _must(_run(_sudo([CRYPTSETUP, "luksKillSlot", device, "1"]), secret_input=current_password), "agathodaimon-keyman-slot-remove-refused")
-    _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", "1"]), secret_input=f"{current_password}\n{new_password}\n{new_password}\n"), "agathodaimon-keyman-slot-add-refused")
+    _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", "1"]), secret_input=_password_input(current_password, new_password, new_password)), "agathodaimon-keyman-slot-add-refused")
     for slot in sorted(slots - {1}):
         _must(_run(_sudo([CRYPTSETUP, "luksKillSlot", device, str(slot)]), secret_input=new_password), "agathodaimon-keyman-slot-remove-refused")
-    _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", "0"]), secret_input=f"{new_password}\n{new_password}\n{new_password}\n"), "agathodaimon-keyman-slot-add-refused")
+    _must(_run(_sudo([CRYPTSETUP, "luksAddKey", device, "--key-slot", "0"]), secret_input=_password_input(new_password, new_password, new_password)), "agathodaimon-keyman-slot-add-refused")
     _must(_run(_sudo([CRYPTSETUP, "luksKillSlot", device, "1"]), secret_input=new_password), "agathodaimon-keyman-slot-remove-refused")
 
 
@@ -159,17 +215,10 @@ def _must(result: subprocess.CompletedProcess[str], signal: str) -> None:
         raise Refusal(signal)
 
 
-def _export_nas(*, planned: bool) -> tuple[list[list[str]], str]:
-    command = _sudo([EXPORT_NAS])
+def _export_nas(*, planned: bool) -> tuple[list[list[str]], bytearray]:
+    command = [KEYMAN, "export", "nas"]
     commands = [_redacted(command)]
-    if planned:
-        return commands, ""
-    result = _run(command)
-    _must(result, "agathodaimon-keyman-nas-export-refused")
-    secret = result.stdout.strip()
-    if not secret:
-        raise Refusal("agathodaimon-keyman-nas-export-empty")
-    return commands, secret
+    return commands, _export_named_key("nas", planned=planned)
 
 
 def create(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
@@ -192,17 +241,22 @@ def create(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
         if not planned:
             _must(_run(newkey), "agathodaimon-keyman-nas-create-refused")
         export_commands, nas_password = _export_nas(planned=planned)
-        commands.extend(export_commands)
-        passwords = payload.get("devicePasswords", {})
-        if not isinstance(passwords, dict):
-            raise Refusal("agathodaimon-keyman-device-passwords-invalid")
-        for device in devices:
-            if target == "both" and device == devices[0]:
-                continue
-            current = passwords.get(device)
-            if not isinstance(current, str) or not current:
-                raise Refusal("agathodaimon-keyman-device-password-required")
-            commands.extend(_apply_strategy(device, strategy, current, nas_password, flexible_option=payload.get("flexibleOption"), key_slot=payload.get("keySlot"), planned=planned))
+        try:
+            commands.extend(export_commands)
+            passwords = payload.get("devicePasswords", {})
+            if not isinstance(passwords, dict):
+                raise Refusal("agathodaimon-keyman-device-passwords-invalid")
+            for device in devices:
+                if target == "both" and device == devices[0]:
+                    continue
+                current = passwords.get(device)
+                if not isinstance(current, str) or not current:
+                    raise Refusal("agathodaimon-keyman-device-password-required")
+                commands.extend(_apply_strategy(device, strategy, current, nas_password,
+                                                flexible_option=payload.get("flexibleOption"),
+                                                key_slot=payload.get("keySlot"), planned=planned))
+        finally:
+            _zero(nas_password)
     return _receipt("create-key", True, planned=planned, commands=commands, target=target, strategy=strategy)
 
 
@@ -215,8 +269,13 @@ def update(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
     if not planned:
         _must(_run(verify, secret_input=current), "agathodaimon-keyman-current-password-invalid")
     export_commands, nas_password = _export_nas(planned=planned)
-    commands.extend(export_commands)
-    commands.extend(_apply_strategy(device, strategy, current, nas_password, flexible_option=payload.get("flexibleOption"), key_slot=payload.get("keySlot"), planned=planned))
+    try:
+        commands.extend(export_commands)
+        commands.extend(_apply_strategy(device, strategy, current, nas_password,
+                                        flexible_option=payload.get("flexibleOption"),
+                                        key_slot=payload.get("keySlot"), planned=planned))
+    finally:
+        _zero(nas_password)
     return _receipt("update-key", True, planned=planned, commands=commands, device=device, strategy=strategy)
 
 
@@ -226,7 +285,7 @@ def admin_password(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
     samba_user = payload.get("sambaUser", "admin")
     if not isinstance(samba_user, str) or not samba_user or any(not (part.isalnum() or part in "_-.") for part in samba_user):
         raise Refusal("agathodaimon-keyman-samba-user-invalid")
-    export = _sudo([EXPORT_SUITE])
+    export = [KEYMAN, "export", "service_suite"]
     rotate = _sudo([CHANGE_SUITE, "--non-interactive", old, new])
     rollback = _sudo([CHANGE_SUITE, "--non-interactive", new, old])
     chpasswd = _sudo([CHPASSWD])
@@ -237,9 +296,15 @@ def admin_password(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
     commands = [_redacted(export), _redacted(rotate), _redacted(chpasswd), _redacted(smbpwd), _redacted(ssh), _redacted(sshd), _redacted(smbd)]
     if planned:
         return _receipt("admin-password", True, planned=True, commands=commands, rollbackCommand=_redacted(rollback), sambaUser=samba_user)
-    exported = _run(export)
-    _must(exported, "agathodaimon-keyman-service-suite-export-refused")
-    if exported.stdout.strip() != old:
+    suite_password = _export_named_key("service_suite", planned=False)
+    try:
+        try:
+            old_password_matches = bytes(suite_password) == old.encode("utf-8")
+        except UnicodeEncodeError:
+            old_password_matches = False
+    finally:
+        _zero(suite_password)
+    if not old_password_matches:
         raise Refusal("agathodaimon-keyman-current-password-invalid")
     _must(_run(rotate), "agathodaimon-keyman-service-suite-rotate-refused")
     owner = _run(chpasswd, secret_input=f"owner:{new}\n")

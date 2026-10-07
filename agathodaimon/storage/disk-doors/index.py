@@ -3,9 +3,10 @@ from __future__ import annotations
 import json, os, posixpath, re, subprocess, sys
 from typing import Any, Sequence
 
+from agathodaimon.lib.keyman_export import KEYMAN, KeymanExportError, export_key
+
 SCHEMA = "caduceus.disk.door.v1"
 MAX_INPUT_BYTES = 64 * 1024
-EXPORT_NAS = "/vault/scripts/exportNAS.sh"
 MOUNT_DRIVE = "/vault/scripts/mountDrive.sh"
 UNMOUNT_DRIVE = "/vault/scripts/unmountDrive.sh"
 CRYPTSETUP = "/usr/sbin/cryptsetup"
@@ -39,15 +40,52 @@ def _step_name(argv: list[str]) -> str:
     return executable if _SAFE_STEP.fullmatch(executable) else "unknown"
 
 
-def _run(argv: list[str], secret: str | None = None) -> subprocess.CompletedProcess[str]:
+def _run(argv: Sequence[str], secret: str | bytes | bytearray | None = None) -> subprocess.CompletedProcess[Any]:
+    input_data: str | bytes | None = bytes(secret) if isinstance(secret, bytearray) else secret
     try:
-        return subprocess.run(argv, input=secret, text=True, capture_output=True, check=False)
+        return subprocess.run(argv, input=input_data, text=not isinstance(input_data, bytes),
+                              capture_output=True, check=False)
     except OSError:
-        raise Refusal("agathodaimon-disk-command-start-refused", _step_name(argv))
+        raise Refusal("agathodaimon-disk-command-start-refused", _step_name(list(argv))) from None
 
 
-def _check(result: subprocess.CompletedProcess[str], signal: str,
-           argv: list[str]) -> subprocess.CompletedProcess[str]:
+_KEYMAN_FAILURES = {
+    "non-root": "agathodaimon-disk-keyman-non-root",
+    "uninitialized-system": "agathodaimon-disk-keyman-uninitialized-system",
+    "missing-key": "agathodaimon-disk-keyman-missing-key",
+    "malformed-key-file": "agathodaimon-disk-keyman-malformed-key-file",
+    "preflight-unobservable": "agathodaimon-disk-keyman-preflight-unobservable",
+    "service-name-invalid": "agathodaimon-disk-keyman-service-invalid",
+    "exchange-artifact-preexisting": "agathodaimon-disk-keyman-exchange-preexisting",
+    "exchange-artifact-malformed": "agathodaimon-disk-keyman-exchange-malformed",
+    "exchange-artifact-raced": "agathodaimon-disk-keyman-exchange-raced",
+    "exchange-cleanup-failed": "agathodaimon-disk-keyman-exchange-cleanup-failed",
+    "export-failed": "agathodaimon-disk-vault-export-failed",
+    "export-timeout": "agathodaimon-disk-vault-export-failed",
+    "export-unavailable": "agathodaimon-disk-vault-export-failed",
+    "scratch-context-invalid": "agathodaimon-disk-vault-export-failed",
+}
+
+
+def _export_keyman(service_name: str) -> bytearray:
+    try:
+        return export_key(service_name)
+    except KeymanExportError as failure:
+        failed_step = (_step_name([KEYMAN, "export", service_name])
+                       if failure.return_code is not None else None)
+        raise Refusal(_KEYMAN_FAILURES.get(failure.signal, "agathodaimon-disk-vault-export-failed"),
+                      failed_step, failure.return_code) from None
+    except Exception:
+        raise Refusal("agathodaimon-disk-vault-export-failed") from None
+
+
+def _zero(value: bytearray) -> None:
+    for index in range(len(value)):
+        value[index] = 0
+
+
+def _check(result: subprocess.CompletedProcess[Any], signal: str,
+           argv: list[str]) -> subprocess.CompletedProcess[Any]:
     if result.returncode != 0:
         raise Refusal(signal, _step_name(argv), int(result.returncode))
     return result
@@ -128,23 +166,25 @@ def _mount_readback(result: subprocess.CompletedProcess[str], mountpoint: str) -
 def unlock(payload: dict[str, Any], planned: bool) -> dict[str, Any]:
     device = _device(payload.get("device"))
     mapper = _mapper(f"{posixpath.basename(device)}_crypt")
-    export = _sudo([BASH, EXPORT_NAS])
+    export = [KEYMAN, "export", "nas"]
     open_command = _sudo([CRYPTSETUP, "open", device, mapper])
     mapper_check = _mapper_cmd(mapper)
     commands = [export, open_command, mapper_check]
     if planned:
         return _receipt("unlock", True, commands, device=device, mapper=mapper,
                         mapperReadback={"path": _mapper_path(mapper), "exists": None, "planned": True})
-    result = _check(_run(export), "agathodaimon-disk-vault-export-failed", export)
-    secret = result.stdout.strip()
-    if not secret:
-        raise Refusal("agathodaimon-disk-vault-export-failed")
-    opened = _run(open_command, secret)
-    readback = _mapper_readback(mapper)
-    _check(opened, "agathodaimon-disk-cryptsetup-open-refused", open_command)
-    if not readback["exists"]:
-        raise Refusal("agathodaimon-disk-mapper-readback-missing")
-    return _receipt("unlock", False, commands, device=device, mapper=mapper, mapperReadback=readback)
+    secret = _export_keyman("nas")
+    try:
+        if not secret:
+            raise Refusal("agathodaimon-disk-vault-export-failed")
+        opened = _run(open_command, secret)
+        readback = _mapper_readback(mapper)
+        _check(opened, "agathodaimon-disk-cryptsetup-open-refused", open_command)
+        if not readback["exists"]:
+            raise Refusal("agathodaimon-disk-mapper-readback-missing")
+        return _receipt("unlock", False, commands, device=device, mapper=mapper, mapperReadback=readback)
+    finally:
+        _zero(secret)
 
 
 def _mount_device(value: Any) -> tuple[str, str | None]:
