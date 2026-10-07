@@ -31,7 +31,6 @@ KEYMAN_CREATE = "/vault/keyman/keyman-crypto"
 KEYMAN_DELETE = "/vault/keyman/deletekey.sh"
 EXPORT_NAS = "/vault/scripts/exportNAS.sh"
 MOUNT_DRIVE = "/vault/scripts/mountDrive.sh"
-UNMOUNT_DRIVE = "/vault/scripts/unmountDrive.sh"
 SGDISK = "/usr/sbin/sgdisk"
 UDEVADM = "/usr/bin/udevadm"
 LSBLK = "/usr/bin/lsblk"
@@ -124,8 +123,11 @@ def _run(argv: Sequence[str], input_data: bytes | None = None, timeout: int = 60
     except subprocess.TimeoutExpired:
         if process is not None:
             if not _stop_process_group(process):
-                raise Refusal("agathodaimon-nas-command-group-unreaped", command_step)
-        raise Refusal("agathodaimon-nas-command-timeout", command_step)
+                raise Refusal("agathodaimon-nas-command-group-unreaped", command_step, process.returncode)
+            return_code = process.returncode
+        else:
+            return_code = None
+        raise Refusal("agathodaimon-nas-command-timeout", command_step, return_code)
     except Interrupted:
         if process is not None:
             if not _stop_process_group(process):
@@ -1022,7 +1024,7 @@ def _mapper_state(mapper: str, partition: str | None = None) -> dict[str, Any]:
         actual = f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}"
         backing_matches = expected in _component(graph, actual)
     return {"exists": True, "block": True, "identity": f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}",
-            "backingMatches": backing_matches}
+            "statusRc": result.returncode, "backingMatches": backing_matches}
 
 
 def _filesystem_type(device: str) -> str | None:
@@ -1112,7 +1114,8 @@ def _helper_unit_readback(receipt: dict[str, Any], info: dict[str, Any], paths: 
         else:
             expected_where = info["mountpoint"]
             expected_what = f"/dev/mapper/{info['mapper']}"
-            okay = values.get("Where") == expected_where and values.get("What") == expected_what and values.get("Type") == "xfs"
+            okay = (values.get("Where") == expected_where and values.get("What") == expected_what
+                    and values.get("Type") in {"auto", "xfs"})
             _record(receipt, "helper-unit-readback", okay, unit=path.name, where=values.get("Where"),
                     whatMatches=values.get("What") == expected_what, type=values.get("Type"))
             if not okay:
@@ -1131,20 +1134,82 @@ def _systemctl_state(receipt: dict[str, Any], action: str, unit: str, allowed: s
 def _mount_readback(info: dict[str, Any]) -> dict[str, Any]:
     entries = _mountinfo()
     matches = [entry for entry in entries if entry["target"] == info["mountpoint"]]
+    try:
+        findmnt = _run([FINDMNT, "--json", "--mountpoint", info["mountpoint"],
+                        "--output", "SOURCE,FSTYPE,MAJ:MIN,TARGET"], step="findmnt-mount-readback")
+    except Refusal as failure:
+        return {"mounted": True, "sourceMatches": False, "fstype": matches[0]["fstype"] if matches else None,
+                "findmntRc": failure.return_code, "reason": failure.signal_name}
+
+    if findmnt.returncode == 1 and not matches:
+        if not findmnt.stdout.strip():
+            return {"mounted": False, "sourceMatches": False, "fstype": None,
+                    "findmntRc": findmnt.returncode, "findmntAbsent": True}
+        try:
+            empty = json.loads(findmnt.stdout.decode("utf-8")).get("filesystems") == []
+        except (UnicodeError, ValueError, TypeError, AttributeError):
+            empty = False
+        if empty:
+            return {"mounted": False, "sourceMatches": False, "fstype": None,
+                    "findmntRc": findmnt.returncode, "findmntAbsent": True}
+    if findmnt.returncode == 0 and not matches:
+        try:
+            empty = json.loads(findmnt.stdout.decode("utf-8")).get("filesystems") == []
+        except (UnicodeError, ValueError, TypeError, AttributeError):
+            empty = False
+        if empty:
+            return {"mounted": False, "sourceMatches": False, "fstype": None,
+                    "findmntRc": findmnt.returncode, "findmntAbsent": True}
+    if findmnt.returncode != 0:
+        return {"mounted": True, "sourceMatches": False, "fstype": matches[0]["fstype"] if matches else None,
+                "findmntRc": findmnt.returncode, "reason": "findmnt-command-failed"}
+    try:
+        decoded = json.loads(findmnt.stdout.decode("utf-8"))
+        filesystems = decoded["filesystems"]
+        if not isinstance(filesystems, list) or len(filesystems) != 1 or not isinstance(filesystems[0], dict):
+            raise ValueError("findmnt-row-count")
+        row = filesystems[0]
+        source = row["source"]
+        fstype = row["fstype"]
+        findmnt_identity = row["maj:min"]
+        target = row["target"]
+        if not all(isinstance(value, str) for value in (source, fstype, findmnt_identity, target)):
+            raise ValueError("findmnt-field-type")
+        if not re.fullmatch(r"\d+:\d+", findmnt_identity):
+            raise ValueError("findmnt-identity")
+    except (UnicodeError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return {"mounted": True, "sourceMatches": False, "fstype": matches[0]["fstype"] if matches else None,
+                "findmntRc": findmnt.returncode, "reason": "findmnt-readback-invalid"}
+
     if len(matches) != 1:
-        return {"mounted": False, "sourceMatches": False, "fstype": None}
+        return {"mounted": True, "sourceMatches": False, "fstype": fstype, "target": target,
+                "findmntSource": source, "findmntIdentity": findmnt_identity,
+                "findmntRc": findmnt.returncode, "reason": "mountinfo-findmnt-disagree"}
     try:
         mapper_identity = _device_identity(f"/dev/mapper/{info['mapper']}", "mount-readback")
+        source_identity = _device_identity(source, "mount-readback")
         root_stat = os.stat(info["mountpoint"], follow_symlinks=False)
-    except Refusal:
-        return {"mounted": True, "sourceMatches": False, "fstype": matches[0]["fstype"]}
+    except Refusal as failure:
+        return {"mounted": True, "sourceMatches": False, "fstype": fstype,
+                "findmntSource": source, "findmntIdentity": findmnt_identity,
+                "findmntRc": findmnt.returncode, "reason": failure.signal_name,
+                "readbackRc": failure.return_code}
     except OSError:
-        return {"mounted": True, "sourceMatches": False, "fstype": matches[0]["fstype"]}
+        return {"mounted": True, "sourceMatches": False, "fstype": fstype,
+                "findmntSource": source, "findmntIdentity": findmnt_identity,
+                "findmntRc": findmnt.returncode, "reason": "mount-stat-unavailable"}
     stat_identity = f"{os.major(root_stat.st_dev)}:{os.minor(root_stat.st_dev)}"
-    source_matches = matches[0]["dev"] == mapper_identity == stat_identity
+    identity_matches = (matches[0]["dev"] == mapper_identity == stat_identity
+                        and source_identity == mapper_identity and findmnt_identity == mapper_identity)
+    target_matches = target == info["mountpoint"] and matches[0]["target"] == info["mountpoint"]
+    filesystem_matches = fstype == "xfs" and matches[0]["fstype"] == "xfs"
+    source_matches = identity_matches and target_matches and filesystem_matches
     return {"mounted": True, "sourceMatches": source_matches,
             "mountinfoIdentity": matches[0]["dev"], "statIdentity": stat_identity,
-            "fstype": matches[0]["fstype"], "target": matches[0]["target"]}
+            "findmntIdentity": findmnt_identity, "findmntSource": source,
+            "findmntRc": findmnt.returncode, "findmntMatches": source_matches,
+            "fstype": fstype, "target": target,
+            "mountinfoFstype": matches[0]["fstype"]}
 
 
 def _ensure_mountpoint_directory(path: str) -> None:
@@ -1409,57 +1474,203 @@ def _run_rollback_command(rollback: list[dict[str, Any]], step: str, argv: Seque
     return okay
 
 
-def _inactive_unit(unit: str) -> bool:
-    result = _run([SYSTEMCTL, "is-active", unit], step="rollback-unit-state")
-    return result.returncode == 3 and result.stdout.strip() == b"inactive"
+def _rollback_systemctl_state(unit: str, step: str, allow_missing: bool = False) -> dict[str, Any]:
+    try:
+        result = _run([SYSTEMCTL, "is-active", unit], step=step)
+    except Refusal as failure:
+        return {"state": None, "rc": failure.return_code, "reason": failure.signal_name}
+    observed = result.stdout.decode("utf-8", "ignore").strip()[:64]
+    running = {"active", "reloading", "refreshing"}
+    if result.returncode == 0 and observed in running:
+        return {"state": observed, "rc": result.returncode}
+    if result.returncode == 3 and observed in {"inactive", "failed", "activating", "deactivating"}:
+        return {"state": observed, "rc": result.returncode}
+    if result.returncode == 4 and observed == "inactive" and allow_missing:
+        return {"state": observed, "rc": result.returncode, "missing": True}
+    return {"state": None, "rc": result.returncode,
+            "observed": observed or "empty", "reason": "service-state-unrecognized"}
 
 
-def _rollback_target_guard(info: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+def _rollback_unit_path_exists(path: Path) -> tuple[bool | None, str | None]:
+    try:
+        return os.path.lexists(path), None
+    except OSError:
+        return None, "unit-path-unreadable"
+
+
+def _rollback_stop_owned_unit(rollback: list[dict[str, Any]], unit: str, step: str,
+                              initial: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    stop_result = None
+    stop_failure: str | None = None
+    try:
+        stop_result = _run([SYSTEMCTL, "stop", unit], timeout=180, step=step)
+    except Refusal as failure:
+        stop_failure = failure.signal_name
+        stop_rc = failure.return_code
+    else:
+        stop_rc = stop_result.returncode
+
+    after_stop = _rollback_systemctl_state(unit, step + "-state")
+    reset_needed = initial.get("state") == "failed" or after_stop.get("state") == "failed"
+    reset_rc = None
+    reset_failure: str | None = None
+    reset_ok = True
+    final_state = after_stop
+    if reset_needed:
+        try:
+            reset = _run([SYSTEMCTL, "reset-failed", unit], timeout=180,
+                         step=step + "-reset-failed")
+        except Refusal as failure:
+            reset_failure = failure.signal_name
+            reset_rc = failure.return_code
+            reset_ok = False
+        else:
+            reset_rc = reset.returncode
+            reset_ok = reset.returncode == 0
+        final_state = _rollback_systemctl_state(unit, step + "-final-state")
+
+    initial_known = initial.get("state") is not None
+    state_known = after_stop.get("state") is not None and final_state.get("state") is not None
+    inactive = final_state.get("state") == "inactive"
+    stop_ok = stop_result is not None and stop_rc == 0
+    reason = "inactive-after-stop"
+    if not initial_known:
+        reason = initial.get("reason", "initial-state-unknown")
+    elif stop_failure is not None:
+        reason = stop_failure
+    elif stop_rc != 0:
+        reason = "stop-command-failed"
+    elif not state_known:
+        reason = after_stop.get("reason", final_state.get("reason", "post-stop-state-unknown"))
+    elif reset_failure is not None:
+        reason = reset_failure
+    elif not reset_ok:
+        reason = "reset-failed-command-failed"
+    elif not inactive:
+        reason = "unit-not-inactive"
+    okay = bool(initial_known and stop_ok and state_known and reset_ok and inactive)
+    rollback.append({"step": _safe_step(step), "ok": okay,
+                     "readback": {"unit": unit, "owned": True, "initialState": initial.get("state"),
+                                  "initialStateRc": initial.get("rc"),
+                                  "initialStateReason": initial.get("reason"),
+                                  "stopRc": stop_rc, "stopReason": stop_failure,
+                                  "stateAfterStop": after_stop.get("state"),
+                                  "stateAfterStopRc": after_stop.get("rc"),
+                                  "stateAfterStopReason": after_stop.get("reason"),
+                                  "resetFailedAttempted": reset_needed, "resetFailedRc": reset_rc,
+                                  "resetFailedReason": reset_failure,
+                                  "finalState": final_state.get("state"),
+                                  "finalStateRc": final_state.get("rc"),
+                                  "finalStateReason": final_state.get("reason"),
+                                  "inactive": inactive, "reason": reason}})
+    return okay, final_state
+
+
+def _rollback_target_guard(info: dict[str, Any],
+                           whole_disk_erasure_step: str | None = None) -> tuple[bool, dict[str, Any]]:
     device, partition = info["device"], info["partition"]
     expected_device = info["deviceIdentity"]
     expected_partition = info.get("createdPartitionIdentity")
+    allowed_erasure_steps = {"wipe-created-disk-signatures", "zap-created-gpt"}
+    if whole_disk_erasure_step not in {None, *allowed_erasure_steps}:
+        return False, {"valid": False, "wholeDiskErasureStep": whole_disk_erasure_step,
+                       "reason": "unrecognized-whole-disk-erasure-phase", "rc": None}
     try:
         observed_device = _device_identity(device, "rollback-device-identity")
+    except Refusal as failure:
+        return False, {"valid": False, "wholeDiskErasureStep": whole_disk_erasure_step,
+                       "reason": failure.signal_name, "rc": failure.return_code}
+    try:
         result = _run([LSBLK, "--json", "--paths", "--output", "PATH,TYPE,MAJ:MIN,PKNAME,PARTLABEL", device],
                       step="rollback-block-census")
-        if result.returncode != 0:
-            return False, {"deviceIdentity": observed_device, "lsblkRc": result.returncode, "valid": False}
+    except Refusal as failure:
+        return False, {"deviceIdentity": observed_device, "valid": False,
+                       "wholeDiskErasureStep": whole_disk_erasure_step,
+                       "reason": failure.signal_name, "rc": failure.return_code}
+    if result.returncode != 0:
+        return False, {"deviceIdentity": observed_device, "lsblkRc": result.returncode,
+                       "wholeDiskErasureStep": whole_disk_erasure_step,
+                       "rc": result.returncode, "valid": False, "reason": "block-census-failed"}
+    try:
         value = json.loads(result.stdout.decode("utf-8"))
         nodes = list(_walk_nodes(value))
         roots = [row for row in nodes if row.get("path") == device]
         if len(roots) != 1 or roots[0].get("maj:min") != expected_device:
-            return False, {"deviceIdentity": observed_device, "lsblkRootCount": len(roots), "valid": False}
-        partitions = [row for row in nodes if row.get("path") == partition and row.get("type") == "part"]
+            return False, {"deviceIdentity": observed_device, "lsblkRc": result.returncode,
+                           "wholeDiskErasureStep": whole_disk_erasure_step,
+                           "rc": result.returncode, "lsblkRootCount": len(roots), "valid": False,
+                           "reason": "whole-device-identity-mismatch"}
+        partition_nodes = [row for row in nodes if row.get("type") == "part"]
+        partitions = [row for row in partition_nodes if row.get("path") == partition]
+        partition_node_identity = partitions[0].get("maj:min") if len(partitions) == 1 else None
+        partition_parent_matches = (len(partitions) == 1
+                                    and _normalize_pkname(partitions[0].get("pkname"))
+                                    == os.path.basename(device))
+        try:
+            os.lstat(partition)
+            partition_node_exists = True
+        except FileNotFoundError:
+            partition_node_exists = False
+        except OSError:
+            partition_node_exists = None
+
+        partition_present = bool(partition_nodes) or partition_node_exists is True
+        created_partition_matches = (partition_node_identity == expected_partition
+                                     and partition_parent_matches)
+        foreign_partition_count = len(partition_nodes) - (1 if created_partition_matches else 0)
         if expected_partition is None:
-            partition_ok = not partitions
-            try:
-                os.lstat(partition)
-                partition_ok = False
-            except FileNotFoundError:
-                pass
-            except OSError:
-                partition_ok = False
+            partition_ok = not partition_nodes and partition_node_exists is False
+            partition_reason = ("no-created-partition-identity-and-no-partitions" if partition_ok
+                                else "unexpected-or-unreadable-partition-present")
+        elif partition_present:
+            partition_ok = (len(partition_nodes) == 1 and len(partitions) == 1
+                            and partition_node_identity == expected_partition and partition_parent_matches
+                            and partition_node_exists is True)
+            if partition_ok:
+                partition_ok = (_device_identity(partition, "rollback-partition-identity")
+                                == expected_partition)
+            partition_reason = ("created-partition-identity-preserved" if partition_ok
+                                else "partition-or-parent-identity-mismatch")
         else:
-            partition_ok = (len(partitions) == 1 and partitions[0].get("maj:min") == expected_partition
-                            and _normalize_pkname(partitions[0].get("pkname")) == os.path.basename(device))
-            partition_stat_identity = _device_identity(partition, "rollback-partition-identity")
-            partition_ok = partition_ok and partition_stat_identity == expected_partition
+            absence_observed = not partition_nodes and partition_node_exists is False
+            partition_ok = absence_observed and whole_disk_erasure_step in allowed_erasure_steps
+            if not absence_observed:
+                partition_reason = "partition-absence-unproven-or-foreign-partition-present"
+            elif partition_ok:
+                partition_reason = "created-partition-absent-after-owned-whole-disk-erasure"
+            else:
+                partition_reason = "created-partition-absent-before-owned-whole-disk-erasure"
         if observed_device != expected_device or not partition_ok:
-            return False, {"deviceIdentity": observed_device, "partitionIdentity": partitions[0].get("maj:min") if len(partitions) == 1 else None,
-                           "partitionExpected": expected_partition, "valid": False}
+            return False, {"deviceIdentity": observed_device, "partitionIdentity": partition_node_identity,
+                           "partitionExpected": expected_partition, "partitionPresent": partition_present,
+                           "partitionParentMatches": partition_parent_matches,
+                           "foreignPartitionCount": foreign_partition_count,
+                           "wholeDiskErasureStep": whole_disk_erasure_step,
+                           "partitionReason": partition_reason, "lsblkRc": result.returncode,
+                           "rc": result.returncode, "valid": False,
+                           "reason": "partition-or-device-identity-mismatch"}
         graph, _paths = _block_graph()
         component = _component(graph, expected_device)
         mapper_state = _mapper_state(info["mapper"], partition)
         if mapper_state.get("exists") is not False:
-            return False, {"deviceIdentity": observed_device, "partitionIdentity": expected_partition,
-                           "mapperAbsent": False, "valid": False}
+            return False, {"deviceIdentity": observed_device, "partitionIdentity": partition_node_identity,
+                           "partitionExpected": expected_partition, "partitionPresent": partition_present,
+                           "partitionParentMatches": partition_parent_matches,
+                           "foreignPartitionCount": foreign_partition_count,
+                           "wholeDiskErasureStep": whole_disk_erasure_step,
+                           "mapperAbsent": False, "mapperStatusRc": mapper_state.get("statusRc"),
+                           "lsblkRc": result.returncode, "rc": result.returncode,
+                           "valid": False, "reason": "mapper-not-absent"}
         holders = []
         for identity in sorted(component):
             resolved = (SYS_DEV_BLOCK / identity).resolve(strict=True)
             holder_dir = resolved / "holders"
             if not holder_dir.is_dir():
-                return False, {"deviceIdentity": observed_device, "partitionIdentity": expected_partition,
-                               "holdersReadable": False, "valid": False}
+                return False, {"deviceIdentity": observed_device, "partitionIdentity": partition_node_identity,
+                               "partitionExpected": expected_partition, "partitionPresent": partition_present,
+                               "wholeDiskErasureStep": whole_disk_erasure_step,
+                               "holdersReadable": False, "lsblkRc": result.returncode, "rc": result.returncode,
+                               "valid": False, "reason": "holders-unreadable"}
             names = sorted(os.listdir(holder_dir))
             if names:
                 holders.extend(names)
@@ -1468,10 +1679,26 @@ def _rollback_target_guard(info: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
                   or entry["target"].startswith(info["mountpoint"] + "/")
                   or (entry["dev"] in graph and bool(_component(graph, entry["dev"]) & component))]
         valid = not holders and not mounts
-        return valid, {"deviceIdentity": observed_device, "partitionIdentity": expected_partition,
-                       "mapperAbsent": True, "holders": holders, "mountCount": len(mounts), "valid": valid}
-    except (Refusal, OSError, UnicodeError, ValueError, KeyError, TypeError):
-        return False, {"valid": False, "observation": "incomplete"}
+        reason = (partition_reason if valid and expected_partition is not None and not partition_present
+                  else "no-created-partition-identity-and-no-partitions" if valid and expected_partition is None
+                  else "identity-holders-mounts-clear" if valid else "holders-or-mounts-present")
+        return valid, {"deviceIdentity": observed_device, "partitionIdentity": partition_node_identity,
+                       "partitionExpected": expected_partition, "partitionPresent": partition_present,
+                       "partitionParentMatches": partition_parent_matches,
+                       "foreignPartitionCount": foreign_partition_count,
+                       "wholeDiskErasureStep": whole_disk_erasure_step,
+                       "mapperAbsent": True, "holders": holders, "mountCount": len(mounts),
+                       "lsblkRc": result.returncode, "rc": result.returncode, "valid": valid,
+                       "reason": reason}
+    except Refusal as failure:
+        return False, {"valid": False, "wholeDiskErasureStep": whole_disk_erasure_step,
+                       "reason": failure.signal_name, "rc": failure.return_code,
+                       "lsblkRc": result.returncode}
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+        return False, {"valid": False, "observation": "incomplete",
+                       "wholeDiskErasureStep": whole_disk_erasure_step,
+                       "reason": "guard-observation-incomplete", "rc": result.returncode,
+                       "lsblkRc": result.returncode}
 
 
 def _cleanup_key(receipt: dict[str, Any], service_role: str, identity: dict[str, Any] | None,
@@ -1491,12 +1718,17 @@ def _cleanup_key(receipt: dict[str, Any], service_role: str, identity: dict[str,
     if not cleanup_certain or not same:
         rollback.append({"step": "retain-created-key", "ok": False,
                          "readback": {"present": same, "cleanupCertain": cleanup_certain,
-                                      "reason": "rollback-incomplete"}})
+                                      "rc": None,
+                                      "reason": "rollback-incomplete" if not cleanup_certain else "key-identity-mismatch"}})
         return
+    result = None
+    failure_reason = None
     try:
         result = _run([KEYMAN_DELETE, service_role], step="delete-created-key")
-    except Refusal:
-        result = None
+        result_rc = result.returncode
+    except Refusal as failure:
+        result_rc = failure.return_code
+        failure_reason = failure.signal_name
     try:
         os.lstat(path)
         absent = False
@@ -1505,9 +1737,11 @@ def _cleanup_key(receipt: dict[str, Any], service_role: str, identity: dict[str,
     except OSError:
         absent = False
     okay = result is not None and result.returncode == 0 and absent
+    reason = "deleted-and-absent" if okay else (failure_reason or
+             ("delete-command-failed" if result is not None and result.returncode != 0 else "key-still-present-or-unreadable"))
     rollback.append({"step": "delete-created-key", "ok": okay,
-                     "readback": {"rc": result.returncode if result else None,
-                                  "absent": absent, "identityMatched": same}})
+                     "readback": {"rc": result_rc, "absent": absent, "identityMatched": same,
+                                  "reason": reason}})
 
 
 def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity: dict[str, Any] | None,
@@ -1523,267 +1757,475 @@ def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity
         for unit_name, path in info["unitPaths"].items():
             snapshot = unit_snapshots.get(unit_name)
             try:
-                exists = os.path.lexists(path)
+                exists: bool | None = os.path.lexists(path)
             except OSError:
-                exists = True
-            if not exists:
-                try:
-                    inactive = _inactive_unit(path.name)
-                except Refusal:
-                    inactive = False
-                if not inactive:
-                    units_clean = False
-                    records.append({"step": "helper-unit-state-conflict", "ok": False,
-                                    "readback": {"unit": path.name, "absent": True, "inactive": False}})
-            if exists and (snapshot is None or not _unit_matches_snapshot(path, snapshot)):
-                units_clean = False
-                records.append({"step": "helper-unit-identity-conflict", "ok": False,
-                                "readback": {"unit": path.name, "exists": exists, "identityMatched": False}})
-    mount_state: dict[str, Any] = {"mounted": False, "sourceMatches": False}
+                exists = None
+            if exists:
+                identity_matched = snapshot is not None and _unit_matches_snapshot(path, snapshot)
+                okay = identity_matched
+                reason = "snapshot-matches" if okay else "unit-snapshot-conflict"
+                rc = None
+            elif exists is False:
+                state = _rollback_systemctl_state(path.name, "rollback-unit-snapshot-state",
+                                                  allow_missing=snapshot is None)
+                if snapshot is not None:
+                    okay = False
+                    reason = "owned-unit-file-disappeared"
+                else:
+                    okay = state.get("state") == "inactive"
+                    reason = "no-owned-file-and-inactive" if okay else state.get(
+                        "reason", "unowned-unit-state-not-inactive")
+                identity_matched = snapshot is None
+                rc = state.get("rc")
+            else:
+                okay, identity_matched, rc, reason = False, False, None, "unit-file-state-unreadable"
+            units_clean = units_clean and okay
+            records.append({"step": "helper-unit-snapshot", "ok": okay,
+                            "readback": {"unit": path.name, "exists": exists,
+                                         "identityMatched": identity_matched, "rc": rc,
+                                         "reason": reason}})
+    mount_state: dict[str, Any] = {"mounted": True, "sourceMatches": False, "reason": "not-observed"}
     mount_conflict = False
+    nested: list[dict[str, str]] = []
     try:
         mount_state = _mount_readback(info)
         all_mounts = _mountinfo()
         nested = [entry for entry in all_mounts if entry["target"].startswith(mountpoint + "/")]
-        if nested:
-            mount_conflict = True
     except Exception:
         mount_conflict = True
-        mount_state = {"mounted": True, "sourceMatches": False, "observed": "unreadable"}
-    if mount_state.get("mounted") and not (helper_attempted and mount_state.get("sourceMatches")):
+        mount_state = {"mounted": True, "sourceMatches": False, "reason": "mount-readback-unavailable"}
+    if nested:
+        mount_conflict = True
+        records.append({"step": "foreign-nested-mount-conflict", "ok": False,
+                        "readback": {"nestedCount": len(nested), "rc": mount_state.get("findmntRc"),
+                                     "reason": "nested-mount-present"}})
+    if mount_state.get("mounted") and not (helper_attempted and mount_state.get("sourceMatches")
+                                             and mount_state.get("fstype") == "xfs"):
         mount_conflict = True
         records.append({"step": "foreign-mount-conflict", "ok": False,
-                        "readback": {"mounted": True, "sourceMatches": mount_state.get("sourceMatches", False)}})
+                        "readback": {"mounted": True, "sourceMatches": mount_state.get("sourceMatches", False),
+                                     "rc": mount_state.get("findmntRc"),
+                                     "reason": mount_state.get("reason", "mount-identity-or-filesystem-mismatch")}})
     if not units_clean:
         mount_conflict = True
-    if mount_conflict:
-        records.append({"step": "mount-cleanup-blocked", "ok": False,
-                        "readback": {"nestedOrUnreadable": True, "helperUnmountAttempted": False}})
-    elif mount_state.get("mounted"):
-        try:
-            unmount = _run([BASH, UNMOUNT_DRIVE, partition, mountpoint, mapper], timeout=120, step="unmount-nas")
-        except Refusal:
-            unmount = None
-        try:
-            after = _mount_readback(info)
-            absent = not after.get("mounted") and not any(row["target"].startswith(mountpoint + "/") for row in _mountinfo())
-        except Exception:
-            after, absent = {"mounted": True, "sourceMatches": False}, False
-        records.append({"step": "unmount-nas", "ok": bool(unmount and unmount.returncode == 0 and absent),
-                        "readback": {"rc": unmount.returncode if unmount else None, "mountAbsent": absent,
-                                     "sourceMatches": after.get("sourceMatches", False)}})
-    else:
-        records.append({"step": "mount-absent", "ok": True, "readback": {"mounted": False}})
+    records.append({"step": "mount-pre-unmount-readback", "ok": not mount_conflict,
+                    "readback": {**mount_state, "nestedCount": len(nested),
+                                 "reason": "owned-mount-or-absent" if not mount_conflict else "mount-cleanup-conflict"}})
 
     services_clean = True
-    if helper_attempted and units_clean and not mount_conflict:
+    if helper_attempted:
+        running_states = {"active", "activating", "reloading", "refreshing", "deactivating"}
         for service in info.get("services", []):
             unit = service["unit"]
+            initial = _rollback_systemctl_state(unit, "rollback-service-state")
+            state = initial.get("state")
             if service.get("activeBefore"):
-                try:
-                    active = _service_active(unit)
-                except Refusal:
-                    active = None
-                okay = active is True
-                services_clean = services_clean and okay
-                records.append({"step": "preserve-preactive-service", "ok": okay,
-                                "readback": {"unit": unit, "activeBefore": True, "active": active}})
+                preserved = state == "active"
+                reason = "preactive-service-still-running" if state in running_states else "preactive-state-not-active"
+                services_clean = False
+                records.append({"step": "preserve-preactive-service", "ok": preserved,
+                                "readback": {"unit": unit, "activeBefore": True, "state": state,
+                                             "rc": initial.get("rc"), "reason": reason}})
+                continue
+            listed = unit in info.get("servicesStarted", [])
+            owned = state in running_states | {"failed"} or listed
+            if owned:
+                if unit not in info.setdefault("servicesStarted", []):
+                    info["servicesStarted"].append(unit)
+                stopped, _final = _rollback_stop_owned_unit(records, unit, "stop-new-service", initial)
+                services_clean = services_clean and stopped
+            elif state == "inactive":
+                records.append({"step": "leave-inactive-service", "ok": True,
+                                "readback": {"unit": unit, "state": state, "rc": initial.get("rc"),
+                                             "reason": "inactive-not-transaction-owned"}})
             else:
-                try:
-                    active = _service_active(unit)
-                except Refusal:
-                    active = None
-                if active is True:
-                    if unit not in info.get("servicesStarted", []):
-                        info["servicesStarted"].append(unit)
-                    try:
-                        stop = _run([SYSTEMCTL, "stop", unit], step="stop-new-service")
-                    except Refusal:
-                        stop = None
-                    try:
-                        inactive = _inactive_unit(unit)
-                    except Refusal:
-                        inactive = False
-                    okay = bool(stop and stop.returncode == 0 and inactive)
-                else:
-                    stop, inactive = None, active is False
-                    okay = inactive
-                services_clean = services_clean and okay
-                records.append({"step": "stop-new-service", "ok": okay,
-                                "readback": {"unit": unit, "active": active,
-                                             "rc": stop.returncode if stop else None, "inactive": inactive}})
-    elif helper_attempted:
+                services_clean = False
+                records.append({"step": "dependent-service-cleanup-blocked", "ok": False,
+                                "readback": {"unit": unit, "state": state, "rc": initial.get("rc"),
+                                             "reason": initial.get("reason", "service-state-unknown")}})
+    elif info.get("servicesStarted"):
         services_clean = False
         records.append({"step": "dependent-service-cleanup-blocked", "ok": False,
-                        "readback": {"unitIdentityConflict": not units_clean, "mountConflict": mount_conflict}})
+                        "readback": {"reason": "service-ownership-without-helper-attempt", "rc": None}})
 
-    if helper_attempted and units_clean and not mount_conflict:
-        files_removed = False
-        for unit_name, path in reversed(list(info["unitPaths"].items())):
-            snapshot = unit_snapshots.get(unit_name)
-            if not os.path.lexists(path):
+    mount_absent = not mount_state.get("mounted") and not nested
+    if helper_attempted:
+        mount_stop_clean = False
+        partition_stop_clean = False
+        stop_ready = units_clean and services_clean and not mount_conflict
+        if not stop_ready:
+            reason = ("unit-snapshot-conflict" if not units_clean else
+                      "dependent-service-not-stopped" if not services_clean else "foreign-or-nested-mount")
+            records.append({"step": "stop-helper-mount-unit", "ok": False,
+                            "readback": {"rc": None, "reason": reason}})
+            records.append({"step": "stop-helper-partition-unit", "ok": False,
+                            "readback": {"rc": None, "reason": "mount-unit-not-stopped"}})
+        else:
+            mount_path = info["unitPaths"]["mount"]
+            mount_snapshot = unit_snapshots.get("mount")
+            mount_exists, mount_path_error = _rollback_unit_path_exists(mount_path)
+            if mount_snapshot is not None and _unit_matches_snapshot(mount_path, mount_snapshot):
+                initial = _rollback_systemctl_state(mount_path.name, "rollback-mount-unit-state")
+                mount_stop_clean, _final = _rollback_stop_owned_unit(
+                    records, mount_path.name, "stop-helper-mount-unit", initial)
                 try:
-                    inactive = _inactive_unit(path.name)
-                except Refusal:
-                    inactive = False
-                okay = inactive
-                units_clean = units_clean and okay
-                records.append({"step": "stop-helper-unit", "ok": okay,
-                                "readback": {"unit": path.name, "absent": True, "inactive": inactive}})
-                continue
-            if snapshot is None or not _unit_matches_snapshot(path, snapshot):
-                units_clean = False
-                records.append({"step": "stop-helper-unit", "ok": False,
-                                "readback": {"unit": path.name, "identityMatched": False}})
-                continue
-            try:
-                stopped = _run([SYSTEMCTL, "stop", path.name], step="stop-helper-unit")
-            except Refusal:
-                stopped = None
-            try:
-                inactive = _inactive_unit(path.name)
-            except Refusal:
-                inactive = False
-            stopped_ok = bool(stopped and stopped.returncode == 0 and inactive)
-            units_clean = units_clean and stopped_ok
-            records.append({"step": "stop-helper-unit", "ok": stopped_ok,
-                            "readback": {"unit": path.name, "rc": stopped.returncode if stopped else None,
-                                         "inactive": inactive, "identityMatched": True}})
-        if units_clean:
+                    after_mount = _mount_readback(info)
+                    nested_after = [row for row in _mountinfo()
+                                    if row["target"].startswith(mountpoint + "/")]
+                    mount_absent = not after_mount.get("mounted") and not nested_after
+                except Exception:
+                    after_mount, nested_after, mount_absent = {
+                        "mounted": True, "sourceMatches": False, "reason": "mount-readback-unavailable"}, [], False
+                absent_ok = mount_stop_clean and mount_absent
+                records.append({"step": "mount-absence-after-unit-stop", "ok": absent_ok,
+                                "readback": {**after_mount, "nestedCount": len(nested_after),
+                                             "reason": "mount-absent" if mount_absent else "mount-remains-or-unreadable"}})
+                mount_stop_clean = absent_ok
+            elif mount_snapshot is None and mount_exists is False and mount_absent:
+                mount_stop_clean = True
+                records.append({"step": "stop-helper-mount-unit", "ok": True,
+                                "readback": {"unit": mount_path.name, "rc": None,
+                                             "reason": "no-owned-mount-unit-and-mount-absent"}})
+            else:
+                records.append({"step": "stop-helper-mount-unit", "ok": False,
+                                "readback": {"unit": mount_path.name, "rc": None,
+                                             "reason": mount_path_error or "mount-unit-snapshot-unavailable"}})
+
+            partition_path = info["unitPaths"]["partition"]
+            partition_snapshot = unit_snapshots.get("partition")
+            partition_exists, partition_path_error = _rollback_unit_path_exists(partition_path)
+            if mount_stop_clean and partition_snapshot is not None and _unit_matches_snapshot(
+                    partition_path, partition_snapshot):
+                initial = _rollback_systemctl_state(partition_path.name, "rollback-partition-unit-state")
+                partition_stop_clean, _final = _rollback_stop_owned_unit(
+                    records, partition_path.name, "stop-helper-partition-unit", initial)
+            elif mount_stop_clean and partition_snapshot is None and partition_exists is False:
+                partition_stop_clean = True
+                records.append({"step": "stop-helper-partition-unit", "ok": True,
+                                "readback": {"unit": partition_path.name, "rc": None,
+                                             "reason": "no-owned-partition-unit"}})
+            else:
+                records.append({"step": "stop-helper-partition-unit", "ok": False,
+                                "readback": {"unit": partition_path.name, "rc": None,
+                                             "reason": partition_path_error or
+                                             "mount-unit-not-stopped-or-partition-snapshot-conflict"}})
+
+        units_clean = units_clean and mount_stop_clean and partition_stop_clean
+        files_removed = False
+        if units_clean and mount_absent:
             for unit_name, path in reversed(list(info["unitPaths"].items())):
                 snapshot = unit_snapshots.get(unit_name)
-                if snapshot is not None and os.path.lexists(path):
-                    if not _unit_matches_snapshot(path, snapshot):
-                        units_clean = False
-                        records.append({"step": "remove-helper-unit", "ok": False,
-                                        "readback": {"unit": path.name, "identityMatched": False, "absent": False}})
-                        continue
-                    try:
-                        os.unlink(path)
-                        files_removed = True
-                    except OSError:
-                        units_clean = False
+                if snapshot is None:
+                    exists, path_error = _rollback_unit_path_exists(path)
+                    absent = exists is False
+                    records.append({"step": "remove-helper-unit", "ok": absent,
+                                    "readback": {"unit": path.name, "identityMatched": False,
+                                                 "absent": absent, "rc": None,
+                                                 "reason": "no-owned-file" if absent else
+                                                 path_error or "unowned-file-present"}})
+                    units_clean = units_clean and absent
+                    continue
+                if not _unit_matches_snapshot(path, snapshot):
+                    units_clean = False
+                    exists, path_error = _rollback_unit_path_exists(path)
+                    records.append({"step": "remove-helper-unit", "ok": False,
+                                    "readback": {"unit": path.name, "identityMatched": False,
+                                                 "absent": exists is False, "rc": None,
+                                                 "reason": path_error or "unit-snapshot-conflict"}})
+                    continue
                 try:
-                    absent = not os.path.lexists(path)
-                    inactive = _inactive_unit(path.name) if absent else False
-                except (OSError, Refusal):
-                    absent, inactive = False, False
-                okay = absent and inactive
+                    os.unlink(path)
+                    files_removed = True
+                    exists, path_error = _rollback_unit_path_exists(path)
+                    absent = exists is False
+                    reason = "identical-snapshot-removed" if absent else path_error or "unit-still-present"
+                except OSError:
+                    absent = False
+                    reason = "unit-unlink-failed"
+                okay = absent
                 units_clean = units_clean and okay
                 records.append({"step": "remove-helper-unit", "ok": okay,
-                                "readback": {"unit": path.name, "identityMatched": snapshot is not None,
-                                             "absent": absent, "inactive": inactive}})
+                                "readback": {"unit": path.name, "identityMatched": True,
+                                             "absent": absent, "rc": None, "reason": reason}})
             if files_removed:
+                reload = None
+                reload_failure = None
                 try:
-                    reload = _run([SYSTEMCTL, "daemon-reload"], step="reload-after-unit-removal")
-                except Refusal:
-                    reload = None
-                okay = bool(reload and reload.returncode == 0)
-                records.append({"step": "reload-after-unit-removal", "ok": okay,
-                                "readback": {"rc": reload.returncode if reload else None}})
-                units_clean = units_clean and okay
+                    reload = _run([SYSTEMCTL, "daemon-reload"], timeout=180,
+                                  step="reload-after-unit-removal")
+                    reload_rc = reload.returncode
+                except Refusal as failure:
+                    reload_failure = failure.signal_name
+                    reload_rc = failure.return_code
+                reload_ok = reload is not None and reload.returncode == 0
+                records.append({"step": "reload-after-unit-removal", "ok": reload_ok,
+                                "readback": {"rc": reload_rc,
+                                             "reason": "daemon-reload-complete" if reload_ok else
+                                             reload_failure or "daemon-reload-command-failed"}})
+                units_clean = units_clean and reload_ok
+                for unit_name, path in info["unitPaths"].items():
+                    snapshot = unit_snapshots.get(unit_name)
+                    if snapshot is None:
+                        continue
+                    state = _rollback_systemctl_state(path.name, "rollback-reloaded-unit-state", allow_missing=True)
+                    reset_rc = None
+                    reset_reason = None
+                    reset_ok = True
+                    if state.get("state") == "failed":
+                        try:
+                            reset = _run([SYSTEMCTL, "reset-failed", path.name], timeout=180,
+                                         step="rollback-reloaded-reset-failed")
+                            reset_rc = reset.returncode
+                            reset_ok = reset.returncode == 0
+                        except Refusal as failure:
+                            reset_rc = failure.return_code
+                            reset_reason = failure.signal_name
+                            reset_ok = False
+                        state = _rollback_systemctl_state(path.name, "rollback-reloaded-final-state",
+                                                          allow_missing=True)
+                    exists, path_error = _rollback_unit_path_exists(path)
+                    absent = exists is False
+                    state_ok = state.get("state") == "inactive"
+                    okay = absent and state_ok and reset_ok
+                    reason = ("unit-absent-and-inactive" if okay else
+                              path_error or state.get("reason", "unit-not-absent-or-inactive"))
+                    records.append({"step": "helper-unit-reload-readback", "ok": okay,
+                                    "readback": {"unit": path.name, "rc": state.get("rc"),
+                                                 "reloadRc": reload_rc, "resetFailedRc": reset_rc,
+                                                 "resetFailedReason": reset_reason, "absent": absent,
+                                                 "state": state.get("state"), "reason": reason}})
+                    units_clean = units_clean and okay
+        else:
+            reason = ("unit-stop-failed" if units_clean is False else
+                      "mount-not-absent" if not mount_absent else "unit-cleanup-blocked")
+            for path in info["unitPaths"].values():
+                exists, path_error = _rollback_unit_path_exists(path)
+                records.append({"step": "remove-helper-unit", "ok": False,
+                                "readback": {"unit": path.name, "identityMatched": False,
+                                             "absent": exists is False, "rc": None,
+                                             "reason": reason if path_error is None else path_error}})
 
     try:
         after_mount = _mount_readback(info)
         nested_after = [row for row in _mountinfo() if row["target"].startswith(mountpoint + "/")]
         mount_absent = not after_mount.get("mounted") and not nested_after
+        mount_reason = "mount-and-nested-mounts-absent" if mount_absent else "mount-remains-or-readback-conflict"
+        mount_rc = after_mount.get("findmntRc")
+    except Refusal as failure:
+        after_mount, nested_after, mount_absent = {"mounted": True, "sourceMatches": False}, [], False
+        mount_reason, mount_rc = failure.signal_name, failure.return_code
     except Exception:
-        mount_absent = False
+        after_mount, nested_after, mount_absent = {"mounted": True, "sourceMatches": False}, [], False
+        mount_reason, mount_rc = "mount-readback-unavailable", None
+    records.append({"step": "mount-final-readback", "ok": mount_absent,
+                    "readback": {**after_mount, "nestedCount": len(nested_after),
+                                 "rc": mount_rc, "reason": mount_reason}})
     mapper_closed = True
+    has_disk_mutation = bool(mutations.get("diskMutationAttempted") or mutations.get("mapperOpenAttempted")
+                              or mutations.get("mountAttempted"))
     mapper_close_safe = mount_absent and units_clean and services_clean
-    if not mapper_close_safe and (mutations.get("diskMutationAttempted") or mutations.get("mapperOpenAttempted") or mutations.get("mountAttempted")):
+    if not mapper_close_safe and has_disk_mutation:
         mapper_closed = False
+        reason = ("mount-not-absent" if not mount_absent else
+                  "helper-units-not-stopped-and-removed" if not units_clean else "dependent-services-not-stopped")
         records.append({"step": "mapper-close-blocked", "ok": False,
                         "readback": {"mountAbsent": mount_absent, "unitsClean": units_clean,
-                                     "servicesClean": services_clean}})
-    elif mutations.get("diskMutationAttempted") or mutations.get("mapperOpenAttempted") or mutations.get("mountAttempted"):
+                                     "servicesClean": services_clean, "rc": None, "reason": reason}})
+    elif has_disk_mutation:
+        mapper_failure = None
         try:
             mapper_state = _mapper_state(mapper, partition)
-        except Refusal:
+        except Refusal as failure:
             mapper_state = {"exists": None, "backingMatches": None}
+            mapper_failure = failure
         if mapper_state.get("exists") is True and mapper_state.get("backingMatches") is True:
+            close = None
+            close_failure = None
             try:
-                close = _run([CRYPTSETUP, "close", mapper], step="close-format-mapper")
-            except Refusal:
-                close = None
+                close = _run([CRYPTSETUP, "close", mapper], timeout=180, step="close-format-mapper")
+                close_rc = close.returncode
+            except Refusal as failure:
+                close_failure = failure.signal_name
+                close_rc = failure.return_code
             try:
-                mapper_closed = not _mapper_state(mapper, partition).get("exists")
-            except Refusal:
-                mapper_closed = False
-            mapper_closed = bool(close and close.returncode == 0 and mapper_closed)
+                after_close = _mapper_state(mapper, partition)
+                mapper_absent = after_close.get("exists") is False
+                readback_reason = "mapper-absent" if mapper_absent else "mapper-still-present-or-unknown"
+                readback_rc = None
+            except Refusal as failure:
+                after_close = {"exists": None, "backingMatches": None}
+                mapper_absent = False
+                readback_reason = failure.signal_name
+                readback_rc = failure.return_code
+            mapper_closed = close is not None and close.returncode == 0 and mapper_absent
+            reason = ("closed-and-absent" if mapper_closed else close_failure or
+                      ("close-command-failed" if close is not None and close.returncode != 0 else readback_reason))
             records.append({"step": "close-format-mapper", "ok": mapper_closed,
-                            "readback": {"rc": close.returncode if close else None, "absent": mapper_closed,
-                                         "backingMatches": True}})
+                            "readback": {"rc": close_rc, "readbackRc": readback_rc,
+                                         "initialMapperStatusRc": mapper_state.get("statusRc"),
+                                         "finalMapperStatusRc": after_close.get("statusRc"),
+                                         "absent": mapper_absent, "backingMatches": True, "reason": reason}})
         elif mapper_state.get("exists") is False:
             mapper_closed = True
-            records.append({"step": "mapper-absent", "ok": True, "readback": {"absent": True}})
+            records.append({"step": "mapper-absent", "ok": True,
+                            "readback": {"absent": True, "rc": None, "reason": "mapper-already-absent"}})
         else:
             mapper_closed = False
             records.append({"step": "mapper-identity-conflict", "ok": False,
                             "readback": {"exists": mapper_state.get("exists"),
-                                         "backingMatches": mapper_state.get("backingMatches")}})
+                                         "backingMatches": mapper_state.get("backingMatches"),
+                                         "rc": mapper_failure.return_code if mapper_failure else None,
+                                         "reason": mapper_failure.signal_name if mapper_failure else
+                                         "mapper-identity-not-proven"}})
 
     disk_clean = not mutations.get("diskMutationAttempted")
     if mutations.get("diskMutationAttempted"):
+        expected_partition = info.get("createdPartitionIdentity")
+        actions: list[tuple[str, list[str]]] = []
+        if expected_partition is not None:
+            actions.append(("wipe-created-partition", [WIPEFS, "--all", "--force", "--", partition]))
+        else:
+            records.append({"step": "partition-absent-before-rollback", "ok": True,
+                            "readback": {"identity": None, "rc": None,
+                                         "reason": "no-created-partition-identity"}})
+        actions.extend([("wipe-created-disk-signatures", [WIPEFS, "--all", "--force", "--", device]),
+                        ("zap-created-gpt", [SGDISK, "--zap-all", "--", device])])
         safe_to_wipe = mount_absent and mapper_closed and units_clean and services_clean
-        commands_ok = True
+        dependencies = []
+        if not mount_absent:
+            dependencies.append("mount-not-absent")
+        if not mapper_closed:
+            dependencies.append("mapper-not-closed")
+        if not units_clean:
+            dependencies.append("helper-units-not-clean")
+        if not services_clean:
+            dependencies.append("dependent-services-not-clean")
+        wipe_sequence_ok = safe_to_wipe
+        whole_disk_erasure_step = None
         if not safe_to_wipe:
+            reason = "+".join(dependencies) or "rollback-dependency-not-clean"
             records.append({"step": "disk-wipe-blocked", "ok": False,
                             "readback": {"mountAbsent": mount_absent, "mapperClosed": mapper_closed,
-                                         "unitsClean": units_clean, "servicesClean": services_clean}})
+                                         "unitsClean": units_clean, "servicesClean": services_clean,
+                                         "rc": None, "reason": reason}})
+            for step, _argv in actions:
+                records.append({"step": step, "ok": False,
+                                "readback": {"attempted": False, "rc": None,
+                                             "reason": "rollback-dependency-not-clean"}})
         else:
-            expected_partition = info.get("createdPartitionIdentity")
-            actions: list[tuple[str, list[str]]] = []
-            if expected_partition is not None:
-                actions.append(("wipe-created-partition", [WIPEFS, "--all", "--force", "--", partition]))
-            else:
-                records.append({"step": "partition-absent-before-rollback", "ok": True,
-                                "readback": {"identity": None}})
-            actions.extend([("wipe-created-disk-signatures", [WIPEFS, "--all", "--force", "--", device]),
-                            ("zap-created-gpt", [SGDISK, "--zap-all", "--", device])])
             for step, argv in actions:
-                guarded, readback = _rollback_target_guard(info)
-                if not guarded:
-                    commands_ok = False
+                if not wipe_sequence_ok:
                     records.append({"step": step, "ok": False,
-                                    "readback": {"attempted": False, "guard": readback}})
-                    break
+                                    "readback": {"attempted": False, "rc": None,
+                                                 "reason": "prior-guard-or-wipe-failed"}})
+                    continue
+                guarded, guard = _rollback_target_guard(
+                    info, whole_disk_erasure_step=whole_disk_erasure_step)
+                records.append({"step": "guard-" + step, "ok": guarded,
+                                "readback": {**guard, "rc": guard.get("rc"),
+                                             "reason": guard.get("reason", "guard-valid" if guarded else "guard-refused")}})
+                if not guarded:
+                    wipe_sequence_ok = False
+                    records.append({"step": step, "ok": False,
+                                    "readback": {"attempted": False, "rc": None,
+                                                 "guard": guard, "reason": "disk-identity-guard-refused"}})
+                    continue
+                command = None
+                command_failure = None
                 try:
                     command = _run(argv, step=step)
-                except Refusal:
-                    command = None
-                command_ok = bool(command and command.returncode == 0)
-                commands_ok = commands_ok and command_ok
+                    command_rc = command.returncode
+                except Refusal as failure:
+                    command_failure = failure.signal_name
+                    command_rc = failure.return_code
+                command_ok = command is not None and command.returncode == 0
                 records.append({"step": step, "ok": command_ok,
-                                "readback": {"attempted": True, "rc": command.returncode if command else None,
-                                             "guard": readback}})
-            if commands_ok:
-                try:
-                    trigger = _run([UDEVADM, "trigger", "--subsystem-match=block", "--action=change"], step="rollback-udev-trigger")
-                    settle = _run([UDEVADM, "settle", "--timeout=30"], step="rollback-udev-settle")
-                    signatures = _run([WIPEFS, "--noheadings", "--output", "TYPE", "--", device], step="rollback-signature-readback")
-                    signature_text = signatures.stdout.decode("utf-8").strip()
-                    tree = _run([LSBLK, "--json", "--paths", "--output", "PATH,TYPE,MAJ:MIN,PKNAME,PARTLABEL", device],
-                                step="rollback-partition-readback")
-                    nodes = list(_walk_nodes(json.loads(tree.stdout.decode("utf-8")))) if tree.returncode == 0 else []
-                    roots = [row for row in nodes if row.get("path") == device and row.get("maj:min") == info["deviceIdentity"]]
-                    partitions_absent = bool(roots) and not any(row.get("type") == "part" for row in nodes)
-                    signatures_absent = signatures.returncode == 0 and not signature_text
-                    disk_clean = (trigger.returncode == 0 and settle.returncode == 0 and signatures_absent
-                                  and partitions_absent)
-                    records.append({"step": "disk-clean-readback", "ok": disk_clean,
-                                    "readback": {"udevTriggerRc": trigger.returncode, "udevSettleRc": settle.returncode,
-                                                 "signatureRc": signatures.returncode, "signaturesAbsent": signatures_absent,
-                                                 "lsblkRc": tree.returncode, "partitionsAbsent": partitions_absent,
-                                                 "deviceIdentityMatched": bool(roots)}})
-                except (Refusal, OSError, UnicodeError, ValueError, KeyError, TypeError):
-                    disk_clean = False
-                    records.append({"step": "disk-clean-readback", "ok": False,
-                                    "readback": {"observed": "incomplete"}})
+                                "readback": {"attempted": True, "rc": command_rc, "guard": guard,
+                                             "wholeDiskErasureStep": step if command_ok and step in {
+                                                 "wipe-created-disk-signatures", "zap-created-gpt"}
+                                             else whole_disk_erasure_step,
+                                             "reason": "wipe-command-complete" if command_ok else
+                                             command_failure or "wipe-command-failed"}})
+                if not command_ok:
+                    wipe_sequence_ok = False
+                elif step in {"wipe-created-disk-signatures", "zap-created-gpt"}:
+                    whole_disk_erasure_step = step
+            if wipe_sequence_ok:
+                def observe_rollback_command(step: str, argv: Sequence[str]) -> subprocess.CompletedProcess[bytes] | None:
+                    try:
+                        result = _run(argv, step=step)
+                    except Refusal as failure:
+                        records.append({"step": step, "ok": False,
+                                        "readback": {"rc": failure.return_code,
+                                                     "reason": failure.signal_name}})
+                        return None
+                    okay = result.returncode == 0
+                    records.append({"step": step, "ok": okay,
+                                    "readback": {"rc": result.returncode,
+                                                 "reason": "command-complete" if okay else "command-failed"}})
+                    return result
+
+                trigger = observe_rollback_command(
+                    "rollback-udev-trigger", [UDEVADM, "trigger", "--subsystem-match=block", "--action=change"])
+                settle = observe_rollback_command("rollback-udev-settle", [UDEVADM, "settle", "--timeout=30"])
+                signatures = observe_rollback_command(
+                    "rollback-signature-readback", [WIPEFS, "--noheadings", "--output", "TYPE", "--", device])
+                tree = observe_rollback_command(
+                    "rollback-partition-readback",
+                    [LSBLK, "--json", "--paths", "--output", "PATH,TYPE,MAJ:MIN,PKNAME,PARTLABEL", device])
+                signature_text = signatures.stdout.decode("utf-8", "ignore").strip() if signatures else ""
+                roots: list[dict[str, Any]] = []
+                partitions_absent = False
+                parse_reason = None
+                if tree is not None and tree.returncode == 0:
+                    try:
+                        nodes = list(_walk_nodes(json.loads(tree.stdout.decode("utf-8"))))
+                        roots = [row for row in nodes if row.get("path") == device
+                                 and row.get("maj:min") == info["deviceIdentity"]]
+                        partitions_absent = bool(roots) and not any(row.get("type") == "part" for row in nodes)
+                    except (UnicodeError, ValueError, KeyError, TypeError, Refusal):
+                        parse_reason = "partition-readback-invalid"
+                elif tree is not None:
+                    parse_reason = "partition-readback-command-failed"
+                else:
+                    parse_reason = "partition-readback-command-unavailable"
+                if parse_reason is not None:
+                    records.append({"step": "disk-partition-readback", "ok": False,
+                                    "readback": {"rc": tree.returncode if tree else None,
+                                                 "reason": parse_reason}})
+                signatures_absent = signatures is not None and signatures.returncode == 0 and not signature_text
+                disk_clean = (trigger is not None and trigger.returncode == 0
+                              and settle is not None and settle.returncode == 0
+                              and signatures_absent and tree is not None and tree.returncode == 0
+                              and partitions_absent and bool(roots))
+                verify_reasons = []
+                if trigger is None or trigger.returncode != 0:
+                    verify_reasons.append("udev-trigger-failed")
+                if settle is None or settle.returncode != 0:
+                    verify_reasons.append("udev-settle-failed")
+                if not signatures_absent:
+                    verify_reasons.append("disk-signatures-remain-or-unreadable")
+                if not partitions_absent or not roots:
+                    verify_reasons.append("partition-or-device-readback-mismatch")
+                records.append({"step": "disk-clean-readback", "ok": disk_clean,
+                                "readback": {"udevTriggerRc": trigger.returncode if trigger else None,
+                                             "udevSettleRc": settle.returncode if settle else None,
+                                             "signatureRc": signatures.returncode if signatures else None,
+                                             "signaturesAbsent": signatures_absent,
+                                             "lsblkRc": tree.returncode if tree else None,
+                                             "partitionsAbsent": partitions_absent,
+                                             "deviceIdentityMatched": bool(roots),
+                                             "reason": "disk-blank-verified" if disk_clean else
+                                             "+".join(verify_reasons) or "disk-readback-incomplete"}})
             else:
                 disk_clean = False
+                records.append({"step": "disk-clean-readback", "ok": False,
+                                "readback": {"attempted": False, "rc": None,
+                                             "reason": "wipe-guard-or-command-failed"}})
     else:
-        records.append({"step": "disk-unchanged", "ok": True, "readback": {"mutationAttempted": False}})
+        records.append({"step": "disk-unchanged", "ok": True,
+                        "readback": {"mutationAttempted": False, "rc": None,
+                                     "reason": "no-disk-mutation-attempted"}})
     cleanup_certain = disk_clean and mapper_closed and mount_absent and units_clean and services_clean
     _cleanup_key(receipt, info["serviceRole"], key_identity, cleanup_certain, records)
     receipt["servicesStarted"] = list(info.get("servicesStarted", []))
@@ -1949,13 +2391,15 @@ def _export_again(receipt: dict[str, Any], service_role: str) -> bytearray:
 
 
 def _rollback_receipt(receipt: dict[str, Any], info: dict[str, Any], key_identity: dict[str, Any] | None,
-                      mutations: dict[str, Any], failure_signal: str | None = None) -> list[dict[str, Any]]:
+                      mutations: dict[str, Any], failure_signal: str | None = None,
+                      failure_return_code: int | None = None) -> list[dict[str, Any]]:
     if failure_signal == "agathodaimon-nas-command-group-unreaped":
         steps = [{"step": "rollback-blocked-child-group", "ok": False,
-                  "readback": {"childGroupReaped": False, "reason": "avoided-racing-unknown-child-mutation"}}]
+                  "readback": {"childGroupReaped": False, "rc": failure_return_code,
+                               "reason": "avoided-racing-unknown-child-mutation"}}]
         if key_identity is not None:
             steps.append({"step": "retain-created-key", "ok": False,
-                          "readback": {"identityKnown": True, "cleanupCertain": False,
+                          "readback": {"identityKnown": True, "cleanupCertain": False, "rc": None,
                                        "reason": "rollback-incomplete"}})
         return steps
     prior = {}
@@ -1968,10 +2412,11 @@ def _rollback_receipt(receipt: dict[str, Any], info: dict[str, Any], key_identit
         return _rollback(receipt, info, key_identity, mutations)
     except Exception:
         steps = [{"step": "rollback-observation", "ok": False,
-                  "readback": {"observed": "rollback-raised"}}]
+                  "readback": {"observed": "rollback-raised", "rc": None,
+                               "reason": "rollback-observation-raised"}}]
         if key_identity is not None:
             steps.append({"step": "retain-created-key", "ok": False,
-                          "readback": {"identityKnown": True, "cleanupCertain": False,
+                          "readback": {"identityKnown": True, "cleanupCertain": False, "rc": None,
                                        "reason": "rollback-incomplete"}})
         return steps
     finally:
@@ -2022,7 +2467,8 @@ def _perform(request: dict[str, Any]) -> dict[str, Any]:
         if info is not None:
             key_identity = key_identity or info.get("createdKeyIdentity")
             if info.get("mutations", {}).get("diskMutationAttempted") or key_identity is not None:
-                steps = _rollback_receipt(receipt, info, key_identity, info.get("mutations", {}), receipt["firstMissingSignal"])
+                steps = _rollback_receipt(receipt, info, key_identity, info.get("mutations", {}),
+                                          receipt["firstMissingSignal"], failure.return_code)
                 receipt["rollbackSteps"] = steps
                 receipt["rolledBack"] = bool(steps) and all(step.get("ok") is True for step in steps)
         return receipt
