@@ -1,3 +1,14 @@
 {
-  "children": []
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": [
+      "action"
+    ],
+    "actions": [
+      "on",
+      "off",
+      "status"
+    ]
+  }
 }

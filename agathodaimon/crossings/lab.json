@@ -246,11 +246,11 @@
     ],
     [
       "settings",
-      "default-apps"
+      "datetime"
     ],
     [
       "settings",
-      "datetime"
+      "default-apps"
     ],
     [
       "settings",
@@ -303,6 +303,10 @@
     [
       "update",
       "profile-retire"
+    ],
+    [
+      "update",
+      "service"
     ],
     [
       "update",

@@ -98,6 +98,10 @@
       "sound"
     ],
     [
+      "update",
+      "service"
+    ],
+    [
       "upload",
       "force-permissions"
     ],
