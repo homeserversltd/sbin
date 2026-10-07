@@ -6,6 +6,7 @@
     "attendance",
     "bind_derived",
     "sacred_credential",
-    "source_map"
+    "source_map",
+    "keyman_export"
   ]
 }

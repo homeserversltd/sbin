@@ -3,7 +3,7 @@ from __future__ import annotations
 import json, os, posixpath, re, subprocess, sys
 from typing import Any, Sequence
 
-from agathodaimon.lib.keyman_export import KEYMAN, KeymanExportError, export_key
+from agathodaimon.lib.keyman_export.index import KEYMAN, KeymanExportError, export_key
 
 SCHEMA = "caduceus.disk.door.v1"
 MAX_INPUT_BYTES = 64 * 1024
@@ -60,6 +60,8 @@ _KEYMAN_FAILURES = {
     "exchange-artifact-malformed": "agathodaimon-disk-keyman-exchange-malformed",
     "exchange-artifact-raced": "agathodaimon-disk-keyman-exchange-raced",
     "exchange-cleanup-failed": "agathodaimon-disk-keyman-exchange-cleanup-failed",
+    "exchange-mount-failed": "agathodaimon-disk-keyman-exchange-mount-failed",
+    "exchange-obliteration-failed": "agathodaimon-disk-keyman-exchange-obliteration-failed",
     "export-failed": "agathodaimon-disk-vault-export-failed",
     "export-timeout": "agathodaimon-disk-vault-export-failed",
     "export-unavailable": "agathodaimon-disk-vault-export-failed",

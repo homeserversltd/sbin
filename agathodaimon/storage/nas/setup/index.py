@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
-from agathodaimon.lib.keyman_export import KeymanExportError, export_key
+from agathodaimon.lib.keyman_export.index import KeymanExportError, export_key
 
 SCHEMA = "caduceus.nas.setup.v1"
 MAX_INPUT = 65536
@@ -85,6 +85,8 @@ _KEYMAN_SIGNAL_MAP = {
     "exchange-artifact-malformed": "agathodaimon-nas-key-export-invalid",
     "exchange-artifact-raced": "agathodaimon-nas-keyman-exchange-raced",
     "exchange-cleanup-failed": "agathodaimon-nas-keyman-exchange-cleanup-failed",
+    "exchange-mount-failed": "agathodaimon-nas-keyman-exchange-mount-failed",
+    "exchange-obliteration-failed": "agathodaimon-nas-keyman-exchange-obliteration-failed",
     "export-failed": "agathodaimon-nas-key-export-failed",
     "export-timeout": "agathodaimon-nas-key-export-failed",
     "export-unavailable": "agathodaimon-nas-key-export-failed",

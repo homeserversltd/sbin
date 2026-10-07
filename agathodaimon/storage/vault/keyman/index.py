@@ -11,7 +11,7 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
-from agathodaimon.lib.keyman_export import KEYMAN, KeymanExportError, export_key
+from agathodaimon.lib.keyman_export.index import KEYMAN, KeymanExportError, export_key
 
 SCHEMA = "caduceus.keyman.door.v1"
 MAX_INPUT_BYTES = 64 * 1024
@@ -89,6 +89,8 @@ _EXPORT_FAILURE_SUFFIX = {
     "exchange-artifact-malformed": "exchange-malformed",
     "exchange-artifact-raced": "exchange-raced",
     "exchange-cleanup-failed": "exchange-cleanup-failed",
+    "exchange-mount-failed": "exchange-mount-failed",
+    "exchange-obliteration-failed": "exchange-obliteration-failed",
     "export-failed": "refused",
     "export-timeout": "refused",
     "export-unavailable": "refused",
