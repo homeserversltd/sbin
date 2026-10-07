@@ -517,7 +517,6 @@
       "settings/notifications",
       "settings/sound",
       "settings/ssh",
-      "storage/disk/test",
       "storage/vault/open",
       "storage/vault/policy"
     ],

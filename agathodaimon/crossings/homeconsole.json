@@ -265,14 +265,12 @@
   ],
   "administrative": {
     "bands": [
-      "appliance/harmonia-press",
       "appliance/service",
       "appliance/sudo-passwordless",
       "network/child-device",
       "network/dns",
       "settings/datetime",
       "settings/input",
-      "storage/disk/test",
       "storage/vault/open",
       "storage/vault/policy"
     ],

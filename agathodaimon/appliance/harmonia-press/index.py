@@ -52,20 +52,23 @@ def _request_object() -> dict[str, Any]:
 
 
 def _allowed_argv(argv: list[str]) -> bool:
-    if argv in (["update"], ["update", "--apply"]):
+    if not argv or argv[0] != _HARMONIA:
+        return False
+    args = argv[1:]
+    if args in (["update"], ["update", "--apply"]):
         return True
-    if argv == ["interactable", "list", "--json"]:
+    if args == ["interactable", "list", "--json"]:
         return True
-    if len(argv) == 3 and argv[:2] == ["interactable", "run"]:
-        return _IDENTIFIER.fullmatch(argv[2]) is not None
-    if len(argv) in (4, 5) and argv[0] == "update-module":
+    if len(args) == 3 and args[:2] == ["interactable", "run"]:
+        return _IDENTIFIER.fullmatch(args[2]) is not None
+    if len(args) in (4, 5) and args[0] == "update-module":
         if (
-            _PROFILE_INDEX.fullmatch(argv[1]) is None
-            or argv[2] != "--module"
-            or _IDENTIFIER.fullmatch(argv[3]) is None
+            _PROFILE_INDEX.fullmatch(args[1]) is None
+            or args[2] != "--module"
+            or _IDENTIFIER.fullmatch(args[3]) is None
         ):
             return False
-        return len(argv) == 4 or argv[4] == "--apply"
+        return len(args) == 4 or args[4] == "--apply"
     return False
 
 
@@ -112,7 +115,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--property",
             _property(invocation_id),
             "--",
-            _HARMONIA,
             *(item.replace("$", "$$") for item in command),
         ]
         _null_stdin()
