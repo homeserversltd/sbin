@@ -514,6 +514,22 @@ def _load_config(receipt: dict[str, Any], mountpoint: str) -> dict[str, Any]:
     raise Refusal("agathodaimon-nas-config-absent", "config-preflight")
 
 
+def _unit_declares_mountpoint(text: str, mountpoint: str) -> bool:
+    conditions: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "=" not in stripped:
+            continue
+        key, value = (part.strip() for part in stripped.split("=", 1))
+        if key != "ConditionPathIsMountPoint":
+            continue
+        if not value:
+            conditions.clear()
+        else:
+            conditions.append(value)
+    return mountpoint in conditions
+
+
 def _list_enabled_nas_services(receipt: dict[str, Any], mountpoint: str) -> list[dict[str, Any]]:
     result = _run([SYSTEMCTL, "list-unit-files", "--type=service", "--no-legend", "--no-pager"])
     if result.returncode != 0:
@@ -525,41 +541,70 @@ def _list_enabled_nas_services(receipt: dict[str, Any], mountpoint: str) -> list
         _record(receipt, "service-census", False, observed="invalid")
         raise Refusal("agathodaimon-nas-service-census-invalid", "service-census")
     services: list[dict[str, Any]] = []
+    skipped_units: list[str] = []
     for line in lines:
         fields = line.split()
         if len(fields) < 2 or not fields[0].endswith(".service"):
             continue
         unit, enabled_state = fields[0], fields[1]
-        enabled = enabled_state in {"enabled", "enabled-runtime"}
-        if enabled_state == "masked":
+        if unit.endswith("@.service") or enabled_state in {"alias", "bad", "masked", "not-found"}:
             continue
+        enabled = enabled_state in {"enabled", "enabled-runtime"}
         fragment = _run([SYSTEMCTL, "show", unit, "--property=FragmentPath", "--value"])
         cat = _run([SYSTEMCTL, "cat", unit, "--no-pager"])
-        if fragment.returncode != 0 or cat.returncode != 0:
-            failed = fragment if fragment.returncode != 0 else cat
-            _record(receipt, "service-condition-readback", False, unit=unit, rc=failed.returncode)
-            raise Refusal("agathodaimon-nas-service-unit-unreadable", "service-condition-readback", failed.returncode)
-        fragment_path = _decode_output(fragment, "service-condition-readback")
-        if not fragment_path or fragment_path == "/dev/null":
-            _record(receipt, "service-condition-readback", False, unit=unit, observed="unreadable")
-            raise Refusal("agathodaimon-nas-service-unit-unreadable", "service-condition-readback")
+        failed = cat if cat.returncode != 0 else fragment if fragment.returncode != 0 else None
+
+        fragment_path: str | None = None
+        fragment_path_unreadable = False
         try:
-            text = cat.stdout.decode("utf-8")
-        except UnicodeError:
-            raise Refusal("agathodaimon-nas-service-unit-invalid", "service-condition-readback")
-        conditions: list[str] = []
-        for line in text.splitlines():
-            stripped = line.strip()
-            if "=" not in stripped:
-                continue
-            key, value = (part.strip() for part in stripped.split("=", 1))
-            if key != "ConditionPathIsMountPoint":
-                continue
-            if not value:
-                conditions.clear()
+            candidate = fragment.stdout.decode("utf-8").strip()
+            if candidate and candidate != "/dev/null":
+                fragment_path = candidate
             else:
-                conditions.append(value)
-        matches = mountpoint in conditions
+                fragment_path_unreadable = True
+        except UnicodeError:
+            fragment_path_unreadable = True
+
+        text: str | None = None
+        cat_unreadable = False
+        try:
+            candidate = cat.stdout.decode("utf-8")
+            if candidate.strip():
+                text = candidate
+            else:
+                cat_unreadable = True
+        except UnicodeError:
+            cat_unreadable = True
+            candidate = cat.stdout.decode("utf-8", "replace")
+            if candidate.strip():
+                text = candidate
+        if (text is None or cat_unreadable or cat.returncode != 0) and fragment_path is not None:
+            try:
+                raw, _metadata = _read_regular_nofollow(fragment_path, maximum=1024 * 1024)
+            except OSError:
+                cat_unreadable = True
+            else:
+                try:
+                    fragment_text = raw.decode("utf-8")
+                except UnicodeError:
+                    cat_unreadable = True
+                    fragment_text = raw.decode("utf-8", "replace")
+                text = fragment_text if text is None else fragment_text + "\n" + text
+
+        matches = text is not None and _unit_declares_mountpoint(text, mountpoint)
+        unreadable = fragment_path_unreadable or cat_unreadable
+        if failed is not None or unreadable:
+            failed_rc = failed.returncode if failed is not None else None
+            if matches:
+                _record(receipt, "service-condition-readback", False, unit=unit, rc=failed_rc,
+                        mountpoint=mountpoint, observed="nas-dependent")
+                raise Refusal("agathodaimon-nas-service-unit-unreadable", "service-condition-readback",
+                              failed_rc)
+            skipped_units.append(unit)
+            _record(receipt, "service-unit-skipped", True, unit=unit, rc=failed_rc,
+                    reason="unit-readback-failed" if failed is not None else "declaration-unreadable",
+                    observed="unreadable")
+            continue
         if not matches:
             continue
         active_result = _run([SYSTEMCTL, "is-active", unit])
@@ -576,7 +621,8 @@ def _list_enabled_nas_services(receipt: dict[str, Any], mountpoint: str) -> list
             raise Refusal("agathodaimon-nas-service-state-unreadable", "service-active-preflight", active_result.returncode)
         services.append({"unit": unit, "enabled": enabled, "activeBefore": active,
                          "condition": mountpoint, "fragment": fragment_path})
-    _record(receipt, "service-census", True, nasDependentCount=len(services))
+    _record(receipt, "service-census", True, nasDependentCount=len(services),
+            skippedUnits=skipped_units, skippedUnitCount=len(skipped_units))
     return services
 
 
