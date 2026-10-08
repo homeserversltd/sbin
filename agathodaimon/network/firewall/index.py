@@ -216,7 +216,13 @@ def _nft_bytes(policies: dict[str, dict[str, Any]]) -> bytes:
     return ("\n".join(lines) + "\n").encode("ascii")
 
 
+def _nft_inert_bytes(data: bytes) -> bool:
+    return all(not line.strip() or line.lstrip().startswith(b"#") for line in data.splitlines())
+
+
 def _parse_nft(data: bytes) -> dict[str, dict[str, Any]]:
+    if _nft_inert_bytes(data):
+        return {}
     try:
         text = data.decode("ascii")
     except UnicodeDecodeError as exc:
@@ -302,6 +308,10 @@ def _parse_live_nft(text: str) -> dict[str, dict[str, Any]]:
 def _expected_nft(policies: dict[str, dict[str, Any]]) -> set[tuple[str, str, str, str]]:
     return {(mac, policy["ip"], proto, policy["router"])
             for mac, policy in policies.items() for proto in ("udp", "tcp")}
+
+
+def _expected_live_table(image: FileImage) -> bool:
+    return image.exists and not _nft_inert_bytes(image.data)
 
 
 def _run(argv: list[str]) -> tuple[bool, str, str]:
@@ -840,9 +850,9 @@ def _validate_intent(intent: Any) -> tuple[str, str | None, list[str] | None, st
     return action, mac, names, revision
 
 
-def _live_state(policies: dict[str, dict[str, Any]], nft_exists: bool,
+def _live_state(policies: dict[str, dict[str, Any]], expected_table: bool,
                 runner: Callable[[list[str]], tuple[bool, str, str]]) -> None:
-    _prove_live_nft(policies, nft_exists, runner)
+    _prove_live_nft(policies, expected_table, runner)
     for mac, policy in policies.items():
         _prove_live_dns(mac, policy["hostnames"], runner)
 
@@ -884,18 +894,19 @@ def _apply_transaction(action: str, policy_path: Path, nft_path: Path, parents: 
                        runner: Callable[[list[str]], tuple[bool, str, str]],
                        removed_mac: str | None = None) -> dict[str, Any]:
     policy_parent, nft_parent = parents[str(policy_path.parent)], parents[str(nft_path.parent)]
+    expected_table = _expected_live_table(nft_source)
     _stage_and_check(policy_path, nft_path, policy_parent, nft_parent, policy_source, nft_source,
                      policy_candidate, nft_candidate, runner)
     want_policy = policy_candidate is not None
     policy_same = policy_source.exists == want_policy and (not want_policy or policy_source.data == policy_candidate)
     nft_same = nft_source.exists and nft_source.data == nft_candidate
     if policy_same and nft_same:
-        _live_state(new_policies, nft_source.exists, runner)
+        _live_state(new_policies, expected_table, runner)
         return {"ok": True, "changed": False, "revision": _revision(policy_source, nft_source),
                 "rollback": "not-needed", "rollbackFiles": []}
 
     initial_live_exists, initial_live_text = _live_table(runner)
-    if initial_live_exists != nft_source.exists:
+    if initial_live_exists != expected_table:
         raise FirewallRefused("firewall-nft-live-table-presence-mismatch")
     if initial_live_exists:
         _prove_live_nft(old_policies, True, runner)
@@ -1046,15 +1057,16 @@ def _apply_transaction(action: str, policy_path: Path, nft_path: Path, parents: 
 def _enforce_readback(policy_path: Path, nft_path: Path, policy_image: FileImage, nft_image: FileImage,
                       policies: dict[str, dict[str, Any]], revision: str, manager_factory: Any,
                       runner: Callable[[list[str]], tuple[bool, str, str]]) -> tuple[Any | None, dict[str, dict[str, Any]], dict[str, dict[str, str]]]:
+    expected_table = _expected_live_table(nft_image)
     if not policies:
-        _live_state({}, nft_image.exists, runner)
+        _live_state({}, expected_table, runner)
         return None, {}, {}
     manager = _dhcp_manager(manager_factory)
     bound = _bind_policies(policies, manager)
     disk_nft = _parse_nft(nft_image.data) if nft_image.exists else {}
     if any(disk_nft[mac]["router"] != policy["router"] for mac, policy in bound.items()):
         raise FirewallRefused("firewall-dhcp-router-binding-mismatch")
-    _live_state(bound, nft_image.exists, runner)
+    _live_state(bound, expected_table, runner)
     _observed, leases = _lease_rows(manager)
     return manager, bound, leases
 
