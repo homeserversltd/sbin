@@ -1,5 +1,5 @@
 {
-  "schema": "agathodaimon.crossings.v1",
+  "schema": "appliance.crossings.v1",
   "profile": "lab",
   "bands": [
     "appliance/journal-vacuum",

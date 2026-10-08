@@ -1,5 +1,5 @@
 {
-  "schema": "agathodaimon.crossings.v1",
+  "schema": "appliance.crossings.v1",
   "profile": "tv",
   "bands": [
     "appliance/harmonia-press",
@@ -11,6 +11,7 @@
     "network/dns",
     "network/firewall",
     "network/identity",
+    "network/wake-on-lan",
     "network/wifi",
     "settings/datetime",
     "settings/input",

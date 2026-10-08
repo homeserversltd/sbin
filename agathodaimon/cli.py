@@ -81,7 +81,7 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
     finally:
         sys.stdin = original_stdin
 
-_CROSSING_SCHEMA = "agathodaimon.crossings.v1"
+_CROSSING_SCHEMA = "appliance.crossings.v1"
 _CROSSING_PART = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 _CROSSING_ROUTE_SEGMENT = r"(?:[a-z0-9][a-z0-9_.-]*|:[a-z][a-z0-9_]*)"
 _CROSSING_API_ROUTE = re.compile(

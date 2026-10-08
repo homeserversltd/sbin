@@ -1,0 +1,8 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": ["actuator", "metadata", "action"],
+    "actions": ["sync-now", "sync-job-status", "sync-schedule", "sync-schedule-update"]
+  }
+}

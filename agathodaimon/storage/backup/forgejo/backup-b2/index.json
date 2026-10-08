@@ -1,0 +1,8 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": ["schema", "payload", "op", "operation"],
+    "actions": ["get"]
+  }
+}

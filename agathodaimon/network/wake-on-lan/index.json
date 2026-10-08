@@ -1,0 +1,8 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": ["actuator", "metadata"],
+    "actions": ["send", "probe"]
+  }
+}
