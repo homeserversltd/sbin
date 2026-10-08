@@ -1,0 +1,32 @@
+MIGRATED.txt - what has been ported to the new tech (sbin staff, Caduceus, Harmonia).
+
+We are DUPLICATING: porting FROM old TO new by copying. The new tech gets its
+own copy. The old file is never moved, renamed or deleted.
+
+HomeServers in the field still run the old files. Every old file stays in its
+repo, at its old path. Nothing listed here is deleted. Cleanup of the old tech
+waits months, until the owner says so.
+
+old file (repo)                         now done by
+--------------------------------------  -------------------------------------------------
+mountvault.sh (sbin)                    sbin storage/vault/open
+websiteMountVault.sh (sbin)             sbin storage/vault/open
+setupNAS.sh (sbin)                      sbin storage/nas/setup, Caduceus
+                                          POST /api/v1/storage/nas/setup
+mountDrive.sh (vault)                   sbin storage/nas/attach, Harmonia units
+                                          homeserver-nas-open@.service, mnt-nas.mount,
+                                          mnt-nas_backup.mount
+unmountDrive.sh (vault)                 sbin storage/nas/detach
+closeNAS.sh (vault)                     sbin storage/nas/detach
+exportNAS.sh (vault)                    sbin key export, run by homeserver-nas-open@.service
+exportServiceSuite.sh (vault)           sbin key export
+init.sh NAS half (vault)                sbin storage/vault/open attaches the NAS through the
+                                          fixed units before it runs init.sh
+
+Duplicated in August 2026 by a move, so the old root path came back 2026-10-08:
+factoryFallback.sh (sbin)               agathodaimon/appliance/report/factoryFallback.sh
+setupNAS.sh (sbin)                      agathodaimon/storage/disk-doors/setupNAS.sh
+safe-nas-sync.sh (sbin)                 agathodaimon/storage/backup/safe-nas-sync.sh
+homeserver-forgejo-migrate.py (sbin)    agathodaimon/storage/backup/homeserver-forgejo-migrate.py
+
+Not migrated yet: transmission.py, src/, teardown_standalone.py (vault).
