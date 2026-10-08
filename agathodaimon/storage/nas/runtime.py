@@ -1138,7 +1138,21 @@ def open_role(role: str) -> dict[str, Any]:
             _fail(receipt, "agathodaimon-nas-luks-required", "luks-readback", result.returncode,
                   isLuks=False)
         _record(receipt, "luks-readback", True, isLuks=True)
-        current = _mapper_state(receipt, runtime_info)
+        try:
+            current = _mapper_state(receipt, runtime_info)
+        except Refusal:
+            for observation in reversed(receipt.get("steps", [])):
+                if isinstance(observation, dict) and observation.get("step") == "mapper-readback":
+                    readback = observation.get("readback")
+                    if isinstance(readback, dict):
+                        receipt["mapperReadback"] = dict(readback)
+                    break
+            raise
+        if current.get("exists") is True:
+            receipt["mapperReadback"] = dict(current)
+            if current.get("backingMatches") is not True:
+                raise Refusal("agathodaimon-nas-mapper-backing-mismatch", "mapper-readback",
+                              receipt=receipt)
         expected_holders = {_sysfs_block_name(current["identity"])} if current.get("exists") else set()
         holders = _list_holders(partition_identity)
         foreign_holders = [name for name in holders if name not in expected_holders]
@@ -1146,11 +1160,10 @@ def open_role(role: str) -> dict[str, Any]:
             _fail(receipt, "agathodaimon-nas-partition-held-by-foreign-device", "partition-holder-preflight",
                   partitionIdentity=partition_identity, holders=foreign_holders)
         if current.get("exists") is True:
-            receipt["mapperReadback"] = dict(current)
             receipt["alreadyOpen"] = True
             receipt["ok"] = True
             receipt["firstMissingSignal"] = "none"
-            _record(receipt, "open-noop", True, alreadyOpen=True, backingMatches=True,
+            _record(receipt, "open-noop", True, **current, alreadyOpen=True,
                     mountAttempted=False, servicesAttempted=False)
             return receipt
 

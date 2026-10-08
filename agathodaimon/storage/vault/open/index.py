@@ -32,8 +32,20 @@ def _runtime_path(path: str) -> str:
     return str(runtime_path(path))
 
 
-def _receipt(ok: bool, present: bool, signal: str) -> dict[str, Any]:
-    return {"schema": _SCHEMA, "ok": ok, "present": present, "firstMissingSignal": signal}
+def _receipt(
+    ok: bool,
+    present: bool,
+    signal: str,
+    *,
+    nas_first_missing_signal: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "schema": _SCHEMA,
+        "ok": ok,
+        "present": present,
+        "firstMissingSignal": signal,
+        "nasFirstMissingSignal": nas_first_missing_signal,
+    }
 
 
 def _unlock_receipt(
@@ -45,6 +57,7 @@ def _unlock_receipt(
     mounted: bool | None = False,
     mapper_closed: bool = False,
     rite: dict[str, Any] | None = None,
+    nas_first_missing_signal: str | None = None,
 ) -> dict[str, Any]:
     receipt = {
         "schema": _SCHEMA,
@@ -54,6 +67,7 @@ def _unlock_receipt(
         "mounted": mounted,
         "mapper_closed": mapper_closed,
         "firstMissingSignal": signal,
+        "nasFirstMissingSignal": nas_first_missing_signal,
     }
     if rite is not None:
         receipt["rite"] = rite
@@ -359,27 +373,36 @@ def _failed_role_receipt(role: str, failure: Exception) -> dict[str, Any]:
 
 
 def _attach_nas_roles() -> tuple[dict[str, Any], Exception | None]:
-    from agathodaimon.storage.nas.runtime import ROLE, Refusal, attach_role, role_partition
+    from agathodaimon.storage.nas.runtime import ROLE, attach_role, role_partition
 
     roles: list[dict[str, Any]] = []
+    first_failure: Exception | None = None
     for role in ROLE:
         try:
             role_partition(role)
-        except Refusal as failure:
+        except Exception as failure:
             if _partlabel_is_absent(failure):
                 roles.append({"role": role, "result": "skipped", "reason": "partlabel-absent",
-                              "signal": failure.signal_name})
+                              "signal": getattr(failure, "signal_name", None)})
                 continue
-            return {"result": "failed", "roles": roles + [_failed_role_receipt(role, failure)]}, failure
+            roles.append(_failed_role_receipt(role, failure))
+            if first_failure is None:
+                first_failure = failure
+            continue
         try:
             receipt = attach_role(role)
-        except Refusal as failure:
+        except Exception as failure:
             if _partlabel_is_absent(failure):
                 roles.append({"role": role, "result": "skipped", "reason": "partlabel-absent",
-                              "signal": failure.signal_name})
+                              "signal": getattr(failure, "signal_name", None)})
                 continue
-            return {"result": "failed", "roles": roles + [_failed_role_receipt(role, failure)]}, failure
+            roles.append(_failed_role_receipt(role, failure))
+            if first_failure is None:
+                first_failure = failure
+            continue
         roles.append({"role": role, "result": "attached", "receipt": receipt})
+    if first_failure is not None:
+        return {"result": "failed", "roles": roles}, first_failure
     return {"result": "complete", "roles": roles}, None
 
 
@@ -549,23 +572,19 @@ def _unlock(
                 preserve_mapper=mount_state is None,
             )
 
+        nas_failure: Exception | None = None
+        nas_first_missing_signal: str | None = None
+        attachments: dict[str, Any] | None = None
         if mountpoint == "/vault":
             try:
-                attachments, failure = _attach_nas_roles()
+                attachments, nas_failure = _attach_nas_roles()
             except Exception as error:
-                failure = error
+                nas_failure = error
                 attachments = {"result": "failed", "roles": [_failed_role_receipt("runtime", error)]}
-            if failure is not None:
-                receipt = _unlock_receipt(
-                    False,
-                    present,
-                    getattr(failure, "signal_name", "agathodaimon-nas-attach-failed"),
-                    already_open=already_open,
-                    mounted=True,
-                    mapper_closed=False,
-                )
-                receipt["attachments"] = attachments
-                return receipt
+            if nas_failure is not None:
+                nas_first_missing_signal = getattr(nas_failure, "signal_name", None)
+                if not isinstance(nas_first_missing_signal, str) or not nas_first_missing_signal:
+                    nas_first_missing_signal = "agathodaimon-nas-attach-failed"
             try:
                 rite = _run_vault_init_rite()
             except Exception:
@@ -575,7 +594,7 @@ def _unlock(
         else:
             rite = {"result": "not_applicable", "reason": "mountpoint-not-vault"}
         if rite["result"] == "failed":
-            return _unlock_receipt(
+            receipt = _unlock_receipt(
                 False,
                 present,
                 "agathodaimon-vault-init-failed",
@@ -583,15 +602,21 @@ def _unlock(
                 mounted=True,
                 mapper_closed=False,
                 rite=rite,
+                nas_first_missing_signal=nas_first_missing_signal,
             )
-        return _unlock_receipt(
-            True,
-            present,
-            "none",
-            already_open=already_open,
-            mounted=True,
-            rite=rite,
-        )
+        else:
+            receipt = _unlock_receipt(
+                True,
+                present,
+                "none",
+                already_open=already_open,
+                mounted=True,
+                rite=rite,
+                nas_first_missing_signal=nas_first_missing_signal,
+            )
+        if nas_failure is not None:
+            receipt["attachments"] = attachments
+        return receipt
     except (OSError, UnicodeError, subprocess.SubprocessError):
         if mount_started:
             return refuse("agathodaimon-vault-mount-refused", mounted=None, preserve_mapper=True)
