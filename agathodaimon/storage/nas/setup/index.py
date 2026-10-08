@@ -57,6 +57,22 @@ _SAFE_DEVICE = re.compile(r"^/dev/[A-Za-z0-9._-]{1,128}$")
 _SAFE_NAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _OCTAL_MODE = re.compile(r"^(?:0?[0-7]{3})$")
 
+PortalFolderLayoutRow = tuple[str, str, str, int]
+PORTAL_FOLDER_LAYOUT: dict[str, tuple[PortalFolderLayoutRow, ...]] = {
+    "primary": (
+        ("", "www-data", "www-data", 0o777),
+        ("books", "calibre", "www-data", 0o775),
+        ("books/upload", "calibre", "www-data", 0o775),
+        ("downloads", "debian-transmission", "www-data", 0o775),
+        ("media", "jellyfin", "www-data", 0o775),
+        ("music", "navidrome", "www-data", 0o775),
+        ("photos", "piwigo", "www-data", 0o777),
+    ),
+    "backup": (
+        ("", "www-data", "www-data", 0o777),
+    ),
+}
+
 
 class Interrupted(Refusal):
     pass
@@ -848,12 +864,19 @@ def _open_or_create_child(parent_fd: int, component: str, root_dev: int, root_fd
                            dir_fd=parent_fd)
     except OSError:
         raise Refusal("agathodaimon-nas-path-escape", "permissions-preflight")
-    st = os.fstat(child_fd)
-    if st.st_dev != root_dev:
-        os.close(child_fd)
-        raise Refusal("agathodaimon-nas-path-escape", "permissions-preflight")
-    _permission_mount_guard(root_fd, mountpoint, mapper_identity, (os.fstat(root_fd).st_dev, os.fstat(root_fd).st_ino))
-    return child_fd
+    try:
+        st = os.fstat(child_fd)
+        if st.st_dev != root_dev:
+            raise Refusal("agathodaimon-nas-path-escape", "permissions-preflight")
+        _permission_mount_guard(root_fd, mountpoint, mapper_identity,
+                                (os.fstat(root_fd).st_dev, os.fstat(root_fd).st_ino))
+        return child_fd
+    except BaseException:
+        try:
+            os.close(child_fd)
+        except OSError:
+            pass
+        raise
 
 
 def _collect_fd_tree(directory_fd: int, root_dev: int) -> list[int]:
@@ -949,6 +972,203 @@ def _apply_permissions(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                     os.close(current_fd)
     finally:
         os.close(root_fd)
+
+
+def _portal_layout_actual(fd: int | None, path: str | None) -> dict[str, Any]:
+    actual: dict[str, Any] = {
+        "path": None, "owner": None, "group": None,
+        "mode": None, "actualDevice": None, "uid": None, "gid": None,
+    }
+    if fd is None:
+        return actual
+    try:
+        metadata = os.fstat(fd)
+    except OSError:
+        return actual
+    try:
+        owner = pwd.getpwuid(metadata.st_uid).pw_name
+    except (KeyError, OSError):
+        owner = None
+    try:
+        group = grp.getgrgid(metadata.st_gid).gr_name
+    except (KeyError, OSError):
+        group = None
+    actual.update({
+        "path": path, "owner": owner, "group": group,
+        "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
+        "actualDevice": metadata.st_dev, "uid": metadata.st_uid, "gid": metadata.st_gid,
+    })
+    return actual
+
+
+def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
+    """Apply only the fixed role rows through descriptors rooted at the verified mount."""
+    role = info.get("role")
+    rows = PORTAL_FOLDER_LAYOUT.get(role) if isinstance(role, str) else None
+    if rows is None:
+        _record(receipt, "portal-layout-preflight", False, role=role, reason="role-invalid")
+        raise Refusal("agathodaimon-nas-portal-layout-role-invalid",
+                      "portal-layout-preflight", receipt=receipt)
+
+    mountpoint = info["mountpoint"]
+    try:
+        mapper_identity = _device_identity(f"/dev/mapper/{info['mapper']}", "portal-layout-preflight")
+    except Refusal as failure:
+        _record(receipt, "portal-layout-preflight", False, reason=failure.signal_name,
+                mapperIdentity=None)
+        raise Refusal(failure.signal_name, "portal-layout-preflight",
+                      failure.return_code, receipt) from None
+
+    root_fd: int | None = None
+    try:
+        root_fd = _open_directory_nofollow(mountpoint)
+        root_stat = os.fstat(root_fd)
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise Refusal("agathodaimon-nas-mounted-root-invalid", "portal-layout-preflight")
+        root_identity = (root_stat.st_dev, root_stat.st_ino)
+        root_dev = root_stat.st_dev
+        _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
+    except Refusal as failure:
+        if root_fd is not None:
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
+        _record(receipt, "portal-layout-preflight", False, reason=failure.signal_name,
+                mapperIdentity=mapper_identity)
+        raise Refusal(failure.signal_name, "portal-layout-preflight",
+                      failure.return_code, receipt) from None
+    except OSError:
+        if root_fd is not None:
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
+        _record(receipt, "portal-layout-preflight", False, reason="mounted-root-unreadable",
+                mapperIdentity=mapper_identity)
+        raise Refusal("agathodaimon-nas-mounted-root-unreadable",
+                      "portal-layout-preflight", receipt=receipt) from None
+    except BaseException:
+        if root_fd is not None:
+            try:
+                os.close(root_fd)
+            except OSError:
+                pass
+        raise
+
+    try:
+        _record(receipt, "portal-layout-preflight", True, mountpoint=mountpoint,
+                mapperIdentity=mapper_identity, rootDevice=root_dev, nestedMounts=False)
+        for relative, owner_name, group_name, mode in rows:
+            expected_path = relative if isinstance(relative, str) and relative else "." if relative == "" else None
+            expected_mode = f"{mode:04o}" if isinstance(mode, int) and not isinstance(mode, bool) else None
+            expected: dict[str, Any] = {
+                "expectedPath": expected_path, "expectedOwner": owner_name,
+                "expectedGroup": group_name, "expectedMode": expected_mode,
+                "expectedUid": None, "expectedGid": None,
+            }
+
+            path_valid = (isinstance(relative, str) and "\x00" not in relative
+                          and not relative.startswith("/")
+                          and (not relative or (posixpath.normpath(relative) == relative
+                               and all(part not in {"", ".", ".."} for part in relative.split("/")))))
+            names_valid = (isinstance(owner_name, str) and _SAFE_NAME.fullmatch(owner_name)
+                           and isinstance(group_name, str) and _SAFE_NAME.fullmatch(group_name))
+            mode_valid = (isinstance(mode, int) and not isinstance(mode, bool)
+                          and 0 <= mode <= 0o777)
+            if not path_valid or not names_valid or not mode_valid:
+                _record(receipt, "portal-layout-row-refused", False, reason="declared-row-invalid",
+                        **expected, **_portal_layout_actual(None, None))
+                raise Refusal("agathodaimon-nas-portal-layout-row-invalid",
+                              "portal-layout-row-refused", receipt=receipt)
+            actual_path = posixpath.join(mountpoint, relative) if relative else mountpoint
+
+            try:
+                owner_entry = pwd.getpwnam(owner_name)
+            except KeyError:
+                _record(receipt, "portal-layout-row-skipped", True, skipped=True,
+                        reason="owner-user-absent", **expected,
+                        **_portal_layout_actual(None, None))
+                continue
+            except OSError:
+                _record(receipt, "portal-layout-row-refused", False, reason="owner-user-unreadable",
+                        **expected, **_portal_layout_actual(None, None))
+                raise Refusal("agathodaimon-nas-portal-layout-user-unreadable",
+                              "portal-layout-row-refused", receipt=receipt) from None
+            expected["expectedUid"] = owner_entry.pw_uid
+
+            try:
+                group_entry = grp.getgrnam(group_name)
+            except KeyError:
+                _record(receipt, "portal-layout-row-refused", False, reason="owner-group-absent",
+                        **expected, **_portal_layout_actual(None, None))
+                raise Refusal("agathodaimon-nas-portal-layout-group-absent",
+                              "portal-layout-row-refused", receipt=receipt) from None
+            except OSError:
+                _record(receipt, "portal-layout-row-refused", False, reason="owner-group-unreadable",
+                        **expected, **_portal_layout_actual(None, None))
+                raise Refusal("agathodaimon-nas-portal-layout-group-unreadable",
+                              "portal-layout-row-refused", receipt=receipt) from None
+            expected["expectedGid"] = group_entry.gr_gid
+
+            current_fd: int | None = None
+            row_recorded = False
+            try:
+                current_fd = os.dup(root_fd)
+                if relative:
+                    for component in relative.split("/"):
+                        child_fd = _open_or_create_child(current_fd, component, root_dev, root_fd,
+                                                         mountpoint, mapper_identity)
+                        parent_fd = current_fd
+                        current_fd = child_fd
+                        try:
+                            os.close(parent_fd)
+                        except OSError:
+                            pass
+                _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
+                opened = os.fstat(current_fd)
+                if opened.st_dev != root_dev:
+                    raise Refusal("agathodaimon-nas-path-escape", "portal-layout-row-refused")
+                os.fchown(current_fd, owner_entry.pw_uid, group_entry.gr_gid)
+                _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
+                os.fchmod(current_fd, mode)
+                _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
+                observed = _portal_layout_actual(current_fd, actual_path)
+                if (observed["actualDevice"] != root_dev
+                        or observed["uid"] != owner_entry.pw_uid
+                        or observed["gid"] != group_entry.gr_gid
+                        or observed["owner"] != owner_entry.pw_name
+                        or observed["group"] != group_entry.gr_name
+                        or observed["mode"] != expected_mode):
+                    raise Refusal("agathodaimon-nas-portal-layout-readback-mismatch",
+                                  "portal-layout-row-refused")
+                _record(receipt, "portal-layout-row-readback", True, applied=True, skipped=False,
+                        **expected, **observed)
+                row_recorded = True
+            except Refusal as failure:
+                if not row_recorded:
+                    _record(receipt, "portal-layout-row-refused", False,
+                            reason=failure.signal_name, **expected,
+                            **_portal_layout_actual(current_fd, actual_path if current_fd is not None else None))
+                    row_recorded = True
+                raise Refusal(failure.signal_name, "portal-layout-row-refused",
+                              failure.return_code, receipt) from None
+            except Exception:
+                if not row_recorded:
+                    _record(receipt, "portal-layout-row-refused", False,
+                            reason="directory-change-or-readback-failed", **expected,
+                            **_portal_layout_actual(current_fd, actual_path if current_fd is not None else None))
+                raise Refusal("agathodaimon-nas-portal-layout-row-failed",
+                              "portal-layout-row-refused", receipt=receipt) from None
+            finally:
+                if current_fd is not None:
+                    try:
+                        os.close(current_fd)
+                    except OSError:
+                        pass
+    finally:
+        if root_fd is not None:
+            os.close(root_fd)
 
 
 def _run_rollback_command(rollback: list[dict[str, Any]], step: str, argv: Sequence[str],
@@ -1744,8 +1964,72 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
     _ensure_mountpoint_directory(info["mountpoint"])
     mutations["mapperOpenAttempted"] = True
     mutations["mountAttempted"] = True
+
+    def after_mount_verified(attachment_receipt: dict[str, Any]) -> None:
+        created_partition_identity = info.get("createdPartitionIdentity")
+        partition_identity = None
+        partition_identity_error = None
+        if isinstance(created_partition_identity, str):
+            try:
+                partition_identity = _device_identity(info["partition"], "portal-layout-partition-guard")
+            except Refusal as failure:
+                partition_identity_error = failure.signal_name
+
+        mapper_readback = attachment_receipt.get("mapperReadback")
+        mount_readback = attachment_receipt.get("mountReadback")
+        started_units = attachment_receipt.get("unitsStarted")
+        partition_matches = (isinstance(created_partition_identity, str)
+                             and partition_identity == created_partition_identity)
+        mapper_matches = (isinstance(mapper_readback, dict)
+                          and mapper_readback.get("exists") is True
+                          and mapper_readback.get("backingMatches") is True
+                          and mapper_readback.get("backingIdentity") == created_partition_identity
+                          and mapper_readback.get("expectedBackingIdentity") == created_partition_identity)
+        mount_matches = (isinstance(mount_readback, dict)
+                         and mount_readback.get("mounted") is True
+                         and mount_readback.get("sourceMatches") is True
+                         and mount_readback.get("fstype") == "xfs")
+        transaction_mount = (attachment_receipt.get("alreadyMounted") is False
+                             and isinstance(started_units, list)
+                             and info["mountUnit"] in started_units)
+        okay = partition_matches and mapper_matches and mount_matches and transaction_mount
+        if not isinstance(created_partition_identity, str):
+            reason = "partition-identity-unavailable"
+        elif not partition_matches:
+            reason = partition_identity_error or "partition-identity-mismatch"
+        elif not mapper_matches:
+            reason = "mapper-backing-identity-mismatch"
+        elif not mount_matches:
+            reason = "mount-readback-mismatch"
+        elif not transaction_mount:
+            reason = "mount-not-transaction-owned"
+        else:
+            reason = "verified"
+        _record(attachment_receipt, "portal-layout-attachment-guard", okay,
+                reason=reason, createdPartitionIdentity=created_partition_identity,
+                partitionIdentity=partition_identity,
+                mapperBackingIdentity=(mapper_readback.get("backingIdentity")
+                                       if isinstance(mapper_readback, dict) else None),
+                mapperExpectedBackingIdentity=(mapper_readback.get("expectedBackingIdentity")
+                                               if isinstance(mapper_readback, dict) else None),
+                mapperBackingMatches=(mapper_readback.get("backingMatches")
+                                      if isinstance(mapper_readback, dict) else None),
+                mounted=(mount_readback.get("mounted") if isinstance(mount_readback, dict) else None),
+                sourceMatches=(mount_readback.get("sourceMatches")
+                               if isinstance(mount_readback, dict) else None),
+                filesystem=(mount_readback.get("fstype") if isinstance(mount_readback, dict) else None),
+                alreadyMounted=attachment_receipt.get("alreadyMounted"),
+                mountUnitStarted=(info["mountUnit"] in started_units
+                                  if isinstance(started_units, list) else False))
+        if not okay:
+            raise Refusal("agathodaimon-nas-portal-layout-attachment-guard-failed",
+                          "portal-layout-attachment-guard", receipt=attachment_receipt)
+        _apply_permissions(attachment_receipt, info)
+        _seed_portal_layout(attachment_receipt, info)
+
     try:
-        attachment = attach_role(request["role"], start_services=False)
+        attachment = attach_role(request["role"], start_services=False,
+                                 after_mount_verified=after_mount_verified)
     except Refusal as failure:
         _merge_attach_receipt(receipt, info, getattr(failure, "receipt", None))
         raise
@@ -1771,7 +2055,6 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
         _record(receipt, "mount-readback", False, rc=None, **mount_readback)
         raise Refusal("agathodaimon-nas-mount-readback-mismatch", "mount-readback")
 
-    _apply_permissions(receipt, info)
     _start_nas_services(receipt, info)
     _record(receipt, "transaction-complete", True, applications=len(info["config"]["applications"]),
             servicesStarted=list(info["servicesStarted"]))

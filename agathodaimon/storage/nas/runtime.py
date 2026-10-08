@@ -16,7 +16,7 @@ import signal
 import stat
 import subprocess
 from pathlib import Path
-from typing import Any, NoReturn, Sequence, cast
+from typing import Any, Callable, NoReturn, Sequence, cast
 
 from agathodaimon.lib.keyman_export.index import (
     MISSING_KEY,
@@ -1090,7 +1090,8 @@ def _observe_mount_and_mapper(receipt: dict[str, Any], info: dict[str, str]) -> 
     return mapper, mount
 
 
-def attach_role(role: str, *, start_services: bool = True) -> dict[str, Any]:
+def attach_role(role: str, *, start_services: bool = True,
+                after_mount_verified: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """Attach one fixed role; a correct existing mount is a strict no-op."""
     receipt = _receipt("caduceus.nas.attach.v1", role if isinstance(role, str) else None)
     try:
@@ -1170,12 +1171,14 @@ def attach_role(role: str, *, start_services: bool = True) -> dict[str, Any]:
                 or mount.get("mounted") is not True or mount.get("sourceMatches") is not True
                 or mount.get("fstype") != "xfs"):
             raise Refusal("agathodaimon-nas-mount-readback-mismatch", "mount-readback", receipt=receipt)
+        receipt["alreadyMounted"] = False
+        if after_mount_verified is not None:
+            after_mount_verified(receipt)
         if start_services:
             _start_nas_services(receipt, runtime_info)
         else:
             _observe_nas_services(receipt, runtime_info)
         receipt["servicesStarted"] = list(runtime_info.get("servicesStarted", []))
-        receipt["alreadyMounted"] = False
         receipt["ok"] = True
         receipt["firstMissingSignal"] = "none"
         _record(receipt, "attach-complete", True, servicesStarted=list(receipt["servicesStarted"]),
