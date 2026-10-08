@@ -25,7 +25,10 @@
     "storage/upload/ingress",
     "storage/vault/open",
     "storage/vault/policy",
-    "update/service"
+    "update/service",
+    "transmission/up",
+    "transmission/down",
+    "transmission/status"
   ],
   "verbs": [
     [
@@ -278,7 +281,10 @@
     "/api/v1/xenia/remove",
     "/api/v1/xenia/status",
     "/api/v1/xenia/status/:id",
-    "/api/v1/xenia/validate"
+    "/api/v1/xenia/validate",
+    "/api/v1/transmission/up",
+    "/api/v1/transmission/down",
+    "/api/v1/transmission/status"
   ],
   "administrative": {
     "bands": [
@@ -292,7 +298,9 @@
       "storage/nas/detach",
       "storage/nas/setup",
       "storage/vault/open",
-      "storage/vault/policy"
+      "storage/vault/policy",
+      "transmission/up",
+      "transmission/down"
     ],
     "verbs": [
       [
@@ -368,7 +376,9 @@
       "/api/v1/storage/nas/detach",
       "/api/v1/storage/nas/setup",
       "/api/v1/storage/vault/auto-decrypt",
-      "/api/v1/storage/vault/unlock"
+      "/api/v1/storage/vault/unlock",
+      "/api/v1/transmission/up",
+      "/api/v1/transmission/down"
     ]
   }
 }
