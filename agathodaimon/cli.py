@@ -504,6 +504,8 @@ def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | 
         return operation != "read"
     if target == "network/dns":
         return operation not in {"read", "status"}
+    if target == "network/firewall":
+        return operation not in {"observed", "list", "whitelist-get", "whitelist get"}
     if target == "network/child-device":
         return operation not in read_only and operation != "whitelist get"
     if target == "appliance/service":
