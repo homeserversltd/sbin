@@ -722,11 +722,19 @@ def portal_port() -> int:
 
 
 def unit_active(unit: str, *, step: str = "unit-state-readback") -> bool:
-    result = run([SYSTEMCTL, "is-active", unit], timeout=30, step=step)
-    state = result.stdout.decode("utf-8", "ignore").strip()
-    if result.returncode == 0 and state == "active":
+    try:
+        result = run([SYSTEMCTL, "is-active", unit], timeout=30, step=step)
+    except TransmissionError:
+        raise TransmissionError("transmission-unit-state-unreadable", step) from None
+    try:
+        state = result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise TransmissionError("transmission-unit-state-unreadable", step) from None
+    if state in {"active", "reloading"}:
         return True
-    if result.returncode in {3, 4} and state in {"inactive", "failed", "unknown", ""}:
+    if state in {"activating", "deactivating", "inactive", "failed", "unknown", "maintenance"}:
+        return False
+    if not state and result.returncode in {3, 4}:
         return False
     raise TransmissionError("transmission-unit-state-unreadable", step)
 
