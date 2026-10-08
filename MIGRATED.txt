@@ -22,6 +22,8 @@ exportNAS.sh (vault)                    sbin key export, run by homeserver-nas-o
 exportServiceSuite.sh (vault)           sbin key export
 init.sh NAS half (vault)                sbin storage/vault/open attaches the NAS through the
                                           fixed units before it runs init.sh
+transmission.py (vault)                 sbin transmission/up, down, status, vpn/hold
+src/pia/ provider inputs (vault)        sbin transmission/vpn/pia
 
 Duplicated in August 2026 by a move, so the old root path came back 2026-10-08:
 factoryFallback.sh (sbin)               agathodaimon/appliance/report/factoryFallback.sh
@@ -29,4 +31,4 @@ setupNAS.sh (sbin)                      agathodaimon/storage/disk-doors/setupNAS
 safe-nas-sync.sh (sbin)                 agathodaimon/storage/backup/safe-nas-sync.sh
 homeserver-forgejo-migrate.py (sbin)    agathodaimon/storage/backup/homeserver-forgejo-migrate.py
 
-Not migrated yet: transmission.py, src/, teardown_standalone.py (vault).
+Not migrated yet: src/ non-PIA modules, teardown_standalone.py (vault).
