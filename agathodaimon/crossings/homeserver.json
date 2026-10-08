@@ -17,6 +17,8 @@
     "settings/input",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
+    "storage/nas/attach",
+    "storage/nas/detach",
     "storage/nas/setup",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
@@ -44,6 +46,14 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "nas",
+      "attach"
+    ],
+    [
+      "nas",
+      "detach"
     ],
     [
       "nas",
@@ -244,6 +254,8 @@
     "/api/v1/staff/actuators",
     "/api/v1/storage/disk/census",
     "/api/v1/storage/disk/test/progress",
+    "/api/v1/storage/nas/attach",
+    "/api/v1/storage/nas/detach",
     "/api/v1/storage/nas/setup",
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/status",
@@ -275,6 +287,8 @@
       "network/dns",
       "settings/datetime",
       "settings/input",
+      "storage/nas/attach",
+      "storage/nas/detach",
       "storage/nas/setup",
       "storage/vault/open",
       "storage/vault/policy"
@@ -349,6 +363,8 @@
       "/api/v1/settings/input",
       "/api/v1/settings/notifications",
       "/api/v1/settings/sound",
+      "/api/v1/storage/nas/attach",
+      "/api/v1/storage/nas/detach",
       "/api/v1/storage/nas/setup",
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/storage/vault/unlock"

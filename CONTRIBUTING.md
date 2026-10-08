@@ -331,8 +331,9 @@ We aim to review PRs within **1 week**. Simple bug fixes may be reviewed faster.
 - `siteSecretKey.sh` - Encryption key management
 - `createCertBundle.sh` - Client certificate bundles
 
-- NAS setup transaction: `agathodaimon/storage/nas/setup`, exposed through Caduceus at `/api/v1/storage/nas/setup`
-- Retained disk-door operations: `wipe`, `unlock`, `mount`, and `unmount`
+- NAS provisioning transaction: `agathodaimon/storage/nas/setup`, exposed through Caduceus at `/api/v1/storage/nas/setup`
+- Fixed NAS systemd-unit lifecycle: attach and detach through Caduceus at `/api/v1/storage/nas/attach` and `/api/v1/storage/nas/detach`
+- Disk doors provide wipe-only disk utility
 
 **Hardware Testing:**
 - `harddrive_test.sh` - Drive testing and validation

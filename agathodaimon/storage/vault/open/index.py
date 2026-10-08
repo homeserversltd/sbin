@@ -14,9 +14,22 @@ import agathodaimon.lib.sacred_credential.index as sacred_credential
 _SCHEMA = "caduceus.vault.keyman-open.v1"
 _SERVICE = "homeconsole-vault"
 _CRYPTSETUP = "/usr/sbin/cryptsetup"
+_BASH = "/usr/bin/bash"
 _DEVICE = re.compile(r"^/dev/[A-Za-z0-9._-]+$")
 _MAPPER = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _command_argv(argv: Sequence[str]) -> list[str]:
+    from agathodaimon.storage.nas.runtime import command_argv
+
+    return command_argv(argv)
+
+
+def _runtime_path(path: str) -> str:
+    from agathodaimon.storage.nas.runtime import runtime_path
+
+    return str(runtime_path(path))
 
 
 def _receipt(ok: bool, present: bool, signal: str) -> dict[str, Any]:
@@ -82,7 +95,7 @@ def open_from_seated_record(payload: object, *, device_fd: int | None = None) ->
 
 def _cryptsetup_open(mapper: str, device_fd: int, material: bytearray) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
-        [
+        _command_argv([
             _CRYPTSETUP,
             "open",
             "--batch-mode",
@@ -90,7 +103,7 @@ def _cryptsetup_open(mapper: str, device_fd: int, material: bytearray) -> subpro
             "-",
             f"/proc/self/fd/{device_fd}",
             mapper,
-        ],
+        ]),
         input=bytes(material),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -298,7 +311,7 @@ def _mounted_source_state(parts: tuple[str, ...], mapper: str) -> bool | None:
 
 
 def _run_vault_init_rite() -> dict[str, Any]:
-    init_script = "/vault/scripts/init.sh"
+    init_script = _runtime_path("/vault/scripts/init.sh")
     try:
         os.lstat(init_script)
     except FileNotFoundError:
@@ -307,13 +320,16 @@ def _run_vault_init_rite() -> dict[str, Any]:
         return {"result": "failed", "exit_code": None}
 
     try:
+        argv = _command_argv([_BASH, init_script])
+        path = (os.path.dirname(argv[0]) if os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
+                else "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
         result = subprocess.run(
-            [init_script],
+            argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
-            env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+            env={"PATH": path},
         )
     except (OSError, subprocess.SubprocessError):
         return {"result": "failed", "exit_code": None}
@@ -322,10 +338,55 @@ def _run_vault_init_rite() -> dict[str, Any]:
     return {"result": "ran"}
 
 
+def _partlabel_is_absent(failure: Exception) -> bool:
+    return getattr(failure, "signal_name", None) == "agathodaimon-nas-partlabel-absent"
+
+
+def _failed_role_receipt(role: str, failure: Exception) -> dict[str, Any]:
+    failed: dict[str, Any] = {
+        "role": role,
+        "result": "failed",
+        "signal": getattr(failure, "signal_name", "agathodaimon-nas-attach-failed"),
+        "step": getattr(failure, "step", None),
+        "returnCode": getattr(failure, "return_code", None),
+    }
+    partial = getattr(failure, "receipt", None)
+    if partial is None:
+        partial = getattr(failure, "partial_receipt", None)
+    if partial is not None:
+        failed["receipt"] = partial
+    return failed
+
+
+def _attach_nas_roles() -> tuple[dict[str, Any], Exception | None]:
+    from agathodaimon.storage.nas.runtime import ROLE, Refusal, attach_role, role_partition
+
+    roles: list[dict[str, Any]] = []
+    for role in ROLE:
+        try:
+            role_partition(role)
+        except Refusal as failure:
+            if _partlabel_is_absent(failure):
+                roles.append({"role": role, "result": "skipped", "reason": "partlabel-absent",
+                              "signal": failure.signal_name})
+                continue
+            return {"result": "failed", "roles": roles + [_failed_role_receipt(role, failure)]}, failure
+        try:
+            receipt = attach_role(role)
+        except Refusal as failure:
+            if _partlabel_is_absent(failure):
+                roles.append({"role": role, "result": "skipped", "reason": "partlabel-absent",
+                              "signal": failure.signal_name})
+                continue
+            return {"result": "failed", "roles": roles + [_failed_role_receipt(role, failure)]}, failure
+        roles.append({"role": role, "result": "attached", "receipt": receipt})
+    return {"result": "complete", "roles": roles}, None
+
+
 def _close_mapper(mapper: str) -> bool:
     try:
         result = subprocess.run(
-            [_CRYPTSETUP, "close", mapper],
+            _command_argv([_CRYPTSETUP, "close", mapper]),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -460,7 +521,7 @@ def _unlock(
         mount_started = True
         try:
             mounted = subprocess.run(
-                ["/usr/bin/mount", "--", f"/dev/mapper/{mapper}", f"/proc/self/fd/{mount_fd}"],
+                _command_argv(["/usr/bin/mount", "--", f"/dev/mapper/{mapper}", f"/proc/self/fd/{mount_fd}"]),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -490,10 +551,27 @@ def _unlock(
 
         if mountpoint == "/vault":
             try:
+                attachments, failure = _attach_nas_roles()
+            except Exception as error:
+                failure = error
+                attachments = {"result": "failed", "roles": [_failed_role_receipt("runtime", error)]}
+            if failure is not None:
+                receipt = _unlock_receipt(
+                    False,
+                    present,
+                    getattr(failure, "signal_name", "agathodaimon-nas-attach-failed"),
+                    already_open=already_open,
+                    mounted=True,
+                    mapper_closed=False,
+                )
+                receipt["attachments"] = attachments
+                return receipt
+            try:
                 rite = _run_vault_init_rite()
             except Exception:
                 # The mount is already established; never close its mapper on rite failure.
                 rite = {"result": "failed", "exit_code": None}
+            rite["nas"] = attachments
         else:
             rite = {"result": "not_applicable", "reason": "mountpoint-not-vault"}
         if rite["result"] == "failed":

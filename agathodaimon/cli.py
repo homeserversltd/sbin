@@ -447,6 +447,9 @@ def _administrative_candidate(target: str | None) -> bool:
             "network/child-device",
             "network/dns",
             "portals/service-control",
+            "storage/nas/attach",
+            "storage/nas/detach",
+            "storage/nas/setup",
             "storage/vault/open",
             "storage/vault/policy",
         }
