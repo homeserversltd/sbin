@@ -2,7 +2,12 @@
   "children": [],
   "envelope": {
     "stdin": "json",
-    "keys": ["metadata", "wipe"],
-    "actions": ["wipe"]
+    "keys": [
+      "actuator",
+      "metadata"
+    ],
+    "actions": [
+      "wipe"
+    ]
   }
 }

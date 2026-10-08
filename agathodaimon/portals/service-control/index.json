@@ -2,7 +2,21 @@
   "children": [],
   "envelope": {
     "stdin": "json",
-    "keys": ["metadata", "action"],
-    "actions": ["ssh-password-authentication-status", "ssh-password-authentication-toggle", "ssh-service-status", "samba-service-status", "ssh-service-toggle", "samba-service-toggle", "portal-service", "system-restart", "system-shutdown", "website-hard-reset"]
+    "keys": [
+      "actuator",
+      "metadata"
+    ],
+    "actions": [
+      "ssh-password-authentication-status",
+      "ssh-password-authentication-toggle",
+      "ssh-service-status",
+      "samba-service-status",
+      "ssh-service-toggle",
+      "samba-service-toggle",
+      "portal-service",
+      "system-restart",
+      "system-shutdown",
+      "website-hard-reset"
+    ]
   }
 }
