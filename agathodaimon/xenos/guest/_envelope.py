@@ -49,7 +49,8 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
         for candidate in candidates: payload.update(_selected(candidate, names))
     return Request(value, True, payload, raw, value["intent_id"], value["transition"], value["version"], value["timestamp"])
 def _outcome(receipt: Mapping[str, Any]) -> str:
-    return "failed" if receipt.get("ok") is False or receipt.get("verified") is False or receipt.get("firstMissingSignal") else "ok"
+    first_missing_signal = receipt.get("firstMissingSignal")
+    return "failed" if receipt.get("ok") is False or receipt.get("verified") is False or (first_missing_signal and first_missing_signal != "none") else "ok"
 def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     if not request.envelope: return receipt
     result = dict(receipt); prior = request.value.get("stamps"); prior = list(prior) if isinstance(prior, list) else []

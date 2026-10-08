@@ -1924,20 +1924,6 @@ def _envelope_refusal(error: EnvelopeError) -> Refusal:
     return Refusal("agathodaimon-nas-envelope-invalid", "request-envelope")
 
 
-def _attach_success_outcome(receipt: dict[str, Any], envelope_request: Any) -> dict[str, Any]:
-    result = attach_envelope(receipt, envelope_request)
-    if (envelope_request.envelope and result.get("ok") is True
-            and result.get("firstMissingSignal") == "none"):
-        if isinstance(result.get("staff"), dict):
-            result["staff"]["outcome"] = "ok"
-        if isinstance(result.get("stamps"), list) and result["stamps"]:
-            result["stamps"][-1]["outcome"] = "ok"
-        carried = result.get("envelope")
-        if isinstance(carried, dict) and isinstance(carried.get("stamps"), list) and carried["stamps"]:
-            carried["stamps"][-1]["outcome"] = "ok"
-    return result
-
-
 def dispatch(value: Any) -> dict[str, Any]:
     try:
         if all(hasattr(value, field) for field in ("value", "payload", "envelope")):
@@ -1958,7 +1944,7 @@ def dispatch(value: Any) -> dict[str, Any]:
                 "role": None, "device": None, "partition": None, "partlabel": None, "mapper": None,
                 "mountpoint": None, "steps": [{"step": failure.step, "ok": False,
                 "readback": {"rc": None}}], "servicesStarted": [], "rolledBack": False, "rollbackSteps": []}
-    return _attach_success_outcome(_perform(request), envelope_request)
+    return attach_envelope(_perform(request), envelope_request)
 
 
 def _handle_signal(signum: int, _frame: Any) -> None:
