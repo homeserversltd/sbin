@@ -1,0 +1,44 @@
+{
+  "face": "index.py",
+  "children": [],
+  "verbs": [
+    {
+      "name": "trust-install",
+      "arguments": [
+        {
+          "name": "bundle",
+          "required": true
+        }
+      ],
+      "flags": [
+        {
+          "name": "--platform",
+          "type": "string",
+          "default": "linux",
+          "choices": [
+            "android",
+            "chromeos",
+            "linux",
+            "macos",
+            "windows"
+          ]
+        },
+        {
+          "name": "--dry-run",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "--fingerprint",
+          "type": "string",
+          "required": false
+        },
+        {
+          "name": "--renew-ring",
+          "type": "boolean",
+          "default": false
+        }
+      ]
+    }
+  ]
+}

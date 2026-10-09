@@ -119,7 +119,7 @@ def _generation() -> int:
         return 0
     try:
         return int(json.loads(path.read_text()).get(SCHEMA, {}).get("generation", 0))
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (OSError, json.JSONDecodeError, ValueError, TypeError, AttributeError):
         return 0
 
 
@@ -342,6 +342,32 @@ def _assert_ca_only(path: Path, encoding: str = "pem") -> str:
     return _fingerprint(path, encoding)
 
 
+def _assert_trust_install_ca_only(path: Path, encoding: str = "pem") -> str:
+    """Validate the whole trust-install PEM, not just OpenSSL's first cert."""
+    if encoding == "pem":
+        content = path.read_bytes()
+        if b"PRIVATE KEY" in content:
+            raise RuntimeError("agathodaimon-cert-private-key-leaked")
+        stripped = content.strip()
+        begin = b"-----BEGIN CERTIFICATE-----"
+        end = b"-----END CERTIFICATE-----"
+        if (
+            stripped.count(begin) != 1
+            or stripped.count(end) != 1
+            or not stripped.startswith(begin)
+            or not stripped.endswith(end)
+        ):
+            raise ValueError("agathodaimon-cert-bundle-not-single-ca")
+        encoded = b"".join(stripped[len(begin):-len(end)].split())
+        if not encoded:
+            raise ValueError("agathodaimon-cert-bundle-not-single-ca")
+        try:
+            base64.b64decode(encoded, validate=True)
+        except ValueError:
+            raise ValueError("agathodaimon-cert-bundle-not-single-ca") from None
+    return _assert_ca_only(path, encoding)
+
+
 def bundle_export(platform: str = "linux", *, dry_run: bool = False) -> dict[str, Any]:
     metadata = _bundle_metadata(platform)
     root = ensure_root(dry_run=dry_run)
@@ -384,31 +410,366 @@ def _expected_root_fingerprint() -> str:
     raise RuntimeError("agathodaimon-house-ca-root-fingerprint-missing")
 
 
-def trust_install(bundle: str, platform: str = "linux", *, dry_run: bool = False) -> dict[str, Any]:
+def _trust_store_layout() -> tuple[bool, Path, Path]:
+    """Return rooted platform detection, anchor directory, and system bundle."""
+    root = _root()
+    arch_anchors = root / "etc/ca-certificates/trust-source/anchors"
+    arch = arch_anchors.is_dir()
+    override = os.environ.get("CADUCEUS_TRUST_STORE")
+    store = Path(override) if override else (
+        arch_anchors if arch else root / "usr/local/share/ca-certificates"
+    )
+    bundle_override = os.environ.get("CADUCEUS_SYSTEM_CA_BUNDLE")
+    if bundle_override:
+        system_bundle = Path(bundle_override)
+    else:
+        system_bundle = root / "etc/ssl/certs/ca-certificates.crt"
+        arch_extracted = root / "etc/ca-certificates/extracted/tls-ca-bundle.pem"
+        if arch and not system_bundle.is_file() and arch_extracted.is_file():
+            system_bundle = arch_extracted
+    return arch, store, system_bundle
+
+
+def _trust_refresh_command(arch: bool, store: Path) -> tuple[str, list[str], str | None]:
+    """Resolve a safe refresher, preferring PATH shims for rooted witnesses."""
+    root = _root()
+    rooted = root.resolve() != Path("/").resolve()
+    program = "update-ca-trust" if arch else "update-ca-certificates"
+    arguments: list[str] = ["extract"] if arch else []
+    if not arch:
+        if rooted:
+            arguments.extend(["--sysroot", str(root)])
+        default_store = root / "usr/local/share/ca-certificates"
+        if rooted or store != default_store:
+            arguments.extend(["--localcertsdir", str(store)])
+
+    executable = shutil.which(program)
+    if executable:
+        resolved = Path(executable).resolve()
+        host_tool_dirs = {Path(path).resolve() for path in ("/usr/bin", "/usr/sbin", "/bin", "/sbin")}
+        # Arch's updater has no portable sysroot mode.  A rooted run must use
+        # the explicitly supplied PATH stand-in, never the host updater.
+        if arch and rooted and resolved.parent in host_tool_dirs:
+            executable = None
+        else:
+            executable = str(resolved)
+    if not executable and (not (arch and rooted)):
+        for directory in ("/usr/sbin", "/usr/bin", "/sbin", "/bin"):
+            candidate = Path(directory) / program
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                executable = str(candidate)
+                break
+    command = [executable or program, *arguments]
+    return program, command, executable
+
+
+def _trust_bundle_readback(system_bundle: Path, anchor: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["openssl", "verify", "-CAfile", str(system_bundle), str(anchor)],
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+def _trust_file_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _trust_refusal(signal: str, *, changed: bool = False, **fields: Any) -> dict[str, Any]:
+    return _receipt(
+        "trust_install", changed=changed, ok=False,
+        firstMissingSignal=signal, proof="trust-install-refusal", **fields,
+    )
+
+
+def trust_install(
+    bundle: str,
+    platform: str = "linux",
+    *,
+    dry_run: bool = False,
+    fingerprint: str | None = None,
+    renew_ring: bool = False,
+) -> dict[str, Any]:
+    """Install a CA-only first-contact bundle into this platform's trust store."""
     metadata = _bundle_metadata(platform)
     source = Path(bundle)
     if not source.is_file():
-        raise ValueError("agathodaimon-cert-bundle-missing")
-    supplied = _assert_ca_only(source, metadata["encoding"])
-    expected = _expected_root_fingerprint()
-    if supplied != expected:
-        raise ValueError("agathodaimon-cert-bundle-fingerprint-mismatch")
-    store = _path("CADUCEUS_TRUST_STORE", "/usr/local/share/ca-certificates")
+        return _trust_refusal(
+            "agathodaimon-cert-bundle-missing", platform=platform,
+            reason="bundle-missing", bundle_installed=False,
+        )
+    try:
+        supplied = _assert_trust_install_ca_only(source, metadata["encoding"])
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        return _trust_refusal(
+            str(error) or "agathodaimon-cert-bundle-invalid", platform=platform,
+            reason="bundle-invalid", bundle_fingerprint=None, bundle_installed=False,
+        )
+
+    # The caller's fingerprint attests to the bundle; it is not authority to
+    # replace a root already pinned by this body's ca.pem or durable ledger.
+    if fingerprint is not None and fingerprint != supplied:
+        return _trust_refusal(
+            "agathodaimon-cert-bundle-fingerprint-mismatch", platform=platform,
+            reason="caller-fingerprint-mismatch", pin_decision="caller-fingerprint",
+            supplied_fingerprint=supplied, caller_fingerprint=fingerprint,
+            bundle_installed=False,
+        )
+
+    ca = cert_dir() / "ca.pem"
+    local_pin: str | None = None
+    if ca.is_file():
+        try:
+            local_pin = _assert_ca_only(ca)
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+            return _trust_refusal(
+                str(error) or "agathodaimon-house-ca-root-invalid", platform=platform,
+                reason="local-root-invalid", pin_decision="local-ca.pem",
+                supplied_fingerprint=supplied, bundle_installed=False,
+            )
+
+    state = state_path()
+    existing: dict[str, Any] = {}
+    if state.is_file():
+        try:
+            loaded = json.loads(state.read_text())
+        except (OSError, json.JSONDecodeError) as error:
+            return _trust_refusal(
+                "agathodaimon-state-invalid", platform=platform,
+                reason="ledger-invalid", supplied_fingerprint=supplied,
+                bundle_installed=False, detail=str(error),
+            )
+        if not isinstance(loaded, dict):
+            return _trust_refusal(
+                "agathodaimon-state-invalid", platform=platform,
+                reason="ledger-invalid", supplied_fingerprint=supplied,
+                bundle_installed=False,
+            )
+        existing = loaded
+    ledger = existing.get(SCHEMA, {})
+    if not isinstance(ledger, dict):
+        return _trust_refusal(
+            "agathodaimon-state-invalid", platform=platform,
+            reason="ledger-invalid", supplied_fingerprint=supplied,
+            bundle_installed=False,
+        )
+    ledger_pin = ledger.get("root_fingerprint")
+    if ledger_pin is not None and ledger_pin != "" and not isinstance(ledger_pin, str):
+        return _trust_refusal(
+            "agathodaimon-state-invalid", platform=platform,
+            reason="ledger-invalid", supplied_fingerprint=supplied,
+            bundle_installed=False,
+        )
+    if not ledger_pin:
+        ledger_pin = None
+
+    pin_sources = [
+        name for name, value in (("local-ca.pem", local_pin), ("state-ledger", ledger_pin))
+        if value is not None
+    ]
+    pin_decision = "+".join(pin_sources) or (
+        "caller-fingerprint" if fingerprint is not None else "missing"
+    )
+    if local_pin is not None and supplied != local_pin:
+        return _trust_refusal(
+            "agathodaimon-cert-bundle-fingerprint-mismatch", platform=platform,
+            reason="local-root-pinned", pin_decision=pin_decision,
+            pin_sources=pin_sources, ca_fingerprint=local_pin,
+            bundle_fingerprint=supplied, bundle_installed=False,
+        )
+    if local_pin is None and ledger_pin is None and fingerprint is None:
+        return _trust_refusal(
+            "agathodaimon-house-ca-root-fingerprint-missing", platform=platform,
+            reason="pin-missing", pin_decision="missing", pin_sources=[],
+            bundle_fingerprint=supplied, bundle_installed=False,
+        )
+
+    ring_changed = ledger_pin is not None and supplied != ledger_pin
+    if ring_changed and not renew_ring:
+        return _trust_refusal(
+            "bundle_refused", platform=platform, reason="ring-changed",
+            pin_decision=pin_decision, pin_sources=pin_sources,
+            ca_fingerprint=ledger_pin, bundle_fingerprint=supplied,
+            bundle_installed=False,
+        )
+
+    if local_pin is not None:
+        pin_decision = "local-ca.pem" + ("+state-ledger" if ledger_pin else "")
+    elif ledger_pin is not None:
+        pin_decision = "state-ledger"
+    else:
+        pin_decision = "caller-fingerprint"
+    first_contact = local_pin is None and ledger_pin is None
+    reason = "renewed" if ring_changed and renew_ring else (
+        "first-contact" if first_contact else "converged"
+    )
+    root_fingerprint = supplied
+
+    arch, store, system_bundle = _trust_store_layout()
     target = store / "homeserver-house-ca.crt"
-    already = target.is_file() and _assert_ca_only(target) == expected
+    try:
+        anchor_fingerprint = _assert_ca_only(target) if target.is_file() else None
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+        anchor_fingerprint = None
+    anchor_current = anchor_fingerprint == root_fingerprint
+    store_current = anchor_current and _trust_bundle_readback(system_bundle, target)
+    state_current = (
+        ledger_pin == root_fingerprint and ledger.get("bundle_installed") is True
+    )
+    program, refresh_command, executable = _trust_refresh_command(arch, store)
+    refresh_needed = not store_current
+    already_current = state_current and anchor_current and store_current and not ring_changed
+    if already_current:
+        reason = "already-current"
+
     if dry_run:
-        return _receipt("trust_install", changed=False, dry_run=True, platform=platform, ca_fingerprint=expected, bundle_installed=already, plan=["verify-bundle-structure", "verify-root-fingerprint", "trust-store-readback"])
-    if not already:
-        store.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(".new")
-        shutil.copyfile(source, temporary)
-        temporary.chmod(0o644)
-        os.replace(temporary, target)
-    installed = target.is_file() and _assert_ca_only(target) == expected
-    if not installed:
-        raise RuntimeError("agathodaimon-cert-trust-store-readback-failed")
-    committed = state_commit({"root_fingerprint": expected, "bundle_installed": True})
-    return _receipt("trust_install", changed=not already, platform=platform, ca_fingerprint=expected, bundle_installed=True, state_generation=committed["state_generation"], state_commit=committed, proof="trust-store-readback")
+        return _receipt(
+            "trust_install", changed=False, dry_run=True, platform=platform,
+            ca_fingerprint=root_fingerprint, bundle_fingerprint=supplied,
+            bundle_installed=store_current, reason=reason,
+            pin_decision=pin_decision, pin_sources=pin_sources,
+            anchor_path=str(target), system_bundle=str(system_bundle),
+            refresh_program=program, refresh_command=refresh_command,
+            refresh_available=executable is not None,
+            would_write_anchor=not anchor_current,
+            would_refresh=refresh_needed,
+            would_commit_state=not state_current,
+            plan=["validate-ca-only-bundle", "resolve-root-pin", "install-platform-anchor", "refresh-system-trust", "verify-system-bundle", "record-root-state"],
+            proof="trust-install-plan-only",
+        )
+
+    try:
+        # Validate the prospective state transition before changing the anchor.
+        _validated_state(
+            {"root_fingerprint": root_fingerprint, "bundle_installed": True},
+            ledger,
+        )
+    except (ValueError, TypeError, RuntimeError) as error:
+        return _trust_refusal(
+            str(error) or "agathodaimon-state-invalid", platform=platform,
+            reason="ledger-transition-refused", pin_decision=pin_decision,
+            pin_sources=pin_sources, ca_fingerprint=root_fingerprint,
+            bundle_installed=False,
+        )
+
+    if refresh_needed and executable is None:
+        return _trust_refusal(
+            "agathodaimon-cert-trust-store-refresh-failed", platform=platform,
+            reason=reason, pin_decision=pin_decision, pin_sources=pin_sources,
+            ca_fingerprint=root_fingerprint, bundle_installed=False,
+            anchor_path=str(target), system_bundle=str(system_bundle),
+            store_refresh={"program": program, "exit": None, "command": refresh_command, "error": "program-not-found"},
+        )
+
+    anchor_changed = False
+    if not anchor_current:
+        store_existed = store.exists()
+        try:
+            store.mkdir(parents=True, exist_ok=True)
+            anchor_changed = not store_existed
+            with tempfile.NamedTemporaryFile(dir=store, prefix=".homeserver-house-ca.", suffix=".new", delete=False) as stream:
+                temporary = Path(stream.name)
+            try:
+                if metadata["encoding"] == "der":
+                    _run(["openssl", "x509", "-inform", "DER", "-in", str(source), "-out", str(temporary)])
+                else:
+                    shutil.copyfile(source, temporary)
+                temporary.chmod(0o644)
+                if _assert_ca_only(temporary) != root_fingerprint:
+                    raise RuntimeError("agathodaimon-cert-bundle-fingerprint-mismatch")
+                os.replace(temporary, target)
+                anchor_changed = True
+            finally:
+                temporary.unlink(missing_ok=True)
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+            return _trust_refusal(
+                str(error) or "agathodaimon-cert-trust-store-write-failed",
+                changed=anchor_changed or (not store_existed and store.exists()), platform=platform, reason=reason,
+                pin_decision=pin_decision, pin_sources=pin_sources,
+                ca_fingerprint=root_fingerprint, bundle_installed=False,
+                anchor_path=str(target), system_bundle=str(system_bundle),
+            )
+
+    store_refresh: dict[str, Any] = {
+        "program": program, "exit": None, "command": refresh_command,
+        "attempted": False,
+    }
+    system_before = _trust_file_bytes(system_bundle)
+    if refresh_needed:
+        store_refresh["attempted"] = True
+        try:
+            refreshed = subprocess.run(
+                refresh_command, check=False, text=True, capture_output=True,
+            )
+            store_refresh["exit"] = refreshed.returncode
+        except OSError as error:
+            store_refresh["error"] = str(error)
+        system_bundle = _trust_store_layout()[2]
+        system_after = _trust_file_bytes(system_bundle)
+        changed = anchor_changed or system_before != system_after
+        if store_refresh["exit"] != 0:
+            return _trust_refusal(
+                "agathodaimon-cert-trust-store-refresh-failed", changed=changed,
+                platform=platform, reason=reason, pin_decision=pin_decision,
+                pin_sources=pin_sources, ca_fingerprint=root_fingerprint,
+                bundle_installed=False, anchor_path=str(target),
+                system_bundle=str(system_bundle), store_refresh=store_refresh,
+            )
+    else:
+        system_after = system_before
+
+    try:
+        installed_fingerprint = _assert_ca_only(target) if target.is_file() else None
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+        installed_fingerprint = None
+    verified = (
+        installed_fingerprint == root_fingerprint
+        and _trust_bundle_readback(system_bundle, target)
+    )
+    if not verified:
+        return _trust_refusal(
+            "agathodaimon-cert-trust-store-readback-failed",
+            changed=anchor_changed or system_before != system_after,
+            platform=platform, reason=reason, pin_decision=pin_decision,
+            pin_sources=pin_sources, ca_fingerprint=root_fingerprint,
+            bundle_installed=False, anchor_path=str(target),
+            system_bundle=str(system_bundle), store_refresh=store_refresh,
+        )
+
+    committed: dict[str, Any] | None = None
+    if not state_current:
+        try:
+            committed = state_commit(
+                {"root_fingerprint": root_fingerprint, "bundle_installed": True}
+            )
+        except (OSError, ValueError, RuntimeError, TypeError) as error:
+            return _trust_refusal(
+                str(error) or "agathodaimon-state-commit-failed",
+                changed=anchor_changed or system_before != system_after,
+                platform=platform, reason=reason, pin_decision=pin_decision,
+                pin_sources=pin_sources, ca_fingerprint=root_fingerprint,
+                bundle_installed=True, anchor_path=str(target),
+                system_bundle=str(system_bundle), store_refresh=store_refresh,
+            )
+
+    changed = anchor_changed or system_before != system_after or committed is not None
+    return _receipt(
+        "trust_install", changed=changed, platform=platform,
+        ca_fingerprint=root_fingerprint, bundle_fingerprint=supplied,
+        bundle_installed=True, reason=reason, pin_decision=pin_decision,
+        pin_sources=pin_sources, anchor_path=str(target),
+        system_bundle=str(system_bundle), store_refresh=store_refresh,
+        state_generation=(committed["state_generation"] if committed else _generation()),
+        state_commit=committed, proof="anchor-and-system-bundle-readback",
+    )
 
 
 def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, *, dry_run: bool = False) -> dict[str, Any]:
@@ -554,7 +915,8 @@ def status() -> dict[str, Any]:
             value["portals"] = ledger.get("portals", [])
             value["constituents"] = ledger.get("constituents", [])
     if role != "homeserver" and not ledger:
-        target = _path("CADUCEUS_TRUST_STORE", "/usr/local/share/ca-certificates") / "homeserver-house-ca.crt"
+        _, store, _ = _trust_store_layout()
+        target = store / "homeserver-house-ca.crt"
         try:
             value["bundle_installed"] = target.is_file() and bool(_assert_ca_only(target))
         except (OSError, ValueError, subprocess.CalledProcessError):
@@ -592,7 +954,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     legacy_bundle = sub.add_parser("bundle"); legacy_bundle.add_argument("platform", nargs="?", default="linux", choices=sorted(PLATFORMS))
     bundle = sub.add_parser("bundle-export"); bundle.add_argument("platform", choices=sorted(PLATFORMS)); bundle.add_argument("--dry-run", action="store_true")
     reader = sub.add_parser("bundle-read"); reader.add_argument("platform", choices=sorted(PLATFORMS))
-    trust = sub.add_parser("trust-install"); trust.add_argument("bundle"); trust.add_argument("--platform", default="linux", choices=sorted(PLATFORMS)); trust.add_argument("--dry-run", action="store_true")
+    trust = sub.add_parser("trust-install"); trust.add_argument("bundle"); trust.add_argument("--platform", default="linux", choices=sorted(PLATFORMS)); trust.add_argument("--dry-run", action="store_true"); trust.add_argument("--fingerprint"); trust.add_argument("--renew-ring", action="store_true")
     apply = sub.add_parser("apply-nginx"); apply.add_argument("portal"); apply.add_argument("upstream"); apply.add_argument("certificate"); apply.add_argument("key_path"); apply.add_argument("--dry-run", action="store_true")
     lock = sub.add_parser("constituent-lock"); lock.add_argument("portal"); lock.add_argument("lan_ip"); lock.add_argument("--dry-run", action="store_true")
     commit = sub.add_parser("state-commit"); commit.add_argument("--dry-run", action="store_true")
@@ -606,7 +968,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.cmd == "bundle": return _emit(lambda: bundle_export(args.platform))
     if args.cmd == "bundle-export": return _emit(lambda: bundle_export(args.platform, dry_run=args.dry_run))
     if args.cmd == "bundle-read": return _emit(lambda: bundle_read(args.platform))
-    if args.cmd == "trust-install": return _emit(lambda: trust_install(args.bundle, args.platform, dry_run=args.dry_run))
+    if args.cmd == "trust-install": return _emit(lambda: trust_install(args.bundle, args.platform, dry_run=args.dry_run, fingerprint=args.fingerprint, renew_ring=args.renew_ring))
     if args.cmd == "apply-nginx": return _emit(lambda: apply_nginx(args.portal, args.upstream, args.certificate, args.key_path, dry_run=args.dry_run))
     if args.cmd == "constituent-lock": return _emit(lambda: constituent_lock(args.portal, args.lan_ip, dry_run=args.dry_run))
     if args.cmd == "state-commit": return _emit(lambda: state_commit(_json_stdin(), dry_run=args.dry_run))
