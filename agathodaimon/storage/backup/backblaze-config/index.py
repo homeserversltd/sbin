@@ -42,8 +42,12 @@ def write(d):
   except FileNotFoundError: pass
   raise
 def dispatch(e):
- if set(e)!={"actuator","metadata"} or e.get("actuator")!="backblaze-config" or not isinstance(e.get("metadata"),dict): raise Refusal("shape","invalid Backblaze staff envelope")
- k,a,b,p,paths,s=parse(e["metadata"]); d=load()
+ body=e.get("payload")
+ actuator=e["actuator"] if "actuator" in e else body.get("actuator") if isinstance(body,dict) else None
+ if actuator!="backblaze-config": raise Refusal("shape","actuator must be backblaze-config")
+ metadata=e["metadata"] if "metadata" in e else body.get("metadata") if isinstance(body,dict) else None
+ if not isinstance(metadata,dict): raise Refusal("shape","invalid Backblaze staff envelope")
+ k,a,b,p,paths,s=parse(metadata); d=load()
  tabs=d.get("tabs",{})
  if not isinstance(tabs,dict): raise Refusal("config","tabs must be a JSON object")
  backblaze=tabs.get("backblaze",{})
@@ -62,7 +66,7 @@ def dispatch(e):
  try: write(d)
  except OSError as e: raise Refusal("write_config",f"unable to write appliance config: {e}")
  return {"schema":SCHEMA,"ok":True,"locked":True,"bucket":b,"keyman_service":s,"mutationPerformed":True}
-def main():
+def main(argv=None):
  try:
   raw=sys.stdin.buffer.read(16385)
   if len(raw)>16384: raise Refusal("shape","request is too large")

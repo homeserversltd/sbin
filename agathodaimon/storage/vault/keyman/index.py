@@ -339,9 +339,11 @@ def key_status(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
 
 
 def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
-    if set(payload) - {"actuator", "metadata"}:
+    body = payload.get("payload")
+    actuator = payload["actuator"] if "actuator" in payload else body.get("actuator") if isinstance(body, dict) else None
+    if actuator != "keyman-doors":
         raise Refusal("agathodaimon-keyman-envelope-invalid")
-    metadata = payload.get("metadata")
+    metadata = payload["metadata"] if "metadata" in payload else body.get("metadata") if isinstance(body, dict) else None
     if not isinstance(metadata, dict):
         raise Refusal("agathodaimon-keyman-request-invalid")
     action = metadata.get("action")

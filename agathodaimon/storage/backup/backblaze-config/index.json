@@ -3,6 +3,7 @@
   "envelope": {
     "stdin": "json",
     "keys": ["actuator", "metadata"],
-    "actions": []
+    "actions": [],
+    "unknown_fields": "skipped"
   }
 }

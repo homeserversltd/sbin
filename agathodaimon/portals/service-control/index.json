@@ -17,6 +17,7 @@
       "system-restart",
       "system-shutdown",
       "website-hard-reset"
-    ]
+    ],
+    "unknown_fields": "skipped"
   }
 }

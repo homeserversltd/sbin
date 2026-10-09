@@ -67,6 +67,10 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
     original_stdin = sys.stdin
     try:
         sys.stdin = _EnvelopeStdin(raw_envelope if raw_envelope is not None else json.dumps(envelope))
+        payload = envelope.get("payload")
+        args = payload.get("args") if isinstance(payload, dict) else None
+        if isinstance(args, list) and all(isinstance(arg, str) for arg in args):
+            return int(fn(list(args)) or 0)
         try:
             return int(fn([]) or 0)
         except SystemExit:

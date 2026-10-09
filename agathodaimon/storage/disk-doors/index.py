@@ -78,9 +78,13 @@ def wipe_disk(payload: dict[str, Any], planned: bool) -> dict[str, Any]:
 
 
 def dispatch(value: dict[str, Any]) -> dict[str, Any]:
-    if set(value) - {"actuator", "metadata"} or not isinstance(value.get("metadata"), dict):
+    body = value.get("payload")
+    actuator = value["actuator"] if "actuator" in value else body.get("actuator") if isinstance(body, dict) else None
+    if actuator != "disk-doors":
         raise Refusal("agathodaimon-disk-request-invalid")
-    payload = value["metadata"]
+    payload = value["metadata"] if "metadata" in value else body.get("metadata") if isinstance(body, dict) else None
+    if not isinstance(payload, dict):
+        raise Refusal("agathodaimon-disk-request-invalid")
     action = payload.get("action")
     planned = payload.get("dryRun", payload.get("planned", False))
     if not isinstance(planned, bool):

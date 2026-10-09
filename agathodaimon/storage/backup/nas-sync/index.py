@@ -272,8 +272,13 @@ def schedule_update(p,planned,runner=command):
  except Exception as e: return finish(receipt("sync-schedule-update","failed",mutation=mutation,reason="schedule-update-failed:"+bounded(e),**common))
 
 def dispatch(x):
- if not isinstance(x,dict) or set(x)-{"actuator","metadata"} or x.get("actuator")!="nas-sync" or not isinstance(x.get("metadata"),dict): raise Refusal("agathodaimon-nas-request-invalid")
- p=x["metadata"]; action=p.get("action"); planned=p.get("dryRun",p.get("planned",False))
+ if not isinstance(x,dict): raise Refusal("agathodaimon-nas-request-invalid")
+ body=x.get("payload")
+ actuator=x["actuator"] if "actuator" in x else body.get("actuator") if isinstance(body,dict) else None
+ if actuator!="nas-sync": raise Refusal("agathodaimon-nas-request-invalid")
+ metadata=x["metadata"] if "metadata" in x else body.get("metadata") if isinstance(body,dict) else None
+ if not isinstance(metadata,dict): raise Refusal("agathodaimon-nas-request-invalid")
+ p=metadata; action=p.get("action"); planned=p.get("dryRun",p.get("planned",False))
  if type(planned) is not bool: raise Refusal("agathodaimon-nas-planned-invalid")
  allowed={"sync-now":{"action","dryRun","planned"},"sync-job-status":{"action","dryRun","planned","jobHandle","handle"},"sync-schedule":{"action","dryRun","planned"},"sync-schedule-update":{"action","dryRun","planned","schedule"}}
  if action not in allowed: raise Refusal("agathodaimon-nas-action-invalid")

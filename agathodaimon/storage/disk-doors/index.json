@@ -8,6 +8,7 @@
     ],
     "actions": [
       "wipe"
-    ]
+    ],
+    "unknown_fields": "skipped"
   }
 }

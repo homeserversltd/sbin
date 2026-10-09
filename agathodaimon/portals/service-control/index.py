@@ -211,9 +211,11 @@ def website_hard_reset(payload: dict[str, Any], *, planned: bool) -> dict[str, A
 
 
 def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
-    if set(payload) - {"actuator", "metadata"}:
+    body = payload.get("payload")
+    actuator = payload["actuator"] if "actuator" in payload else body.get("actuator") if isinstance(body, dict) else None
+    if actuator != "service-control-doors":
         raise Refusal("agathodaimon-service-envelope-invalid")
-    metadata = payload.get("metadata")
+    metadata = payload["metadata"] if "metadata" in payload else body.get("metadata") if isinstance(body, dict) else None
     if not isinstance(metadata, dict):
         raise Refusal("agathodaimon-service-request-invalid")
     action = metadata.get("action")

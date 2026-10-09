@@ -12,6 +12,7 @@
       "admin-password",
       "rotate-capability",
       "key-status"
-    ]
+    ],
+    "unknown_fields": "skipped"
   }
 }
