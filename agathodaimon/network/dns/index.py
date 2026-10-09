@@ -839,7 +839,7 @@ class DnsManager:
         if any(owner in observed - existing_owned for owner in new_owners):
             raise DnsError("dns-observed-record-collision")
 
-    def _candidate_apply(self, lines: list[str], expected: list[tuple[str, str]]) -> dict[str, Any]:
+    def _candidate_apply(self, lines: list[str], expected: list[tuple[str, str]], *, expected_present: bool = True) -> dict[str, Any]:
         query_tool = shutil.which("dig")
         if query_tool is None:
             raise DnsError("dns-live-query-tool-missing")
@@ -856,9 +856,11 @@ class DnsManager:
             for record_type, owner in expected:
                 result = self._command([query_tool, "@127.0.0.1", owner, record_type, "+short"])
                 output = result.stdout.strip()
-                if not output:
-                    raise DnsError(f"dns-live-query-empty: {record_type} {owner}")
                 receipt["live_query_readback"].append({"type": record_type, "owner": owner, "output": output})
+                if expected_present and not output:
+                    raise DnsError(f"dns-live-query-empty: {record_type} {owner}")
+                if not expected_present and output:
+                    raise DnsError(f"dns-live-query-still-present: {record_type} {owner}")
             receipt["mutationPerformed"] = True
             return receipt
         except DnsError as exc:
@@ -912,7 +914,7 @@ class DnsManager:
             return {"action": "device-name-remove", "state": "noop", "canonical_name": canonical, "mutationPerformed": False, "verification": []}
         if present != removals:
             raise DnsError("dns-device-projection-incomplete")
-        return {"action": "device-name-remove", "state": "applied", "canonical_name": canonical, "verification": self._candidate_apply([line for line in lines if line not in removals], [("A", canonical), ("PTR", reverse)])}
+        return {"action": "device-name-remove", "state": "applied", "canonical_name": canonical, "verification": self._candidate_apply([line for line in lines if line not in removals], [("A", canonical), ("PTR", reverse)], expected_present=False)}
 
     def create_alias(self, alias_label: str, hostname: str) -> dict[str, Any]:
         alias, canonical = self._alias_name(alias_label), self.canonical_name(hostname)
@@ -929,7 +931,7 @@ class DnsManager:
         lines = self._owned_records()
         if record not in lines:
             return {"action": "alias-remove", "state": "noop", "alias": alias, "mutationPerformed": False, "verification": []}
-        return {"action": "alias-remove", "state": "applied", "alias": alias, "verification": self._candidate_apply([line for line in lines if line != record], [("CNAME", alias)])}
+        return {"action": "alias-remove", "state": "applied", "alias": alias, "verification": self._candidate_apply([line for line in lines if line != record], [("CNAME", alias)], expected_present=False)}
 
     def apply(self, metadata: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(metadata, dict):
