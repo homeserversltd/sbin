@@ -305,7 +305,8 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(envelope, dict):
         return _emit(_receipt(first_missing_signal="update-service-payload-invalid"))
     payload = envelope.get("payload") if "schema" in envelope else envelope
-    if not isinstance(payload, dict) or not set(payload).issubset({"action"}):
+    # Unknown keys, such as the scrubbed flags room, are skipped, never fatal.
+    if not isinstance(payload, dict):
         return _emit(_receipt(first_missing_signal="update-service-payload-invalid"))
 
     action = payload.get("action")
