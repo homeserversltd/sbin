@@ -3,6 +3,7 @@
   "profile": "homeserver",
   "bands": [
     "appliance/harmonia-press",
+    "appliance/journal-vacuum",
     "appliance/service",
     "appliance/sudo-passwordless",
     "exousia/bind",
@@ -13,11 +14,13 @@
     "games/sync",
     "gui/update",
     "network/cert/house-ca",
+    "network/cert/refresh",
     "network/child-device",
     "network/dhcp",
     "network/dns",
     "network/firewall",
     "network/identity",
+    "network/linker",
     "network/wake-on-lan",
     "network/wifi",
     "settings/appearance",
@@ -27,6 +30,8 @@
     "settings/input",
     "settings/notifications",
     "settings/sound",
+    "storage/backup/forgejo/credential",
+    "storage/disk/test",
     "storage/nas/attach",
     "storage/nas/detach",
     "storage/nas/setup",
@@ -37,7 +42,8 @@
     "transmission/down",
     "transmission/status",
     "transmission/up",
-    "update/service"
+    "update/service",
+    "update/sources-reseed"
   ],
   "verbs": [
     [
@@ -98,6 +104,10 @@
     ],
     [
       "network",
+      "linker"
+    ],
+    [
+      "network",
       "wake-on-lan"
     ],
     [
@@ -143,6 +153,10 @@
     [
       "update",
       "service"
+    ],
+    [
+      "update",
+      "sources-reseed"
     ],
     [
       "upload",
