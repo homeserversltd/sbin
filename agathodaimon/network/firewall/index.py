@@ -314,17 +314,24 @@ def _expected_live_table(image: FileImage) -> bool:
     return image.exists and not _nft_inert_bytes(image.data)
 
 
+def _unbound_view_missing(output: Any, view: str) -> bool:
+    message = f"no view with name: {view}"
+    return isinstance(output, str) and output in {message, message + "\n"}
+
+
 def _run(argv: list[str]) -> tuple[bool, str, str]:
     try:
         result = subprocess.run(argv, text=True, capture_output=True, timeout=20, check=False)
     except (OSError, subprocess.SubprocessError):
         return False, "", "firewall-command-unavailable"
+    is_view_query = len(argv) == 3 and argv[:2] == [str(UNBOUND_CONTROL), "view_list_local_zones"]
+    if is_view_query and _unbound_view_missing(result.stdout, argv[2]):
+        return False, result.stdout, "firewall-unbound-live-view-missing"
     if result.returncode == 0:
         return True, result.stdout, "none"
     detail = result.stderr.lower()
     if argv[:4] == [str(NFT), "list", "table", "inet"] and "no such file or directory" in detail:
         return False, result.stdout, "not-found"
-    is_view_query = len(argv) == 3 and argv[:2] == [str(UNBOUND_CONTROL), "view_list_local_zones"]
     missing_view = re.search(
         r"(?:\b(?:unknown|missing|absent)\s+view\b|\bview\b[^\n]*(?:not\s+found|does\s+not\s+exist|unknown|missing|absent)|\b(?:no\s+such|not\s+found)\b[^\n]*\bview\b)",
         detail,
@@ -621,8 +628,23 @@ def _prove_live_nft(policies: dict[str, dict[str, Any]], expected_exists: bool,
         raise FirewallRefused("firewall-nft-live-policy-mismatch")
 
 
+def _valid_unbound_zone_name(name: str) -> bool:
+    if name == ".":
+        return True
+    bare = name[:-1] if name.endswith(".") else name
+    if not bare or len(bare) > 253:
+        return False
+    return all(
+        re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is not None
+        for label in bare.split(".")
+    )
+
+
 def _prove_live_dns(mac: str, hostnames: list[str], runner: Callable[[list[str]], tuple[bool, str, str]]) -> None:
-    ok, output, error = runner([str(UNBOUND_CONTROL), "view_list_local_zones", view_name(mac)])
+    requested_view = view_name(mac)
+    ok, output, error = runner([str(UNBOUND_CONTROL), "view_list_local_zones", requested_view])
+    if _unbound_view_missing(output, requested_view):
+        raise FirewallRefused("firewall-unbound-live-view-missing")
     if not ok:
         raise FirewallRefused(error if error != "none" else "firewall-unbound-live-readback-unavailable")
     if not isinstance(output, str) or len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
@@ -631,13 +653,16 @@ def _prove_live_dns(mac: str, hostnames: list[str], runner: Callable[[list[str]]
     for line in output.splitlines():
         if not line.strip():
             continue
-        match = re.fullmatch(r'^\s*(?:local-zone:\s*)?"?([a-z0-9.-]+)"?\s+(refuse|transparent)\s*$', line)
+        match = re.fullmatch(r'^\s*(?:local-zone:\s*)?(?:"([^"\s]+)"|([^\s"]+))\s+([a-z][a-z0-9_-]*)\s*$', line)
         if match is None:
             raise FirewallRefused("firewall-unbound-live-readback-invalid")
-        name, kind = match.groups()
-        name = name.lower()
-        if name != "." and canonical_fqdns([name])[0] != name:
+        name = match.group(1) or match.group(2)
+        kind = match.group(3)
+        if not _valid_unbound_zone_name(name):
             raise FirewallRefused("firewall-unbound-live-readback-invalid")
+        name = name.lower()
+        if kind not in {"refuse", "transparent"}:
+            continue
         pair = (name, kind)
         if pair in zones:
             raise FirewallRefused("firewall-unbound-live-readback-invalid")
@@ -648,7 +673,10 @@ def _prove_live_dns(mac: str, hostnames: list[str], runner: Callable[[list[str]]
 
 
 def _prove_live_dns_absent(mac: str, runner: Callable[[list[str]], tuple[bool, str, str]]) -> None:
-    ok, _output, error = runner([str(UNBOUND_CONTROL), "view_list_local_zones", view_name(mac)])
+    requested_view = view_name(mac)
+    ok, output, error = runner([str(UNBOUND_CONTROL), "view_list_local_zones", requested_view])
+    if _unbound_view_missing(output, requested_view):
+        return
     if ok:
         raise FirewallRefused("firewall-unbound-live-view-extra")
     if error != "firewall-unbound-live-view-missing":
