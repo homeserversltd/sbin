@@ -1669,8 +1669,6 @@ def rpc_set_download_settings(port: int, peer_port: int | None = None) -> dict[s
         "download-dir": "/mnt/nas/downloads/complete/",
         "incomplete-dir": "/mnt/nas/downloads/incomplete/",
         "incomplete-dir-enabled": True,
-        "watch-dir": "/mnt/nas/downloads/objectives/",
-        "watch-dir-enabled": True,
     }
     if peer_port is not None:
         if isinstance(peer_port, bool) or not isinstance(peer_port, int) or not 1 <= peer_port <= 65535:

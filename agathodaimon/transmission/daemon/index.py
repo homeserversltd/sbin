@@ -44,6 +44,7 @@ def _daemon_argv(rpc_port: int) -> list[str]:
         rt.IP, "netns", "exec", rt.VPN_NAMESPACE,
         _RUNUSER, "-u", "debian-transmission", "--",
         "transmission-daemon", "--foreground", "--config-dir", "/etc/transmission-daemon",
+        "--watch-dir", "/mnt/nas/downloads/objectives/",
         "--port", str(rpc_port),
     ]
 
