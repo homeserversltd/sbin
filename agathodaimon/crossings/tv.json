@@ -235,6 +235,11 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
+      "POST /api/v1/network/dhcp",
+      "POST /api/v1/network/dhcp/pool-boundary",
+      "POST /api/v1/network/dhcp/reservations",
+      "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
+      "PUT /api/v1/network/dhcp/reservations/{reservation_id}",
       "/api/v1/network/dns",
       "/api/v1/network/dns/adblock",
       "/api/v1/network/dns/alias/create",

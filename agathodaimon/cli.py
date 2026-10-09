@@ -91,6 +91,10 @@ _CROSSING_ROUTE_SEGMENT = r"(?:[a-z0-9][a-z0-9_.-]*|:[a-z][a-z0-9_]*)"
 _CROSSING_API_ROUTE = re.compile(
     rf"^/api/v1/{_CROSSING_ROUTE_SEGMENT}(?:/{_CROSSING_ROUTE_SEGMENT})*$"
 )
+_CROSSING_ADMIN_ROUTE_SEGMENT = rf"(?:{_CROSSING_ROUTE_SEGMENT}|[{{][a-z][a-z0-9_]*[}}])"
+_CROSSING_ADMIN_API_ROUTE = re.compile(
+    rf"^(?:POST|PUT|PATCH|DELETE) /api/v1/{_CROSSING_ADMIN_ROUTE_SEGMENT}(?:/{_CROSSING_ADMIN_ROUTE_SEGMENT})*$"
+)
 _CROSSING_JSON_LIMIT = 1024 * 1024
 
 
@@ -239,7 +243,12 @@ def _crossing_publication(
 
     clean_admin_routes: set[str] = set()
     for route in admin_routes:
-        if not isinstance(route, str) or _CROSSING_API_ROUTE.fullmatch(route) is None or route not in clean_routes:
+        if not isinstance(route, str):
+            return None
+        if _CROSSING_API_ROUTE.fullmatch(route) is not None:
+            if route not in clean_routes:
+                return None
+        elif _CROSSING_ADMIN_API_ROUTE.fullmatch(route) is None:
             return None
         clean_admin_routes.add(route)
     return clean_bands, clean_verbs, clean_admin_bands, clean_admin_verbs, clean_admin_routes
