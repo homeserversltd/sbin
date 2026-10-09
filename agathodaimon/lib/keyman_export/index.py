@@ -13,6 +13,8 @@ from typing import NoReturn
 
 KEYMAN = "/vault/keyman/keyman"
 SERVICE_NAMES = frozenset({"nas", "nas_backup", "service_suite"})
+# Credential exports (username and password) take any plain Keyman service name.
+CREDENTIAL_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 MAX_KEY_FILE_BYTES = 1024 * 1024
 MAX_EXCHANGE_BYTES = 64 * 1024
 EXPORT_TIMEOUT_SECONDS = 10
@@ -145,7 +147,15 @@ def _same_path_inode(directory_fd: int, name: str, identity: os.stat_result) -> 
             and (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino))
 
 
-def _parse_credential(record: bytearray, service_name: str) -> bytearray:
+def _dequote(value: bytes) -> bytes:
+    value = value.strip()
+    if value and value[0] in (ord("'"), ord('"')) and len(value) >= 2 and value[-1] == value[0]:
+        value = value[1:-1]
+    return value
+
+
+def _parse_credential(record: bytearray, service_name: str,
+                      username_out: bytearray | None = None) -> bytearray:
     if not record or 0 in record:
         _refuse(EXCHANGE_ARTIFACT_MALFORMED)
     fields: dict[bytes, tuple[int, int]] = {}
@@ -180,15 +190,14 @@ def _parse_credential(record: bytearray, service_name: str) -> bytearray:
     password_start, password_end = fields[b"password"]
     if username_start == username_end:
         _refuse(EXCHANGE_ARTIFACT_MALFORMED)
-    password = bytes(record[password_start:password_end]).strip()
+    password = _dequote(bytes(record[password_start:password_end]))
     if not password:
         _refuse(EXCHANGE_ARTIFACT_MALFORMED)
-    if password[0] in (ord("'"), ord('"')) and len(password) >= 2:
-        quote = password[0]
-        if password[-1] == quote:
-            password = password[1:-1]
-    if not password:
-        _refuse(EXCHANGE_ARTIFACT_MALFORMED)
+    if username_out is not None:
+        username = _dequote(bytes(record[username_start:username_end]))
+        if not username:
+            _refuse(EXCHANGE_ARTIFACT_MALFORMED)
+        username_out[:] = username
     return bytearray(password)
 
 
@@ -223,7 +232,8 @@ def _cleanup_observed_exchange(directory_fd: int, name: str,
 
 def _read_and_remove_exchange(directory_fd: int, name: str,
                               expected_identity: os.stat_result | None = None,
-                              require_identity: bool = False) -> bytearray:
+                              require_identity: bool = False,
+                              username_out: bytearray | None = None) -> bytearray:
     record = bytearray()
     password: bytearray | None = None
     opened_fd: int | None = None
@@ -277,7 +287,7 @@ def _read_and_remove_exchange(directory_fd: int, name: str,
                 or after.st_mtime_ns != identity.st_mtime_ns
                 or after.st_ctime_ns != identity.st_ctime_ns):
             _refuse(EXCHANGE_ARTIFACT_RACED)
-        password = _parse_credential(record, name)
+        password = _parse_credential(record, name, username_out)
     except KeymanExportError as error:
         failure_signal = error.signal
     except OSError:
@@ -323,6 +333,9 @@ def _read_and_remove_exchange(directory_fd: int, name: str,
         if password is not None:
             for index in range(len(password)):
                 password[index] = 0
+        if username_out is not None:
+            for index in range(len(username_out)):
+                username_out[index] = 0
         _refuse(failure_signal)
     if password is None:
         _refuse(EXCHANGE_ARTIFACT_MALFORMED)
@@ -835,6 +848,29 @@ def export_key(service_name: str, *,
     """Export one named key into mutable memory through a per-call exchange."""
     if not isinstance(service_name, str) or service_name not in SERVICE_NAMES:
         _refuse(SERVICE_NAME_INVALID)
+    return _export(service_name, scratch_root, exporter, None)
+
+
+def export_credential(service_name: str, *,
+                      scratch_root: str | os.PathLike[str] | None = None,
+                      exporter: str | os.PathLike[str] | None = None) -> tuple[ExportedKey, ExportedKey]:
+    """Export one service's username and password through the same per-call exchange."""
+    if not isinstance(service_name, str) or not CREDENTIAL_NAME.fullmatch(service_name):
+        _refuse(SERVICE_NAME_INVALID)
+    username = ExportedKey()
+    try:
+        password = _export(service_name, scratch_root, exporter, username)
+    except BaseException:
+        for index in range(len(username)):
+            username[index] = 0
+        raise
+    username.exchange_reclaimed = password.exchange_reclaimed
+    return username, password
+
+
+def _export(service_name: str, scratch_root: str | os.PathLike[str] | None,
+            exporter: str | os.PathLike[str] | None,
+            username_out: bytearray | None) -> ExportedKey:
     scratch_mode = scratch_root is not None or exporter is not None
     if not scratch_mode and os.geteuid() != 0:
         _refuse(NON_ROOT)
@@ -917,7 +953,8 @@ def export_key(service_name: str, *,
             _refuse(EXPORT_FAILED, int(result.returncode))
         parsed_material = _read_and_remove_exchange(exchange_fd, service_name,
                                                     expected_identity=observed_exchange,
-                                                    require_identity=True)
+                                                    require_identity=True,
+                                                    username_out=username_out)
         result_secret = ExportedKey(parsed_material, exchange_reclaimed=state.reclaimed)
         for index in range(len(parsed_material)):
             parsed_material[index] = 0

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import fcntl
 import importlib.util
 import io
 import ipaddress
@@ -22,6 +21,9 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from agathodaimon._envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
+from agathodaimon.lib.keyman_export.index import (
+    PREFLIGHT_UNOBSERVABLE, KeymanExportError, export_credential,
+)
 
 SCHEMA_UP = "caduceus.transmission.up.v1"
 SCHEMA_DOWN = "caduceus.transmission.down.v1"
@@ -44,10 +46,10 @@ HOLD_UNIT = "hold-port-forward@{}.service"
 NATIVE_UNIT = "transmissionVPN.service"
 STATE_DIR = "/run/agathodaimon/transmission"
 KEYMAN = "/vault/keyman/keyman"
-EXCHANGE_DIR = "/mnt/keyexchange"
-KEY_LOCK = "/run/lock/agathodaimon-transmission-keyman-export.lock"
-_KEY_LOCK_TIMEOUT = 15.0
-_KEY_LOCK_POLL_INTERVAL = 0.05
+# The staff export helper births /mnt/keyexchange per export and obliterates it;
+# it is never standing. A busy skeleton.key lock is waited out, never fatal.
+_KEY_EXPORT_TIMEOUT = 15.0
+_KEY_EXPORT_POLL_INTERVAL = 0.05
 IP = "/usr/sbin/ip"
 SYSTEMCTL = "/usr/bin/systemctl"
 SYSCTL = "/usr/sbin/sysctl"
@@ -1374,175 +1376,41 @@ def state_is_fresh(state: Mapping[str, Any] | None) -> bool:
     return 0 <= age < interval
 
 
-def _open_key_exchange_dir(*, required: bool = True, require_tmpfs: bool = True) -> int | None:
-    try:
-        fd = _open_absolute_dir(EXCHANGE_DIR)
-    except FileNotFoundError:
-        if not required:
-            return None
-        raise TransmissionError("transmission-key-exchange-unavailable", "key-export") from None
-    info = os.fstat(fd)
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700:
-        os.close(fd)
-        raise TransmissionError("transmission-key-exchange-unavailable", "key-export")
-    if not require_tmpfs:
-        return fd
-    # Keyman owns exchange-directory preparation; verify the prepared transit
-    # surface only after its export command has run.
-    mountinfo_path = runtime_path("/proc/self/mountinfo")
-    try:
-        text = mountinfo_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
-        os.close(fd)
-        raise TransmissionError("transmission-key-exchange-unavailable", "key-export") from None
-    mounted = False
-    for line in text.splitlines():
-        left, sep, right = line.partition(" - ")
-        fields = left.split()
-        tail = right.split()
-        if sep and len(fields) > 4 and len(tail) > 0 and fields[4].replace("\\040", " ") == EXCHANGE_DIR and tail[0] == "tmpfs":
-            mounted = True
-            break
-    if not mounted:
-        os.close(fd)
-        raise TransmissionError("transmission-key-exchange-unavailable", "key-export")
-    return fd
-
-
-def _read_exchange_file(directory_fd: int, service: str) -> tuple[bytearray, os.stat_result]:
-    try:
-        before = os.stat(service, dir_fd=directory_fd, follow_symlinks=False)
-        if (not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)
-                or before.st_uid != 0 or stat.S_IMODE(before.st_mode) != 0o600
-                or before.st_size <= 0 or before.st_size > 65536):
-            raise OSError("exchange-file-invalid")
-        fd = os.open(service, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                     | getattr(os, "O_CLOEXEC", 0) | os.O_NONBLOCK, dir_fd=directory_fd)
-    except OSError:
-        raise TransmissionError("transmission-key-export-invalid", "key-export") from None
-    try:
-        opened = os.fstat(fd)
-        after = os.stat(service, dir_fd=directory_fd, follow_symlinks=False)
-        if ((opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
-                or (after.st_dev, after.st_ino) != (opened.st_dev, opened.st_ino)
-                or not stat.S_ISREG(opened.st_mode) or opened.st_uid != 0
-                or stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_size > 65536):
-            raise OSError("exchange-file-raced")
-        chunks = bytearray()
-        while len(chunks) <= 65536:
-            part = os.read(fd, min(8192, 65537 - len(chunks)))
-            if not part:
-                break
-            chunks.extend(part)
-        if not chunks or len(chunks) > 65536:
-            raise OSError("exchange-file-invalid")
-    except OSError:
-        raise TransmissionError("transmission-key-export-invalid", "key-export") from None
-    finally:
-        os.close(fd)
-    try:
-        current = os.stat(service, dir_fd=directory_fd, follow_symlinks=False)
-        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-            raise OSError("exchange-file-raced")
-        os.unlink(service, dir_fd=directory_fd)
-    except OSError:
-        for index in range(len(chunks)):
-            chunks[index] = 0
-        raise TransmissionError("transmission-key-export-cleanup-failed", "key-export") from None
-    return chunks, opened
-
-
-def _parse_key_material(material: bytearray) -> tuple[str, str]:
-    try:
-        text = material.decode("utf-8")
-    except UnicodeError:
-        raise TransmissionError("transmission-key-export-invalid", "key-export") from None
-    values: dict[str, str] = {}
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        if not sep:
-            continue
-        key = key.strip().lower()
-        value = value.strip().strip("\"'")
-        if key in {"username", "user"}:
-            values["username"] = value
-        elif key in {"password", "pass"}:
-            values["password"] = value
-    username, password = values.get("username"), values.get("password")
-    if (not username or not password or any(ch in username + password for ch in "\r\n\x00")):
-        raise TransmissionError("transmission-key-export-invalid", "key-export")
-    return username, password
-
-
 @contextmanager
 def exported_credentials(service: str) -> Iterator[tuple[str, str]]:
     providers, _default = _provider_metadata()
     if (not isinstance(service, str) or not _PROVIDER_RE.fullmatch(service)
             or service not in set(providers) | {"transmission"}):
         raise TransmissionError("transmission-key-service-invalid", "key-export")
-    if os.geteuid() != 0 and _scratch_root() is None:
+    scratch = _scratch_root()
+    if os.geteuid() != 0 and scratch is None:
         raise TransmissionError("transmission-root-required", "key-export")
-    lock_path = runtime_path(KEY_LOCK)
-    os.makedirs(lock_path.parent, mode=0o755, exist_ok=True)
-    lock_fd = None
-    exchange_fd = None
+    context: dict[str, str] = {}
+    if scratch is not None:
+        context = {"scratch_root": str(scratch), "exporter": str(runtime_path(KEYMAN))}
+    deadline = time.monotonic() + _KEY_EXPORT_TIMEOUT
+    while True:
+        try:
+            username_bytes, password_bytes = export_credential(service, **context)
+            break
+        except KeymanExportError as error:
+            if error.signal == PREFLIGHT_UNOBSERVABLE and time.monotonic() < deadline:
+                time.sleep(_KEY_EXPORT_POLL_INTERVAL)
+                continue
+            raise TransmissionError("transmission-key-export-" + error.signal, "key-export") from None
     try:
-        lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-                          | getattr(os, "O_CLOEXEC", 0), 0o600)
-        lock_info = os.fstat(lock_fd)
-        if (not stat.S_ISREG(lock_info.st_mode) or stat.S_IMODE(lock_info.st_mode) != 0o600
-                or (_scratch_root() is None and lock_info.st_uid != 0)):
-            raise OSError("unsafe-export-lock")
-        # Refuse stale plaintext before asking Keyman to export. The directory
-        # may legitimately be absent: Keyman prepares it as part of export.
-        exchange_fd = _open_key_exchange_dir(required=False, require_tmpfs=False)
-    except (OSError, TransmissionError):
-        if lock_fd is not None:
-            os.close(lock_fd)
-        raise TransmissionError("transmission-key-export-unavailable", "key-export") from None
-    material: bytearray | None = None
-    try:
-        lock_deadline = time.monotonic() + _KEY_LOCK_TIMEOUT
-        while True:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                remaining = lock_deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TransmissionError("transmission-key-export-lock-timeout", "key-export") from None
-                time.sleep(min(_KEY_LOCK_POLL_INTERVAL, remaining))
-        if exchange_fd is not None:
-            try:
-                os.stat(service, dir_fd=exchange_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                pass
-            except OSError:
-                raise TransmissionError("transmission-key-export-unavailable", "key-export") from None
-            else:
-                raise TransmissionError("transmission-key-export-preexisting", "key-export")
-            os.close(exchange_fd)
-            exchange_fd = None
-        result = run([KEYMAN, "export", service], timeout=15, step="keyman-export")
-        if result.returncode != 0:
-            raise TransmissionError("transmission-key-export-failed", "key-export")
-        exchange_fd = _open_key_exchange_dir(required=True, require_tmpfs=True)
-        assert exchange_fd is not None
-        material, _identity = _read_exchange_file(exchange_fd, service)
-        username, password = _parse_key_material(material)
+        try:
+            username = username_bytes.decode("utf-8")
+            password = password_bytes.decode("utf-8")
+        except UnicodeError:
+            raise TransmissionError("transmission-key-export-invalid", "key-export") from None
+        if any(ch in username + password for ch in "\r\n\x00"):
+            raise TransmissionError("transmission-key-export-invalid", "key-export")
         yield username, password
     finally:
-        if material is not None:
+        for material in (username_bytes, password_bytes):
             for index in range(len(material)):
                 material[index] = 0
-        try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        except OSError:
-            pass
-        if exchange_fd is not None:
-            os.close(exchange_fd)
-        if lock_fd is not None:
-            os.close(lock_fd)
 
 
 def _curl_config_value(key: str, value: str) -> str:
