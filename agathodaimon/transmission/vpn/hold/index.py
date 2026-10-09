@@ -23,6 +23,7 @@ def _wait_for_peer_port(stop: threading.Event, tunnel: Any,
                         forward: dict[str, Any]) -> tuple[int, int] | None:
     deadline = time.monotonic() + _DAEMON_START_TIMEOUT
     last_port_error: rt.TransmissionError | None = None
+    last_rpc_error: rt.TransmissionError | None = None
     while not stop.is_set():
         _tunnel_alive(tunnel)
         try:
@@ -37,14 +38,20 @@ def _wait_for_peer_port(stop: threading.Event, tunnel: Any,
 
         daemon_unit = rt.NATIVE_UNIT
         if rt.unit_active(daemon_unit, step="daemon-readback"):
+            # An active unit is not yet a listening RPC; retry until the deadline.
             peer_port = forward.get("port")
-            rt.rpc_call(rpc_port, "session-set", {"peer-port": peer_port})
-            readback = rt.rpc_get_peer_port(rpc_port)
-            if readback != peer_port:
-                raise rt.TransmissionError("transmission-peer-port-readback-mismatch",
-                                           "peer-port-readback")
-            return rpc_port, readback
+            try:
+                rt.rpc_call(rpc_port, "session-set", {"peer-port": peer_port})
+                readback = rt.rpc_get_peer_port(rpc_port)
+                if readback != peer_port:
+                    raise rt.TransmissionError("transmission-peer-port-readback-mismatch",
+                                               "peer-port-readback")
+                return rpc_port, readback
+            except rt.TransmissionError as failure:
+                last_rpc_error = failure
         if time.monotonic() >= deadline:
+            if last_rpc_error is not None:
+                raise last_rpc_error
             if last_port_error is not None:
                 raise last_port_error
             raise rt.TransmissionError("transmission-daemon-start-timeout", "daemon")
@@ -80,6 +87,7 @@ def dispatch(request: Any) -> dict[str, Any]:
     state_identity: tuple[int, int] | None = None
     rung = "provider"
     failed = False
+    notify_address = rt.claim_notify_socket()
 
     def request_stop(signum: int, _frame: Any) -> None:
         signal_seen[0] = signal.Signals(signum).name
@@ -128,7 +136,7 @@ def dispatch(request: Any) -> dict[str, Any]:
                   {"written": True, "readback": True, "mode": "0600"})
 
         rung = "notify-ready"
-        rt.notify_ready()
+        rt.notify_ready(notify_address)
         result["ready"] = True
         rt._stamp(result, "ready", {"notifySocketPresent": True}, False,
                   "send-READY=1-after-bind-and-state-write", {"ready": True})

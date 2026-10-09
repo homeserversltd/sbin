@@ -1286,8 +1286,19 @@ def wait_unit_state(unit: str, desired: str, timeout: float, step: str) -> str:
         time.sleep(0.5)
 
 
-def notify_ready() -> None:
-    address = os.environ.get("NOTIFY_SOCKET")
+def claim_notify_socket() -> str | None:
+    """Take NOTIFY_SOCKET out of the environment so no child can claim the unit.
+
+    A provider tunnel (openvpn) speaks sd_notify itself when it inherits the
+    socket, sending READY=1 and MAINPID, which makes systemd supervise the
+    tunnel instead of the hold.
+    """
+    return os.environ.pop("NOTIFY_SOCKET", None)
+
+
+def notify_ready(address: str | None = None) -> None:
+    if address is None:
+        address = os.environ.get("NOTIFY_SOCKET")
     if not isinstance(address, str) or not address or "\x00" in address:
         raise TransmissionError("transmission-notify-socket-unavailable", "notify-ready")
     scratch = _scratch_root()
