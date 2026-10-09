@@ -1592,7 +1592,7 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
     status_code = 200
     body_text = response
     if "\r\n\r\n" in response or "\n\n" in response:
-        header_text, _, body_text = re.split(r"\r?\n\r?\n", response, maxsplit=1)
+        header_text, body_text = re.split(r"\r?\n\r?\n", response, maxsplit=1)
         match = re.search(r"(?m)^HTTP/\S+\s+(\d{3})", header_text)
         if match:
             status_code = int(match.group(1))
