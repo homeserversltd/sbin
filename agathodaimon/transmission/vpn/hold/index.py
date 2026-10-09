@@ -35,7 +35,7 @@ def _wait_for_peer_port(stop: threading.Event, tunnel: Any,
             stop.wait(_POLL_INTERVAL)
             continue
 
-        daemon_unit = rt.DAEMON_UNIT.format(rpc_port)
+        daemon_unit = rt.NATIVE_UNIT
         if rt.unit_active(daemon_unit, step="daemon-readback"):
             peer_port = forward.get("port")
             rt.rpc_call(rpc_port, "session-set", {"peer-port": peer_port})
@@ -63,6 +63,8 @@ def _failure(value: dict[str, Any], failure: Exception, rung: str) -> None:
     value["firstMissingSignal"] = signal_name
     value["failedRung"] = rung
     value["failedCommandError"] = {"signal": signal_name, "step": command_step}
+    if isinstance(failure, rt.TransmissionError) and failure.detail:
+        value.update(failure.detail)
     rt._stamp(value, "error", {"failedRung": rung, "commandError": command_step},
               ["provider tunnel", "provider state"], "report-hold-failure", {"ok": False})
 
@@ -111,6 +113,11 @@ def dispatch(request: Any) -> dict[str, Any]:
         bound_at = rt.now_utc()
         state_identity = rt.write_provider_state(
             provider, forward, interface, bound_at=bound_at)
+        state_readback = rt.read_provider_state(provider)
+        if (state_readback is None or state_readback.get("forwardPort") != forward.get("port")
+                or state_readback.get("tunnelInterface") != interface
+                or not rt.state_is_fresh(state_readback)):
+            raise rt.TransmissionError("transmission-forward-state-readback-mismatch", "forward-state-readback")
         result["forwardPort"] = forward.get("port")
         result["keepaliveInterval"] = forward.get("keepaliveInterval")
         result["peerPortApplied"] = False
@@ -118,7 +125,13 @@ def dispatch(request: Any) -> dict[str, Any]:
         result["rpcPort"] = None
         rt._stamp(result, "forward-state", {"forwardPort": forward.get("port")},
                   ["private provider state"], "publish-before-daemon-readiness",
-                  {"written": True, "mode": "0600"})
+                  {"written": True, "readback": True, "mode": "0600"})
+
+        rung = "notify-ready"
+        rt.notify_ready()
+        result["ready"] = True
+        rt._stamp(result, "ready", {"notifySocketPresent": True}, False,
+                  "send-READY=1-after-bind-and-state-write", {"ready": True})
 
         rung = "daemon"
         peer_state = _wait_for_peer_port(stop, tunnel, forward)

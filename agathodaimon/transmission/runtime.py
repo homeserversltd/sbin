@@ -27,6 +27,9 @@ SCHEMA_UP = "caduceus.transmission.up.v1"
 SCHEMA_DOWN = "caduceus.transmission.down.v1"
 SCHEMA_STATUS = "caduceus.transmission.status.v1"
 SCHEMA_HOLD = "caduceus.transmission.vpn.hold.v1"
+SCHEMA_NAMESPACE = "caduceus.transmission.namespace.v1"
+SCHEMA_DAEMON = "caduceus.transmission.daemon.v1"
+SCHEMA_SETTINGS = "caduceus.transmission.settings.v1"
 MAX_INPUT = 65536
 VPN_NAMESPACE = "vpn"
 HOST_VETH = "veth0"
@@ -38,11 +41,13 @@ NS_ADDRESS_ONLY = "192.168.2.2"
 DNS_PATH = "/etc/netns/vpn/resolv.conf"
 CONFIG_PATH = "/etc/appliance/config.json"
 HOLD_UNIT = "hold-port-forward@{}.service"
-DAEMON_UNIT = "transmission-vpn@{}.service"
+NATIVE_UNIT = "transmissionVPN.service"
 STATE_DIR = "/run/agathodaimon/transmission"
 KEYMAN = "/vault/keyman/keyman"
 EXCHANGE_DIR = "/mnt/keyexchange"
 KEY_LOCK = "/run/lock/agathodaimon-transmission-keyman-export.lock"
+_KEY_LOCK_TIMEOUT = 15.0
+_KEY_LOCK_POLL_INTERVAL = 0.05
 IP = "/usr/sbin/ip"
 SYSTEMCTL = "/usr/bin/systemctl"
 SYSCTL = "/usr/sbin/sysctl"
@@ -110,9 +115,14 @@ def command_argv(argv: list[str] | tuple[str, ...]) -> list[str]:
     if root is None:
         return values
     executable_indexes = [0]
-    # ip netns exec starts another binary; resolve that binary in the same fake root.
-    if len(values) >= 5 and os.path.basename(values[0]) == "ip" and values[1:3] == ["netns", "exec"]:
+    # ip netns exec starts another binary; resolve each nested executable in
+    # the same fake root without changing the production argv.
+    if (len(values) >= 5 and os.path.basename(values[0]) == "ip"
+            and values[1:3] == ["netns", "exec"]):
         executable_indexes.append(4)
+        if (len(values) >= 9 and os.path.basename(values[4]) == "runuser"
+                and values[7] == "--"):
+            executable_indexes.append(8)
     for index in executable_indexes:
         basename = os.path.basename(values[index])
         if basename in {"", ".", ".."} or "\x00" in basename:
@@ -333,28 +343,75 @@ def _provider_candidates(container: Mapping[str, Any]) -> tuple[bool, Any]:
     return False, None
 
 
-def resolve_provider(request: Any) -> tuple[str, list[str]]:
-    providers, default = _provider_metadata()
+def _requested_provider(request: Any) -> tuple[bool, Any]:
     raw = getattr(request, "value", {})
     payload = raw.get("payload") if isinstance(raw, Mapping) else None
     sources = [item for item in (raw, payload) if isinstance(item, Mapping)]
-    selected = False
-    value: Any = None
     for source in sources:
         found, candidate = _provider_candidates(source)
         if found:
-            selected, value = True, candidate
-            break
-    if not selected:
-        for source in sources:
-            if "provider" in source:
-                selected, value = True, source.get("provider")
-                break
+            return True, candidate
+    for source in sources:
+        if "provider" in source:
+            return True, source.get("provider")
+    return False, None
+
+
+def _provider_native_units() -> dict[str, str | None]:
+    providers, _default = _provider_metadata()
+    result: dict[str, str | None] = {}
+    for provider in providers:
+        path = Path(__file__).resolve().parent / "vpn" / provider / "index.json"
+        try:
+            metadata = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            raise TransmissionError("transmission-provider-metadata-unreadable", "provider-metadata") from None
+        if not isinstance(metadata, dict):
+            raise TransmissionError("transmission-provider-metadata-invalid", "provider-metadata")
+        native_unit = metadata.get("nativeUnit")
+        if native_unit is not None and (not isinstance(native_unit, str)
+                                        or not native_unit.endswith(".service")
+                                        or "/" in native_unit or "\x00" in native_unit):
+            raise TransmissionError("transmission-provider-metadata-invalid", "provider-metadata")
+        result[provider] = native_unit
+    return result
+
+
+def provider_bound_to_unit(unit: str = NATIVE_UNIT) -> str:
+    bindings = _provider_native_units()
+    matches = sorted(provider for provider, native_unit in bindings.items()
+                     if native_unit == unit)
+    if len(matches) != 1:
+        raise TransmissionError("transmission-native-unit-provider-unbound", "provider-binding",
+                                {"nativeUnit": unit, "boundProviders": matches})
+    return matches[0]
+
+
+def resolve_provider(request: Any) -> tuple[str, list[str]]:
+    providers, default = _provider_metadata()
+    selected, value = _requested_provider(request)
     if not selected or value is None:
         return default, providers
     if not isinstance(value, str) or not _PROVIDER_RE.fullmatch(value) or value not in providers:
         raise TransmissionError("provider-unknown", "provider-resolution")
     return value, providers
+
+
+def resolve_bound_provider(request: Any) -> tuple[str, list[str]]:
+    providers, _default = _provider_metadata()
+    bound = provider_bound_to_unit()
+    selected, value = _requested_provider(request)
+    if not selected or value is None:
+        return bound, providers
+    if not isinstance(value, str) or not _PROVIDER_RE.fullmatch(value):
+        raise TransmissionError("provider-unknown", "provider-resolution")
+    if value != bound:
+        raise TransmissionError("provider-not-bound", "provider-binding",
+                                {"boundProvider": bound, "requestedProvider": value,
+                                 "nativeUnit": NATIVE_UNIT})
+    if value not in providers:
+        raise TransmissionError("transmission-provider-metadata-invalid", "provider-metadata")
+    return bound, providers
 
 
 def provider_face(provider: str) -> Any:
@@ -375,7 +432,7 @@ def provider_face(provider: str) -> Any:
         spec.loader.exec_module(module)
     except Exception:
         raise TransmissionError("transmission-provider-band-unreadable", "provider-load") from None
-    for name in ("connect", "forward", "keepalive", "teardown"):
+    for name in ("prepare_endpoint", "connect", "forward", "keepalive", "teardown"):
         if not callable(getattr(module, name, None)):
             raise TransmissionError("transmission-provider-face-incomplete", "provider-load")
     return module
@@ -519,26 +576,467 @@ def _read_route_device() -> str:
     return dev
 
 
+_NFT_IGNORED_FIELDS = {"comment", "counter", "handle", "index", "packets", "bytes"}
+
+
+def _nft_semantic(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _nft_semantic(item) for key, item in value.items()
+                if key not in _NFT_IGNORED_FIELDS}
+    if isinstance(value, list):
+        return [_nft_semantic(item) for item in value]
+    return value
+
+
+def _nft_run(arguments: list[str], step: str, *, namespace: str | None = None,
+             input_data: bytes | None = None
+             ) -> subprocess.CompletedProcess[bytes]:
+    command = [NFT, *arguments]
+    if namespace is not None:
+        command = [IP, "netns", "exec", namespace, *command]
+    return run(command, step=step, input_data=input_data)
+
+
+def _nft_list(family: str, table: str, chain: str | None, step: str,
+              *, namespace: str | None = None
+              ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    target = ["-j", "list"]
+    target += ["chain", family, table, chain] if chain is not None else ["table", family, table]
+    result = _nft_run(target, step, namespace=namespace)
+    if result.returncode != 0:
+        raise TransmissionError("transmission-firewall-read-failed", step)
+    try:
+        payload = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        raise TransmissionError("transmission-firewall-read-invalid", step) from None
+    rows = payload.get("nftables") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        raise TransmissionError("transmission-firewall-read-invalid", step)
+    chain_row = None
+    rules = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        candidate = item.get("chain")
+        if isinstance(candidate, dict) and candidate.get("family") == family \
+                and candidate.get("table") == table:
+            if (chain is not None and candidate.get("name") == chain) \
+                    or (chain is None and candidate.get("name") == "output"):
+                chain_row = candidate
+        rule = item.get("rule")
+        if isinstance(rule, dict) and rule.get("family") == family \
+                and rule.get("table") == table and (chain is None or rule.get("chain") == chain):
+            rules.append(rule)
+    return chain_row, rules
+
+
+def _nft_rule_comment(rule: Mapping[str, Any]) -> str | None:
+    value = rule.get("comment")
+    if isinstance(value, str):
+        return value
+    expressions = rule.get("expr")
+    if isinstance(expressions, list):
+        for expression in expressions:
+            if isinstance(expression, dict) and isinstance(expression.get("comment"), str):
+                return expression["comment"]
+    return None
+
+
+def _nft_left(value: Any) -> Any:
+    if isinstance(value, dict):
+        if isinstance(value.get("meta"), dict):
+            return ("meta", value["meta"].get("key"))
+        if isinstance(value.get("payload"), dict):
+            payload = value["payload"]
+            return ("payload", payload.get("protocol"), payload.get("field"))
+        if isinstance(value.get("ct"), dict):
+            return ("ct", value["ct"].get("key"))
+        operation = value.get("bitwise")
+        if isinstance(operation, dict):
+            left = operation.get("left", operation.get("arg"))
+            if left is None and isinstance(operation.get("op"), dict):
+                left = operation["op"].get("left")
+            base = _nft_left(left)
+            return ("bitwise", operation.get("op"), base,
+                    operation.get("right", operation.get("mask")), operation.get("xor", 0))
+        binary = value.get("binary", value.get("binop"))
+        if isinstance(binary, dict):
+            return ("bitwise", binary.get("op"), _nft_left(binary.get("left")),
+                    binary.get("right"), 0)
+        for operator in ("&",):
+            operands = value.get(operator)
+            if isinstance(operands, list) and len(operands) == 2:
+                return ("bitwise", operator, _nft_left(operands[0]), operands[1], 0)
+    return ("unknown-left", json.dumps(_nft_semantic(value), sort_keys=True, separators=(",", ":")))
+
+
+def _nft_prefix(value: Any) -> tuple[str, str, int] | None:
+    if isinstance(value, str):
+        try:
+            network = ipaddress.ip_network(value, strict=False)
+        except ValueError:
+            return None
+        return ("prefix", network.network_address.compressed, network.prefixlen)
+    if isinstance(value, dict) and isinstance(value.get("prefix"), dict):
+        prefix = value["prefix"]
+        try:
+            network = ipaddress.ip_network(f"{prefix['addr']}/{prefix['len']}", strict=False)
+        except (KeyError, TypeError, ValueError):
+            return None
+        return ("prefix", network.network_address.compressed, network.prefixlen)
+    return None
+
+
+def _nft_right(value: Any) -> Any:
+    prefix = _nft_prefix(value)
+    if prefix is not None:
+        return prefix
+    if isinstance(value, dict):
+        if "set" in value:
+            raw = value["set"]
+            values = raw if isinstance(raw, list) else [raw]
+            return ("set", tuple(sorted((_nft_right(item) for item in values), key=repr)))
+        if "range" in value and isinstance(value["range"], list):
+            return ("range", tuple(_nft_right(item) for item in value["range"]))
+        if "concat" in value and isinstance(value["concat"], list):
+            return ("concat", tuple(_nft_right(item) for item in value["concat"]))
+        return ("object", tuple(sorted((key, _nft_right(item)) for key, item in value.items())))
+    if isinstance(value, list):
+        return tuple(_nft_right(item) for item in value)
+    if isinstance(value, str):
+        try:
+            if value.startswith("0x"):
+                return int(value, 16)
+        except ValueError:
+            pass
+    return value
+
+
+def _ct_state_names(value: Any) -> tuple[str, ...] | None:
+    if isinstance(value, dict) and "set" in value:
+        if set(value) != {"set"}:
+            return None
+        value = value["set"]
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return None
+    names: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item in {"new", "established", "related", "invalid", "untracked"}:
+            names.append(item)
+        else:
+            return None
+    return tuple(sorted(names))
+
+
+def _nft_integer(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        if re.fullmatch(r"0[xX][0-9a-fA-F]+", value):
+            return int(value, 16)
+        if re.fullmatch(r"[0-9]+", value):
+            return int(value, 10)
+    except ValueError:
+        return None
+    return None
+
+
+def _ct_state_bitmask(left: Any, operation: Any, right: Any) -> tuple[str, ...] | None:
+    if (not isinstance(left, tuple) or len(left) != 5 or left[0] != "bitwise"
+            or not isinstance(left[1], str) or left[1] != "&"
+            or left[2] != ("ct", "state") or operation != "!="):
+        return None
+    mask = _nft_integer(left[3])
+    xor = _nft_integer(left[4])
+    target = _nft_integer(right)
+    if mask != 6 or xor != 0 or target != 0:
+        return None
+    return ("established", "related")
+
+
+def _nft_meta_protocol(key: str, value: Any) -> Any:
+    if key == "l4proto":
+        if isinstance(value, str) and value.lower() in {"tcp", "udp"}:
+            return value.lower()
+        numeric = _nft_integer(value)
+        if numeric is not None:
+            return {6: "tcp", 17: "udp"}.get(numeric, _nft_right(value))
+        return _nft_right(value)
+    if key == "nfproto":
+        if isinstance(value, str) and value.lower() in {"ipv4", "ipv6"}:
+            return value.lower()
+        numeric = _nft_integer(value)
+        if numeric is not None:
+            return {2: "ipv4", 10: "ipv6"}.get(numeric, _nft_right(value))
+        return _nft_right(value)
+    return _nft_right(value)
+
+
+def _nft_expression_signature(expression: Any) -> Any:
+    if not isinstance(expression, dict) or len(expression) != 1:
+        return ("unknown", json.dumps(_nft_semantic(expression), sort_keys=True, separators=(",", ":")))
+    name, value = next(iter(expression.items()))
+    if name in {"comment", "counter"}:
+        return None
+    if name in {"accept", "drop", "reject", "masquerade", "return"}:
+        return (name, _nft_right(value))
+    if name != "match" or not isinstance(value, dict):
+        return ("unknown", json.dumps(_nft_semantic(expression), sort_keys=True, separators=(",", ":")))
+    left_raw = value.get("left")
+    right_raw = value.get("right")
+    left = _nft_left(left_raw)
+    operation = value.get("op")
+    if left == ("ct", "state"):
+        states = _ct_state_names(right_raw)
+        if states == ("established", "related") and isinstance(operation, str) \
+                and operation in {"in", "=="}:
+            return ("ct-state", states)
+    elif isinstance(left, tuple) and len(left) == 5 and left[0] == "bitwise" \
+            and left[2] == ("ct", "state"):
+        states = _ct_state_bitmask(left, operation, right_raw)
+        if states == ("established", "related"):
+            return ("ct-state", states)
+    if isinstance(left, tuple) and len(left) == 2 and left[0] == "meta":
+        right = _nft_meta_protocol(left[1], right_raw)
+    else:
+        right = _nft_right(right_raw)
+    return ("match", left, operation, right)
+
+
+def _nft_normalize_signatures(result: list[Any]) -> list[Any]:
+    ipv4_payload = any(
+        isinstance(item, tuple) and len(item) == 4 and item[0] == "match"
+        and isinstance(item[1], tuple) and len(item[1]) == 3
+        and item[1][0] == "payload" and item[1][1] == "ip"
+        and item[1][2] in {"saddr", "daddr"}
+        for item in result
+    )
+    l4_payloads = {
+        item[1][1]
+        for item in result
+        if isinstance(item, tuple) and len(item) == 4 and item[0] == "match"
+        and isinstance(item[1], tuple) and len(item[1]) == 3
+        and item[1][0] == "payload" and item[1][1] in {"tcp", "udp"}
+        and item[1][2] in {"sport", "dport"}
+    }
+    normalized = []
+    for item in result:
+        if (ipv4_payload and isinstance(item, tuple) and len(item) == 4
+                and item[0] == "match" and item[1] == ("meta", "nfproto")
+                and item[2] == "==" and item[3] == "ipv4"):
+            continue
+        if (isinstance(item, tuple) and len(item) == 4 and item[0] == "match"
+                and item[1] == ("meta", "l4proto") and item[2] == "=="
+                and item[3] in l4_payloads):
+            continue
+        normalized.append(item)
+    return normalized
+
+
+def _nft_semantic_expressions(expressions: Any) -> list[Any]:
+    if not isinstance(expressions, list):
+        return [("invalid-expressions",)]
+    result: list[Any] = []
+    for expression in expressions:
+        signature = _nft_expression_signature(expression)
+        if signature is not None:
+            result.append(signature)
+    return _nft_normalize_signatures(result)
+
+
+def _nft_expected_expr(tokens: list[str]) -> list[Any]:
+    result: list[Any] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"iifname", "oifname"} and index + 1 < len(tokens):
+            result.append(("match", ("meta", token), "==", tokens[index + 1]))
+            index += 2
+        elif token == "meta" and index + 2 < len(tokens):
+            result.append(("match", ("meta", tokens[index + 1]), "==", tokens[index + 2]))
+            index += 3
+        elif token == "ip" and index + 2 < len(tokens) and tokens[index + 1] in {"saddr", "daddr"}:
+            prefix = _nft_prefix(tokens[index + 2])
+            if prefix is None:
+                raise TransmissionError("transmission-firewall-rule-invalid", "firewall-rule")
+            result.append(("match", ("payload", "ip", tokens[index + 1]), "==", prefix))
+            index += 3
+        elif token in {"tcp", "udp"} and index + 2 < len(tokens) and tokens[index + 1] in {"sport", "dport"}:
+            try:
+                port = int(tokens[index + 2])
+            except ValueError:
+                raise TransmissionError("transmission-firewall-rule-invalid", "firewall-rule") from None
+            result.append(("match", ("payload", token, tokens[index + 1]), "==", port))
+            index += 3
+        elif token == "ct" and index + 2 < len(tokens) and tokens[index + 1] == "state":
+            states = tuple(sorted(set(tokens[index + 2].split(","))))
+            result.append(("ct-state", states))
+            index += 3
+        elif token in {"accept", "masquerade"}:
+            result.append((token, None))
+            index += 1
+        else:
+            raise TransmissionError("transmission-firewall-rule-invalid", "firewall-rule")
+    return _nft_normalize_signatures(result)
+
+
+def _rule_semantically_matches(rule: Mapping[str, Any], expected: list[Any]) -> bool:
+    return _nft_semantic_expressions(rule.get("expr")) == expected
+
+
 def _ensure_nft_rule(family: str, table: str, chain: str, marker: str,
                      rule: list[str], step: str) -> None:
-    listed = run([NFT, "list", "chain", family, table, chain], step=step + "-readback")
-    if listed.returncode != 0:
-        raise TransmissionError("transmission-firewall-chain-unavailable", step)
-    try:
-        text = listed.stdout.decode("utf-8")
-    except UnicodeError:
-        raise TransmissionError("transmission-firewall-read-invalid", step) from None
-    if marker in text:
+    expected = _nft_expected_expr(rule)
+
+    def owned_rules() -> list[dict[str, Any]]:
+        _chain, rules = _nft_list(family, table, chain, step + "-readback")
+        return [item for item in rules if _nft_rule_comment(item) == marker]
+
+    owned = owned_rules()
+    if len(owned) == 1 and _rule_semantically_matches(owned[0], expected):
         return
+    for item in owned:
+        handle = item.get("handle")
+        if isinstance(handle, bool) or not isinstance(handle, int):
+            raise TransmissionError("transmission-firewall-owned-rule-unreadable", step)
+        deleted = _nft_run(["delete", "rule", family, table, chain, "handle", str(handle)],
+                           step + "-repair")
+        if deleted.returncode != 0:
+            raise TransmissionError("transmission-firewall-rule-repair-failed", step)
     # Insert narrow allow rules before existing terminal drops; never weaken or
-    # replace the host's established policy.
-    command = [NFT, "insert", "rule", family, table, chain, *rule, "comment", marker]
-    result = run(command, step=step)
+    # replace the host's established policy or touch rules without our marker.
+    result = _nft_run(["insert", "rule", family, table, chain, *rule, "comment", marker], step)
     if result.returncode != 0:
         raise TransmissionError("transmission-firewall-rule-failed", step)
-    checked = run([NFT, "list", "chain", family, table, chain], step=step + "-final-readback")
-    if checked.returncode != 0 or marker not in checked.stdout.decode("utf-8", "ignore"):
+    verified = owned_rules()
+    if len(verified) != 1 or not _rule_semantically_matches(verified[0], expected):
         raise TransmissionError("transmission-firewall-rule-readback-failed", step)
+
+
+def _ensure_namespace_output_rules(face: Any, provider: str) -> dict[str, Any]:
+    endpoint = face.prepare_endpoint()
+    if not isinstance(endpoint, Mapping):
+        raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint")
+    address_raw = endpoint.get("address")
+    protocol = endpoint.get("protocol")
+    port = endpoint.get("port")
+    interface = endpoint.get("tunnelInterface")
+    if not isinstance(address_raw, str):
+        raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint")
+    try:
+        address = ipaddress.ip_address(address_raw)
+    except ValueError:
+        raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint") from None
+    if (address.version != 4 or protocol not in {"tcp", "udp"}
+            or isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
+            or not isinstance(interface, str) or not _IFACE_RE.fullmatch(interface)):
+        raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint")
+
+    family, table, chain = "inet", "agathodaimon_transmission", "output"
+    listed = _nft_run(["-j", "list", "tables"], "namespace-firewall-tables-readback",
+                      namespace=VPN_NAMESPACE)
+    if listed.returncode != 0:
+        raise TransmissionError("transmission-firewall-read-failed", "namespace-firewall-tables-readback")
+    try:
+        rows = json.loads(listed.stdout.decode("utf-8")).get("nftables")
+    except (AttributeError, UnicodeError, json.JSONDecodeError):
+        raise TransmissionError("transmission-firewall-read-invalid", "namespace-firewall-tables-readback") from None
+    if not isinstance(rows, list):
+        raise TransmissionError("transmission-firewall-read-invalid", "namespace-firewall-tables-readback")
+    table_exists = any(isinstance(item, dict) and isinstance(item.get("table"), dict)
+                       and item["table"].get("family") == family
+                       and item["table"].get("name") == table for item in rows)
+    if not table_exists:
+        created = _nft_run(["add", "table", family, table], "namespace-firewall-table-create",
+                           namespace=VPN_NAMESPACE)
+        if created.returncode != 0:
+            raise TransmissionError("transmission-firewall-table-create-failed", "namespace-firewall-table-create")
+
+    chain_row, _rules = _nft_list(family, table, None, "namespace-firewall-chain-readback",
+                                 namespace=VPN_NAMESPACE)
+    chain_exists = chain_row is not None and chain_row.get("name") == chain
+    if not chain_exists:
+        created = _nft_run(["add", "chain", family, table, chain,
+                            "{", "type", "filter", "hook", "output", "priority", "0", ";",
+                            "policy", "drop", ";", "}"], "namespace-firewall-chain-create",
+                           namespace=VPN_NAMESPACE)
+        if created.returncode != 0:
+            raise TransmissionError("transmission-firewall-chain-create-failed", "namespace-firewall-chain-create")
+
+    # Re-read the table because the table-level list includes every chain. Only
+    # the dedicated output chain is normalized; sibling chains are untouched.
+    chain_row, _rules = _nft_list(family, table, None, "namespace-firewall-chain-readback",
+                                 namespace=VPN_NAMESPACE)
+    if chain_row is None or chain_row.get("name") != chain:
+        raise TransmissionError("transmission-firewall-chain-readback-failed", "namespace-firewall-chain-readback")
+    if (chain_row.get("type") != "filter" or chain_row.get("hook") != "output"
+            or chain_row.get("prio", chain_row.get("priority")) not in {0, "0"}):
+        raise TransmissionError("transmission-firewall-chain-conflict", "namespace-firewall-chain-readback")
+    if chain_row.get("policy") != "drop":
+        changed = _nft_run(["chain", family, table, chain,
+                            "{", "policy", "drop", ";", "}"], "namespace-firewall-policy-drop",
+                           namespace=VPN_NAMESPACE)
+        if changed.returncode != 0:
+            raise TransmissionError("transmission-firewall-policy-failed", "namespace-firewall-policy-drop")
+
+    desired = [
+        (["oifname", "lo", "accept"], "agathodaimon-transmission-output-loopback"),
+        (["oifname", interface, "accept"], "agathodaimon-transmission-output-tunnel"),
+        (["oifname", NS_VETH, "ct", "state", "established,related", "accept"],
+         "agathodaimon-transmission-output-veth-replies"),
+        (["oifname", NS_VETH, "ip", "daddr", address.compressed,
+          "meta", "l4proto", protocol, protocol, "dport", str(port), "accept"], "agathodaimon-transmission-output-provider-endpoint"),
+    ]
+    expected = [_nft_expected_expr(expression) for expression, _marker in desired]
+    chain_row, current_rules = _nft_list(family, table, None,
+                                         "namespace-firewall-current-readback",
+                                         namespace=VPN_NAMESPACE)
+    if chain_row is None or chain_row.get("name") != chain:
+        raise TransmissionError("transmission-firewall-chain-readback-failed", "namespace-firewall-current-readback")
+    output_rules = [item for item in current_rules if item.get("chain") == chain]
+    actual = [_nft_semantic_expressions(item.get("expr")) for item in output_rules]
+    markers = [_nft_rule_comment(item) for item in output_rules]
+    wanted_markers = [marker for _expression, marker in desired]
+    if chain_row.get("policy") != "drop" or actual != expected or markers != wanted_markers:
+        commands = [f"flush chain {family} {table} {chain}"]
+        for expression, marker in desired:
+            words: list[str] = []
+            index = 0
+            while index < len(expression):
+                token = expression[index]
+                words.append(token)
+                if token in {"iifname", "oifname"}:
+                    words.append(json.dumps(expression[index + 1]))
+                    index += 2
+                else:
+                    index += 1
+            commands.append("add rule " + family + " " + table + " " + chain + " "
+                            + " ".join(words) + " comment " + json.dumps(marker))
+        replaced = _nft_run(["-f", "-"], "namespace-firewall-rules-replace",
+                            namespace=VPN_NAMESPACE,
+                            input_data=("\n".join(commands) + "\n").encode("utf-8"))
+        if replaced.returncode != 0:
+            raise TransmissionError("transmission-firewall-rules-replace-failed", "namespace-firewall-rules-replace")
+
+    verified_chain, verified_rules = _nft_list(family, table, None,
+                                                "namespace-firewall-final-readback",
+                                                namespace=VPN_NAMESPACE)
+    output_chain = verified_chain if verified_chain and verified_chain.get("name") == chain else None
+    output_rules = [item for item in verified_rules if item.get("chain") == chain]
+    actual = [_nft_semantic_expressions(item.get("expr")) for item in output_rules]
+    markers = [_nft_rule_comment(item) for item in output_rules]
+    if (output_chain is None or output_chain.get("policy") != "drop"
+            or output_chain.get("type") != "filter" or output_chain.get("hook") != "output"
+            or output_chain.get("prio", output_chain.get("priority")) not in {0, "0"}
+            or actual != expected or markers != wanted_markers):
+        raise TransmissionError("transmission-firewall-readback-mismatch", "namespace-firewall-final-readback")
+    return {"policy": "drop", "chain": chain, "rules": 4,
+            "providerEndpoint": {"address": address.compressed, "protocol": protocol, "port": port},
+            "provider": provider}
 
 
 def _enable_host_forwarding_and_nat(wan: str) -> None:
@@ -566,7 +1064,7 @@ def _enable_host_forwarding_and_nat(wan: str) -> None:
     )
 
 
-def _ensure_namespace() -> dict[str, Any]:
+def _ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
     if os.geteuid() != 0 and _scratch_root() is None:
         raise TransmissionError("transmission-root-required", "namespace")
     names = namespace_names()
@@ -613,6 +1111,8 @@ def _ensure_namespace() -> dict[str, Any]:
         write_atomic(DNS_PATH, wanted_dns, 0o644)
     wan = _read_route_device()
     _enable_host_forwarding_and_nat(wan)
+    lan_interfaces = ensure_rpc_lan_rules(rpc_port)
+    namespace_firewall = _ensure_namespace_output_rules(provider_face(provider), provider)
     final = {
         "namespace": VPN_NAMESPACE in namespace_names(),
         "hostVethUp": link_up(None, HOST_VETH),
@@ -623,8 +1123,17 @@ def _ensure_namespace() -> dict[str, Any]:
         "resolvConf": _read_dns_config(),
         "wanInterface": wan,
         "ipForward": True,
+        "rpcPort": rpc_port,
+        "lanInterfaces": lan_interfaces,
+        "namespaceFirewall": namespace_firewall,
     }
-    if not all(final[key] is True for key in ("namespace", "hostVethUp", "namespaceVethUp", "hostAddress", "namespaceAddress", "ipForward")) or final["defaultRouteVia"] is not True or final["resolvConf"] is not True:
+    if (not all(final[key] is True for key in
+                ("namespace", "hostVethUp", "namespaceVethUp", "hostAddress",
+                 "namespaceAddress", "ipForward"))
+            or final["defaultRouteVia"] is not True or final["resolvConf"] is not True
+            or not isinstance(final["rpcPort"], int)
+            or not isinstance(final["lanInterfaces"], list)
+            or final["namespaceFirewall"].get("policy") != "drop"):
         raise TransmissionError("transmission-namespace-readback-mismatch", "namespace")
     return {"observed": {"namespacePresent": not namespace_created, "hostVethPresent": not veth_created},
             "could-change": ["vpn namespace", "veth0/veth1 addresses and link state", "namespace default route", "resolv.conf", "ip_forward", "narrow VPN forwarding/NAT rules"],
@@ -657,7 +1166,7 @@ def _read_dns_config() -> bool:
     return content == b"nameserver 1.1.1.1\n"
 
 
-def ensure_namespace() -> dict[str, Any]:
+def ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
     before_names: set[str] = set()
     before_host = False
     try:
@@ -667,7 +1176,7 @@ def ensure_namespace() -> dict[str, Any]:
         # The owned-attempt report below will carry any follow-up read failure.
         pass
     try:
-        return _ensure_namespace()
+        return _ensure_namespace(provider, rpc_port)
     except Exception as failure:
         final_names: set[str] = set()
         final_host = False
@@ -686,7 +1195,9 @@ def ensure_namespace() -> dict[str, Any]:
         detail = {
             "observedBefore": {"namespacePresent": VPN_NAMESPACE in before_names,
                                "hostVethPresent": before_host},
-            "attempt": "ensure exact vpn namespace plumbing and routes",
+            "attempt": "ensure vpn plumbing, portal LAN access, provider endpoint, and namespace output kill-switch",
+            "provider": provider,
+            "rpcPort": rpc_port,
             "preservedOwnedResources": owned,
             "finalState": {"namespacePresent": VPN_NAMESPACE in final_names,
                            "hostVethPresent": final_host,
@@ -721,7 +1232,7 @@ def portal_port() -> int:
     return port
 
 
-def unit_active(unit: str, *, step: str = "unit-state-readback") -> bool:
+def unit_state(unit: str, *, step: str = "unit-state-readback") -> str:
     try:
         result = run([SYSTEMCTL, "is-active", unit], timeout=30, step=step)
     except TransmissionError:
@@ -730,13 +1241,17 @@ def unit_active(unit: str, *, step: str = "unit-state-readback") -> bool:
         state = result.stdout.decode("utf-8").strip()
     except UnicodeDecodeError:
         raise TransmissionError("transmission-unit-state-unreadable", step) from None
-    if state in {"active", "reloading"}:
-        return True
-    if state in {"activating", "deactivating", "inactive", "failed", "unknown", "maintenance"}:
-        return False
+    known = {"active", "reloading", "activating", "deactivating", "inactive",
+             "failed", "unknown", "maintenance"}
+    if state in known:
+        return state
     if not state and result.returncode in {3, 4}:
-        return False
+        return "inactive"
     raise TransmissionError("transmission-unit-state-unreadable", step)
+
+
+def unit_active(unit: str, *, step: str = "unit-state-readback") -> bool:
+    return unit_state(unit, step=step) in {"active", "reloading"}
 
 
 def start_unit(unit: str, step: str) -> None:
@@ -755,6 +1270,39 @@ def stop_unit(unit: str, step: str) -> None:
         raise TransmissionError("transmission-unit-stop-failed", step)
     if unit_active(unit, step=step + "-readback"):
         raise TransmissionError("transmission-unit-stop-readback-failed", step)
+
+
+def wait_unit_state(unit: str, desired: str, timeout: float, step: str) -> str:
+    deadline = time.monotonic() + max(0.0, timeout)
+    last_state = "unknown"
+    while True:
+        last_state = unit_state(unit, step=step)
+        if last_state == desired:
+            return last_state
+        if time.monotonic() >= deadline:
+            return last_state
+        time.sleep(0.5)
+
+
+def notify_ready() -> None:
+    address = os.environ.get("NOTIFY_SOCKET")
+    if not isinstance(address, str) or not address or "\x00" in address:
+        raise TransmissionError("transmission-notify-socket-unavailable", "notify-ready")
+    scratch = _scratch_root()
+    if address.startswith("@"):
+        if scratch is not None:
+            raise TransmissionError("transmission-scratch-notify-socket-invalid", "notify-ready")
+        target = "\x00" + address[1:]
+    elif os.path.isabs(address):
+        target = str(runtime_path(address))
+    else:
+        raise TransmissionError("transmission-notify-socket-invalid", "notify-ready")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as client:
+            client.connect(target)
+            client.sendall(b"READY=1\nSTATUS=provider tunnel and port binding ready\n")
+    except OSError:
+        raise TransmissionError("transmission-notify-send-failed", "notify-ready") from None
 
 
 def _timestamp_seconds(value: Any) -> float | None:
@@ -954,7 +1502,16 @@ def exported_credentials(service: str) -> Iterator[tuple[str, str]]:
         raise TransmissionError("transmission-key-export-unavailable", "key-export") from None
     material: bytearray | None = None
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        lock_deadline = time.monotonic() + _KEY_LOCK_TIMEOUT
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = lock_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TransmissionError("transmission-key-export-lock-timeout", "key-export") from None
+                time.sleep(min(_KEY_LOCK_POLL_INTERVAL, remaining))
         if exchange_fd is not None:
             try:
                 os.stat(service, dir_fd=exchange_fd, follow_symlinks=False)
@@ -1000,6 +1557,7 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
                connect_to: str | None = None, ca_file: str | None = None,
                namespace: str | None = None, method: str | None = None,
                form: Mapping[str, str] | None = None,
+               timeout_s: int = 25,
                step: str = "http-request") -> tuple[int, dict[str, str], bytes]:
     cfg = "silent\nshow-error\ninclude\nmax-time = 15\n" + _curl_config_value("url", url)
     if username is not None and password is not None:
@@ -1023,7 +1581,7 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
         command = [CURL, "--config", "-"]
     else:
         command = [IP, "netns", "exec", namespace, CURL, "--config", "-"]
-    result = run(command, input_data=cfg.encode("utf-8"), timeout=25, step=step)
+    result = run(command, input_data=cfg.encode("utf-8"), timeout=timeout_s, step=step)
     if result.returncode != 0:
         raise TransmissionError("transmission-http-request-failed", step)
     try:
@@ -1045,21 +1603,24 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
     return status_code, headers, body_text.encode("utf-8")
 
 
-def rpc_call(port: int, method: str, arguments: dict[str, Any] | None = None) -> dict[str, Any]:
+def rpc_call(port: int, method: str, arguments: dict[str, Any] | None = None,
+             *, timeout_s: int = 25) -> dict[str, Any]:
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise TransmissionError("transmission-rpc-port-invalid", "rpc-request")
     body = json.dumps({"method": method, "arguments": arguments or {}}, separators=(",", ":"))
     with exported_credentials("transmission") as (username, password):
         url = f"http://127.0.0.1:{port}/transmission/rpc"
         status, headers, raw = _curl_http(url, username=username, password=password,
-                                          body=body, namespace=VPN_NAMESPACE, step="transmission-rpc")
+                                          body=body, namespace=VPN_NAMESPACE,
+                                          timeout_s=timeout_s, step="transmission-rpc")
         if status == 409:
             session_id = headers.get("x-transmission-session-id")
             if not session_id:
                 raise TransmissionError("transmission-rpc-session-id-missing", "rpc-session")
             status, _headers, raw = _curl_http(url, username=username, password=password,
                                                session_id=session_id, body=body,
-                                               namespace=VPN_NAMESPACE, step="transmission-rpc-retry")
+                                               namespace=VPN_NAMESPACE, timeout_s=timeout_s,
+                                               step="transmission-rpc-retry")
     if status != 200:
         raise TransmissionError("transmission-rpc-response-failed", "rpc-response")
     try:
@@ -1084,15 +1645,37 @@ def rpc_set_peer_port(port: int, peer_port: int) -> bool:
     return rpc_get_peer_port(port) == peer_port
 
 
-def rpc_set_download_settings(port: int, peer_port: int) -> dict[str, Any]:
+def wait_for_rpc_ready(port: int, timeout: float = 60) -> dict[str, Any]:
+    deadline = time.monotonic() + max(0.0, timeout)
+    last_failure: TransmissionError | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining < 27 and last_failure is not None:
+            raise TransmissionError("transmission-rpc-readiness-timeout", "settings-rpc-readiness",
+                                    {"lastSignal": last_failure.signal_name})
+        try:
+            return rpc_call(port, "session-get", timeout_s=5)
+        except TransmissionError as failure:
+            last_failure = failure
+            remaining = deadline - time.monotonic()
+            if remaining < 27:
+                raise TransmissionError("transmission-rpc-readiness-timeout", "settings-rpc-readiness",
+                                        {"lastSignal": failure.signal_name}) from None
+            time.sleep(min(1.0, max(0.0, remaining - 26)))
+
+
+def rpc_set_download_settings(port: int, peer_port: int | None = None) -> dict[str, Any]:
     desired = {
-        "peer-port": peer_port,
         "download-dir": "/mnt/nas/downloads/complete/",
         "incomplete-dir": "/mnt/nas/downloads/incomplete/",
         "incomplete-dir-enabled": True,
         "watch-dir": "/mnt/nas/downloads/objectives/",
         "watch-dir-enabled": True,
     }
+    if peer_port is not None:
+        if isinstance(peer_port, bool) or not isinstance(peer_port, int) or not 1 <= peer_port <= 65535:
+            raise TransmissionError("transmission-peer-port-invalid", "settings")
+        desired["peer-port"] = peer_port
     rpc_call(port, "session-set", desired)
     observed = rpc_call(port, "session-get")
     readback = {key: observed.get(key) for key in desired}
@@ -1166,32 +1749,33 @@ def status_read(provider: str, provider_names: list[str]) -> dict[str, Any]:
         "forwardPort": None,
         "peerPort": None,
         "rpcPort": None,
-        "firstMissingSignal": "namespace",
+        "firstMissingSignal": "none",
         "steps": [],
     }
     try:
-        provider_names_present, _default = _provider_metadata()
-        if provider not in provider_names_present:
-            result.update(firstMissingSignal="provider-unknown", providers=provider_names_present)
-            return result
+        providers, _default = _provider_metadata()
+        if provider not in providers or provider not in provider_names:
+            raise TransmissionError("provider-unknown", "provider-resolution",
+                                    {"providers": providers})
         names = namespace_names()
-        if VPN_NAMESPACE not in names:
-            _stamp(result, "namespace", {"present": False}, False, "read-only", {"present": False, "veth1Up": False})
-            result["ok"] = True
-            result["firstMissingSignal"] = "namespace"
-            return result
-        namespace_ok = link_up(VPN_NAMESPACE, NS_VETH)
+        namespace_present = VPN_NAMESPACE in names
+        namespace_ok = namespace_present and link_up(VPN_NAMESPACE, NS_VETH)
         result["conditions"]["namespace"] = namespace_ok
-        _stamp(result, "namespace", {"present": True}, False, "read-only", {"present": True, "veth1Up": namespace_ok})
+        _stamp(result, "namespace", {"present": namespace_present}, False, "read-only",
+               {"present": namespace_present, "veth1Up": namespace_ok})
+
         face = provider_face(provider)
         tunnel_interface = getattr(face, "TUNNEL_INTERFACE", None)
         if not isinstance(tunnel_interface, str) or not _IFACE_RE.fullmatch(tunnel_interface):
             raise TransmissionError("transmission-provider-interface-invalid", "tunnel-readback")
-        tunnel_ok = link_up(VPN_NAMESPACE, tunnel_interface)
+        tunnel_ok = namespace_present and link_up(VPN_NAMESPACE, tunnel_interface)
         result["conditions"]["tunnel"] = tunnel_ok
-        _stamp(result, "tunnel", {"interface": tunnel_interface}, False, "read-only", {"up": tunnel_ok})
+        _stamp(result, "tunnel", {"interface": tunnel_interface, "namespacePresent": namespace_present},
+               False, "read-only", {"up": tunnel_ok})
+
         hold_unit = HOLD_UNIT.format(provider)
-        hold_active = unit_active(hold_unit, step="hold-unit-readback")
+        hold_state = unit_state(hold_unit, step="hold-unit-readback")
+        hold_active = hold_state in {"active", "reloading"}
         state = read_provider_state(provider)
         forward_ok = hold_active and state_is_fresh(state)
         if state is not None:
@@ -1199,31 +1783,42 @@ def status_read(provider: str, provider_names: list[str]) -> dict[str, Any]:
             if isinstance(forward_port, int) and not isinstance(forward_port, bool) and 1 <= forward_port <= 65535:
                 result["forwardPort"] = forward_port
         result["conditions"]["forward"] = forward_ok
-        _stamp(result, "forward", {"holdActive": hold_active, "statePresent": state is not None}, False,
+        _stamp(result, "forward", {"holdState": hold_state, "statePresent": state is not None}, False,
                "read-only", {"fresh": forward_ok, "forwardPort": result["forwardPort"]})
-        rpc_port = portal_port()
-        result["rpcPort"] = rpc_port
-        daemon_active = unit_active(DAEMON_UNIT.format(rpc_port), step="daemon-unit-readback")
+
+        daemon_state = unit_state(NATIVE_UNIT, step="daemon-unit-readback")
+        daemon_active = daemon_state in {"active", "reloading"}
         result["conditions"]["daemon"] = daemon_active
-        _stamp(result, "daemon", {"unit": DAEMON_UNIT.format(rpc_port)}, False, "read-only", {"active": daemon_active})
+        _stamp(result, "daemon", {"unit": NATIVE_UNIT, "state": daemon_state}, False,
+               "read-only", {"active": daemon_active})
+        if namespace_present or daemon_active:
+            result["rpcPort"] = portal_port()
         if daemon_active:
-            peer_port = rpc_get_peer_port(rpc_port)
+            peer_port = rpc_get_peer_port(result["rpcPort"])
             result["peerPort"] = peer_port
-            peer_ok = result["forwardPort"] is not None and peer_port == result["forwardPort"] and forward_ok
+            peer_ok = (result["forwardPort"] is not None
+                       and peer_port == result["forwardPort"] and forward_ok)
             result["conditions"]["peerPort"] = peer_ok
-            _stamp(result, "peerPort", {"peerPort": peer_port, "forwardPort": result["forwardPort"]}, False,
-                   "read-only", {"matches": peer_ok})
+            _stamp(result, "peerPort", {"peerPort": peer_port, "forwardPort": result["forwardPort"]},
+                   False, "read-only", {"matches": peer_ok})
         else:
-            _stamp(result, "peerPort", {"daemonActive": False}, False, "not-needed", {"matches": False})
+            _stamp(result, "peerPort", {"daemonActive": False}, False,
+                   "not-needed", {"matches": False})
         conditions = result["conditions"]
         result["on"] = all(conditions.values())
         result["ok"] = True
-        result["firstMissingSignal"] = next((key for key, value in conditions.items() if not value), "none")
+        result["firstMissingSignal"] = next(
+            (name for name in ("namespace", "tunnel", "forward", "daemon", "peerPort")
+             if conditions[name] is not True),
+            "none",
+        )
         return result
     except TransmissionError as failure:
         result["ok"] = False
         result["firstMissingSignal"] = failure.signal_name
         result["failedStep"] = failure.step
+        if failure.detail:
+            result.update(failure.detail)
         return result
 
 

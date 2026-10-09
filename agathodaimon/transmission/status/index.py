@@ -23,6 +23,8 @@ def dispatch(request: Any) -> dict[str, Any]:
             "firstMissingSignal": failure.signal_name,
             "failedStep": failure.step, "steps": [],
         }
+        if failure.detail:
+            value.update(failure.detail)
         if failure.signal_name == "provider-unknown":
             raw = getattr(request, "value", {})
             payload = raw.get("payload") if isinstance(raw, dict) else None

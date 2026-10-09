@@ -1,1 +1,1 @@
-{"children":["pia"],"providers":["pia"],"defaultProvider":"pia","verbs":["hold"]}
+{"children":["pia","namespace","hold"],"providers":["pia"],"defaultProvider":"pia"}

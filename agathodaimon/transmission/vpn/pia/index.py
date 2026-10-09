@@ -21,10 +21,13 @@ from typing import Any
 from agathodaimon.transmission import runtime as rt
 
 TUNNEL_INTERFACE = "tun06"
+TUNNEL_PROTOCOL = "udp"
+TUNNEL_PORT = 1198
 KEEPALIVE_INTERVAL = 900
 _AUTH_URL = "https://www.privateinternetaccess.com/api/client/v2/token"
 _SERVERLIST_URL = "https://serverlist.piaservers.net/vpninfo/servers/v6"
 _RUNTIME_DIR = "/run/agathodaimon/transmission/pia"
+_ENDPOINT_PATH = _RUNTIME_DIR + "/endpoint.json"
 _IP = "/usr/sbin/ip"
 _OPENVPN = "/usr/sbin/openvpn"
 _CA_FILE = Path(__file__).resolve().with_name("ca.rsa.2048.crt")
@@ -176,6 +179,57 @@ def _endpoint_from_serverlist() -> _Endpoint:
     raise rt.TransmissionError("transmission-pia-forward-region-unavailable", "pia-serverlist")
 
 
+def _read_prepared_endpoint() -> _Endpoint:
+    try:
+        _private_directory()
+        raw, metadata = rt.read_regular(_ENDPOINT_PATH, 8192)
+        if (stat.S_IMODE(metadata.st_mode) != 0o600
+                or (rt._scratch_root() is None and metadata.st_uid != 0)):
+            raise OSError("unsafe-prepared-endpoint")
+        value = json.loads(raw.decode("utf-8"))
+        meta_hostname = value["metaHostname"]
+        meta_address = value["metaAddress"]
+        vpn_hostname = value["vpnHostname"]
+        vpn_address = value["vpnAddress"]
+        if (not isinstance(meta_hostname, str) or not _HOST_RE.fullmatch(meta_hostname)
+                or not isinstance(vpn_hostname, str) or not _HOST_RE.fullmatch(vpn_hostname)):
+            raise ValueError
+        meta_ip = ipaddress.ip_address(meta_address)
+        vpn_ip = ipaddress.ip_address(vpn_address)
+        if meta_ip.version != 4 or vpn_ip.version != 4:
+            raise ValueError
+        prepared_at = value.get("preparedAt")
+        if (isinstance(prepared_at, bool) or not isinstance(prepared_at, (int, float))
+                or not math.isfinite(prepared_at) or prepared_at > time.time() + 60):
+            raise ValueError
+        return _Endpoint(meta_hostname, meta_ip.compressed, vpn_hostname, vpn_ip.compressed)
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        raise rt.TransmissionError("transmission-provider-endpoint-unavailable", "provider-endpoint-read") from None
+
+
+def prepare_endpoint() -> dict[str, Any]:
+    endpoint = _endpoint_from_serverlist()
+    _private_directory()
+    record = {
+        "metaHostname": endpoint.meta_hostname,
+        "metaAddress": endpoint.meta_address,
+        "vpnHostname": endpoint.vpn_hostname,
+        "vpnAddress": endpoint.vpn_address,
+        "preparedAt": time.time(),
+    }
+    try:
+        rt.write_atomic(_ENDPOINT_PATH,
+                        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"),
+                        0o600)
+        observed = _read_prepared_endpoint()
+        if observed != endpoint:
+            raise OSError("prepared-endpoint-readback-mismatch")
+    except (OSError, rt.TransmissionError):
+        raise rt.TransmissionError("transmission-provider-endpoint-write-failed", "provider-endpoint-write") from None
+    return {"address": endpoint.vpn_address, "protocol": TUNNEL_PROTOCOL,
+            "port": TUNNEL_PORT, "tunnelInterface": TUNNEL_INTERFACE}
+
+
 def _token(username: str, password: str) -> str:
     try:
         status, _headers, raw = rt._curl_http(
@@ -234,8 +288,8 @@ def _write_openvpn_files(endpoint: _Endpoint, token: str
         conf = (
             "client\n"
             f"dev {TUNNEL_INTERFACE}\n"
-            "proto udp\n"
-            f"remote {endpoint.vpn_address} 1198\n"
+            f"proto {TUNNEL_PROTOCOL}\n"
+            f"remote {endpoint.vpn_address} {TUNNEL_PORT}\n"
             "nobind\nresolv-retry infinite\npersist-key\npersist-tun\n"
             "tls-client\nremote-cert-tls server\n"
             f"verify-x509-name {endpoint.vpn_hostname} name\n"
@@ -268,7 +322,7 @@ def connect(namespace: str) -> _Tunnel:
             raise rt.TransmissionError("transmission-pia-tunnel-already-active", "vpn-connect")
         teardown()
 
-    endpoint = _endpoint_from_serverlist()
+    endpoint = _read_prepared_endpoint()
     config_path = auth_path = None
     config_id = auth_id = None
     process = None

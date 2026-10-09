@@ -1,80 +1,96 @@
-"""Stop only the provider hold and Transmission units, in contract order."""
+"""Stop only the native Transmission unit and verify PartOf cleanup."""
 from __future__ import annotations
+
+import time
 from typing import Any
 
 from agathodaimon.transmission import runtime as rt
 
 
+_READBACK_TIMEOUT = 180
+_TERMINAL_NONACTIVE_STATES = {"inactive", "failed", "unknown", "maintenance"}
+
+
+def _tunnel_present(provider: str) -> tuple[bool, bool]:
+    names = rt.namespace_names()
+    present = rt.VPN_NAMESPACE in names
+    if not present:
+        return False, False
+    face = rt.provider_face(provider)
+    interface = getattr(face, "TUNNEL_INTERFACE", None)
+    if not isinstance(interface, str):
+        raise rt.TransmissionError("transmission-provider-interface-invalid", "final-readback")
+    return True, bool(rt._link_data(rt.VPN_NAMESPACE, interface))
+
+
 def dispatch(request: Any) -> dict[str, Any]:
     result = rt.receipt(rt.SCHEMA_DOWN)
-    provider: str | None = None
+    result["rpcPort"] = None
     rung = "provider"
     try:
-        provider, _providers = rt.resolve_provider(request)
+        provider, _providers = rt.resolve_bound_provider(request)
         result["provider"] = provider
         rt._stamp(result, "provider", {"selected": provider}, False, "resolve", {"provider": provider})
 
-        rung = "portal-row"
-        rpc_port = rt.portal_port()
-        result["rpcPort"] = rpc_port
-        daemon_unit = rt.DAEMON_UNIT.format(rpc_port)
-        daemon_before = rt.unit_active(daemon_unit, step="daemon-preflight")
-        rt.stop_unit(daemon_unit, "daemon-stop")
-        daemon_after = rt.unit_active(daemon_unit, step="daemon-stop-readback")
-        rt._stamp(result, "daemon", {"unit": daemon_unit, "active": daemon_before},
-                  [daemon_unit] if daemon_before else [],
-                  "stop-if-active" if daemon_before else "preserve-inactive",
-                  {"active": daemon_after})
-        if daemon_after:
-            raise rt.TransmissionError("transmission-daemon-stop-readback-failed", "daemon")
+        rung = "daemon"
+        native_before = rt.unit_state(rt.NATIVE_UNIT, step="native-preflight")
+        hold_unit = rt.HOLD_UNIT.format(provider)
+        hold_before = rt.unit_state(hold_unit, step="hold-preflight")
+        result["nativeUnit"] = rt.NATIVE_UNIT
+        result["holdUnit"] = hold_unit
+        result["nativeStateBefore"] = native_before
+        result["holdStateBefore"] = hold_before
+        stopped = rt.run([rt.SYSTEMCTL, "stop", rt.NATIVE_UNIT],
+                         timeout=180, step="native-stop")
+        if stopped.returncode != 0:
+            raise rt.TransmissionError("transmission-native-stop-failed", "daemon",
+                                       {"nativeUnit": rt.NATIVE_UNIT,
+                                        "nativeStateBefore": native_before,
+                                        "holdUnit": hold_unit,
+                                        "holdStateBefore": hold_before})
+        rt._stamp(result, "daemon", {"unit": rt.NATIVE_UNIT, "state": native_before},
+                  [rt.NATIVE_UNIT, hold_unit], "stop-native-unit-for-PartOf-propagation",
+                  {"stopRequested": True, "returnCode": stopped.returncode})
 
         rung = "hold"
-        hold_unit = rt.HOLD_UNIT.format(provider)
-        hold_before = rt.unit_active(hold_unit, step="hold-preflight")
-        rt.stop_unit(hold_unit, "hold-stop")
-        hold_after = rt.unit_active(hold_unit, step="hold-stop-readback")
-        rt._stamp(result, "hold", {"unit": hold_unit, "active": hold_before},
-                  [hold_unit] if hold_before else [],
-                  "stop-if-active" if hold_before else "preserve-inactive",
-                  {"active": hold_after})
-        if hold_after:
-            raise rt.TransmissionError("transmission-hold-stop-readback-failed", "hold")
+        deadline = time.monotonic() + _READBACK_TIMEOUT
+        final: dict[str, Any] = {}
+        while True:
+            native_state = rt.unit_state(rt.NATIVE_UNIT, step="native-stop-readback")
+            hold_state = rt.unit_state(hold_unit, step="hold-PartOf-readback")
+            namespace_present, tunnel_present = _tunnel_present(provider)
+            final = {"nativeState": native_state, "holdUnit": hold_unit,
+                     "holdState": hold_state, "namespacePreserved": namespace_present,
+                     "tunnelInterfacePresent": tunnel_present}
+            if (native_state in _TERMINAL_NONACTIVE_STATES
+                    and hold_state in _TERMINAL_NONACTIVE_STATES
+                    and not tunnel_present):
+                break
+            if time.monotonic() >= deadline:
+                raise rt.TransmissionError("transmission-down-readback-timeout", "final-readback", final)
+            time.sleep(1)
+        result["nativeState"] = native_state
+        result["holdState"] = hold_state
+        result["namespacePreserved"] = namespace_present
+        rt._stamp(result, "hold", {"unit": hold_unit, "stateBefore": hold_before},
+                  [hold_unit] if hold_before not in _TERMINAL_NONACTIVE_STATES else [],
+                  "read-PartOf-state-without-direct-stop", {"state": hold_state})
 
         rung = "final-readback"
-        names = rt.namespace_names()
-        namespace_present = rt.VPN_NAMESPACE in names
-        face = rt.provider_face(provider)
-        interface = getattr(face, "TUNNEL_INTERFACE", None)
-        if not isinstance(interface, str):
-            raise rt.TransmissionError("transmission-provider-interface-invalid", "final-readback")
-        tunnel_present = False
-        if namespace_present:
-            rows = rt._link_data(rt.VPN_NAMESPACE, interface)
-            tunnel_present = bool(rows)
-        hold_final = rt.unit_active(hold_unit, step="final-readback")
-        daemon_final = rt.unit_active(daemon_unit, step="final-readback")
-        final = {"holdActive": hold_final, "daemonActive": daemon_final,
-                 "namespacePreserved": namespace_present, "tunnelInterfacePresent": tunnel_present}
         rt._stamp(result, "final-readback", {"namespacePresent": namespace_present}, False,
-                  "read-units-and-tunnel-interface-only", final)
-        if hold_final or daemon_final or tunnel_present:
-            raise rt.TransmissionError("transmission-down-readback-incomplete", "final-readback")
+                  "read-native-and-PartOf-hold-terminal-nonactive-and-tunnel-absent", final)
         result["ok"] = True
         result["firstMissingSignal"] = "none"
-        result["namespacePreserved"] = namespace_present
         return rt.finish(result, request)
     except Exception as failure:
         if isinstance(failure, rt.TransmissionError):
             result["firstMissingSignal"] = failure.signal_name
             result["failedRung"] = failure.step
+            if failure.detail:
+                result.update(failure.detail)
         else:
             result["firstMissingSignal"] = "transmission-down-failed"
             result["failedRung"] = rung
-        if result.get("firstMissingSignal") == "provider-unknown":
-            try:
-                result["providers"] = rt._provider_metadata()[0]
-            except Exception:
-                pass
         result["ok"] = False
         if not result["steps"] or result["steps"][-1].get("step") != result["failedRung"]:
             rt._stamp(result, result["failedRung"], {"completed": False}, False,
