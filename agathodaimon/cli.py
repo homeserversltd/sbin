@@ -435,6 +435,17 @@ def _cli_target(args: list[str]) -> tuple[str | None, list[str]]:
     return path.relative_to(ROOT).as_posix(), remainder
 
 
+def _transmission_keys_json_argv(args: list[str]) -> bool:
+    try:
+        target, _remainder = _cli_target(list(args))
+    except Exception:
+        return False
+    return target == "transmission/keys" and any(
+        isinstance(argument, str) and argument.lstrip().startswith("{")
+        for argument in args[1:]
+    )
+
+
 def _administrative_target(target: str, publication) -> bool:
     if publication is None:
         return False
@@ -465,6 +476,7 @@ def _administrative_candidate(target: str | None) -> bool:
             "storage/nas/setup",
             "storage/vault/open",
             "storage/vault/policy",
+            "transmission/keys",
         }
         or target.startswith("settings/")
         or target in {"exousia/change", "exousia/reset-default"}
@@ -501,6 +513,13 @@ def _envelope_operation(envelope: dict | None, remainder: list[str]) -> str | No
 
 
 def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | None) -> bool:
+    if target == "transmission/keys":
+        try:
+            module = _load(ROOT / "transmission" / "keys" / "index.py")
+            action = module.select_action(envelope=envelope, argv=remainder)
+        except Exception:
+            return True
+        return action in {"replace", "rotate"}
     operation = _envelope_operation(envelope, remainder)
     read_only = {"get", "read", "status", "list", "show", "observed", "validate", "verify"}
     mutation = {"set", "change", "apply", "mutate", "write", "create", "remove", "update", "start", "stop", "restart", "enable", "disable", "reset-default", "unlock", "open", "register", "unregister"}
@@ -604,6 +623,8 @@ def _administrative_pin_admits(
 
 def main(argv=None):
     args=list(sys.argv[1:] if argv is None else argv)
+    if _transmission_keys_json_argv(args):
+        return _refuse_administrative("transmission-keys-stdin-required")
     caduceus_root = os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0
     if caduceus_root:
         if not _admit_caduceus_crossing(args):

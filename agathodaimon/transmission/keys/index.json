@@ -1,0 +1,16 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": [
+      "actuator",
+      "metadata"
+    ],
+    "actions": [
+      "status",
+      "replace",
+      "rotate"
+    ],
+    "unknown_fields": "skipped"
+  }
+}

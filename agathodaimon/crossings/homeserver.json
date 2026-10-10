@@ -40,6 +40,7 @@
     "storage/vault/open",
     "storage/vault/policy",
     "transmission/down",
+    "transmission/keys",
     "transmission/status",
     "transmission/up",
     "update/service",
@@ -144,6 +145,10 @@
     ],
     [
       "transmission",
+      "keys"
+    ],
+    [
+      "transmission",
       "status"
     ],
     [
@@ -235,6 +240,9 @@
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
     "/api/v1/transmission/down",
+    "/api/v1/transmission/keys",
+    "/api/v1/transmission/keys/replace",
+    "/api/v1/transmission/keys/rotate",
     "/api/v1/transmission/status",
     "/api/v1/transmission/up",
     "/api/v1/update/check",
@@ -256,6 +264,7 @@
       "storage/vault/open",
       "storage/vault/policy",
       "transmission/down",
+      "transmission/keys",
       "transmission/up"
     ],
     "verbs": [
@@ -330,6 +339,8 @@
       "/api/v1/storage/nas/detach",
       "/api/v1/storage/nas/setup",
       "/api/v1/storage/vault/unlock",
+      "POST /api/v1/transmission/keys/replace",
+      "POST /api/v1/transmission/keys/rotate",
       "/api/v1/transmission/down",
       "/api/v1/transmission/up"
     ]
