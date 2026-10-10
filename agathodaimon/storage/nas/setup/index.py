@@ -2179,7 +2179,7 @@ def _request(value: Any) -> dict[str, str]:
     payload = value.payload
     original_payload = raw.get("payload") if value.envelope else raw
     if (not isinstance(payload, dict) or not isinstance(original_payload, dict)
-            or set(original_payload) != {"device", "role"}):
+            or not {"device", "role"}.issubset(original_payload)):
         raise Refusal("agathodaimon-nas-request-invalid", "request")
     device, role = payload.get("device"), payload.get("role")
     if not isinstance(device, str) or not _SAFE_DEVICE.fullmatch(device) or device in {"/dev/.", "/dev/.."}:
