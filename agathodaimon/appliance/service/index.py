@@ -56,6 +56,7 @@ def _receipt(
     *,
     ok: bool = False,
     active: bool | None = None,
+    enabled: bool | None = None,
     output: str = "",
     first_missing_signal: str,
 ) -> dict[str, Any]:
@@ -63,6 +64,7 @@ def _receipt(
         "schema": SCHEMA,
         "ok": ok,
         "active": active,
+        "enabled": enabled,
         "output": output,
         "firstMissingSignal": first_missing_signal,
     }
@@ -80,6 +82,17 @@ def _command_output(stdout: bytes, stderr: bytes) -> str:
 
 def _run_systemctl(*args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(["/usr/bin/systemctl", *args], capture_output=True, check=False)
+
+
+def _enabled_state(systemd_service: str) -> bool | None:
+    try:
+        result = _run_systemctl("is-enabled", "--", systemd_service)
+        state = result.stdout.decode("utf-8", errors="replace").strip()
+    except Exception:
+        return None
+    if not state:
+        return None
+    return state == "enabled"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,19 +132,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         command = _run_systemctl(action, "--", systemd_service)
     except (OSError, subprocess.SubprocessError) as error:
+        enabled = _enabled_state(systemd_service)
         return _emit(
             _receipt(
+                enabled=enabled,
                 output=str(error),
                 first_missing_signal="portal-service-systemctl-failed",
             )
         )
 
+    enabled = _enabled_state(systemd_service)
     output = _command_output(command.stdout, command.stderr)
     try:
         active_result = _run_systemctl("is-active", "--", systemd_service)
     except (OSError, subprocess.SubprocessError):
         return _emit(
             _receipt(
+                enabled=enabled,
                 output=output,
                 first_missing_signal="portal-service-systemctl-failed",
             )
@@ -146,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         _receipt(
             ok=ok,
             active=active,
+            enabled=enabled,
             output=output,
             first_missing_signal="none" if ok else "portal-service-systemctl-failed",
         )
