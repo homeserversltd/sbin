@@ -129,6 +129,45 @@ def main(argv: list[str] | None = None) -> int:
         if systemd_service not in allowed:
             return _emit(_receipt(first_missing_signal="portal-service-not-allowed"))
 
+    if action == "status":
+        try:
+            command = _run_systemctl(action, "--", systemd_service)
+            output = _command_output(command.stdout, command.stderr)
+        except Exception as error:
+            output = str(error)
+
+        enabled = _enabled_state(systemd_service)
+        try:
+            active_result = _run_systemctl("is-active", "--", systemd_service)
+            state = active_result.stdout.decode("utf-8", errors="replace").strip()
+        except Exception:
+            return _emit(
+                _receipt(
+                    enabled=enabled,
+                    output=output,
+                    first_missing_signal="portal-service-systemctl-failed",
+                )
+            )
+
+        if not state:
+            return _emit(
+                _receipt(
+                    enabled=enabled,
+                    output=output,
+                    first_missing_signal="portal-service-systemctl-failed",
+                )
+            )
+        active = active_result.returncode == 0 and state == "active"
+        return _emit(
+            _receipt(
+                ok=True,
+                active=active,
+                enabled=enabled,
+                output=output,
+                first_missing_signal="none",
+            )
+        )
+
     try:
         command = _run_systemctl(action, "--", systemd_service)
     except (OSError, subprocess.SubprocessError) as error:
