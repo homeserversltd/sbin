@@ -439,7 +439,7 @@ def _registered_owner(entry: dict[str, object]) -> tuple[str, pwd.struct_passwd]
     try:
         identity = pwd.getpwnam(owner)
     except KeyError as exc:
-        raise Refusal("xenos-owner-not-found") from exc
+        raise Refusal("xenos-install-owner-unknown") from exc
     except (OSError, ValueError) as exc:
         raise Refusal("xenos-owner-lookup-failed") from exc
     if identity.pw_uid == 0:
@@ -450,6 +450,17 @@ def _registered_owner(entry: dict[str, object]) -> tuple[str, pwd.struct_passwd]
 def seat_xenos(xenos_id: str) -> dict[str, object]:
     entry = _registered_entry(xenos_id)
     owner, identity = _registered_owner(entry)
+    try:
+        install_group = grp.getgrnam(XENIA_USER)
+    except KeyError:
+        try:
+            install_group = grp.getgrgid(identity.pw_gid)
+        except KeyError as exc:
+            raise Refusal("xenos-install-group-unknown") from exc
+        except (OSError, ValueError) as exc:
+            raise Refusal("xenos-install-group-lookup-failed") from exc
+    except (OSError, ValueError) as exc:
+        raise Refusal("xenos-install-group-lookup-failed") from exc
     root_fd = _open_absolute_directory(
         SEAT_ROOT,
         "xenos-seat-root-missing",
@@ -460,21 +471,10 @@ def seat_xenos(xenos_id: str) -> dict[str, object]:
         root_metadata = os.fstat(root_fd)
         if root_metadata.st_uid != 0 or root_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise Refusal("xenos-seat-root-untrusted")
-        created = False
         try:
             before = os.stat(xenos_id, dir_fd=root_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            try:
-                os.mkdir(xenos_id, 0o750, dir_fd=root_fd)
-                created = True
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise Refusal("xenos-seat-create-failed") from exc
-            try:
-                before = os.stat(xenos_id, dir_fd=root_fd, follow_symlinks=False)
-            except OSError as exc:
-                raise Refusal("xenos-seat-observation-failed") from exc
+        except FileNotFoundError as exc:
+            raise Refusal("xenos-seat-missing") from exc
         except OSError as exc:
             raise Refusal("xenos-seat-observation-failed") from exc
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
@@ -487,12 +487,12 @@ def seat_xenos(xenos_id: str) -> dict[str, object]:
                 raise Refusal("xenos-seat-changed-during-open")
             changed = (
                 current.st_uid != identity.pw_uid
-                or current.st_gid != identity.pw_gid
+                or current.st_gid != install_group.gr_gid
                 or stat.S_IMODE(current.st_mode) != 0o750
             )
             try:
-                if current.st_uid != identity.pw_uid or current.st_gid != identity.pw_gid:
-                    os.fchown(child_fd, identity.pw_uid, identity.pw_gid)
+                if current.st_uid != identity.pw_uid or current.st_gid != install_group.gr_gid:
+                    os.fchown(child_fd, identity.pw_uid, install_group.gr_gid)
                 if stat.S_IMODE(current.st_mode) != 0o750:
                     os.fchmod(child_fd, 0o750)
                 final = os.fstat(child_fd)
@@ -503,7 +503,7 @@ def seat_xenos(xenos_id: str) -> dict[str, object]:
                 (linked.st_dev, linked.st_ino) != (final.st_dev, final.st_ino)
                 or not stat.S_ISDIR(linked.st_mode)
                 or final.st_uid != identity.pw_uid
-                or final.st_gid != identity.pw_gid
+                or final.st_gid != install_group.gr_gid
                 or stat.S_IMODE(final.st_mode) != 0o750
             ):
                 raise Refusal("xenos-seat-final-state-mismatch")
@@ -512,7 +512,9 @@ def seat_xenos(xenos_id: str) -> dict[str, object]:
                 "id": xenos_id,
                 "path": str(Path(SEAT_ROOT) / xenos_id),
                 "owner": owner,
-                "changed": changed or created,
+                "group": install_group.gr_name,
+                "mode": "0750",
+                "changed": changed,
             }
         finally:
             os.close(child_fd)
