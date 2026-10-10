@@ -471,10 +471,21 @@ def seat_xenos(xenos_id: str) -> dict[str, object]:
         root_metadata = os.fstat(root_fd)
         if root_metadata.st_uid != 0 or root_metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
             raise Refusal("xenos-seat-root-untrusted")
+        created = False
         try:
             before = os.stat(xenos_id, dir_fd=root_fd, follow_symlinks=False)
-        except FileNotFoundError as exc:
-            raise Refusal("xenos-seat-missing") from exc
+        except FileNotFoundError:
+            try:
+                os.mkdir(xenos_id, 0o750, dir_fd=root_fd)
+                created = True
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise Refusal("xenos-seat-create-failed") from exc
+            try:
+                before = os.stat(xenos_id, dir_fd=root_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise Refusal("xenos-seat-observation-failed") from exc
         except OSError as exc:
             raise Refusal("xenos-seat-observation-failed") from exc
         if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
@@ -514,7 +525,8 @@ def seat_xenos(xenos_id: str) -> dict[str, object]:
                 "owner": owner,
                 "group": install_group.gr_name,
                 "mode": "0750",
-                "changed": changed,
+                "changed": changed or created,
+                "created": created,
             }
         finally:
             os.close(child_fd)
