@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from agathodaimon.transmission import runtime as rt
+from agathodaimon.lib.keyman_export.index import _mount_rows
 
 SCHEMA = "caduceus.transmission.keys.v1"
 _KEY_DIRECTORY = "/vault/.keys"
@@ -110,6 +111,14 @@ def _fail(receipt: dict[str, Any], signal: str) -> dict[str, Any]:
     receipt["ok"] = False
     receipt["firstMissingSignal"] = signal
     return receipt
+
+
+def _vault_mount_proven() -> bool:
+    try:
+        rows = _mount_rows()
+        return rows is not None and any(row[1] == "/vault" for row in rows)
+    except Exception:
+        return False
 
 
 def _signal(failure: BaseException, fallback: str) -> str:
@@ -220,6 +229,8 @@ def _observe_key_map(receipt: dict[str, Any], names: list[str]) -> dict[str, str
 
 def _status() -> dict[str, Any]:
     receipt = _receipt("status")
+    if not _vault_mount_proven():
+        return _fail(receipt, "transmission-vault-locked")
     try:
         _providers, names = _service_names()
         receipt["services"] = names
@@ -402,6 +413,8 @@ def _replace(service_value: Any, username_value: Any, password_value: Any,
              service_present: bool, username_present: bool,
              password_present: bool) -> dict[str, Any]:
     receipt = _receipt("replace")
+    if not _vault_mount_proven():
+        return _fail(receipt, "transmission-vault-locked")
     username_buffer = bytearray()
     password_buffer = bytearray()
     username_value_ref = username_value
@@ -458,6 +471,8 @@ def _replace(service_value: Any, username_value: Any, password_value: Any,
 
 def _rotate(service_value: Any, service_present: bool) -> dict[str, Any]:
     receipt = _receipt("rotate")
+    if not _vault_mount_proven():
+        return _fail(receipt, "transmission-vault-locked")
     username_buffer = bytearray()
     password_buffer = bytearray()
     username_value = None
