@@ -170,6 +170,48 @@ def _record(receipt: dict[str, Any], step: str, ok: bool, **readback: Any) -> No
     })
 
 
+def _update_services_not_running(receipt: dict[str, Any], unit: str, state: str,
+                                 state_rc: int | None, *, start_rc: int | None = None,
+                                 signal_name: str | None = None) -> None:
+    """Keep the latest literal nonrunning dependent state, keyed by unit."""
+    observations = receipt.setdefault("servicesNotRunning", [])
+    if state == "active":
+        receipt["servicesNotRunning"] = [
+            item for item in observations
+            if not isinstance(item, dict) or item.get("unit") != unit
+        ]
+        return
+    if state not in {"inactive", "failed"}:
+        return
+
+    prior = next((item for item in observations
+                  if isinstance(item, dict) and item.get("unit") == unit), None)
+    item: dict[str, Any] = dict(prior) if prior is not None else {}
+    item.update({
+        "unit": unit, "state": state, "stateRc": state_rc,
+        "rc": state_rc, "startAttempted": False,
+    })
+    if prior is not None and prior.get("startAttempted") is True:
+        item.update({
+            "rc": prior.get("startRc"), "startRc": prior.get("startRc"),
+            "signal": prior.get("signal"), "startAttempted": True,
+        })
+    if start_rc is not None:
+        item.update({
+            "rc": start_rc, "startRc": start_rc, "startAttempted": True,
+            "signal": signal_name,
+        })
+    if prior is None:
+        observations.append(item)
+    else:
+        prior_index = observations.index(prior)
+        observations[prior_index] = item
+        receipt["servicesNotRunning"] = [
+            value for index, value in enumerate(observations)
+            if not isinstance(value, dict) or value.get("unit") != unit or index == prior_index
+        ]
+
+
 def _fail(receipt: dict[str, Any], signal_name: str, step: str,
           return_code: int | None = None, **readback: Any) -> NoReturn:
     _record(receipt, step, False, **readback)
@@ -843,6 +885,7 @@ def _list_enabled_nas_services(receipt: dict[str, Any], mountpoint: str) -> list
     except UnicodeError:
         _fail(receipt, "agathodaimon-nas-service-census-invalid", "service-census",
               observed="invalid")
+    receipt["servicesNotRunning"] = []
     services: list[dict[str, Any]] = []
     skipped_units: list[str] = []
     active_before_deadline: float | None = None
@@ -938,15 +981,28 @@ def _list_enabled_nas_services(receipt: dict[str, Any], mountpoint: str) -> list
             continue
         if active_before_deadline is None:
             active_before_deadline = time.monotonic() + _SERVICE_SETTLE_BOUND_SECONDS
+        before_observation: dict[str, Any] = {}
+
+        def capture_before(state: str, rc: int) -> None:
+            before_observation.update(state=state, rc=rc)
+
         try:
             active = _service_active(unit, deadline=active_before_deadline, receipt=receipt,
+                                     on_state=capture_before,
                                      step="service-active-preflight")
         except Refusal as failure:
             raise Refusal(failure.signal_name, failure.step, failure.return_code, receipt) from None
+        before_state = before_observation.get("state")
+        before_rc = before_observation.get("rc")
+        if before_state is None:
+            _fail(receipt, "agathodaimon-nas-service-state-unreadable",
+                  "service-active-preflight", unit=unit)
         services.append({
             "unit": unit,
             "enabled": enabled,
             "activeBefore": active,
+            "activeBeforeState": before_state,
+            "activeBeforeRc": before_rc,
             "condition": mountpoint,
             "fragment": fragment_path,
         })
@@ -972,7 +1028,7 @@ def _service_state_once(unit: str, *, timeout: float,
 
 def _service_active(unit: str, *, deadline: float | None = None,
                     receipt: dict[str, Any] | None = None,
-                    on_state: Callable[[str], None] | None = None,
+                    on_state: Callable[[str, int], None] | None = None,
                     step: str = "service-state-readback") -> bool:
     """Read a settled service state; callers may share one batch deadline."""
     settle_deadline = (time.monotonic() + _SERVICE_SETTLE_BOUND_SECONDS
@@ -1007,11 +1063,15 @@ def _service_active(unit: str, *, deadline: float | None = None,
                         state=last_state, active=None, rc=last_rc)
             raise Refusal("agathodaimon-nas-service-state-unreadable", step,
                           last_rc, receipt)
-        if on_state is not None and last_state != "inactive":
-            on_state(last_state)
+        if on_state is not None:
+            on_state(last_state, last_rc)
         if last_rc == 0 and last_state == "active":
+            if receipt is not None:
+                _update_services_not_running(receipt, unit, last_state, last_rc)
             return True
-        if last_rc == 3 and last_state == "inactive":
+        if last_rc == 3 and last_state in {"inactive", "failed"}:
+            if receipt is not None:
+                _update_services_not_running(receipt, unit, last_state, last_rc)
             return False
         if last_state not in _SERVICE_TRANSITIONAL_STATES:
             if receipt is not None:
@@ -1032,15 +1092,23 @@ def _service_active(unit: str, *, deadline: float | None = None,
         time.sleep(min(_SERVICE_POLL_INTERVAL_SECONDS, remaining))
 
 
+def _track_started_service(state: str, *, current: dict[str, Any], unit: str,
+                           started: list[str]) -> None:
+    if current.get("activeBefore"):
+        return
+    moved_to_running = state == "active" or state in _SERVICE_TRANSITIONAL_STATES
+    moved_from_inactive_to_failed = (
+        state == "failed" and current.get("activeBeforeState") == "inactive"
+    )
+    if (moved_to_running or moved_from_inactive_to_failed) and unit not in started:
+        started.append(unit)
+
+
 def _start_nas_services(receipt: dict[str, Any], info: dict[str, Any]) -> None:
     services = info.get("services", [])
     deadline = time.monotonic() + _SERVICE_SETTLE_BOUND_SECONDS
     _observe_nas_services(receipt, info, deadline=deadline)
     started = info.setdefault("servicesStarted", [])
-
-    def own_observation(state: str, *, current: dict[str, Any], unit: str) -> None:
-        if not current["activeBefore"] and state != "inactive" and unit not in started:
-            started.append(unit)
 
     def refuse_after_observing_all(failure: Refusal) -> NoReturn:
         try:
@@ -1051,20 +1119,32 @@ def _start_nas_services(receipt: dict[str, Any], info: dict[str, Any]) -> None:
 
     for service in services:
         unit = service["unit"]
-        on_state = lambda state, current=service, current_unit=unit: own_observation(
-            state, current=current, unit=current_unit)
+        observation: dict[str, Any] = {}
+
+        def on_state(state: str, state_rc: int, *, current: dict[str, Any] = service,
+                     current_unit: str = unit) -> None:
+            observation.update(state=state, rc=state_rc)
+            _track_started_service(state, current=current, unit=current_unit, started=started)
+
         try:
             active = _service_active(unit, deadline=deadline, receipt=receipt, on_state=on_state)
         except Refusal as failure:
             refuse_after_observing_all(failure)
+        before_state = observation.get("state")
+        before_rc = observation.get("rc")
+        if before_state is None:
+            refuse_after_observing_all(Refusal(
+                "agathodaimon-nas-service-state-unreadable", "service-state-readback", receipt=receipt))
         if service["activeBefore"] and not active:
-            _record(receipt, "service-state-readback", False, unit=unit, active=False,
+            _record(receipt, "service-state-readback", False, unit=unit, state=before_state,
+                    rc=before_rc, active=False,
                     enabled=service["enabled"], activeBefore=True, startAttempted=True)
             refuse_after_observing_all(Refusal(
                 "agathodaimon-nas-preactive-service-stopped", "service-state-readback", receipt=receipt))
         if active:
             if not service["activeBefore"]:
-                _record(receipt, "service-start-readback", True, unit=unit, active=True,
+                _record(receipt, "service-start-readback", True, unit=unit, state=before_state,
+                        rc=before_rc, active=True,
                         enabled=service["enabled"], startAttempted=False)
             continue
         if not service["enabled"]:
@@ -1075,17 +1155,31 @@ def _start_nas_services(receipt: dict[str, Any], info: dict[str, Any]) -> None:
         except Refusal as failure:
             command = None
             command_failure = failure
+        observation.clear()
         try:
             after = _service_active(unit, deadline=deadline, receipt=receipt, on_state=on_state)
         except Refusal as failure:
             if command_failure is not None:
                 refuse_after_observing_all(command_failure)
             refuse_after_observing_all(failure)
+        after_state = observation.get("state")
+        after_state_rc = observation.get("rc")
+        if after_state is None:
+            refuse_after_observing_all(Refusal(
+                "agathodaimon-nas-service-state-unreadable", "service-state-readback", receipt=receipt))
         rc = (command_failure.return_code if command_failure is not None else
               command.returncode if command is not None else None)
         okay = command is not None and rc == 0 and after
-        _record(receipt, "service-start", okay, unit=unit, enabled=True, active=after, rc=rc)
+        _record(receipt, "service-start", okay, unit=unit, enabled=True, state=after_state,
+                active=after, rc=rc, stateRc=after_state_rc)
         if not okay:
+            if command_failure is not None:
+                refuse_after_observing_all(command_failure)
+            if after_state in {"inactive", "failed"}:
+                _update_services_not_running(
+                    receipt, unit, after_state, after_state_rc,
+                    start_rc=rc, signal_name="agathodaimon-nas-service-start-failed")
+                continue
             refuse_after_observing_all(Refusal(
                 "agathodaimon-nas-service-start-failed", "service-start", rc, receipt))
 
@@ -1100,12 +1194,13 @@ def _observe_nas_services(receipt: dict[str, Any], info: dict[str, Any], *,
     first_failure: Refusal | None = None
     for service in info.get("services", []):
         unit = service["unit"]
+        observation: dict[str, Any] = {}
 
-        def own_observation(state: str, *, current: dict[str, Any] = service,
+        def own_observation(state: str, state_rc: int, *, current: dict[str, Any] = service,
                             current_unit: str = unit) -> None:
-            if (track_started and not current["activeBefore"] and state != "inactive"
-                    and current_unit not in started):
-                started.append(current_unit)
+            observation.update(state=state, rc=state_rc)
+            if track_started:
+                _track_started_service(state, current=current, unit=current_unit, started=started)
 
         try:
             active = _service_active(unit, deadline=deadline, receipt=receipt,
@@ -1115,8 +1210,16 @@ def _observe_nas_services(receipt: dict[str, Any], info: dict[str, Any], *,
                 first_failure = Refusal(failure.signal_name, failure.step,
                                         failure.return_code, receipt)
             continue
+        state = observation.get("state")
+        state_rc = observation.get("rc")
+        if state is None:
+            if first_failure is None:
+                first_failure = Refusal("agathodaimon-nas-service-state-unreadable",
+                                        "service-state-readback", receipt=receipt)
+            continue
         if service["activeBefore"] and not active:
-            _record(receipt, "service-state-readback", False, unit=unit, active=False,
+            _record(receipt, "service-state-readback", False, unit=unit, state=state,
+                    rc=state_rc, active=False,
                     enabled=service["enabled"], activeBefore=True,
                     startAttempted=track_started)
             if first_failure is None:
@@ -1124,7 +1227,8 @@ def _observe_nas_services(receipt: dict[str, Any], info: dict[str, Any], *,
                                         "service-state-readback", receipt=receipt)
             continue
         states[unit] = active
-        _record(receipt, "service-state-readback", True, unit=unit, active=active,
+        _record(receipt, "service-state-readback", True, unit=unit, state=state,
+                rc=state_rc, active=active,
                 enabled=service["enabled"], activeBefore=service["activeBefore"],
                 startAttempted=track_started)
     if first_failure is not None:
@@ -1181,7 +1285,8 @@ def _receipt(schema: str, role: str | None) -> dict[str, Any]:
         "schema": schema, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
         "role": role, "partlabel": None, "partition": None, "mapper": None,
         "mountpoint": None, "steps": [], "unitsStarted": [], "unitStatesBefore": {},
-        "services": [], "servicesStarted": [], "mapperReadback": None, "mountReadback": None,
+        "services": [], "servicesStarted": [], "servicesNotRunning": [],
+        "mapperReadback": None, "mountReadback": None,
         "alreadyOpen": False, "alreadyMounted": False, "servicesStopped": [], "unitsStopped": [],
     }
 

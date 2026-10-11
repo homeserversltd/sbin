@@ -31,6 +31,7 @@ from agathodaimon.storage.nas.runtime import (
     _mountinfo,
     _start_nas_services,
     _systemctl_state,
+    _update_services_not_running,
     attach_role,
     command_argv,
     require_fixed_units,
@@ -1203,7 +1204,8 @@ def _rollback_systemctl_state(receipt: dict[str, Any], unit: str, step: str) -> 
 
 
 def _rollback_stop_owned_unit(rollback: list[dict[str, Any]], receipt: dict[str, Any],
-                              unit: str, step: str, initial: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+                              unit: str, step: str, initial: dict[str, Any], *,
+                              allow_failed: bool = False) -> tuple[bool, dict[str, Any]]:
     stop_result = None
     stop_failure: str | None = None
     try:
@@ -1218,6 +1220,7 @@ def _rollback_stop_owned_unit(rollback: list[dict[str, Any]], receipt: dict[str,
     initial_known = initial.get("state") is not None
     final_known = final_state.get("state") is not None
     inactive = final_state.get("state") == "inactive"
+    not_running = inactive or (allow_failed and final_state.get("state") == "failed")
     stop_ok = stop_result is not None and stop_rc == 0
     if not initial_known:
         reason = initial.get("reason", "initial-state-unknown")
@@ -1227,11 +1230,13 @@ def _rollback_stop_owned_unit(rollback: list[dict[str, Any]], receipt: dict[str,
         reason = "stop-command-failed"
     elif not final_known:
         reason = final_state.get("reason", "post-stop-state-unknown")
-    elif not inactive:
+    elif not not_running:
         reason = "unit-not-inactive"
+    elif not inactive:
+        reason = "failed-after-stop"
     else:
         reason = "inactive-after-stop"
-    okay = bool(initial_known and stop_ok and final_known and inactive)
+    okay = bool(initial_known and stop_ok and final_known and not_running)
     rollback.append({"step": _safe_step(step), "ok": okay,
                      "readback": {"unit": unit, "owned": True, "initialState": initial.get("state"),
                                   "initialStateRc": initial.get("rc"),
@@ -1240,7 +1245,8 @@ def _rollback_stop_owned_unit(rollback: list[dict[str, Any]], receipt: dict[str,
                                   "finalState": final_state.get("state"),
                                   "finalStateRc": final_state.get("rc"),
                                   "finalStateReason": final_state.get("reason"),
-                                  "inactive": inactive, "reason": reason}})
+                                  "inactive": inactive, "notRunning": not_running,
+                                  "reason": reason}})
     return okay, final_state
 
 
@@ -1468,6 +1474,8 @@ def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity
             unit = service["unit"]
             initial = _rollback_systemctl_state(receipt, unit, "rollback-service-state")
             state = initial.get("state")
+            if state in {"active", "inactive", "failed"}:
+                _update_services_not_running(receipt, unit, state, initial.get("rc"))
             if service.get("activeBefore"):
                 preserved = state == "active"
                 reason = "preactive-service-still-running" if state in running_states else "preactive-state-not-active"
@@ -1478,7 +1486,10 @@ def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity
                 continue
             if unit in owned_services:
                 if state in running_states | {"failed"}:
-                    stopped, _final = _rollback_stop_owned_unit(records, receipt, unit, "stop-new-service", initial)
+                    stopped, final = _rollback_stop_owned_unit(
+                        records, receipt, unit, "stop-new-service", initial, allow_failed=True)
+                    if final.get("state") in {"active", "inactive", "failed"}:
+                        _update_services_not_running(receipt, unit, final["state"], final.get("rc"))
                     services_clean = services_clean and stopped
                 elif state == "inactive":
                     records.append({"step": "leave-inactive-service", "ok": True,
@@ -1494,6 +1505,10 @@ def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity
                 records.append({"step": "leave-inactive-service", "ok": True,
                                 "readback": {"unit": unit, "owned": False, "state": state,
                                              "rc": initial.get("rc"), "reason": "inactive-not-transaction-owned"}})
+            elif state == "failed":
+                records.append({"step": "leave-nonrunning-service", "ok": True,
+                                "readback": {"unit": unit, "owned": False, "state": state,
+                                             "rc": initial.get("rc"), "reason": "failed-not-transaction-owned"}})
             else:
                 services_clean = False
                 records.append({"step": "dependent-service-cleanup-blocked", "ok": False,
@@ -1848,6 +1863,32 @@ def _merge_attach_receipt(receipt: dict[str, Any], info: dict[str, Any], attachm
                 merged_services.append(dict(service))
                 known_services.add(service["unit"])
         info["services"] = merged_services
+    raw_not_running = attachment.get("servicesNotRunning")
+    if isinstance(raw_not_running, list):
+        steps = attachment.get("steps")
+        census_complete = (isinstance(steps, list) and any(
+            isinstance(step, dict) and step.get("step") == "service-census"
+            and step.get("ok") is True for step in steps))
+        merged_not_running = [] if census_complete else list(receipt.get("servicesNotRunning", []))
+        if not census_complete and isinstance(steps, list):
+            active_units = {
+                readback.get("unit") for step in steps if isinstance(step, dict)
+                and isinstance((readback := step.get("readback")), dict)
+                and readback.get("state") == "active"
+                and isinstance(readback.get("unit"), str)
+            }
+            merged_not_running = [
+                item for item in merged_not_running
+                if not isinstance(item, dict) or item.get("unit") not in active_units
+            ]
+        by_unit: dict[str, dict[str, Any]] = {}
+        for item in merged_not_running:
+            if isinstance(item, dict) and isinstance(item.get("unit"), str):
+                by_unit[item["unit"]] = dict(item)
+        for item in raw_not_running:
+            if isinstance(item, dict) and isinstance(item.get("unit"), str):
+                by_unit[item["unit"]] = dict(item)
+        receipt["servicesNotRunning"] = list(by_unit.values())
     steps = attachment.get("steps")
     if isinstance(steps, list):
         for step in steps:
@@ -2106,7 +2147,8 @@ def _perform(request: dict[str, Any]) -> dict[str, Any]:
     receipt: dict[str, Any] = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
                                "role": request.get("role"), "device": request.get("device"), "partition": None,
                                "partlabel": None, "mapper": None, "mountpoint": None, "steps": [],
-                               "servicesStarted": [], "rolledBack": False, "rollbackSteps": []}
+                               "servicesStarted": [], "servicesNotRunning": [],
+                               "rolledBack": False, "rollbackSteps": []}
     lock_fd = None
     info = None
     key_identity = None
@@ -2219,14 +2261,16 @@ def dispatch(value: Any) -> dict[str, Any]:
         return {"schema": SCHEMA, "ok": False, "firstMissingSignal": failure.signal_name,
                 "role": None, "device": None, "partition": None, "partlabel": None, "mapper": None,
                 "mountpoint": None, "steps": [{"step": failure.step, "ok": False,
-                "readback": {"rc": failure.return_code}}], "servicesStarted": [], "rolledBack": False,
+                "readback": {"rc": failure.return_code}}], "servicesStarted": [],
+                "servicesNotRunning": [], "rolledBack": False,
                 "rollbackSteps": []}
     except (UnicodeError, json.JSONDecodeError, EnvelopeError) as error:
         failure = _envelope_refusal(error) if isinstance(error, EnvelopeError) else Refusal("agathodaimon-nas-request-invalid", "request")
         return {"schema": SCHEMA, "ok": False, "firstMissingSignal": failure.signal_name,
                 "role": None, "device": None, "partition": None, "partlabel": None, "mapper": None,
                 "mountpoint": None, "steps": [{"step": failure.step, "ok": False,
-                "readback": {"rc": None}}], "servicesStarted": [], "rolledBack": False, "rollbackSteps": []}
+                "readback": {"rc": None}}], "servicesStarted": [],
+                "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": []}
     return attach_envelope(_perform(request), envelope_request)
 
 
@@ -2249,7 +2293,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid",
                        "role": None, "device": None, "partition": None, "partlabel": None, "mapper": None,
                        "mountpoint": None, "steps": [{"step": "request", "ok": False, "readback": {}}],
-                       "servicesStarted": [], "rolledBack": False, "rollbackSteps": []}
+                       "servicesStarted": [], "servicesNotRunning": [],
+                       "rolledBack": False, "rollbackSteps": []}
         print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
         return 0 if receipt["ok"] else 1
     finally:
