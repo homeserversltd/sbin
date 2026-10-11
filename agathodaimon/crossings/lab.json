@@ -521,7 +521,6 @@
       "settings/notifications",
       "settings/sound",
       "settings/ssh",
-      "storage/vault/open",
       "storage/vault/policy"
     ],
     "verbs": [
@@ -587,10 +586,6 @@
       ],
       [
         "vault",
-        "open"
-      ],
-      [
-        "vault",
         "policy"
       ]
     ],
@@ -639,8 +634,7 @@
       "/api/v1/settings/ssh/config",
       "/api/v1/settings/ssh/service/disable",
       "/api/v1/settings/ssh/service/enable",
-      "/api/v1/storage/vault/auto-decrypt",
-      "/api/v1/storage/vault/unlock"
+      "/api/v1/storage/vault/auto-decrypt"
     ]
   }
 }
