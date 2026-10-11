@@ -31,6 +31,7 @@
     "settings/notifications",
     "settings/sound",
     "settings/ssh",
+    "settings/samba",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
     "storage/nas/attach",
@@ -145,6 +146,10 @@
       "ssh"
     ],
     [
+      "settings",
+      "samba"
+    ],
+    [
       "transmission",
       "down"
     ],
@@ -240,6 +245,7 @@
     "/api/v1/settings/notifications",
     "/api/v1/settings/sound",
     "/api/v1/settings/ssh/status",
+    "/api/v1/settings/samba/status",
     "/api/v1/storage/nas/attach",
     "/api/v1/storage/nas/detach",
     "/api/v1/storage/nas/setup",
