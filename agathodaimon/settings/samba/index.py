@@ -151,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             and request.payload[field] != "status"
             for field in ("state", "action", "operation")
         )
-        or (request.envelope and request.verb not in STATUS_VERBS)
+        or (request.envelope and request.verb not in STATUS_VERBS | {"samba"})
     ):
         receipt = _receipt(
             ok=False,
