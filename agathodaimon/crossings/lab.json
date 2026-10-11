@@ -31,6 +31,7 @@
     "network/firewall",
     "network/identity",
     "network/linker",
+    "network/tailscale",
     "network/wake-on-lan",
     "network/wifi",
     "portals/service-control",
@@ -195,6 +196,10 @@
     [
       "network",
       "linker"
+    ],
+    [
+      "network",
+      "tailscale"
     ],
     [
       "network",
@@ -453,6 +458,11 @@
     "/api/v1/network/firewall/status",
     "/api/v1/network/notes",
     "/api/v1/network/status",
+    "/api/v1/network/tailscale/authkey",
+    "/api/v1/network/tailscale/down",
+    "/api/v1/network/tailscale/status",
+    "/api/v1/network/tailscale/tailnet",
+    "/api/v1/network/tailscale/up",
     "/api/v1/pjlink/devices",
     "/api/v1/pjlink/known-products",
     "/api/v1/pjlink/power",
@@ -617,6 +627,10 @@
       "/api/v1/network/dns/device-name/create",
       "/api/v1/network/dns/device-name/remove",
       "/api/v1/network/dns/upstream",
+      "POST /api/v1/network/tailscale/authkey",
+      "POST /api/v1/network/tailscale/down",
+      "POST /api/v1/network/tailscale/tailnet",
+      "POST /api/v1/network/tailscale/up",
       "/api/v1/service/:service/disable",
       "/api/v1/service/:service/enable",
       "/api/v1/service/:service/restart",

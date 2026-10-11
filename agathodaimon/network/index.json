@@ -8,6 +8,7 @@
     "wake-on-lan",
     "linker",
     "cert",
-    "wifi"
+    "wifi",
+    "tailscale"
   ]
 }

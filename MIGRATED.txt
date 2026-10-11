@@ -24,6 +24,10 @@ init.sh NAS half (vault)                sbin storage/vault/open attaches the NAS
                                           fixed units before it runs init.sh
 transmission.py (vault)                 sbin transmission/up, down, status, vpn/hold
 src/pia/ provider inputs (vault)        sbin transmission/vpn/pia
+tailUp (sbin)                           sbin network/tailscale/up (legacy file retained)
+tailget (sbin)                          sbin network/tailscale/status (declaredTailnet; legacy file retained)
+tailnetName (sbin)                      sbin network/tailscale/tailnet (legacy file retained)
+sslKey.sh (sbin)                        sbin network/cert/refresh (native port; legacy file retained)
 
 Duplicated in August 2026 by a move, so the old root path came back 2026-10-08:
 factoryFallback.sh (sbin)               agathodaimon/appliance/report/factoryFallback.sh
