@@ -30,6 +30,7 @@
     "settings/input",
     "settings/notifications",
     "settings/sound",
+    "settings/ssh",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
     "storage/nas/attach",
@@ -140,6 +141,10 @@
       "sound"
     ],
     [
+      "settings",
+      "ssh"
+    ],
+    [
       "transmission",
       "down"
     ],
@@ -234,6 +239,7 @@
     "/api/v1/settings/input",
     "/api/v1/settings/notifications",
     "/api/v1/settings/sound",
+    "/api/v1/settings/ssh/status",
     "/api/v1/storage/nas/attach",
     "/api/v1/storage/nas/detach",
     "/api/v1/storage/nas/setup",
