@@ -141,6 +141,41 @@ def _service_readback(unit: str | None = None) -> tuple[dict[str, Any], list[lis
     return {"requestedUnit": SSH_UNIT, "unit": unit, "active": active.stdout.strip() == "active", "activeState": active.stdout.strip() or "unknown", "enabled": enabled.stdout.strip() == "enabled", "enabledState": enabled.stdout.strip() or "unknown"}, [*resolution, active_command, enabled_command]
 
 
+def _effective_readback() -> tuple[dict[str, str] | None, str, list[list[str]]]:
+    command = _sudo([SSHD, "-T"])
+    commands = [command]
+    try:
+        result = _run(command)
+    except OSError:
+        return None, "agathodaimon-ssh-exposure-effective-read-refused", commands
+    if result.returncode != 0:
+        return None, "agathodaimon-ssh-exposure-effective-read-refused", commands
+
+    found: dict[str, list[list[str]]] = {directive: [] for directive in DIRECTIVES}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        directive = next(
+            (name for name in DIRECTIVES if name.lower() == fields[0].lower()),
+            None,
+        )
+        if directive is not None:
+            found[directive].append(fields)
+    if any(len(values) > 1 for values in found.values()):
+        return None, "agathodaimon-ssh-exposure-effective-directive-ambiguous", commands
+    if any(not values for values in found.values()):
+        return None, "agathodaimon-ssh-exposure-effective-directive-missing", commands
+
+    effective: dict[str, str] = {}
+    for directive in DIRECTIVES:
+        fields = found[directive][0]
+        if len(fields) != 2 or fields[1].lower() not in {"yes", "no"}:
+            return None, "agathodaimon-ssh-exposure-effective-directive-invalid", commands
+        effective[directive] = fields[1].lower()
+    return effective, "none", commands
+
+
 def status() -> dict[str, Any]:
     commands: list[list[str]] = []
     try:
@@ -149,7 +184,15 @@ def status() -> dict[str, Any]:
         directives = _directive_values(raw)
         service, service_commands = _service_readback()
         commands.extend(service_commands)
-        return _receipt("status", ok=True, changed=[], unchanged=[], readback={"directives": directives, "service": service}, commands=commands)
+        effective, effective_signal, effective_commands = _effective_readback()
+        commands.extend(effective_commands)
+        readback = {
+            "directives": directives,
+            "service": service,
+            "effective": effective,
+            "effectiveSignal": effective_signal,
+        }
+        return _receipt("status", ok=True, changed=[], unchanged=[], readback=readback, commands=commands)
     except Refusal as exc:
         return _receipt("status", ok=False, changed=[], unchanged=[], readback=None, commands=commands, signal=str(exc))
 
