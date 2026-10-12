@@ -31,6 +31,7 @@
     "settings/input",
     "settings/notifications",
     "settings/sound",
+    "settings/ssh",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
     "storage/upload/force-permissions",
@@ -126,6 +127,10 @@
       "sound"
     ],
     [
+      "settings",
+      "ssh"
+    ],
+    [
       "update",
       "service"
     ],
@@ -170,6 +175,10 @@
     "/api/v1/network/device/wifi/forget",
     "/api/v1/network/device/wifi/ipv4",
     "/api/v1/network/device/wifi/radio",
+    "/api/v1/network/dhcp",
+    "/api/v1/network/dhcp/pool-boundary",
+    "/api/v1/network/dhcp/reservations",
+    "/api/v1/network/dhcp/reservations/:reservation_id",
     "/api/v1/network/dns",
     "/api/v1/network/dns/adblock",
     "/api/v1/network/dns/alias/create",
@@ -193,6 +202,7 @@
     "/api/v1/settings/input",
     "/api/v1/settings/notifications",
     "/api/v1/settings/sound",
+    "/api/v1/settings/ssh/status",
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
@@ -209,6 +219,7 @@
       "network/dns",
       "settings/datetime",
       "settings/input",
+      "storage/vault/open",
       "storage/vault/policy"
     ],
     "verbs": [
@@ -247,11 +258,10 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
-      "POST /api/v1/network/dhcp",
-      "POST /api/v1/network/dhcp/pool-boundary",
-      "POST /api/v1/network/dhcp/reservations",
-      "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
-      "PUT /api/v1/network/dhcp/reservations/{reservation_id}",
+      "/api/v1/network/dhcp",
+      "/api/v1/network/dhcp/pool-boundary",
+      "/api/v1/network/dhcp/reservations",
+      "/api/v1/network/dhcp/reservations/:reservation_id",
       "/api/v1/network/dns",
       "/api/v1/network/dns/adblock",
       "/api/v1/network/dns/alias/create",
@@ -267,7 +277,8 @@
       "/api/v1/settings/input",
       "/api/v1/settings/notifications",
       "/api/v1/settings/sound",
-      "/api/v1/storage/vault/auto-decrypt"
+      "/api/v1/storage/vault/auto-decrypt",
+      "/api/v1/storage/vault/unlock"
     ]
   }
 }
