@@ -1,0 +1,10 @@
+{
+  "children": [
+    "browse",
+    "delete",
+    "deploy",
+    "hardlink-scan",
+    "mkdir",
+    "rename"
+  ]
+}

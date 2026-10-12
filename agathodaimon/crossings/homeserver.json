@@ -13,6 +13,16 @@
     "games/provider-keys",
     "games/sync",
     "gui/update",
+    "keyman/admin-password",
+    "keyman/create-key",
+    "keyman/key-status",
+    "keyman/update-key",
+    "linker/browse",
+    "linker/delete",
+    "linker/deploy",
+    "linker/hardlink-scan",
+    "linker/mkdir",
+    "linker/rename",
     "network/cert/house-ca",
     "network/cert/refresh",
     "network/child-device",
@@ -73,6 +83,46 @@
     [
       "gui",
       "update"
+    ],
+    [
+      "keyman",
+      "admin-password"
+    ],
+    [
+      "keyman",
+      "create-key"
+    ],
+    [
+      "keyman",
+      "key-status"
+    ],
+    [
+      "keyman",
+      "update-key"
+    ],
+    [
+      "linker",
+      "browse"
+    ],
+    [
+      "linker",
+      "delete"
+    ],
+    [
+      "linker",
+      "deploy"
+    ],
+    [
+      "linker",
+      "hardlink-scan"
+    ],
+    [
+      "linker",
+      "mkdir"
+    ],
+    [
+      "linker",
+      "rename"
     ],
     [
       "nas",
@@ -213,6 +263,16 @@
     "/api/v1/gui/update/now",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
+    "/api/v1/keyman/admin-password",
+    "/api/v1/keyman/create-key",
+    "/api/v1/keyman/key-status",
+    "/api/v1/keyman/update-key",
+    "/api/v1/linker/browse",
+    "/api/v1/linker/delete",
+    "/api/v1/linker/deploy",
+    "/api/v1/linker/hardlink-scan",
+    "/api/v1/linker/mkdir",
+    "/api/v1/linker/rename",
     "/api/v1/network/device",
     "/api/v1/network/device/claim",
     "/api/v1/network/device/wake",
@@ -282,6 +342,13 @@
     "bands": [
       "appliance/service",
       "appliance/sudo-passwordless",
+      "keyman/admin-password",
+      "keyman/create-key",
+      "keyman/update-key",
+      "linker/delete",
+      "linker/deploy",
+      "linker/mkdir",
+      "linker/rename",
       "network/dns",
       "settings/datetime",
       "settings/input",
@@ -302,6 +369,34 @@
       [
         "exousia",
         "reset-default"
+      ],
+      [
+        "keyman",
+        "admin-password"
+      ],
+      [
+        "keyman",
+        "create-key"
+      ],
+      [
+        "keyman",
+        "update-key"
+      ],
+      [
+        "linker",
+        "delete"
+      ],
+      [
+        "linker",
+        "deploy"
+      ],
+      [
+        "linker",
+        "mkdir"
+      ],
+      [
+        "linker",
+        "rename"
       ],
       [
         "settings",
@@ -337,6 +432,13 @@
       "/api/v1/appliance/service/:service/status",
       "/api/v1/appliance/service/:service/stop",
       "/api/v1/appliance/stats/admin",
+      "/api/v1/keyman/admin-password",
+      "/api/v1/keyman/create-key",
+      "/api/v1/keyman/update-key",
+      "/api/v1/linker/delete",
+      "/api/v1/linker/deploy",
+      "/api/v1/linker/mkdir",
+      "/api/v1/linker/rename",
       "/api/v1/network/dhcp",
       "/api/v1/network/dhcp/pool-boundary",
       "/api/v1/network/dhcp/reservations",

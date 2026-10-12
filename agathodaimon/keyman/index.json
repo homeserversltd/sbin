@@ -1,0 +1,8 @@
+{
+  "children": [
+    "admin-password",
+    "create-key",
+    "key-status",
+    "update-key"
+  ]
+}

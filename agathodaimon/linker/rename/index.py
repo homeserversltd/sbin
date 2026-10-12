@@ -1,0 +1,6 @@
+"""Rename a directory through retained Linker core.rename_directory."""
+from agathodaimon.linker._common import main_for
+
+
+def main(argv=None):
+    return main_for("rename", argv)
