@@ -6,7 +6,7 @@ import platform
 import socket
 
 try:
-    from ._common import _command, _group, _json, _page, _read
+    from ._common import _command, _json, _page, _read
 except ImportError:
     import importlib.util as _importlib_util
     import sys as _sys
@@ -14,9 +14,9 @@ except ImportError:
     _common_module = _importlib_util.module_from_spec(_common_spec)
     _sys.modules["_common"] = _common_module
     _common_spec.loader.exec_module(_common_module)
-    from _common import _command, _group, _json, _page, _read
+    from _common import _command, _json, _page, _read
 
-PLUG = {"id": "about-system", "title": "About System", "icon": "computer-symbolic", "order": 110, "parent": None}
+PLUG = {"id": "about-system", "title": "About System", "icon": "computer-symbolic", "order": 0, "parent": None}
 
 PRODUCTS = {"tv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
 
@@ -160,11 +160,20 @@ def build_widget():
 
     page = _page(Adw, PLUG)
     for title, facts in _groups(Gdk):
-        group = _group(Adw, page, title)
+        group = Adw.PreferencesGroup()
+        page.add(group)
+        line = Gtk.Box(spacing=24)
+        heading = Gtk.Label(label=title, xalign=0, valign=Gtk.Align.START, width_chars=10, margin_top=16)
+        heading.add_css_class("heading")
+        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, hexpand=True)
+        rows.add_css_class("boxed-list")
         for key, value in facts:
             row = Adw.ActionRow(title=key)
             value_label = Gtk.Label(label=value or "Unavailable", xalign=1)
             value_label.add_css_class("dim-label")
             row.add_suffix(value_label)
-            group.add(row)
+            rows.append(row)
+        line.append(heading)
+        line.append(rows)
+        group.add(line)
     return page
