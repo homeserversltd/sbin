@@ -197,7 +197,7 @@ def _bounded_deletion(path: Path, roots: Sequence[Path]) -> Path:
 
 
 def _wofi_domain(optional: bool, directories: dict[str, Path]) -> dict[str, Any]:
-    cache_file = directories["state"] / "arch-tv-launcher/wofi-drun-cache"
+    cache_file = directories["state"] / "hometv-launcher/wofi-drun-cache"
     if not cache_file.exists() and not cache_file.is_symlink():
         status = "absent-optional" if optional else "unchanged"
         return _result("wofi-drun", optional, status, path=str(cache_file))

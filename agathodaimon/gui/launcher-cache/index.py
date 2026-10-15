@@ -13,6 +13,7 @@ import uuid
 from pathlib import Path
 
 from agathodaimon.lib.receipts.index import emit
+from agathodaimon.face._shared import owner_home, refresh_launcher_cache
 
 DEFAULT_OWNER_HOME = "/home/owner"
 DEFAULT_RECEIPT_ROOT = "/var/lib/caduceus/receipts"
@@ -95,14 +96,14 @@ def state() -> str:
     return "Empty" if cache_mtime >= newest_input else "Different"
 
 
-def refresh_command() -> list[str]:
+def refresh_command() -> list[str] | None:
     override = os.environ.get("CADUCEUS_LAUNCHER_REFRESH_COMMAND")
-    if override is not None:
-        command = shlex.split(override)
-        if not command:
-            raise ValueError("launcher-refresh-command-empty")
-        return command
-    return ["/usr/bin/sudo", "--user", "owner", "--", str(refresh_script())]
+    if override is None:
+        return None
+    command = shlex.split(override)
+    if not command:
+        raise ValueError("launcher-refresh-command-empty")
+    return command
 
 
 def _write_apply_receipt(receipt: dict) -> bool:
@@ -145,14 +146,25 @@ def _apply() -> int:
 
     try:
         command = refresh_command()
-        result = subprocess.run(command, check=False, capture_output=True)
-        refresh_exit = result.returncode
-        refresh_stderr_tail = bounded_stderr_tail(result.stderr)
-        refresh_step = {
-            "name": "owner-scoped-refresh",
-            "outcome": "succeeded" if refresh_exit == 0 else "failed",
-            "exit": refresh_exit,
-        }
+        if command is None:
+            native = refresh_launcher_cache(owner_home())
+            refresh_exit = native["exit"]
+            refresh_stderr_tail = bounded_stderr_tail(native.get("stderr"))
+            refresh_step = {
+                "name": "owner-scoped-refresh",
+                "outcome": "succeeded" if refresh_exit == 0 else "failed",
+                "exit": refresh_exit,
+                "steps": native["steps"],
+            }
+        else:
+            result = subprocess.run(command, check=False, capture_output=True)
+            refresh_exit = result.returncode
+            refresh_stderr_tail = bounded_stderr_tail(result.stderr)
+            refresh_step = {
+                "name": "owner-scoped-refresh",
+                "outcome": "succeeded" if refresh_exit == 0 else "failed",
+                "exit": refresh_exit,
+            }
         if refresh_stderr_tail is not None:
             refresh_step["stderr_tail"] = refresh_stderr_tail
         steps.append(refresh_step)

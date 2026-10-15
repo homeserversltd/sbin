@@ -10,6 +10,15 @@
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
+    "face/app",
+    "face/badge",
+    "face/bar",
+    "face/fetch",
+    "face/focus",
+    "face/launch",
+    "face/launcher-cache",
+    "face/meter",
+    "face/volume",
     "gui/update",
     "network/cert/house-ca",
     "network/cert/refresh",
@@ -58,6 +67,42 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "face",
+      "app"
+    ],
+    [
+      "face",
+      "badge"
+    ],
+    [
+      "face",
+      "bar"
+    ],
+    [
+      "face",
+      "fetch"
+    ],
+    [
+      "face",
+      "focus"
+    ],
+    [
+      "face",
+      "launch"
+    ],
+    [
+      "face",
+      "launcher-cache"
+    ],
+    [
+      "face",
+      "meter"
+    ],
+    [
+      "face",
+      "volume"
     ],
     [
       "gui",
@@ -150,6 +195,15 @@
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
+    "/api/v1/face/app",
+    "/api/v1/face/badge",
+    "/api/v1/face/bar",
+    "/api/v1/face/fetch",
+    "/api/v1/face/focus",
+    "/api/v1/face/launch",
+    "/api/v1/face/launcher-cache",
+    "/api/v1/face/meter",
+    "/api/v1/face/volume",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/gui/update/now",
