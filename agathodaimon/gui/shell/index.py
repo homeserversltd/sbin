@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -101,6 +102,25 @@ def ordered_plugs(registry: dict[str, Plug]) -> list[tuple[Plug, int]]:
     return result
 
 
+START_PLUG = "about-system"
+PRODUCT_TITLES = {"tv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
+
+
+def _app_title() -> str:
+    try:
+        profile = json.loads(Path("/etc/appliance/profile.json").read_text(encoding="utf-8")).get("profile")
+    except (OSError, ValueError, AttributeError):
+        profile = None
+    return f"{PRODUCT_TITLES.get(profile, 'Appliance')} Settings"
+
+
+def _toolbar(Adw: Any, header: Any, child: Any) -> Any:
+    view = Adw.ToolbarView()
+    view.add_top_bar(header)
+    view.set_content(child)
+    return view
+
+
 def _gtk() -> tuple[Any, Any, Any, Any]:
     import gi
 
@@ -184,6 +204,20 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
             )
 
+        def install_shell_css(self) -> None:
+            provider = Gtk.CssProvider()
+            css = (
+                "windowcontrols > button.close {"
+                " background-color: @destructive_bg_color; color: @destructive_fg_color; }"
+            )
+            if hasattr(provider, "load_from_string"):
+                provider.load_from_string(css)
+            else:
+                provider.load_from_data(css.encode("utf-8"))
+            Gtk.StyleContext.add_provider_for_display(
+                self.window.get_display(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+
         def do_activate(self) -> None:
             if self.window is not None:
                 self.window.present()
@@ -204,7 +238,10 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             listing.add_css_class("navigation-sidebar")
             sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             sidebar_box.append(listing)
-            sidebar_page = Adw.NavigationPage.new(sidebar_box, "Settings")
+            app_title = _app_title()
+            sidebar_bar = Adw.HeaderBar(show_end_title_buttons=False)
+            sidebar_bar.set_title_widget(Adw.WindowTitle(title=app_title))
+            sidebar_page = Adw.NavigationPage.new(_toolbar(Adw, sidebar_bar, sidebar_box), app_title)
             split.set_sidebar(sidebar_page)
             rows: dict[Any, Plug] = {}
             first_row = None
@@ -222,21 +259,24 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 row.set_child(line)
                 listing.append(row)
                 rows[row] = plug
-                if first_row is None:
+                if first_row is None or plug.ident == START_PLUG:
                     first_row = row
 
             def select(_listing: Any, row: Any) -> None:
                 if row is None:
                     return
                 plug = rows[row]
-                split.set_content(Adw.NavigationPage.new(plug.build_widget(), plug.title))
+                content_bar = Adw.HeaderBar(show_start_title_buttons=False, decoration_layout=":close")
+                content = _toolbar(Adw, content_bar, plug.build_widget())
+                split.set_content(Adw.NavigationPage.new(content, plug.title))
                 split.set_show_content(True)
 
             listing.connect("row-selected", select)
             self.window = Adw.ApplicationWindow(application=self)
-            self.window.set_title("Appliance Settings")
+            self.window.set_title(app_title)
             self.window.set_default_size(1040, 720)
             self.window.set_content(split)
+            self.install_shell_css()
             self.install_optional_css()
             if first_row is not None:
                 listing.select_row(first_row)
