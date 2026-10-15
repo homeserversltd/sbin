@@ -92,16 +92,25 @@ def _expand(value: str, variables: dict[str, str]) -> str:
     return value
 
 
-def _sway_bindings(paths: list[Path]) -> list[tuple[str, str]]:
+NAME_PREFIX = "# name:"
+
+
+def _sway_bindings(paths: list[Path]) -> list[tuple[str, str, str]]:
     variables: dict[str, str] = {}
     modes: list[str] = []
     bindings = []
     valued_options = {"--input-device"}
     for path in paths:
+        name = ""
         for line in _logical_lines(_read(str(path))):
+            stripped = line.strip()
+            if stripped.startswith(NAME_PREFIX):
+                name = stripped[len(NAME_PREFIX):].strip()
+                continue
             tokens, spans, line_end = _tokens(line)
             if not tokens:
                 continue
+            bind_name, name = name, ""
             command = tokens[0]
             if command == "set" and len(tokens) >= 3 and tokens[1].startswith("$"):
                 variables[tokens[1][1:]] = " ".join(tokens[2:])
@@ -131,7 +140,7 @@ def _sway_bindings(paths: list[Path]) -> list[tuple[str, str]]:
                 continue
             if modes:
                 command_text = f"mode {modes[-1]} · {command_text}"
-            bindings.append((keys, command_text))
+            bindings.append((keys, bind_name, command_text))
     return bindings
 
 
@@ -153,8 +162,12 @@ def build_widget():
     if "SWAYSOCK" in os.environ or sway_dir.exists():
         paths = [sway_dir / "config", *sorted((sway_dir / "conf.d").glob("*.conf"))]
         bindings = _sway_bindings(paths)
-        for keys, command in bindings:
-            group.add(_plain_row(Adw, keys, command))
+        for keys, name, command in bindings:
+            row = _plain_row(Adw, name or "(no name)", command)
+            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22)
+            key_label.add_css_class("monospace")
+            row.add_prefix(key_label)
+            group.add(row)
         if not bindings:
             _missing(Adw, group)
     else:
