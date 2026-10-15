@@ -38,7 +38,7 @@ class FaceError(ValueError):
 
 def read_payload() -> Request:
     """Read the public envelope and select the fields used by FaceDoor verbs."""
-    return read(known_fields=("payload", "direction", "action", "desktop_id", "menu", "id", "kind", "step"))
+    return read(known_fields=("payload", "direction", "action", "desktop_id", "menu", "id", "kind", "step", "carry", "ring"))
 
 
 def invoke(verb: str, operation: Callable[[dict[str, Any]], Mapping[str, Any]]) -> int:
@@ -425,6 +425,76 @@ def focus(payload: dict[str, Any]) -> Mapping[str, Any]:
         if result.returncode != 0:
             raise FaceError("swaymsg-focus-failed", target=target, socket_source=socket_source)
     return {"ok": True, "firstMissingSignal": "none", "changed": True, "target": target, "socket_source": socket_source}
+
+
+def workspace(payload: dict[str, Any]) -> Mapping[str, Any]:
+    direction = _require_string(payload, "direction", "face-workspace-direction-required")
+    if direction not in {"prev", "next"}:
+        raise FaceError("face-workspace-direction-invalid")
+    carry = payload.get("carry")
+    if carry is None:
+        carry = False
+    elif type(carry) is not bool:
+        raise FaceError("face-workspace-carry-invalid")
+    ring = payload.get("ring")
+    if ring is None:
+        ring = []
+    elif not isinstance(ring, list) or any(type(number) is not int for number in ring):
+        raise FaceError("face-workspace-ring-invalid")
+    ring = sorted(set(ring))
+    environment, socket_source = owner_session_environment(discover=True, require_sway=True)
+    workspaces = _sway_json(["-t", "get_workspaces"], environment)
+    if not isinstance(workspaces, list):
+        raise FaceError("face-workspace-workspaces-shape-invalid")
+    focused = next((row for row in workspaces if isinstance(row, dict) and row.get("focused") is True), None)
+    if focused is None:
+        raise FaceError("face-workspace-focused-missing")
+    previous = focused.get("num")
+    if type(previous) is not int:
+        raise FaceError("face-workspace-focused-num-invalid")
+    ring = sorted(set(ring).union(
+        row["num"] for row in workspaces
+        if isinstance(row, dict) and type(row.get("num")) is int and row["num"] > 0
+    ))
+    if not ring:
+        raise FaceError(
+            "face-workspace-ring-empty", previous=previous, ring=ring,
+            carry=carry, socket_source=socket_source,
+        )
+    try:
+        index = ring.index(previous) if previous != -1 else 0
+    except ValueError:
+        index = 0
+    offset = 1 if direction == "next" else -1
+    target = ring[(index + offset) % len(ring)]
+    commands = (
+        [f"move container to workspace number {target}, workspace number {target}"]
+        if carry else [f"workspace number {target}"]
+    )
+    refusal_context = {
+        "target": target, "previous": previous, "ring": ring,
+        "carry": carry, "socket_source": socket_source,
+    }
+    for command in commands:
+        result = owner_run(["swaymsg", "-r", command], environment, timeout=8)
+        if result.returncode != 0:
+            signal = "swaymsg-workspace-move-failed" if carry else "swaymsg-workspace-focus-failed"
+            raise FaceError(signal, **refusal_context)
+        try:
+            response = json.loads(result.stdout)
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError):
+            raise FaceError("swaymsg-workspace-response-invalid", **refusal_context)
+        if not isinstance(response, list) or not response or any(not isinstance(row, dict) for row in response):
+            raise FaceError("swaymsg-workspace-response-invalid", **refusal_context)
+        if any(row.get("success") is False or row.get("parse_error") is True for row in response):
+            raise FaceError("swaymsg-workspace-command-refused", **refusal_context)
+        if any(row.get("success") is not True for row in response):
+            raise FaceError("swaymsg-workspace-response-invalid", **refusal_context)
+    return {
+        "ok": True, "firstMissingSignal": "none", "target": target,
+        "previous": previous, "ring": ring, "carry": carry,
+        "socket_source": socket_source,
+    }
 
 
 def fetch(payload: dict[str, Any]) -> Mapping[str, Any]:

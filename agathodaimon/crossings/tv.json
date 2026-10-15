@@ -19,6 +19,7 @@
     "face/launcher-cache",
     "face/meter",
     "face/volume",
+    "face/workspace",
     "gui/update",
     "network/cert/house-ca",
     "network/cert/refresh",
@@ -103,6 +104,10 @@
     [
       "face",
       "volume"
+    ],
+    [
+      "face",
+      "workspace"
     ],
     [
       "gui",
@@ -204,6 +209,7 @@
     "/api/v1/face/launcher-cache",
     "/api/v1/face/meter",
     "/api/v1/face/volume",
+    "/api/v1/face/workspace",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/gui/update/now",
