@@ -181,8 +181,174 @@ def self_check() -> int:
     return 1 if failed else 0
 
 
+def _visible_children(widget: Any, Gtk: Any) -> list[Any]:
+    if isinstance(widget, Gtk.Stack):
+        child = widget.get_visible_child()
+        return [child] if child is not None else []
+    children = []
+    child = widget.get_first_child()
+    while child is not None:
+        children.append(child)
+        child = child.get_next_sibling()
+    return children
+
+
+def _visible_widgets(root: Any, Gtk: Any, *, require_mapped: bool = False):
+    if root is None or not root.get_visible() or not root.get_child_visible():
+        return
+    if require_mapped and not root.get_mapped():
+        return
+    yield root
+    for child in _visible_children(root, Gtk):
+        yield from _visible_widgets(child, Gtk, require_mapped=require_mapped)
+
+
+def _find_visible_scroller(root: Any, Gtk: Any) -> Any | None:
+    return next((widget for widget in _visible_widgets(root, Gtk)
+                 if isinstance(widget, Gtk.ScrolledWindow)), None)
+
+
+def _ensure_page_scroller(Gtk: Any, page: Any) -> tuple[Any, Any]:
+    scroller = _find_visible_scroller(page, Gtk)
+    if scroller is not None:
+        return page, scroller
+    scroller = Gtk.ScrolledWindow()
+    scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+    scroller.set_child(page)
+    return scroller, scroller
+
+
+def _is_descendant(widget: Any, ancestor: Any) -> bool:
+    while widget is not None:
+        if widget is ancestor:
+            return True
+        widget = widget.get_parent()
+    return False
+
+
+def _page_focusables(root: Any, Gtk: Any) -> list[Any]:
+    scroller = _find_visible_scroller(root, Gtk)
+    if scroller is None:
+        return []
+    widgets = list(_visible_widgets(root, Gtk, require_mapped=True))
+    focusables = [widget for widget in widgets
+                  if widget is not scroller and not isinstance(widget, Gtk.Scrollbar)
+                  and widget.get_focusable() and widget.is_sensitive()]
+    scroller.set_focusable(not focusables)
+    if focusables:
+        return focusables
+    return [scroller] if scroller in widgets and scroller.is_sensitive() else []
+
+
+def _focus_page(root: Any, Gtk: Any) -> bool:
+    for widget in _page_focusables(root, Gtk):
+        if widget.grab_focus():
+            return True
+    return False
+
+
+def _native_horizontal_control(focus: Any, root: Any, Gtk: Any, Adw: Any) -> bool:
+    controls = tuple(cls for cls in (
+        Gtk.Range, Gtk.DropDown,
+        getattr(Adw, "ComboRow", None), getattr(Adw, "SpinRow", None),
+        getattr(Adw, "EntryRow", None),
+    ) if cls is not None)
+    while focus is not None and _is_descendant(focus, root):
+        if isinstance(focus, (Gtk.Editable, Gtk.TextView)) or isinstance(focus, controls):
+            return True
+        if isinstance(focus, Gtk.Label) and focus.get_selectable():
+            return True
+        if focus is root:
+            break
+        focus = focus.get_parent()
+    return False
+
+
+def _install_page_keyboard(window: Any, Gtk: Any, Gdk: Any, Adw: Any,
+                           get_content: Callable[[], Any], listing: Any = None,
+                           get_active_row: Callable[[], Any] | None = None) -> None:
+    page_keys = {
+        Gdk.KEY_Page_Up, Gdk.KEY_Page_Down, Gdk.KEY_Home, Gdk.KEY_End,
+        getattr(Gdk, "KEY_KP_Page_Up", -1), getattr(Gdk, "KEY_KP_Page_Down", -1),
+        getattr(Gdk, "KEY_KP_Home", -1), getattr(Gdk, "KEY_KP_End", -1),
+    }
+    left_keys = {Gdk.KEY_Left, getattr(Gdk, "KEY_KP_Left", -1)}
+    right_keys = {Gdk.KEY_Right, getattr(Gdk, "KEY_KP_Right", -1)}
+    tab_keys = {Gdk.KEY_Tab, getattr(Gdk, "KEY_ISO_Left_Tab", -1)}
+    blocked_tab_modifiers = (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK |
+                             Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK |
+                             Gdk.ModifierType.HYPER_MASK)
+
+    def current_row() -> Any:
+        return listing.get_selected_row() or (get_active_row() if get_active_row else None)
+
+    def focus_current_row() -> bool:
+        row = current_row()
+        return bool(row is not None and row.grab_focus())
+
+    def capture(_controller: Any, keyval: int, _keycode: int, _state: Any) -> bool:
+        root = get_content()
+        if keyval in page_keys:
+            scroller = _find_visible_scroller(root, Gtk) if root is not None else None
+            if scroller is not None:
+                adjustment = scroller.get_vadjustment()
+                lower = adjustment.get_lower()
+                maximum = max(lower, adjustment.get_upper() - adjustment.get_page_size())
+                if keyval in (Gdk.KEY_Home, getattr(Gdk, "KEY_KP_Home", -1)):
+                    adjustment.set_value(lower)
+                elif keyval in (Gdk.KEY_End, getattr(Gdk, "KEY_KP_End", -1)):
+                    adjustment.set_value(maximum)
+                else:
+                    step = adjustment.get_page_increment()
+                    if step <= 0:
+                        step = max(adjustment.get_page_size() * 0.9, 40.0)
+                    direction = -1 if keyval in (Gdk.KEY_Page_Up, getattr(Gdk, "KEY_KP_Page_Up", -1)) else 1
+                    adjustment.set_value(min(maximum, max(lower, adjustment.get_value() + direction * step)))
+            return True
+        if listing is None or keyval not in tab_keys:
+            return False
+        focus = window.get_focus()
+        modifiers = _state & blocked_tab_modifiers
+        shift = keyval == getattr(Gdk, "KEY_ISO_Left_Tab", -1) or bool(_state & Gdk.ModifierType.SHIFT_MASK)
+        if modifiers:
+            return False
+        if _is_descendant(focus, listing) and not shift:
+            _focus_page(root, Gtk)
+            return True
+        if root is not None and _is_descendant(focus, root) and shift:
+            focusables = _page_focusables(root, Gtk)
+            if focusables and _is_descendant(focus, focusables[0]):
+                focus_current_row()
+                return True
+        return False
+
+    def bubble(_controller: Any, keyval: int, _keycode: int, _state: Any) -> bool:
+        if listing is None:
+            return False
+        focus = window.get_focus()
+        if keyval in right_keys and _is_descendant(focus, listing):
+            _focus_page(get_content(), Gtk)
+            return True
+        root = get_content()
+        if keyval in left_keys and root is not None and _is_descendant(focus, root):
+            if _native_horizontal_control(focus, root, Gtk, Adw):
+                return False
+            return focus_current_row()
+        return False
+
+    capture_controller = Gtk.EventControllerKey.new()
+    capture_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    capture_controller.connect("key-pressed", capture)
+    window.add_controller(capture_controller)
+    bubble_controller = Gtk.EventControllerKey.new()
+    bubble_controller.set_propagation_phase(Gtk.PropagationPhase.BUBBLE)
+    bubble_controller.connect("key-pressed", bubble)
+    window.add_controller(bubble_controller)
+
+
 def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
     Adw, Gio, _GLib, Gtk = _gtk()
+    from gi.repository import Gdk
 
     class SettingsApplication(Adw.Application):
         def __init__(self) -> None:
@@ -225,16 +391,20 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK)
             if self.standalone is not None:
                 plug = self.registry[self.standalone]
+                page, _scroller = _ensure_page_scroller(Gtk, plug.build_widget())
                 self.window = Adw.ApplicationWindow(application=self)
                 self.window.set_title(plug.title)
                 self.window.set_default_size(720, 640)
-                self.window.set_content(plug.build_widget())
+                self.window.set_content(page)
+                content = {"root": page}
+                _install_page_keyboard(self.window, Gtk, Gdk, Adw, lambda: content["root"])
                 self.install_optional_css()
                 self.window.present()
                 return
 
             split = Adw.NavigationSplitView()
             listing = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+            listing.set_activate_on_single_click(True)
             listing.add_css_class("navigation-sidebar")
             sidebar_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             sidebar_box.append(listing)
@@ -244,9 +414,12 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             sidebar_page = Adw.NavigationPage.new(_toolbar(Adw, sidebar_bar, sidebar_box), app_title)
             split.set_sidebar(sidebar_page)
             rows: dict[Any, Plug] = {}
+            markers: dict[Any, Any] = {}
             first_row = None
+            active = {"row": None, "content": None}
             for plug, depth in ordered_plugs(self.registry):
                 row = Gtk.ListBoxRow()
+                row.set_activatable(True)
                 line = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
                 line.set_margin_start(12 + depth * 20)
                 line.set_margin_end(12)
@@ -256,35 +429,51 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 label = Gtk.Label(label=plug.title, xalign=0)
                 label.set_hexpand(True)
                 line.append(label)
+                marker = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
+                marker.set_tooltip_text("Currently displayed")
+                marker.set_visible(False)
+                line.append(marker)
                 row.set_child(line)
                 listing.append(row)
                 rows[row] = plug
+                markers[row] = marker
                 if first_row is None or plug.ident == START_PLUG:
                     first_row = row
 
-            def select(_listing: Any, row: Any) -> None:
-                if row is None:
+            def activate_row(_listing: Any, row: Any) -> None:
+                plug = rows.get(row)
+                if plug is None:
                     return
-                plug = rows[row]
+                page, _scroller = _ensure_page_scroller(Gtk, plug.build_widget())
                 content_bar = Adw.HeaderBar(show_start_title_buttons=False, decoration_layout=":close")
-                content = _toolbar(Adw, content_bar, plug.build_widget())
-                split.set_content(Adw.NavigationPage.new(content, plug.title))
+                content_view = _toolbar(Adw, content_bar, page)
+                split.set_content(Adw.NavigationPage.new(content_view, plug.title))
                 split.set_show_content(True)
+                active["content"] = page
+                previous = active["row"]
+                if previous is not None:
+                    markers[previous].set_visible(False)
+                active["row"] = row
+                markers[row].set_visible(True)
 
-            listing.connect("row-selected", select)
+            listing.connect("row-activated", activate_row)
             self.window = Adw.ApplicationWindow(application=self)
             self.window.set_title(app_title)
             self.window.set_default_size(1040, 720)
             self.window.set_content(split)
             self.install_shell_css()
             self.install_optional_css()
+            _install_page_keyboard(
+                self.window, Gtk, Gdk, Adw, lambda: active["content"], listing,
+                lambda: active["row"],
+            )
             if first_row is not None:
                 listing.select_row(first_row)
+                activate_row(listing, first_row)
             self.window.present()
 
     app = SettingsApplication()
     return app.run([sys.argv[0]])
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agathodaimon-gui-settings")
