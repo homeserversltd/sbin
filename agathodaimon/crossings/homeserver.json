@@ -33,14 +33,7 @@
     "network/linker",
     "network/tailscale",
     "network/wake-on-lan",
-    "settings/appearance",
-    "settings/datetime",
-    "settings/default-apps",
-    "settings/display",
-    "settings/input",
-    "settings/notifications",
     "settings/samba",
-    "settings/sound",
     "settings/ssh",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
@@ -169,35 +162,7 @@
     ],
     [
       "settings",
-      "appearance"
-    ],
-    [
-      "settings",
-      "datetime"
-    ],
-    [
-      "settings",
-      "default-apps"
-    ],
-    [
-      "settings",
-      "display"
-    ],
-    [
-      "settings",
-      "input"
-    ],
-    [
-      "settings",
-      "notifications"
-    ],
-    [
-      "settings",
       "samba"
-    ],
-    [
-      "settings",
-      "sound"
     ],
     [
       "settings",
@@ -304,15 +269,8 @@
     "/api/v1/service/:service/start",
     "/api/v1/service/:service/status",
     "/api/v1/service/:service/stop",
-    "/api/v1/settings/appearance",
     "/api/v1/settings/child-device",
-    "/api/v1/settings/datetime",
-    "/api/v1/settings/default-apps",
-    "/api/v1/settings/display",
-    "/api/v1/settings/input",
-    "/api/v1/settings/notifications",
     "/api/v1/settings/samba/status",
-    "/api/v1/settings/sound",
     "/api/v1/settings/ssh/status",
     "/api/v1/storage/nas/attach",
     "/api/v1/storage/nas/detach",
@@ -344,8 +302,6 @@
       "linker/mkdir",
       "linker/rename",
       "network/dns",
-      "settings/datetime",
-      "settings/input",
       "storage/nas/attach",
       "storage/nas/detach",
       "storage/nas/setup",
@@ -391,30 +347,6 @@
       [
         "linker",
         "rename"
-      ],
-      [
-        "settings",
-        "appearance"
-      ],
-      [
-        "settings",
-        "datetime"
-      ],
-      [
-        "settings",
-        "default-apps"
-      ],
-      [
-        "settings",
-        "display"
-      ],
-      [
-        "settings",
-        "notifications"
-      ],
-      [
-        "settings",
-        "sound"
       ]
     ],
     "routes": [
@@ -455,13 +387,6 @@
       "/api/v1/service/:service/start",
       "/api/v1/service/:service/status",
       "/api/v1/service/:service/stop",
-      "/api/v1/settings/appearance",
-      "/api/v1/settings/datetime",
-      "/api/v1/settings/default-apps",
-      "/api/v1/settings/display",
-      "/api/v1/settings/input",
-      "/api/v1/settings/notifications",
-      "/api/v1/settings/sound",
       "/api/v1/storage/nas/attach",
       "/api/v1/storage/nas/detach",
       "/api/v1/storage/nas/setup",
