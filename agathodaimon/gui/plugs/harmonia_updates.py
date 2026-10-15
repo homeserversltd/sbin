@@ -111,6 +111,14 @@ def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _duration(milliseconds: int) -> str:
+    seconds = round(milliseconds / 1000)
+    if seconds < 60:
+        return f"{max(seconds, 1)} s" if milliseconds else "0 s"
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes} min {seconds} s" if seconds else f"{minutes} min"
+
+
 def _humanize(identifier: str) -> str:
     words = [word for word in re.split(r"[-_]+", identifier) if word]
     return " ".join(word[:1].upper() + word[1:] for word in words) or identifier
@@ -626,6 +634,8 @@ def build_widget() -> Any:
             content.append(setting_label)
 
             control_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            control_row.set_vexpand(True)
+            control_row.set_valign(Gtk.Align.END)
             module_switch = Gtk.Switch(active=enabled, valign=Gtk.Align.CENTER)
             module_switch.update_property(
                 [Gtk.AccessibleProperty.LABEL],
@@ -748,7 +758,7 @@ def build_widget() -> Any:
             duration = run["duration_ms"]
             module_count = run["module_count"]
             updated_count = run["updated_count"]
-            details = [f"{duration} ms" if duration is not None else "Duration unavailable"]
+            details = [f"took {_duration(duration)}" if duration is not None else "Duration unavailable"]
             details.append(f"{module_count} modules" if module_count is not None else "Module count unavailable")
             details.append(f"{updated_count} updated" if updated_count is not None else "Updated count unavailable")
             details_label = Gtk.Label(label=" · ".join(details), xalign=0, wrap=True)
