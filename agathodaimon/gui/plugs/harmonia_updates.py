@@ -1094,10 +1094,15 @@ def build_widget() -> Any:
             if sequence != data["update_sequence"]:
                 return False
             data["update_busy"] = False
+            state = (receipt or {}).get("state") if isinstance(receipt, dict) else None
             failed = bool(error or not _receipt_ok(receipt or {}))
-            data["update_message_is_error"] = failed
-            if failed:
+            data["update_message_is_error"] = failed and state != "busy"
+            if state == "busy":
+                data["update_message"] = "An update is already running. Its result will appear in History."
+            elif failed:
                 data["update_message"] = error or _receipt_error(receipt, "Update request refused.")
+            elif state in ("started", "unknown"):
+                data["update_message"] = "Update started. Its result will appear in History when it finishes."
             else:
                 data["update_message"] = "Update completed."
             if data["alive"]:
