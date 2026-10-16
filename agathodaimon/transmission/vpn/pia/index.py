@@ -11,6 +11,7 @@ import socket
 import stat
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -102,6 +103,43 @@ def _retry_pia_call(call: str, operation, *, attempts: int = 3):
     if last is None:
         last = rt.TransmissionError("transmission-pia-call-failed", call)
     detail = dict(last.detail)
+    detail["call"] = call
+    if "curlError" not in detail:
+        detail["curlError"] = "PIA call failed after bounded retries"
+    raise rt.TransmissionError(last.signal_name, last.step or call, detail) from None
+
+
+def _retry_forward_api(call: str, operation) -> dict[str, Any]:
+    deadline = time.monotonic() + 30.0
+    reserve = rt._CURL_REAP_RESERVE
+    delay = 0.5
+    last: rt.TransmissionError | None = None
+    while True:
+        if last is not None and deadline - time.monotonic() <= reserve:
+            break
+        try:
+            return operation(deadline)
+        except rt.TransmissionError as failure:
+            last = failure
+            transport = failure.detail.get("_transport")
+            if (not isinstance(transport, Mapping)
+                    or transport.get("class") != "pre-request-connection"):
+                break
+        except Exception:
+            last = rt.TransmissionError("transmission-pia-call-failed", call)
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= reserve:
+            break
+        sleep_for = min(delay, remaining - reserve)
+        if sleep_for <= 0:
+            break
+        time.sleep(sleep_for)
+        delay = min(delay * 2, 2.0)
+    if last is None:
+        last = rt.TransmissionError("transmission-pia-call-failed", call)
+    detail = dict(last.detail)
+    detail.pop("_transport", None)
     detail["call"] = call
     if "curlError" not in detail:
         detail["curlError"] = "PIA call failed after bounded retries"
@@ -228,8 +266,18 @@ def _is_forward_region(region: Mapping[str, Any]) -> bool:
     return region.get("port_forward") is True
 
 
+def _meta_latency(meta: Mapping[str, str]) -> float | None:
+    started = time.monotonic()
+    try:
+        with socket.create_connection((meta["address"], 443), timeout=0.1):
+            latency = time.monotonic() - started
+    except OSError:
+        return None
+    return latency if latency < 0.1 else None
+
+
 def _latency_pick(regions: list[dict[str, Any]], protocol: str) -> tuple[dict[str, Any], dict[str, str]]:
-    candidates: list[tuple[float, dict[str, Any], dict[str, str]]] = []
+    eligible: list[tuple[dict[str, Any], dict[str, str]]] = []
     for region in regions:
         if not _is_forward_region(region):
             continue
@@ -237,19 +285,27 @@ def _latency_pick(regions: list[dict[str, Any]], protocol: str) -> tuple[dict[st
         server = _protocol_server(region, protocol)
         if not isinstance(region_id, str) or not region_id or server is None:
             continue
-        for meta in _meta_candidates(region):
-            started = time.monotonic()
-            try:
-                with socket.create_connection((meta["address"], 443), timeout=0.1):
-                    latency = time.monotonic() - started
-            except OSError:
-                continue
-            if latency < 0.1:
-                candidates.append((latency, region, meta))
+        eligible.extend((region, meta) for meta in _meta_candidates(region))
+    candidates: list[tuple[float, int, dict[str, Any], dict[str, str]]] = []
+    next_index = 0
+    outstanding = {}
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        while next_index < len(eligible) or outstanding:
+            while next_index < len(eligible) and len(outstanding) < 10:
+                region, meta = eligible[next_index]
+                future = pool.submit(_meta_latency, meta)
+                outstanding[future] = (next_index, region, meta)
+                next_index += 1
+            completed, _pending = wait(outstanding, return_when=FIRST_COMPLETED)
+            for future in completed:
+                index, region, meta = outstanding.pop(future)
+                latency = future.result()
+                if latency is not None:
+                    candidates.append((latency, index, region, meta))
     if not candidates:
         raise rt.TransmissionError("transmission-pia-forward-region-unavailable", "region-latency",
                                    {"call": "serverlist", "curlError": "no meta endpoint below 0.1 seconds"})
-    _latency, region, meta = min(candidates, key=lambda item: item[0])
+    _latency, _index, region, meta = min(candidates, key=lambda item: (item[0], item[1]))
     return region, meta
 
 
@@ -545,10 +601,13 @@ def _api_json(path: str, query: Mapping[str, str], call: str, step: str) -> dict
                                    {"call": call, "curlError": "WireGuard server VIP and peer unavailable"})
     connect_target = gateway or endpoint["metaAddress"]
 
-    def request() -> dict[str, Any]:
+    def request(deadline: float | None = None) -> dict[str, Any]:
+        curl_options = ({"deadline": deadline, "structured_transport_errors": True}
+                        if deadline is not None else {})
         status, _headers, raw = rt._curl_http(
             url, namespace=rt.VPN_NAMESPACE, ca_file=str(_API_CA_FILE),
-            connect_to=f"{host}:19999:{connect_target}:19999", step=step)
+            connect_to=f"{host}:19999:{connect_target}:19999", step=step,
+            **curl_options)
         if status != 200:
             raise rt.TransmissionError("transmission-pia-api-failed", step,
                                        {"call": call, "curlError": f"HTTP status {status}"})
@@ -557,6 +616,8 @@ def _api_json(path: str, query: Mapping[str, str], call: str, step: str) -> dict
             raise rt.TransmissionError("transmission-pia-api-rejected", step,
                                        {"call": call, "curlError": "PIA rejected request"})
         return dict(value)
+    if call in {"getSignature", "bindPort"}:
+        return _retry_forward_api(call, request)
     return _retry_pia_call(call, request)
 
 

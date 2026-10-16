@@ -56,6 +56,8 @@ SYSTEMCTL = "/usr/bin/systemctl"
 SYSCTL = "/usr/sbin/sysctl"
 NFT = "/usr/sbin/nft"
 CURL = "/usr/bin/curl"
+_CURL_PRE_REQUEST_CONNECTION_CODES = {5, 6, 7}
+_CURL_REAP_RESERVE = 0.25
 _PROVIDER_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _IFACE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,15}$")
 _PORT_RE = re.compile(r"^[1-9][0-9]{0,4}$")
@@ -150,8 +152,9 @@ def command_argv(argv: list[str] | tuple[str, ...]) -> list[str]:
 
 
 def run(argv: list[str] | tuple[str, ...], *, input_data: bytes | None = None,
-        timeout: int = 45, step: str = "command",
-        capture_stderr: bool = False) -> subprocess.CompletedProcess[bytes]:
+        timeout: float = 45, step: str = "command",
+        capture_stderr: bool = False,
+        deadline: float | None = None) -> subprocess.CompletedProcess[bytes]:
     values = command_argv(argv)
     env = None
     root = _scratch_root()
@@ -169,19 +172,35 @@ def run(argv: list[str] | tuple[str, ...], *, input_data: bytes | None = None,
             close_fds=True,
             start_new_session=True,
         )
-        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        communicate_timeout = timeout
+        if deadline is not None:
+            communicate_timeout = min(timeout, deadline - time.monotonic() - _CURL_REAP_RESERVE)
+            if communicate_timeout <= 0:
+                raise subprocess.TimeoutExpired(values, communicate_timeout)
+        stdout, stderr = process.communicate(input=input_data, timeout=communicate_timeout)
         return subprocess.CompletedProcess(values, process.returncode, stdout or b"", stderr or b"")
     except subprocess.TimeoutExpired:
         if process is not None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.communicate(timeout=2)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
+            if deadline is not None:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
-                    process.communicate(timeout=3)
-                except (ProcessLookupError, subprocess.TimeoutExpired):
+                except ProcessLookupError:
                     pass
+                reap_timeout = min(_CURL_REAP_RESERVE, max(0.0, deadline - time.monotonic()))
+                try:
+                    process.communicate(timeout=reap_timeout)
+                except subprocess.TimeoutExpired:
+                    process.poll()
+            else:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.communicate(timeout=2)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.communicate(timeout=3)
+                    except (ProcessLookupError, subprocess.TimeoutExpired):
+                        pass
         raise TransmissionError("transmission-command-timeout", step) from None
     except OSError:
         if process is not None:
@@ -1723,6 +1742,8 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
                form: Mapping[str, str] | None = None,
                headers: Mapping[str, str] | None = None,
                timeout_s: int = 25,
+               deadline: float | None = None,
+               structured_transport_errors: bool = False,
                step: str = "http-request") -> tuple[int, dict[str, str], bytes]:
     cfg = "silent\nshow-error\ninclude\nmax-time = 15\n" + _curl_config_value("url", url)
     secret_values = [url]
@@ -1755,17 +1776,30 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
         command = [CURL, "--config", "-"]
     else:
         command = [IP, "netns", "exec", namespace, CURL, "--config", "-"]
+    run_timeout = timeout_s
+    deadline_kwargs: dict[str, float] = {}
+    if deadline is not None:
+        max_time = min(15.0, deadline - time.monotonic() - _CURL_REAP_RESERVE)
+        if max_time <= 0:
+            raise TransmissionError("transmission-command-timeout", step,
+                                    {"call": step, "curlError": "curl time budget exhausted"})
+        cfg = cfg.replace("max-time = 15\n", f"max-time = {max_time}\n", 1)
+        run_timeout = min(timeout_s, max_time)
+        deadline_kwargs["deadline"] = deadline
     try:
-        result = run(command, input_data=cfg.encode("utf-8"), timeout=timeout_s,
-                     step=step, capture_stderr=True)
+        result = run(command, input_data=cfg.encode("utf-8"), timeout=run_timeout,
+                     step=step, capture_stderr=True, **deadline_kwargs)
     except TransmissionError as failure:
         diagnostic = "curl timed out" if failure.signal_name == "transmission-command-timeout" else "curl unavailable"
         failure.detail.update({"call": step, "curlError": diagnostic})
         raise
     if result.returncode != 0:
         diagnostic = _safe_diagnostic(result.stderr, tuple(secret_values)) or f"curl exited {result.returncode}"
-        raise TransmissionError("transmission-http-request-failed", step,
-                                {"call": step, "curlError": diagnostic})
+        detail: dict[str, Any] = {"call": step, "curlError": diagnostic}
+        if structured_transport_errors and result.returncode in _CURL_PRE_REQUEST_CONNECTION_CODES:
+            detail["_transport"] = {"class": "pre-request-connection",
+                                     "curlExitCode": result.returncode}
+        raise TransmissionError("transmission-http-request-failed", step, detail)
     try:
         response = result.stdout.decode("utf-8")
     except UnicodeError:
