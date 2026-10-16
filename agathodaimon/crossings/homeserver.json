@@ -395,6 +395,7 @@
       "/api/v1/transmission/down",
       "/api/v1/transmission/keys/replace",
       "/api/v1/transmission/keys/rotate",
+      "POST /api/v1/transmission/vpn/settings",
       "/api/v1/transmission/up"
     ]
   }
