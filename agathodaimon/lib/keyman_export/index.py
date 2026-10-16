@@ -7,6 +7,7 @@ import os
 import re
 import stat
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
@@ -18,6 +19,8 @@ CREDENTIAL_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 MAX_KEY_FILE_BYTES = 1024 * 1024
 MAX_EXCHANGE_BYTES = 64 * 1024
 EXPORT_TIMEOUT_SECONDS = 10
+# Bound staff waiting for another exporter holding the skeleton.key lock.
+LOCK_TIMEOUT_SECONDS = 60
 
 NON_ROOT = "non-root"
 UNINITIALIZED_SYSTEM = "uninitialized-system"
@@ -31,6 +34,7 @@ EXCHANGE_ARTIFACT_RACED = "exchange-artifact-raced"
 EXCHANGE_CLEANUP_FAILED = "exchange-cleanup-failed"
 EXPORT_FAILED = "export-failed"
 EXPORT_TIMEOUT = "export-timeout"
+EXPORT_LOCK_TIMEOUT = "keyman-export-lock-timeout"
 EXPORT_UNAVAILABLE = "export-unavailable"
 SCRATCH_CONTEXT_INVALID = "scratch-context-invalid"
 EXCHANGE_MOUNT_FAILED = "exchange-mount-failed"
@@ -868,6 +872,27 @@ def export_credential(service_name: str, *,
     return username, password
 
 
+def _acquire_export_lock(fd: int) -> None:
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _refuse(EXPORT_LOCK_TIMEOUT)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as failure:
+            if failure.errno not in {errno.EAGAIN, errno.EWOULDBLOCK, errno.EINTR}:
+                _refuse(PREFLIGHT_UNOBSERVABLE)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _refuse(EXPORT_LOCK_TIMEOUT)
+            time.sleep(min(0.05, remaining))
+            continue
+        if time.monotonic() >= deadline:
+            _refuse(EXPORT_LOCK_TIMEOUT)
+        return
+
+
 def _export(service_name: str, scratch_root: str | os.PathLike[str] | None,
             exporter: str | os.PathLike[str] | None,
             username_out: bytearray | None) -> ExportedKey:
@@ -891,7 +916,7 @@ def _export(service_name: str, scratch_root: str | os.PathLike[str] | None,
             _refuse(UNINITIALIZED_SYSTEM)
         skeleton_fd, _skeleton_metadata = skeleton
         try:
-            fcntl.flock(skeleton_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            _acquire_export_lock(skeleton_fd)
             if not _same_path_inode(skeleton_dir_fd, "skeleton.key", os.fstat(skeleton_fd)):
                 _refuse(PREFLIGHT_UNOBSERVABLE)
         except OSError:

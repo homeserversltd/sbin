@@ -84,6 +84,7 @@ _EXPORT_FAILURE_SUFFIX = {
     "missing-key": "missing-key",
     "malformed-key-file": "malformed-key-file",
     "preflight-unobservable": "preflight-unobservable",
+    "keyman-export-lock-timeout": "lock-timeout",
     "service-name-invalid": "service-invalid",
     "exchange-artifact-preexisting": "exchange-preexisting",
     "exchange-artifact-malformed": "exchange-malformed",

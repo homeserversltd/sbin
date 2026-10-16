@@ -85,6 +85,7 @@ _KEYMAN_SIGNAL_MAP = {
     "missing-key": "agathodaimon-nas-keyman-missing-key",
     "malformed-key-file": "agathodaimon-nas-keyman-malformed-key-file",
     "preflight-unobservable": "agathodaimon-nas-keyman-preflight-unobservable",
+    "keyman-export-lock-timeout": "agathodaimon-nas-key-export-lock-timeout",
     "service-name-invalid": "agathodaimon-nas-keyman-service-invalid",
     "exchange-artifact-preexisting": "agathodaimon-nas-keyman-exchange-preexisting",
     "exchange-artifact-malformed": "agathodaimon-nas-key-export-invalid",

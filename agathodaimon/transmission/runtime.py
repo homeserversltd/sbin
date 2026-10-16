@@ -47,7 +47,7 @@ NATIVE_UNIT = "transmissionVPN.service"
 STATE_DIR = "/run/agathodaimon/transmission"
 KEYMAN = "/vault/keyman/keyman"
 # The staff export helper births /mnt/keyexchange per export and obliterates it;
-# it is never standing. A busy skeleton.key lock is waited out, never fatal.
+# it is never standing. A busy skeleton.key lock has a bounded wait and named timeout refusal.
 _KEY_EXPORT_TIMEOUT = 15.0
 _KEY_EXPORT_POLL_INTERVAL = 0.05
 IP = "/usr/sbin/ip"

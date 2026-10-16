@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, NoReturn, Sequence, cast
 
 from agathodaimon.lib.keyman_export.index import (
+    EXPORT_LOCK_TIMEOUT,
     MISSING_KEY,
     KeymanExportError,
     export_key,
@@ -1476,9 +1477,12 @@ def open_role(role: str) -> dict[str, Any]:
         try:
             material = _export_for_role(role, scratch)
         except KeymanExportError as failure:
-            signal_name = ("agathodaimon-nas-key-export-missing"
-                           if failure.signal == MISSING_KEY
-                           else "agathodaimon-nas-key-export-failed")
+            if failure.signal == MISSING_KEY:
+                signal_name = "agathodaimon-nas-key-export-missing"
+            elif failure.signal == EXPORT_LOCK_TIMEOUT:
+                signal_name = "agathodaimon-nas-key-export-lock-timeout"
+            else:
+                signal_name = "agathodaimon-nas-key-export-failed"
             _fail(receipt, signal_name, "key-export", failure.return_code,
                   observed=failure.signal)
         _record(receipt, "key-export", True, present=True, bytes=len(material))
