@@ -134,12 +134,15 @@ def _write_files(endpoint: dict[str, Any], username: str, password: str
             raise rt.TransmissionError("transmission-pia-runtime-path-invalid", "pia-runtime-files")
     auth_identity = config_identity = None
     address, hostname = _valid_endpoint(endpoint)
+    port = endpoint.get("vpnPort", TUNNEL_PORT)
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise rt.TransmissionError("transmission-provider-endpoint-invalid", "vpn-endpoint")
     try:
         auth_identity = rt.write_atomic(auth_path, f"{username}\n{password}\n".encode("utf-8"), 0o600)
         config = (
             "client\n"
             f"dev {TUNNEL_INTERFACE}\nproto udp\n"
-            f"remote {address} {TUNNEL_PORT}\n"
+            f"remote {address} {port}\n"
             f"route {address} 255.255.255.255 net_gateway\n"
             "redirect-gateway def1\n"
             "nobind\nresolv-retry infinite\npersist-key\npersist-tun\n"

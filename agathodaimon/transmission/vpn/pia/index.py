@@ -130,6 +130,10 @@ def _valid_host(value: Any) -> bool:
     return isinstance(value, str) and bool(_HOST_RE.fullmatch(value))
 
 
+def _valid_port(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
+
+
 def _regions_from_serverlist() -> list[dict[str, Any]]:
     def fetch() -> list[dict[str, Any]]:
         status, _headers, raw = rt._curl_http(_SERVERLIST_URL, step="pia-serverlist")
@@ -145,7 +149,26 @@ def _regions_from_serverlist() -> list[dict[str, Any]]:
         if not isinstance(regions, list):
             raise rt.TransmissionError("transmission-pia-serverlist-invalid", "pia-serverlist",
                                        {"call": "serverlist", "curlError": "regions missing"})
-        return [item for item in regions if isinstance(item, dict)]
+        groups = data.get("groups") if isinstance(data, Mapping) else None
+        ovpn_groups = groups.get("ovpnudp") if isinstance(groups, Mapping) else None
+        openvpn_port = None
+        if isinstance(ovpn_groups, list):
+            for group in ovpn_groups:
+                ports = group.get("ports") if isinstance(group, Mapping) else None
+                if not isinstance(ports, list):
+                    continue
+                openvpn_port = next((port for port in ports if _valid_port(port)), None)
+                if openvpn_port is not None:
+                    break
+        regional_copies = []
+        for item in regions:
+            if not isinstance(item, dict):
+                continue
+            region = dict(item)
+            if openvpn_port is not None:
+                region["declaredOpenVPNPort"] = openvpn_port
+            regional_copies.append(region)
+        return regional_copies
     return _retry_pia_call("serverlist", fetch)
 
 
@@ -190,6 +213,10 @@ def _protocol_server(region: Mapping[str, Any], protocol: str,
         if parsed.version != 4:
             continue
         candidate = {"hostname": hostname, "address": parsed.compressed}
+        if protocol == "openvpn":
+            port = region.get("declaredOpenVPNPort")
+            if _valid_port(port):
+                candidate["vpnPort"] = port
         if hostname == preferred_hostname:
             return candidate
         if first_eligible is None:
@@ -268,6 +295,8 @@ def _read_endpoint() -> dict[str, Any] | None:
             or not isinstance(value.get("regionId"), str)
             or value.get("protocol") not in _PROTOCOLS):
         return None
+    if "vpnPort" in value and not _valid_port(value.get("vpnPort")):
+        return None
     for field in ("metaAddress", "vpnAddress"):
         try:
             parsed = ipaddress.ip_address(value.get(field))
@@ -339,12 +368,14 @@ def _prepare_endpoint_record(options: Mapping[str, Any],
             "regionId": region["id"], "protocol": protocol, "dip": dip,
             "preparedAt": time.time(),
         }
+        if protocol == "openvpn":
+            record["vpnPort"] = server.get("vpnPort", 1198)
         return record, "serverlist", None
 
 
 def _persist_endpoint(record: Mapping[str, Any]) -> None:
     stable_fields = ("metaHostname", "metaAddress", "vpnHostname", "vpnAddress",
-                     "regionId", "protocol", "dip")
+                     "regionId", "protocol", "dip", "vpnPort")
     existing = _read_endpoint()
     if existing is not None and all(existing.get(key) == record.get(key) for key in stable_fields):
         return
@@ -372,7 +403,7 @@ def prepare_endpoint(options: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "address": record["vpnAddress"],
         "protocol": "udp",
-        "port": 1198 if protocol == "openvpn" else None,
+        "port": record.get("vpnPort", 1198) if protocol == "openvpn" else None,
         "tunnelInterface": backend.interface_name(),
         "regionId": record["regionId"],
         "provider": "pia",
