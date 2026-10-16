@@ -22,7 +22,8 @@ from typing import Any, Iterator, Mapping
 
 from agathodaimon._envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
 from agathodaimon.lib.keyman_export.index import (
-    PREFLIGHT_UNOBSERVABLE, KeymanExportError, export_credential,
+    MISSING_KEY, PREFLIGHT_UNOBSERVABLE, KeymanExportError,
+    _export as _keyman_export, export_credential,
 )
 
 SCHEMA_UP = "caduceus.transmission.up.v1"
@@ -122,9 +123,15 @@ def command_argv(argv: list[str] | tuple[str, ...]) -> list[str]:
     if (len(values) >= 5 and os.path.basename(values[0]) == "ip"
             and values[1:3] == ["netns", "exec"]):
         executable_indexes.append(4)
-        if (len(values) >= 9 and os.path.basename(values[4]) == "runuser"
-                and values[7] == "--"):
-            executable_indexes.append(8)
+        wrapper = os.path.basename(values[4])
+        if wrapper in {"runuser", "setpriv"}:
+            try:
+                separator = values.index("--", 5)
+            except ValueError:
+                raise TransmissionError("transmission-command-invalid", "command") from None
+            if separator + 1 >= len(values):
+                raise TransmissionError("transmission-command-invalid", "command")
+            executable_indexes.append(separator + 1)
     for index in executable_indexes:
         basename = os.path.basename(values[index])
         if basename in {"", ".", ".."} or "\x00" in basename:
@@ -143,7 +150,8 @@ def command_argv(argv: list[str] | tuple[str, ...]) -> list[str]:
 
 
 def run(argv: list[str] | tuple[str, ...], *, input_data: bytes | None = None,
-        timeout: int = 45, step: str = "command") -> subprocess.CompletedProcess[bytes]:
+        timeout: int = 45, step: str = "command",
+        capture_stderr: bool = False) -> subprocess.CompletedProcess[bytes]:
     values = command_argv(argv)
     env = None
     root = _scratch_root()
@@ -156,13 +164,13 @@ def run(argv: list[str] | tuple[str, ...], *, input_data: bytes | None = None,
             values,
             stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE if capture_stderr else subprocess.DEVNULL,
             env=env,
             close_fds=True,
             start_new_session=True,
         )
-        stdout, _ = process.communicate(input=input_data, timeout=timeout)
-        return subprocess.CompletedProcess(values, process.returncode, stdout or b"", b"")
+        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
+        return subprocess.CompletedProcess(values, process.returncode, stdout or b"", stderr or b"")
     except subprocess.TimeoutExpired:
         if process is not None:
             try:
@@ -330,46 +338,154 @@ def _provider_metadata() -> tuple[list[str], str]:
     return providers, default
 
 
-def _provider_candidates(container: Mapping[str, Any]) -> tuple[bool, Any]:
-    flags = container.get("flags")
-    if not isinstance(flags, Mapping):
-        return False, None
-    scopes = [flags]
-    exousia = flags.get("exousia")
-    if isinstance(exousia, Mapping):
-        scopes.insert(0, exousia)
-    for scope in scopes:
-        vpn = scope.get("vpn")
-        if isinstance(vpn, Mapping) and "provider" in vpn:
-            return True, vpn.get("provider")
-    return False, None
+def _provider_band_metadata(provider: str) -> dict[str, Any]:
+    providers, _default = _provider_metadata()
+    if provider not in providers:
+        raise TransmissionError("provider-unknown", "provider-resolution", {"providers": providers})
+    path = Path(__file__).resolve().parent / "vpn" / provider / "index.json"
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise TransmissionError("transmission-provider-metadata-unreadable", "provider-metadata") from None
+    protocols = metadata.get("protocols")
+    default = metadata.get("defaultProtocol")
+    if (not isinstance(protocols, list) or not protocols
+            or any(not isinstance(item, str) or not _PROVIDER_RE.fullmatch(item) for item in protocols)
+            or len(set(protocols)) != len(protocols)
+            or not isinstance(default, str) or default not in protocols):
+        raise TransmissionError("transmission-provider-metadata-invalid", "provider-metadata")
+    return metadata
 
 
-def _requested_provider(request: Any) -> tuple[bool, Any]:
-    raw = getattr(request, "value", {})
-    payload = raw.get("payload") if isinstance(raw, Mapping) else None
-    sources = [item for item in (raw, payload) if isinstance(item, Mapping)]
-    for source in sources:
-        found, candidate = _provider_candidates(source)
-        if found:
-            return True, candidate
-    for source in sources:
-        if "provider" in source:
+def _read_appliance_config() -> dict[str, Any]:
+    try:
+        raw, _metadata = read_regular(CONFIG_PATH, 4 * 1024 * 1024)
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise TransmissionError("transmission-portal-config-read-failed", "portal-row") from None
+    if not isinstance(value, dict):
+        raise TransmissionError("transmission-portal-config-invalid", "portal-row")
+    return value
+
+
+def _raw_request(request: Any) -> Mapping[str, Any]:
+    value = getattr(request, "value", request)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _flag_vpn(request: Any) -> tuple[bool, Mapping[str, Any] | None]:
+    raw = _raw_request(request)
+    payload = raw.get("payload")
+    found = False
+    result: dict[str, Any] = {}
+    family_reset = False
+    for container in (payload, raw):
+        if not isinstance(container, Mapping):
+            continue
+        flags = container.get("flags")
+        if not isinstance(flags, Mapping):
+            continue
+        exousia = flags.get("exousia")
+        scopes = [exousia, flags] if isinstance(exousia, Mapping) else [flags]
+        for scope in scopes:
+            if "vpn" not in scope:
+                continue
+            found = True
+            value = scope.get("vpn")
+            if value is None:
+                family_reset = True
+                result.clear()
+            elif isinstance(value, Mapping):
+                family_reset = False
+                result.update(value)
+            else:
+                raise TransmissionError("transmission-vpn-family-unknown", "vpn-flags")
+    if family_reset:
+        return True, None
+    return found, result if found else None
+
+
+def _provider_alias(request: Any) -> tuple[bool, Any]:
+    raw = _raw_request(request)
+    payload = raw.get("payload")
+    for source in (payload, raw):
+        if isinstance(source, Mapping) and "provider" in source:
             return True, source.get("provider")
     return False, None
+
+
+def _vpn_field_error(field: str) -> TransmissionError:
+    return TransmissionError("transmission-vpn-" + field + "-unknown", "vpn-options",
+                             {"field": field})
+
+
+def _validate_vpn_value(field: str, value: Any, allowed: set[Any] | None = None) -> Any:
+    if value is None:
+        return None
+    if field in {"dip", "rescan"}:
+        if isinstance(value, bool):
+            return value
+        raise _vpn_field_error(field)
+    if field == "region":
+        if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", value):
+            return value
+        raise _vpn_field_error(field)
+    if allowed is not None and isinstance(value, str) and value in allowed:
+        return value
+    raise _vpn_field_error(field)
+
+
+def resolve_vpn(request: Any) -> tuple[dict[str, Any], list[str]]:
+    """Compose the config.json standing choice with field-wise Alkahest overrides."""
+    providers, default_provider = _provider_metadata()
+    appliance = _read_appliance_config()
+    standing = appliance.get("transmission", {})
+    if standing is None:
+        standing = {}
+    if not isinstance(standing, Mapping):
+        raise TransmissionError("transmission-vpn-config-invalid", "vpn-config")
+    config_vpn = standing.get("vpn", {})
+    if config_vpn is None:
+        config_vpn = {}
+    if not isinstance(config_vpn, Mapping):
+        raise TransmissionError("transmission-vpn-config-invalid", "vpn-config")
+
+    values: dict[str, Any] = {field: config_vpn.get(field) for field in
+                              ("provider", "protocol", "region", "dip", "dns")}
+    values["rescan"] = standing.get("rescan")
+    alias_present, alias = _provider_alias(request)
+    if alias_present:
+        values["provider"] = alias
+    flags_present, overrides = _flag_vpn(request)
+    family_reset = flags_present and overrides is None
+    if family_reset:
+        values = {field: None for field in
+                  ("provider", "protocol", "region", "dip", "dns", "rescan")}
+    elif overrides is not None:
+        for field in ("provider", "protocol", "region", "dip", "dns", "rescan"):
+            if field in overrides:
+                values[field] = overrides[field]
+
+    provider = _validate_vpn_value("provider", values.get("provider"), set(providers))
+    provider = provider or default_provider
+    band = _provider_band_metadata(provider)
+    protocols = set(band["protocols"])
+    protocol = _validate_vpn_value("protocol", values.get("protocol"), protocols)
+    protocol = protocol or band["defaultProtocol"]
+    region = _validate_vpn_value("region", values.get("region"))
+    dip = _validate_vpn_value("dip", values.get("dip"))
+    dns = _validate_vpn_value("dns", values.get("dns"), {"provider"})
+    rescan = _validate_vpn_value("rescan", values.get("rescan"))
+    return ({"provider": provider, "protocol": protocol, "region": region,
+             "dip": bool(dip), "dns": dns, "rescan": bool(rescan),
+             "unitOverridePropagated": False}, providers)
 
 
 def _provider_native_units() -> dict[str, str | None]:
     providers, _default = _provider_metadata()
     result: dict[str, str | None] = {}
     for provider in providers:
-        path = Path(__file__).resolve().parent / "vpn" / provider / "index.json"
-        try:
-            metadata = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            raise TransmissionError("transmission-provider-metadata-unreadable", "provider-metadata") from None
-        if not isinstance(metadata, dict):
-            raise TransmissionError("transmission-provider-metadata-invalid", "provider-metadata")
+        metadata = _provider_band_metadata(provider)
         native_unit = metadata.get("nativeUnit")
         if native_unit is not None and (not isinstance(native_unit, str)
                                         or not native_unit.endswith(".service")
@@ -389,37 +505,33 @@ def provider_bound_to_unit(unit: str = NATIVE_UNIT) -> str:
     return matches[0]
 
 
+def resolve_bound_vpn(request: Any) -> tuple[dict[str, Any], list[str]]:
+    options, providers = resolve_vpn(request)
+    bound = provider_bound_to_unit()
+    if options["provider"] != bound:
+        raise TransmissionError("provider-not-bound", "provider-binding",
+                                {"boundProvider": bound, "requestedProvider": options["provider"],
+                                 "nativeUnit": NATIVE_UNIT})
+    return options, providers
+
+
 def resolve_provider(request: Any) -> tuple[str, list[str]]:
-    providers, default = _provider_metadata()
-    selected, value = _requested_provider(request)
-    if not selected or value is None:
-        return default, providers
-    if not isinstance(value, str) or not _PROVIDER_RE.fullmatch(value) or value not in providers:
-        raise TransmissionError("provider-unknown", "provider-resolution")
-    return value, providers
+    options, providers = resolve_vpn(request)
+    return options["provider"], providers
 
 
 def resolve_bound_provider(request: Any) -> tuple[str, list[str]]:
-    providers, _default = _provider_metadata()
-    bound = provider_bound_to_unit()
-    selected, value = _requested_provider(request)
-    if not selected or value is None:
-        return bound, providers
-    if not isinstance(value, str) or not _PROVIDER_RE.fullmatch(value):
-        raise TransmissionError("provider-unknown", "provider-resolution")
-    if value != bound:
-        raise TransmissionError("provider-not-bound", "provider-binding",
-                                {"boundProvider": bound, "requestedProvider": value,
-                                 "nativeUnit": NATIVE_UNIT})
-    if value not in providers:
-        raise TransmissionError("transmission-provider-metadata-invalid", "provider-metadata")
-    return bound, providers
+    options, providers = resolve_bound_vpn(request)
+    return options["provider"], providers
 
 
-def provider_face(provider: str) -> Any:
+def provider_face(provider: str, protocol: str | None = None) -> Any:
     providers, _default = _provider_metadata()
     if provider not in providers:
-        raise TransmissionError("provider-unknown", "provider-resolution")
+        raise TransmissionError("provider-unknown", "provider-resolution", {"providers": providers})
+    band = _provider_band_metadata(provider)
+    if protocol is not None and protocol not in band["protocols"]:
+        raise _vpn_field_error("protocol")
     path = Path(__file__).resolve().parent / "vpn" / provider / "index.py"
     if not path.is_file():
         raise TransmissionError("transmission-provider-band-unreadable", "provider-load")
@@ -434,21 +546,39 @@ def provider_face(provider: str) -> Any:
         spec.loader.exec_module(module)
     except Exception:
         raise TransmissionError("transmission-provider-band-unreadable", "provider-load") from None
-    for name in ("prepare_endpoint", "connect", "forward", "keepalive", "teardown"):
+    for name in ("prepare_endpoint", "connect", "forward", "keepalive", "teardown", "select_protocol"):
         if not callable(getattr(module, name, None)):
             raise TransmissionError("transmission-provider-face-incomplete", "provider-load")
+    if not callable(getattr(module, "dns_server", None)):
+        raise TransmissionError("transmission-provider-face-incomplete", "provider-load")
     return module
+
+
+_MAX_RECEIPT_STEPS = 32
+_CALL_STARTED = time.monotonic()
 
 
 def _stamp(receipt: dict[str, Any], step: str, observed: Any, could_change: Any,
            attempt: Any, final_state: Any) -> None:
-    receipt.setdefault("steps", []).append({
+    value = {
         "step": step,
         "observed": observed,
         "could-change": could_change,
         "attempt": attempt,
         "finalState": final_state,
-    })
+    }
+    steps = receipt.setdefault("steps", [])
+    if not isinstance(steps, list):
+        receipt["steps"] = [value]
+        return
+    for index, existing in enumerate(steps):
+        if isinstance(existing, Mapping) and existing.get("step") == step:
+            steps[index] = value
+            return
+    if len(steps) >= _MAX_RECEIPT_STEPS:
+        steps[-1] = value
+    else:
+        steps.append(value)
 
 
 def receipt(schema: str, provider: str | None = None) -> dict[str, Any]:
@@ -477,8 +607,72 @@ def finish(receipt_value: dict[str, Any], request: Any | None = None,
     return attach_envelope(receipt_value, request)
 
 
+def _journal_stdout() -> bool:
+    stream = os.environ.get("JOURNAL_STREAM")
+    if not isinstance(stream, str):
+        return False
+    try:
+        device, inode = (int(value, 10) for value in stream.split(":", 1))
+        stdout = os.fstat(sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    return stdout.st_dev == device and stdout.st_ino == inode
+
+
+def _log_token(value: Any, maximum: int = 80) -> str | None:
+    if not isinstance(value, str):
+        return None
+    clean = re.sub(r"[^A-Za-z0-9_.:/-]", "_", value)[:maximum]
+    return clean or None
+
+
 def print_receipt(value: dict[str, Any]) -> int:
-    print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+    if _journal_stdout():
+        if value.get("schema") in {SCHEMA_STATUS, "caduceus.transmission.vpn.v1"}:
+            return 0 if value.get("ok") is True else 1
+        steps = value.get("steps")
+        latest = steps[-1] if isinstance(steps, list) and steps else {}
+        if not isinstance(latest, Mapping):
+            latest = {}
+        schema = _log_token(value.get("schema"), 96)
+        line = {
+            "kind": "transmission",
+            "verb": schema.rsplit(".", 2)[-2] if schema and schema.count(".") >= 2 else "unknown",
+            "target": "transmission",
+            "outcome": "ok" if value.get("ok") is True else "failed",
+            "durationMs": max(0, int((time.monotonic() - _CALL_STARTED) * 1000)),
+        }
+        for key in ("provider", "protocol"):
+            token = _log_token(value.get(key))
+            if token is not None:
+                line[key] = token
+        step = _log_token(value.get("failedRung") or value.get("failedStep") or latest.get("step"))
+        signal_name = _log_token(value.get("firstMissingSignal"))
+        if step:
+            line["step"] = step
+        if signal_name and signal_name != "none":
+            line["signal"] = signal_name
+        call = _log_token(value.get("call"), 64)
+        if call:
+            line["call"] = call
+        curl_error = _safe_diagnostic(value.get("curlError"))
+        if curl_error:
+            line["curlError"] = curl_error[:96]
+        if value.get("ok") is not True:
+            for key in ("tunnelDiagnostic", "wgError"):
+                diagnostic = _safe_diagnostic(value.get(key))
+                if diagnostic:
+                    line[key] = diagnostic.encode("utf-8")[:160].decode("utf-8", "ignore")
+        encoded = json.dumps(line, sort_keys=True, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) >= 1024:
+            compact = {"kind": "transmission", "target": "transmission", "outcome": "failed"}
+            for key in ("signal", "call", "tunnelDiagnostic", "wgError"):
+                if key in line:
+                    compact[key] = line[key]
+            encoded = json.dumps(compact, sort_keys=True, separators=(",", ":"))
+        print(encoded, flush=True)
+    else:
+        print(json.dumps(value, sort_keys=True, separators=(",", ":")), flush=True)
     return 0 if value.get("ok") is True else 1
 
 
@@ -919,10 +1113,7 @@ def _ensure_nft_rule(family: str, table: str, chain: str, marker: str,
         raise TransmissionError("transmission-firewall-rule-readback-failed", step)
 
 
-def _ensure_namespace_output_rules(face: Any, provider: str) -> dict[str, Any]:
-    endpoint = face.prepare_endpoint()
-    if not isinstance(endpoint, Mapping):
-        raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint")
+def _ensure_namespace_output_rules(endpoint: Mapping[str, Any], provider: str) -> dict[str, Any]:
     address_raw = endpoint.get("address")
     protocol = endpoint.get("protocol")
     port = endpoint.get("port")
@@ -933,8 +1124,9 @@ def _ensure_namespace_output_rules(face: Any, provider: str) -> dict[str, Any]:
         address = ipaddress.ip_address(address_raw)
     except ValueError:
         raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint") from None
-    if (address.version != 4 or protocol not in {"tcp", "udp"}
-            or isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
+    valid_port = (port is None or (not isinstance(port, bool) and isinstance(port, int)
+                                   and 1 <= port <= 65535))
+    if (address.version != 4 or protocol not in {"tcp", "udp"} or not valid_port
             or not isinstance(interface, str) or not _IFACE_RE.fullmatch(interface)):
         raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint")
 
@@ -985,13 +1177,17 @@ def _ensure_namespace_output_rules(face: Any, provider: str) -> dict[str, Any]:
         if changed.returncode != 0:
             raise TransmissionError("transmission-firewall-policy-failed", "namespace-firewall-policy-drop")
 
+    endpoint_rule = ["oifname", NS_VETH, "ip", "daddr", address.compressed,
+                     "meta", "l4proto", protocol]
+    if port is not None:
+        endpoint_rule += [protocol, "dport", str(port)]
+    endpoint_rule.append("accept")
     desired = [
         (["oifname", "lo", "accept"], "agathodaimon-transmission-output-loopback"),
         (["oifname", interface, "accept"], "agathodaimon-transmission-output-tunnel"),
         (["oifname", NS_VETH, "ct", "state", "established,related", "accept"],
          "agathodaimon-transmission-output-veth-replies"),
-        (["oifname", NS_VETH, "ip", "daddr", address.compressed,
-          "meta", "l4proto", protocol, protocol, "dport", str(port), "accept"], "agathodaimon-transmission-output-provider-endpoint"),
+        (endpoint_rule, "agathodaimon-transmission-output-provider-endpoint"),
     ]
     expected = [_nft_expected_expr(expression) for expression, _marker in desired]
     chain_row, current_rules = _nft_list(family, table, None,
@@ -1066,9 +1262,17 @@ def _enable_host_forwarding_and_nat(wan: str) -> None:
     )
 
 
-def _ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
+def _ensure_namespace(provider: str, rpc_port: int,
+                      options: Mapping[str, Any]) -> dict[str, Any]:
     if os.geteuid() != 0 and _scratch_root() is None:
         raise TransmissionError("transmission-root-required", "namespace")
+    face = provider_face(provider)
+    endpoint = face.prepare_endpoint(options)
+    if not isinstance(endpoint, Mapping):
+        raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint")
+    dns_server = face.dns_server(options.get("dns"))
+    if not isinstance(dns_server, str):
+        raise TransmissionError("transmission-provider-dns-invalid", "namespace-dns")
     names = namespace_names()
     namespace_created = VPN_NAMESPACE not in names
     if namespace_created:
@@ -1108,13 +1312,13 @@ def _ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
         content = b""
     except OSError:
         raise TransmissionError("transmission-dns-config-unreadable", "namespace") from None
-    wanted_dns = b"nameserver 1.1.1.1\n"
+    wanted_dns = f"nameserver {dns_server}\n".encode("ascii")
     if content != wanted_dns:
         write_atomic(DNS_PATH, wanted_dns, 0o644)
     wan = _read_route_device()
     _enable_host_forwarding_and_nat(wan)
     lan_interfaces = ensure_rpc_lan_rules(rpc_port)
-    namespace_firewall = _ensure_namespace_output_rules(provider_face(provider), provider)
+    namespace_firewall = _ensure_namespace_output_rules(endpoint, provider)
     final = {
         "namespace": VPN_NAMESPACE in namespace_names(),
         "hostVethUp": link_up(None, HOST_VETH),
@@ -1122,12 +1326,17 @@ def _ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
         "hostAddress": expected_host in _ipv4_addresses(None, HOST_VETH),
         "namespaceAddress": expected_ns in _ipv4_addresses(VPN_NAMESPACE, NS_VETH),
         "defaultRouteVia": _namespace_default_route(),
-        "resolvConf": _read_dns_config(),
+        "resolvConf": _read_dns_config(dns_server),
         "wanInterface": wan,
         "ipForward": True,
         "rpcPort": rpc_port,
         "lanInterfaces": lan_interfaces,
         "namespaceFirewall": namespace_firewall,
+        "providerEndpoint": {
+            "regionId": endpoint.get("regionId"),
+            "source": endpoint.get("endpointSource"),
+            "diagnostic": endpoint.get("endpointDiagnostic"),
+        },
     }
     if (not all(final[key] is True for key in
                 ("namespace", "hostVethUp", "namespaceVethUp", "hostAddress",
@@ -1160,15 +1369,16 @@ def _namespace_default_route() -> bool:
                and row.get("dev") == NS_VETH for row in rows)
 
 
-def _read_dns_config() -> bool:
+def _read_dns_config(dns_server: str = "1.1.1.1") -> bool:
     try:
         content, _metadata = read_regular(DNS_PATH, 4096)
     except OSError:
         return False
-    return content == b"nameserver 1.1.1.1\n"
+    return content == f"nameserver {dns_server}\n".encode("ascii")
 
 
-def ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
+def ensure_namespace(provider: str, rpc_port: int,
+                     options: Mapping[str, Any]) -> dict[str, Any]:
     before_names: set[str] = set()
     before_host = False
     try:
@@ -1178,7 +1388,7 @@ def ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
         # The owned-attempt report below will carry any follow-up read failure.
         pass
     try:
-        return _ensure_namespace(provider, rpc_port)
+        return _ensure_namespace(provider, rpc_port, options)
     except Exception as failure:
         final_names: set[str] = set()
         final_host = False
@@ -1213,11 +1423,7 @@ def ensure_namespace(provider: str, rpc_port: int) -> dict[str, Any]:
 
 
 def portal_port() -> int:
-    try:
-        raw, _metadata = read_regular(CONFIG_PATH, 4 * 1024 * 1024)
-        config = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        raise TransmissionError("transmission-portal-config-read-failed", "portal-row") from None
+    config = _read_appliance_config()
     try:
         portals = config["tabs"]["portals"]["data"]["portals"]
     except (TypeError, KeyError):
@@ -1328,22 +1534,34 @@ def _timestamp_seconds(value: Any) -> float | None:
 
 
 def write_provider_state(provider: str, forward: Mapping[str, Any], tunnel_interface: str,
-                         *, peer_port_applied: bool = False, peer_port_readback: int | None = None,
+                         *, protocol: str = "openvpn", peer_port_applied: bool = False,
+                         peer_port_readback: int | None = None,
+                         peer_port_readback_at: str | None = None,
                          rpc_port: int | None = None, bound_at: str | None = None) -> tuple[int, int]:
     port = forward.get("port")
     interval = forward.get("keepaliveInterval")
     if (isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535
             or isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0
-            or not _IFACE_RE.fullmatch(tunnel_interface)):
+            or not isinstance(protocol, str) or not _PROVIDER_RE.fullmatch(protocol)
+            or not isinstance(tunnel_interface, str) or not _IFACE_RE.fullmatch(tunnel_interface)
+            or isinstance(peer_port_readback, bool)
+            or (peer_port_readback is not None
+                and (not isinstance(peer_port_readback, int) or not 1 <= peer_port_readback <= 65535))
+            or (peer_port_readback is not None
+                and (_timestamp_seconds(peer_port_readback_at) is None))
+            or (rpc_port is not None and (isinstance(rpc_port, bool) or not isinstance(rpc_port, int)
+                                          or not 1 <= rpc_port <= 65535))):
         raise TransmissionError("transmission-forward-state-invalid", "forward-state-write")
     state = {
         "provider": provider,
+        "protocol": protocol,
         "boundAt": bound_at or now_utc(),
         "keepaliveInterval": interval,
         "forwardPort": port,
         "tunnelInterface": tunnel_interface,
-        "peerPortApplied": bool(peer_port_applied),
+        "peerPortApplied": bool(peer_port_applied and peer_port_readback is not None),
         "peerPortReadback": peer_port_readback,
+        "peerPortReadbackAt": peer_port_readback_at if peer_port_readback is not None else None,
         "rpcPort": rpc_port,
     }
     path = f"{STATE_DIR}/{provider}.json"
@@ -1387,6 +1605,23 @@ def state_is_fresh(state: Mapping[str, Any] | None) -> bool:
     return 0 <= age < interval
 
 
+def peer_readback_is_fresh(state: Mapping[str, Any] | None,
+                           configured_rpc_port: int | None = None) -> bool:
+    if state is None:
+        return False
+    value = state.get("peerPortReadback")
+    timestamp = _timestamp_seconds(state.get("peerPortReadbackAt"))
+    interval = state.get("keepaliveInterval")
+    state_rpc = state.get("rpcPort")
+    if (isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535
+            or timestamp is None or isinstance(interval, bool) or not isinstance(interval, int)
+            or interval <= 0 or isinstance(state_rpc, bool) or not isinstance(state_rpc, int)
+            or (configured_rpc_port is not None and state_rpc != configured_rpc_port)):
+        return False
+    age = time.time() - timestamp
+    return 0 <= age < interval
+
+
 @contextmanager
 def exported_credentials(service: str) -> Iterator[tuple[str, str]]:
     providers, _default = _provider_metadata()
@@ -1424,6 +1659,56 @@ def exported_credentials(service: str) -> Iterator[tuple[str, str]]:
                 material[index] = 0
 
 
+def _safe_diagnostic(raw: bytes | str | None, secrets_to_redact: tuple[str, ...] = ()) -> str:
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8", "replace")
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        text = ""
+    for secret in secrets_to_redact:
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    text = re.sub(r"https?://[^\s?#\"']+\?[^\s\"']*", "[url-with-query-redacted]", text)
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
+    return " ".join(text.split())[:240]
+
+
+@contextmanager
+def exported_pia_dip_credentials() -> Iterator[tuple[str, str]]:
+    """Narrow Transmission adapter for Keyman's literal ``pia-dip`` credential."""
+    scratch = _scratch_root()
+    if os.geteuid() != 0 and scratch is None:
+        raise TransmissionError("transmission-root-required", "key-export")
+    context: dict[str, str] = {}
+    if scratch is not None:
+        context = {"scratch_root": str(scratch), "exporter": str(runtime_path(KEYMAN))}
+    username_bytes = bytearray()
+    password_bytes = None
+    try:
+        try:
+            # The public credential-name gate rejects hyphens. Keep the exact
+            # legacy key name and delegate all lock/exchange custody to _export.
+            password_bytes = _keyman_export(
+                "pia-dip", context.get("scratch_root"), context.get("exporter"), username_bytes)
+        except KeymanExportError as error:
+            if error.signal == MISSING_KEY:
+                raise TransmissionError("transmission-pia-dip-key-absent", "dip-key-export") from None
+            raise TransmissionError("transmission-key-export-" + error.signal, "dip-key-export") from None
+        try:
+            username = username_bytes.decode("utf-8")
+            password = password_bytes.decode("utf-8")
+        except UnicodeError:
+            raise TransmissionError("transmission-pia-dip-key-invalid", "dip-key-export") from None
+        if not username or not password or any(ch in username + password for ch in "\r\n\x00"):
+            raise TransmissionError("transmission-pia-dip-key-invalid", "dip-key-export")
+        yield username, password
+    finally:
+        for material in (username_bytes, password_bytes):
+            if material is not None:
+                material[:] = b"\x00" * len(material)
+
+
 def _curl_config_value(key: str, value: str) -> str:
     if "\n" in value or "\r" in value or "\x00" in value:
         raise TransmissionError("transmission-rpc-request-invalid", "rpc-request")
@@ -1436,21 +1721,31 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
                connect_to: str | None = None, ca_file: str | None = None,
                namespace: str | None = None, method: str | None = None,
                form: Mapping[str, str] | None = None,
+               headers: Mapping[str, str] | None = None,
                timeout_s: int = 25,
                step: str = "http-request") -> tuple[int, dict[str, str], bytes]:
     cfg = "silent\nshow-error\ninclude\nmax-time = 15\n" + _curl_config_value("url", url)
+    secret_values = [url]
     if username is not None and password is not None:
-        cfg += _curl_config_value("user", username + ":" + password)
+        cfg += "basic\n" + _curl_config_value("user", username + ":" + password)
+        secret_values.extend((username, password, username + ":" + password))
     if session_id is not None:
         cfg += _curl_config_value("header", "X-Transmission-Session-Id: " + session_id)
+        secret_values.append(session_id)
     if body is not None:
         cfg += _curl_config_value("header", "Content-Type: application/json")
         cfg += _curl_config_value("data", body)
+        secret_values.append(body)
     if method is not None:
         cfg += _curl_config_value("request", method.upper())
     if form is not None:
         for key, value in form.items():
             cfg += _curl_config_value("data-urlencode", f"{key}={value}")
+            secret_values.append(value)
+    if headers is not None:
+        for name, value in headers.items():
+            cfg += _curl_config_value("header", f"{name}: {value}")
+            secret_values.append(value)
     if connect_to is not None:
         cfg += _curl_config_value("connect-to", connect_to)
     if ca_file is not None:
@@ -1460,14 +1755,23 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
         command = [CURL, "--config", "-"]
     else:
         command = [IP, "netns", "exec", namespace, CURL, "--config", "-"]
-    result = run(command, input_data=cfg.encode("utf-8"), timeout=timeout_s, step=step)
+    try:
+        result = run(command, input_data=cfg.encode("utf-8"), timeout=timeout_s,
+                     step=step, capture_stderr=True)
+    except TransmissionError as failure:
+        diagnostic = "curl timed out" if failure.signal_name == "transmission-command-timeout" else "curl unavailable"
+        failure.detail.update({"call": step, "curlError": diagnostic})
+        raise
     if result.returncode != 0:
-        raise TransmissionError("transmission-http-request-failed", step)
+        diagnostic = _safe_diagnostic(result.stderr, tuple(secret_values)) or f"curl exited {result.returncode}"
+        raise TransmissionError("transmission-http-request-failed", step,
+                                {"call": step, "curlError": diagnostic})
     try:
         response = result.stdout.decode("utf-8")
     except UnicodeError:
-        raise TransmissionError("transmission-http-response-invalid", step) from None
-    headers: dict[str, str] = {}
+        raise TransmissionError("transmission-http-response-invalid", step,
+                                {"call": step, "curlError": "response was not UTF-8"}) from None
+    response_headers: dict[str, str] = {}
     status_code = 200
     body_text = response
     if "\r\n\r\n" in response or "\n\n" in response:
@@ -1478,8 +1782,8 @@ def _curl_http(url: str, *, username: str | None = None, password: str | None = 
         for line in header_text.splitlines()[1:]:
             name, sep, value = line.partition(":")
             if sep:
-                headers[name.strip().lower()] = value.strip()
-    return status_code, headers, body_text.encode("utf-8")
+                response_headers[name.strip().lower()] = value.strip()
+    return status_code, response_headers, body_text.encode("utf-8")
 
 
 def rpc_call(port: int, method: str, arguments: dict[str, Any] | None = None,
@@ -1561,6 +1865,52 @@ def rpc_set_download_settings(port: int, peer_port: int | None = None) -> dict[s
     return readback
 
 
+def rpc_rescan(port: int) -> dict[str, int]:
+    """Re-add watched metainfo and relink existing data using Transmission RPC only."""
+    watch_directory = Path("/mnt/nas/downloads/objectives")
+    data_directories = (Path("/mnt/nas/downloads/complete"),
+                        Path("/mnt/nas/downloads/incomplete"))
+    added = 0
+    if watch_directory.is_dir():
+        try:
+            entries = watch_directory.iterdir()
+            for candidate in entries:
+                if (".torrent" not in candidate.name or not candidate.is_file()
+                        or candidate.is_symlink()):
+                    continue
+                response = rpc_call(port, "torrent-add", {"filename": str(candidate)})
+                if "torrent-added" in response:
+                    added += 1
+        except OSError:
+            raise TransmissionError("transmission-rescan-watch-read-failed", "rescan-watch") from None
+
+    result = rpc_call(port, "torrent-get", {"fields": ["id", "name", "downloadDir"]})
+    torrents = result.get("torrents")
+    if not isinstance(torrents, list):
+        raise TransmissionError("transmission-rescan-torrent-list-invalid", "rescan-list")
+    relinked = 0
+    for torrent in torrents:
+        if not isinstance(torrent, Mapping):
+            continue
+        torrent_id = torrent.get("id")
+        name = torrent.get("name")
+        current = torrent.get("downloadDir")
+        if (isinstance(torrent_id, bool) or not isinstance(torrent_id, int)
+                or not isinstance(name, str) or not name or Path(name).name != name
+                or name in {".", ".."}):
+            continue
+        for directory in data_directories:
+            path = directory / name
+            if path.exists():
+                if str(directory) != current:
+                    rpc_call(port, "torrent-set-location", {
+                        "ids": [torrent_id], "location": str(directory), "move": False,
+                    })
+                    relinked += 1
+                break
+    return {"addedTorrentFiles": added, "relinkedTorrents": relinked}
+
+
 def ensure_rpc_lan_rules(rpc_port: int) -> list[str]:
     result = run([IP, "-j", "-4", "addr", "show"], step="lan-interface-readback")
     if result.returncode != 0:
@@ -1589,6 +1939,26 @@ def ensure_rpc_lan_rules(rpc_port: int) -> list[str]:
             if isinstance(address, ipaddress.IPv4Address) and address.is_private:
                 interfaces.add(name)
                 break
+    desired_markers: set[str] = set()
+    for interface in interfaces:
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", interface)
+        desired_markers.add(f"agathodaimon-transmission-lan-rpc-{rpc_port}-{safe_name}")
+        desired_markers.add(f"agathodaimon-transmission-vpn-lan-rpc-{rpc_port}-{safe_name}")
+    _chain, current_rules = _nft_list("inet", "filter", "forward", "lan-rpc-stale-readback")
+    owned_marker = re.compile(
+        r"^agathodaimon-transmission-(?:vpn-)?lan-rpc-[1-9][0-9]{0,4}-[A-Za-z0-9_.-]{1,15}$"
+    )
+    for rule in current_rules:
+        marker = _nft_rule_comment(rule)
+        if marker is None or not owned_marker.fullmatch(marker) or marker in desired_markers:
+            continue
+        handle = rule.get("handle")
+        if isinstance(handle, bool) or not isinstance(handle, int):
+            raise TransmissionError("transmission-firewall-owned-rule-unreadable", "lan-rpc-stale-cleanup")
+        deleted = _nft_run(["delete", "rule", "inet", "filter", "forward", "handle", str(handle)],
+                           "lan-rpc-stale-cleanup")
+        if deleted.returncode != 0:
+            raise TransmissionError("transmission-firewall-rule-repair-failed", "lan-rpc-stale-cleanup")
     if not interfaces:
         raise TransmissionError("transmission-lan-interface-unavailable", "lan-interface-readback")
     for interface in sorted(interfaces):
@@ -1616,12 +1986,15 @@ def _status_unit_read(unit: str) -> tuple[bool, bool]:
         raise
 
 
-def status_read(provider: str, provider_names: list[str]) -> dict[str, Any]:
+def status_read(provider: str, provider_names: list[str],
+                options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
         "schema": SCHEMA_STATUS,
         "ok": False,
         "on": False,
         "provider": provider,
+        "protocol": None,
+        "tunnelInterface": None,
         "conditions": {"namespace": False, "tunnel": False, "forward": False, "daemon": False, "peerPort": False},
         "forwardPort": None,
         "peerPort": None,
@@ -1632,8 +2005,9 @@ def status_read(provider: str, provider_names: list[str]) -> dict[str, Any]:
     try:
         providers, _default = _provider_metadata()
         if provider not in providers or provider not in provider_names:
-            raise TransmissionError("provider-unknown", "provider-resolution",
-                                    {"providers": providers})
+            raise TransmissionError("provider-unknown", "provider-resolution", {"providers": providers})
+        selected = dict(options or resolve_vpn({"provider": provider})[0])
+        selected["provider"] = provider
         names = namespace_names()
         namespace_present = VPN_NAMESPACE in names
         namespace_ok = namespace_present and link_up(VPN_NAMESPACE, NS_VETH)
@@ -1641,19 +2015,30 @@ def status_read(provider: str, provider_names: list[str]) -> dict[str, Any]:
         _stamp(result, "namespace", {"present": namespace_present}, False, "read-only",
                {"present": namespace_present, "veth1Up": namespace_ok})
 
+        state = read_provider_state(provider)
+        protocol = state.get("protocol") if state is not None else selected.get("protocol")
+        band = _provider_band_metadata(provider)
+        if not isinstance(protocol, str) or protocol not in band["protocols"]:
+            protocol = selected.get("protocol")
+        if not isinstance(protocol, str) or protocol not in band["protocols"]:
+            raise TransmissionError("transmission-vpn-protocol-unknown", "tunnel-readback")
+        result["protocol"] = protocol
         face = provider_face(provider)
-        tunnel_interface = getattr(face, "TUNNEL_INTERFACE", None)
+        protocol_face = face.select_protocol(protocol)
+        tunnel_interface = state.get("tunnelInterface") if state is not None else None
         if not isinstance(tunnel_interface, str) or not _IFACE_RE.fullmatch(tunnel_interface):
-            raise TransmissionError("transmission-provider-interface-invalid", "tunnel-readback")
-        tunnel_ok = namespace_present and link_up(VPN_NAMESPACE, tunnel_interface)
+            tunnel_interface = None
+        result["tunnelInterface"] = tunnel_interface
+        tunnel_ok = (namespace_present and tunnel_interface is not None
+                     and link_up(VPN_NAMESPACE, tunnel_interface))
         result["conditions"]["tunnel"] = tunnel_ok
-        _stamp(result, "tunnel", {"interface": tunnel_interface, "namespacePresent": namespace_present},
-               False, "read-only", {"up": tunnel_ok})
+        _stamp(result, "tunnel", {"interface": tunnel_interface, "namespacePresent": namespace_present,
+                                   "protocol": protocol}, False, "read-only", {"up": tunnel_ok})
+        del protocol_face
 
         hold_unit = HOLD_UNIT.format(provider)
         hold_state = unit_state(hold_unit, step="hold-unit-readback")
         hold_active = hold_state in {"active", "reloading"}
-        state = read_provider_state(provider)
         forward_ok = hold_active and state_is_fresh(state)
         if state is not None:
             forward_port = state.get("forwardPort")
@@ -1670,17 +2055,21 @@ def status_read(provider: str, provider_names: list[str]) -> dict[str, Any]:
                "read-only", {"active": daemon_active})
         if namespace_present or daemon_active:
             result["rpcPort"] = portal_port()
-        if daemon_active:
-            peer_port = rpc_get_peer_port(result["rpcPort"])
-            result["peerPort"] = peer_port
-            peer_ok = (result["forwardPort"] is not None
-                       and peer_port == result["forwardPort"] and forward_ok)
-            result["conditions"]["peerPort"] = peer_ok
-            _stamp(result, "peerPort", {"peerPort": peer_port, "forwardPort": result["forwardPort"]},
-                   False, "read-only", {"matches": peer_ok})
-        else:
-            _stamp(result, "peerPort", {"daemonActive": False}, False,
-                   "not-needed", {"matches": False})
+        if state is not None:
+            readback = state.get("peerPortReadback")
+            if isinstance(readback, int) and not isinstance(readback, bool):
+                result["peerPort"] = readback
+        peer_ok = (
+            daemon_active and result["forwardPort"] is not None
+            and result["peerPort"] == result["forwardPort"] and forward_ok
+            and peer_readback_is_fresh(state, result["rpcPort"])
+        )
+        result["conditions"]["peerPort"] = peer_ok
+        _stamp(result, "peerPort", {
+            "peerPort": result["peerPort"], "forwardPort": result["forwardPort"],
+            "configuredRpcPort": result["rpcPort"],
+            "readbackAt": state.get("peerPortReadbackAt") if state is not None else None,
+        }, False, "read-recorded-readback-only", {"matches": peer_ok})
         conditions = result["conditions"]
         result["on"] = all(conditions.values())
         result["ok"] = True

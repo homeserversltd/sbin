@@ -13,8 +13,12 @@ def dispatch(request: Any) -> dict[str, Any]:
     provider: str | None = None
     result = rt.receipt(rt.SCHEMA_SETTINGS)
     try:
-        provider, _providers = rt.resolve_bound_provider(request)
+        options, _providers = rt.resolve_bound_vpn(request)
+        provider = options["provider"]
+        if not isinstance(provider, str):
+            raise rt.TransmissionError("transmission-vpn-provider-unknown", "provider-resolution")
         result["provider"] = provider
+        result["rescanRequested"] = options["rescan"]
         rt._stamp(result, "provider", {"selected": provider}, False, "resolve-bound-provider",
                   {"provider": provider, "nativeUnit": rt.NATIVE_UNIT})
 
@@ -46,6 +50,14 @@ def dispatch(request: Any) -> dict[str, Any]:
             "forwardStateFresh": peer_port is not None,
         }, ["Transmission directory settings"] + (["peer-port"] if peer_port is not None else []),
            "session-set-then-session-get", settings)
+        if options["rescan"]:
+            rescan = rt.rpc_rescan(rpc_port)
+            result["rescan"] = {"requested": True, "performed": True, **rescan}
+            rt._stamp(result, "rescan", {"peerPortReadback": result["peerPort"]},
+                      ["Transmission torrent metadata and locations"],
+                      "Transmission-RPC-only-rescan-after-peer-port-readback", rescan)
+        else:
+            result["rescan"] = {"requested": False, "performed": False}
         result["ok"] = True
         result["firstMissingSignal"] = "none"
     except Exception as failure:

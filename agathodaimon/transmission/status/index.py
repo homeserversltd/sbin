@@ -1,14 +1,17 @@
 """Read the single five-condition Transmission onness projection."""
 from __future__ import annotations
-from typing import Any
+from typing import Any, Mapping
 
 from agathodaimon.transmission import runtime as rt
 
 
 def dispatch(request: Any) -> dict[str, Any]:
     try:
-        provider, providers = rt.resolve_provider(request)
-        value = rt.status_read(provider, providers)
+        options, providers = rt.resolve_vpn(request)
+        provider = options["provider"]
+        if not isinstance(provider, str):
+            raise rt.TransmissionError("transmission-vpn-provider-unknown", "provider-resolution")
+        value = rt.status_read(provider, providers, options)
     except rt.TransmissionError as failure:
         try:
             providers = rt._provider_metadata()[0]
@@ -25,21 +28,17 @@ def dispatch(request: Any) -> dict[str, Any]:
         }
         if failure.detail:
             value.update(failure.detail)
-        if failure.signal_name == "provider-unknown":
-            raw = getattr(request, "value", {})
-            payload = raw.get("payload") if isinstance(raw, dict) else None
-            for source in (raw, payload):
-                if not isinstance(source, dict):
-                    continue
-                flags = source.get("flags")
-                if isinstance(flags, dict):
-                    vpn = flags.get("vpn")
-                    if isinstance(vpn, dict) and "provider" in vpn:
-                        value["unknownProvider"] = vpn.get("provider")
-                        break
-                if "provider" in source:
-                    value["unknownProvider"] = source.get("provider")
-                    break
+        if failure.signal_name in {"provider-unknown", "transmission-vpn-provider-unknown"}:
+            try:
+                _present, vpn_flags = rt._flag_vpn(request)
+                if isinstance(vpn_flags, Mapping) and "provider" in vpn_flags:
+                    value["unknownProvider"] = vpn_flags.get("provider")
+                else:
+                    alias_present, alias = rt._provider_alias(request)
+                    if alias_present:
+                        value["unknownProvider"] = alias
+            except rt.TransmissionError:
+                pass
     value = rt.finish(value, request, successful_read=value.get("ok") is True)
     return value
 

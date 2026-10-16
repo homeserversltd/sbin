@@ -40,9 +40,21 @@ def dispatch(request: Any) -> dict[str, Any]:
     native_active_before = False
     rung = "provider"
     try:
-        provider, provider_names = rt.resolve_bound_provider(request)
+        options, provider_names = rt.resolve_bound_vpn(request)
+        provider = options["provider"]
+        if not isinstance(provider, str):
+            raise rt.TransmissionError("transmission-vpn-provider-unknown", "provider-resolution")
         result["provider"] = provider
-        rt._stamp(result, "provider", {"selected": provider}, False, "resolve", {"provider": provider})
+        intended_options = {key: options[key] for key in
+                            ("provider", "protocol", "region", "dip", "dns", "rescan")}
+        result["intendedOptions"] = intended_options
+        result["unitOverridePropagated"] = False
+        result["nextStartConfigurationSource"] = rt.CONFIG_PATH
+        rt._stamp(result, "provider", {"selected": provider,
+                                       "intendedOptions": intended_options}, False,
+                  "compose-config-and-envelope-vpn-fields",
+                  {"provider": provider, "systemdStartOptionsSource": rt.CONFIG_PATH,
+                   "unitOverridePropagated": False})
 
         rung = "hold"
         hold_unit = rt.HOLD_UNIT.format(provider)
@@ -162,7 +174,7 @@ def dispatch(request: Any) -> dict[str, Any]:
         result["firstMissingSignal"] = signal_name
         result["failedRung"] = "hold" if signal_name == "transmission-hold-start-failed" else rung
         result["failedCommandError"] = {"signal": signal_name, "step": command_step}
-        if signal_name == "provider-unknown":
+        if signal_name in {"provider-unknown", "transmission-vpn-provider-unknown"}:
             try:
                 result["providers"] = rt._provider_metadata()[0]
                 result["unknownProvider"] = _unknown_provider(request)

@@ -11,14 +11,12 @@ _READBACK_TIMEOUT = 180
 _TERMINAL_NONACTIVE_STATES = {"inactive", "failed", "unknown", "maintenance"}
 
 
-def _tunnel_present(provider: str) -> tuple[bool, bool]:
+def _tunnel_present(interface: str) -> tuple[bool, bool]:
     names = rt.namespace_names()
     present = rt.VPN_NAMESPACE in names
     if not present:
         return False, False
-    face = rt.provider_face(provider)
-    interface = getattr(face, "TUNNEL_INTERFACE", None)
-    if not isinstance(interface, str):
+    if not isinstance(interface, str) or not rt._IFACE_RE.fullmatch(interface):
         raise rt.TransmissionError("transmission-provider-interface-invalid", "final-readback")
     return True, bool(rt._link_data(rt.VPN_NAMESPACE, interface))
 
@@ -28,7 +26,10 @@ def dispatch(request: Any) -> dict[str, Any]:
     result["rpcPort"] = None
     rung = "provider"
     try:
-        provider, _providers = rt.resolve_bound_provider(request)
+        options, _providers = rt.resolve_bound_vpn(request)
+        provider = options["provider"]
+        if not isinstance(provider, str):
+            raise rt.TransmissionError("transmission-vpn-provider-unknown", "provider-resolution")
         result["provider"] = provider
         rt._stamp(result, "provider", {"selected": provider}, False, "resolve", {"provider": provider})
 
@@ -40,6 +41,16 @@ def dispatch(request: Any) -> dict[str, Any]:
         result["holdUnit"] = hold_unit
         result["nativeStateBefore"] = native_before
         result["holdStateBefore"] = hold_before
+        forward_state = rt.read_provider_state(provider)
+        tunnel_interface = (forward_state.get("tunnelInterface")
+                            if forward_state is not None else None)
+        if tunnel_interface is None:
+            protocol_face = rt.provider_face(provider, options["protocol"]).select_protocol(
+                options["protocol"])
+            tunnel_interface = protocol_face.interface_name()
+        if not isinstance(tunnel_interface, str) or not rt._IFACE_RE.fullmatch(tunnel_interface):
+            raise rt.TransmissionError("transmission-provider-interface-invalid", "tunnel-preflight")
+        result["tunnelInterfaceBeforeStop"] = tunnel_interface
         stopped = rt.run([rt.SYSTEMCTL, "stop", rt.NATIVE_UNIT],
                          timeout=180, step="native-stop")
         if stopped.returncode != 0:
@@ -58,7 +69,7 @@ def dispatch(request: Any) -> dict[str, Any]:
         while True:
             native_state = rt.unit_state(rt.NATIVE_UNIT, step="native-stop-readback")
             hold_state = rt.unit_state(hold_unit, step="hold-PartOf-readback")
-            namespace_present, tunnel_present = _tunnel_present(provider)
+            namespace_present, tunnel_present = _tunnel_present(tunnel_interface)
             final = {"nativeState": native_state, "holdUnit": hold_unit,
                      "holdState": hold_state, "namespacePreserved": namespace_present,
                      "tunnelInterfacePresent": tunnel_present}

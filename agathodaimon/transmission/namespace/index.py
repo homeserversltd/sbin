@@ -10,14 +10,19 @@ def dispatch(request: Any) -> dict[str, Any]:
     provider: str | None = None
     result = rt.receipt(rt.SCHEMA_NAMESPACE)
     try:
-        provider, _providers = rt.resolve_provider(request)
+        options, _providers = rt.resolve_vpn(request)
+        provider = options["provider"]
         result["provider"] = provider
-        rt._stamp(result, "provider", {"selected": provider}, False, "resolve-provider",
-                  {"provider": provider})
+        result["protocol"] = options["protocol"]
+        rt._stamp(result, "provider", {"selected": provider, "protocol": options["protocol"]},
+                  False, "compose-vpn-options-from-config-and-envelope", {"provider": provider})
         rpc_port = rt.portal_port()
         result["rpcPort"] = rpc_port
-        state = rt.ensure_namespace(provider, rpc_port)
-        result["steps"].append({"step": "namespace", **state})
+        state = rt.ensure_namespace(provider, rpc_port, options)
+        rt._stamp(result, "namespace", state.get("observed"), state.get("could-change"),
+                  state.get("attempt"), state.get("finalState"))
+        result["nextStartConfigurationSource"] = rt.CONFIG_PATH
+        result["unitOverridePropagated"] = False
         result["ok"] = True
         result["firstMissingSignal"] = "none"
     except Exception as failure:

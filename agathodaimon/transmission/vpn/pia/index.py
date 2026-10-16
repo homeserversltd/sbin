@@ -1,46 +1,34 @@
-"""PIA OpenVPN tunnel and port-forward provider face."""
+"""PIA provider face; protocol implementations are sibling bands."""
 from __future__ import annotations
 
-import base64
+import importlib.util
 import ipaddress
 import json
 import math
 import os
 import re
-import secrets
-import signal
+import socket
 import stat
-import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 from urllib.parse import urlencode
-from typing import Any
 
 from agathodaimon.transmission import runtime as rt
 
-TUNNEL_INTERFACE = "tun06"
-TUNNEL_PROTOCOL = "udp"
-TUNNEL_PORT = 1198
-KEEPALIVE_INTERVAL = 900
-_AUTH_URL = "https://www.privateinternetaccess.com/api/client/v2/token"
-_SERVERLIST_URL = "https://serverlist.piaservers.net/vpninfo/servers/v6"
+_BAND = Path(__file__).resolve().parent
 _RUNTIME_DIR = "/run/agathodaimon/transmission/pia"
 _ENDPOINT_PATH = _RUNTIME_DIR + "/endpoint.json"
-_IP = "/usr/sbin/ip"
-_OPENVPN = "/usr/sbin/openvpn"
-_CA_FILE = Path(__file__).resolve().with_name("ca.rsa.2048.crt")
-_API_CA_FILE = Path(__file__).resolve().with_name("ca.rsa.4096.crt")
+_SERVERLIST_URL = "https://serverlist.piaservers.net/vpninfo/servers/v6"
+_AUTH_URL = "https://www.privateinternetaccess.com/api/client/v2/token"
+_DEDICATED_IP_URL = "https://www.privateinternetaccess.com/api/client/v2/dedicated_ip"
+_API_CA_FILE = _BAND / "ca.rsa.4096.crt"
 _HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
-
-
-@dataclass(frozen=True)
-class _Endpoint:
-    meta_hostname: str
-    meta_address: str
-    vpn_hostname: str
-    vpn_address: str
+_PROTOCOLS = {"openvpn", "wireguard"}
+_DNS_SERVER = "10.0.0.242"
 
 
 @dataclass(frozen=True)
@@ -51,203 +39,73 @@ class _Signature:
     expires_at: float
 
 
-class _Tunnel:
-    def __init__(self, namespace: str, process: subprocess.Popen[bytes],
-                 config_path: str, config_id: tuple[int, int],
-                 auth_path: str, auth_id: tuple[int, int]):
-        self.namespace = namespace
-        self.process = process
-        self.config_path = config_path
-        self.config_id = config_id
-        self.auth_path = auth_path
-        self.auth_id = auth_id
-
-    def wait_ready(self, timeout: float = 60) -> bool:
-        deadline = time.monotonic() + max(0, timeout)
-        while True:
-            if self.process.poll() is not None:
-                raise rt.TransmissionError("transmission-vpn-tunnel-exited", "vpn-tunnel")
-            if rt.link_up(self.namespace, TUNNEL_INTERFACE):
-                return True
-            if time.monotonic() >= deadline:
-                raise rt.TransmissionError("transmission-vpn-tunnel-not-ready", "vpn-tunnel")
-            time.sleep(0.25)
-
-    def stop(self) -> None:
-        failures: list[str] = []
-        try:
-            _terminate_process(self.process)
-        except Exception as failure:
-            failures.append(failure.signal_name if isinstance(failure, rt.TransmissionError)
-                            else "transmission-vpn-tunnel-stop-failed")
-        for path, identity in ((self.config_path, self.config_id), (self.auth_path, self.auth_id)):
-            try:
-                if not rt.safe_unlink(path, identity):
-                    failures.append("transmission-vpn-runtime-file-cleanup-failed")
-            except Exception:
-                failures.append("transmission-vpn-runtime-file-cleanup-failed")
-        if failures:
-            raise rt.TransmissionError("transmission-vpn-teardown-failed", "vpn-teardown",
-                                       {"cleanupSignals": failures})
-
-
 @dataclass
 class _State:
-    tunnel: _Tunnel | None = None
-    endpoint: _Endpoint | None = None
+    endpoint: dict[str, Any] | None = None
+    options: dict[str, Any] | None = None
     token: str | None = None
     signed: _Signature | None = None
+    tunnel: Any = None
+    tunnel_face: Any = None
 
 
 _state = _State()
+_protocol_modules: dict[str, Any] = {}
 
 
-def _terminate_process(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
+def select_protocol(protocol: str) -> Any:
+    if protocol not in _PROTOCOLS:
+        raise rt.TransmissionError("transmission-vpn-protocol-unknown", "vpn-options",
+                                   {"field": "protocol"})
+    if protocol in _protocol_modules:
+        return _protocol_modules[protocol]
+    path = _BAND / protocol / "index.py"
+    if not path.is_file():
+        raise rt.TransmissionError("transmission-provider-protocol-unreadable", "provider-load")
+    name = "agathodaimon.face_transmission_vpn_pia_" + protocol
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise rt.TransmissionError("transmission-provider-protocol-unreadable", "provider-load")
+    module = importlib.util.module_from_spec(spec)
+    module.__package__ = "agathodaimon"
+    sys.modules[name] = module
     try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            raise rt.TransmissionError("transmission-vpn-tunnel-stop-failed", "vpn-teardown") from None
-
-
-def _endpoint_from_serverlist() -> _Endpoint:
-    try:
-        status, _headers, raw = rt._curl_http(_SERVERLIST_URL, step="pia-serverlist")
-    except rt.TransmissionError:
-        raise
+        spec.loader.exec_module(module)
     except Exception:
-        raise rt.TransmissionError("transmission-pia-serverlist-failed", "pia-serverlist") from None
-    if status != 200:
-        raise rt.TransmissionError("transmission-pia-serverlist-failed", "pia-serverlist")
-    try:
-        data = json.loads(raw.splitlines()[0].decode("utf-8"))
-        regions = data["regions"]
-        if not isinstance(regions, list):
-            raise ValueError
-        for region in regions:
-            if not isinstance(region, dict) or region.get("port_forward") is not True:
-                continue
-            servers = region.get("servers")
-            meta_servers = servers.get("meta") if isinstance(servers, dict) else None
-            udp_servers = servers.get("ovpnudp") if isinstance(servers, dict) else None
-            if not isinstance(meta_servers, list) or not meta_servers or not isinstance(udp_servers, list):
-                continue
-            meta = meta_servers[0]
-            if not isinstance(meta, dict):
-                continue
-            meta_hostname = meta.get("cn")
-            meta_address = meta.get("ip")
-            if (not isinstance(meta_hostname, str) or not _HOST_RE.fullmatch(meta_hostname)
-                    or not isinstance(meta_address, str)):
-                continue
-            try:
-                parsed_meta = ipaddress.ip_address(meta_address)
-            except (TypeError, ValueError):
-                continue
-            if parsed_meta.version != 4:
-                continue
-            for server in udp_servers:
-                if not isinstance(server, dict):
-                    continue
-                vpn_hostname = server.get("cn")
-                address = server.get("ip")
-                if not isinstance(vpn_hostname, str) or not _HOST_RE.fullmatch(vpn_hostname):
-                    continue
-                if not isinstance(address, str):
-                    continue
-                try:
-                    parsed_ip = ipaddress.ip_address(address)
-                except (TypeError, ValueError):
-                    continue
-                if parsed_ip.version == 4:
-                    return _Endpoint(meta_hostname, parsed_meta.compressed,
-                                     vpn_hostname, parsed_ip.compressed)
-    except (IndexError, KeyError, TypeError, UnicodeError, ValueError, json.JSONDecodeError):
-        raise rt.TransmissionError("transmission-pia-serverlist-invalid", "pia-serverlist") from None
-    raise rt.TransmissionError("transmission-pia-forward-region-unavailable", "pia-serverlist")
+        raise rt.TransmissionError("transmission-provider-protocol-unreadable", "provider-load") from None
+    for method in ("connect", "interface_name", "is_alive", "teardown"):
+        if not callable(getattr(module, method, None)):
+            raise rt.TransmissionError("transmission-provider-protocol-incomplete", "provider-load")
+    _protocol_modules[protocol] = module
+    return module
 
 
-def _read_prepared_endpoint() -> _Endpoint:
-    try:
-        _private_directory()
-        raw, metadata = rt.read_regular(_ENDPOINT_PATH, 8192)
-        if (stat.S_IMODE(metadata.st_mode) != 0o600
-                or (rt._scratch_root() is None and metadata.st_uid != 0)):
-            raise OSError("unsafe-prepared-endpoint")
-        value = json.loads(raw.decode("utf-8"))
-        meta_hostname = value["metaHostname"]
-        meta_address = value["metaAddress"]
-        vpn_hostname = value["vpnHostname"]
-        vpn_address = value["vpnAddress"]
-        if (not isinstance(meta_hostname, str) or not _HOST_RE.fullmatch(meta_hostname)
-                or not isinstance(vpn_hostname, str) or not _HOST_RE.fullmatch(vpn_hostname)):
-            raise ValueError
-        meta_ip = ipaddress.ip_address(meta_address)
-        vpn_ip = ipaddress.ip_address(vpn_address)
-        if meta_ip.version != 4 or vpn_ip.version != 4:
-            raise ValueError
-        prepared_at = value.get("preparedAt")
-        if (isinstance(prepared_at, bool) or not isinstance(prepared_at, (int, float))
-                or not math.isfinite(prepared_at) or prepared_at > time.time() + 60):
-            raise ValueError
-        return _Endpoint(meta_hostname, meta_ip.compressed, vpn_hostname, vpn_ip.compressed)
-    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-        raise rt.TransmissionError("transmission-provider-endpoint-unavailable", "provider-endpoint-read") from None
+def dns_server(selection: str | None) -> str:
+    if selection is None:
+        return "1.1.1.1"
+    if selection == "provider":
+        return _DNS_SERVER
+    raise rt.TransmissionError("transmission-vpn-dns-unknown", "vpn-options", {"field": "dns"})
 
 
-def prepare_endpoint() -> dict[str, Any]:
-    endpoint = _endpoint_from_serverlist()
-    _private_directory()
-    record = {
-        "metaHostname": endpoint.meta_hostname,
-        "metaAddress": endpoint.meta_address,
-        "vpnHostname": endpoint.vpn_hostname,
-        "vpnAddress": endpoint.vpn_address,
-        "preparedAt": time.time(),
-    }
-    try:
-        rt.write_atomic(_ENDPOINT_PATH,
-                        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"),
-                        0o600)
-        observed = _read_prepared_endpoint()
-        if observed != endpoint:
-            raise OSError("prepared-endpoint-readback-mismatch")
-    except (OSError, rt.TransmissionError):
-        raise rt.TransmissionError("transmission-provider-endpoint-write-failed", "provider-endpoint-write") from None
-    return {"address": endpoint.vpn_address, "protocol": TUNNEL_PROTOCOL,
-            "port": TUNNEL_PORT, "tunnelInterface": TUNNEL_INTERFACE}
-
-
-def _token(username: str, password: str) -> str:
-    try:
-        status, _headers, raw = rt._curl_http(
-            _AUTH_URL, form={"username": username, "password": password}, step="pia-auth")
-    except rt.TransmissionError:
-        raise
-    except Exception:
-        raise rt.TransmissionError("transmission-pia-auth-failed", "pia-auth") from None
-    if status != 200:
-        raise rt.TransmissionError("transmission-pia-auth-failed", "pia-auth")
-    try:
-        result = json.loads(raw.decode("utf-8"))
-        value = result.get("token") if isinstance(result, dict) else None
-    except (UnicodeError, json.JSONDecodeError):
-        value = None
-    if not isinstance(value, str) or not value or any(ch in value for ch in "\r\n\x00"):
-        raise rt.TransmissionError("transmission-pia-auth-response-invalid", "pia-auth")
-    return value
+def _retry_pia_call(call: str, operation, *, attempts: int = 3):
+    last: rt.TransmissionError | None = None
+    for index in range(attempts):
+        try:
+            return operation()
+        except rt.TransmissionError as failure:
+            last = failure
+        except Exception:
+            last = rt.TransmissionError("transmission-pia-call-failed", call)
+        if index + 1 < attempts:
+            time.sleep(min(2.0, 0.5 * (2 ** index)))
+    if last is None:
+        last = rt.TransmissionError("transmission-pia-call-failed", call)
+    detail = dict(last.detail)
+    detail["call"] = call
+    if "curlError" not in detail:
+        detail["curlError"] = "PIA call failed after bounded retries"
+    raise rt.TransmissionError(last.signal_name, last.step or call, detail) from None
 
 
 def _private_directory() -> Path:
@@ -268,124 +126,400 @@ def _private_directory() -> Path:
     return path
 
 
-def _write_openvpn_files(endpoint: _Endpoint, token: str
-                         ) -> tuple[str, tuple[int, int], str, tuple[int, int]]:
-    directory = _private_directory()
-    nonce = f"{os.getpid()}-{secrets.token_hex(12)}"
-    auth_path = f"{_RUNTIME_DIR}/auth-{nonce}"
-    config_path = f"{_RUNTIME_DIR}/openvpn-{nonce}.conf"
-    mapped_auth = rt.runtime_path(auth_path)
-    mapped_config = rt.runtime_path(config_path)
-    for value in (str(mapped_auth), str(mapped_config), str(_CA_FILE), str(_API_CA_FILE)):
-        if any(ch.isspace() or ch in "\r\n\x00\"" for ch in value):
-            raise rt.TransmissionError("transmission-pia-runtime-path-invalid", "pia-runtime-files")
+def _valid_host(value: Any) -> bool:
+    return isinstance(value, str) and bool(_HOST_RE.fullmatch(value))
 
-    auth_id = None
-    config_id = None
+
+def _regions_from_serverlist() -> list[dict[str, Any]]:
+    def fetch() -> list[dict[str, Any]]:
+        status, _headers, raw = rt._curl_http(_SERVERLIST_URL, step="pia-serverlist")
+        if status != 200:
+            raise rt.TransmissionError("transmission-pia-serverlist-failed", "pia-serverlist",
+                                       {"call": "serverlist", "curlError": f"HTTP status {status}"})
+        try:
+            data = json.loads(raw.splitlines()[0].decode("utf-8"))
+        except (IndexError, UnicodeError, json.JSONDecodeError):
+            raise rt.TransmissionError("transmission-pia-serverlist-invalid", "pia-serverlist",
+                                       {"call": "serverlist", "curlError": "invalid serverlist JSON"}) from None
+        regions = data.get("regions") if isinstance(data, Mapping) else None
+        if not isinstance(regions, list):
+            raise rt.TransmissionError("transmission-pia-serverlist-invalid", "pia-serverlist",
+                                       {"call": "serverlist", "curlError": "regions missing"})
+        return [item for item in regions if isinstance(item, dict)]
+    return _retry_pia_call("serverlist", fetch)
+
+
+def _meta_candidates(region: Mapping[str, Any]) -> list[dict[str, str]]:
+    servers = region.get("servers")
+    metadata = servers.get("meta") if isinstance(servers, Mapping) else None
+    if not isinstance(metadata, list):
+        return []
+    result = []
+    for server in metadata:
+        if not isinstance(server, Mapping):
+            continue
+        host, address = server.get("cn"), server.get("ip")
+        if not _valid_host(host) or not isinstance(address, str):
+            continue
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if parsed.version == 4:
+            result.append({"hostname": host, "address": parsed.compressed})
+    return result
+
+
+def _protocol_server(region: Mapping[str, Any], protocol: str) -> dict[str, Any] | None:
+    servers = region.get("servers")
+    entries = servers.get("ovpnudp" if protocol == "openvpn" else "wg") if isinstance(servers, Mapping) else None
+    if not isinstance(entries, list):
+        return None
+    for server in entries:
+        if not isinstance(server, Mapping):
+            continue
+        hostname, address = server.get("cn"), server.get("ip")
+        if not _valid_host(hostname) or not isinstance(address, str):
+            continue
+        try:
+            parsed = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if parsed.version == 4:
+            return {"hostname": hostname, "address": parsed.compressed}
+    return None
+
+
+def _is_forward_region(region: Mapping[str, Any]) -> bool:
+    return region.get("port_forward") is True
+
+
+def _latency_pick(regions: list[dict[str, Any]], protocol: str) -> tuple[dict[str, Any], dict[str, str]]:
+    candidates: list[tuple[float, dict[str, Any], dict[str, str]]] = []
+    for region in regions:
+        if not _is_forward_region(region):
+            continue
+        region_id = region.get("id")
+        server = _protocol_server(region, protocol)
+        if not isinstance(region_id, str) or not region_id or server is None:
+            continue
+        for meta in _meta_candidates(region):
+            started = time.monotonic()
+            try:
+                with socket.create_connection((meta["address"], 443), timeout=0.1):
+                    latency = time.monotonic() - started
+            except OSError:
+                continue
+            if latency < 0.1:
+                candidates.append((latency, region, meta))
+    if not candidates:
+        raise rt.TransmissionError("transmission-pia-forward-region-unavailable", "region-latency",
+                                   {"call": "serverlist", "curlError": "no meta endpoint below 0.1 seconds"})
+    _latency, region, meta = min(candidates, key=lambda item: item[0])
+    return region, meta
+
+
+def _select_region(regions: list[dict[str, Any]], options: Mapping[str, Any]
+                   ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
+    protocol = options.get("protocol")
+    preferred = options.get("region")
+    if protocol not in _PROTOCOLS:
+        raise rt.TransmissionError("transmission-vpn-protocol-unknown", "vpn-options", {"field": "protocol"})
+    if preferred is None:
+        region, meta = _latency_pick(regions, protocol)
+    else:
+        matching = [item for item in regions if item.get("id") == preferred and _is_forward_region(item)]
+        if len(matching) != 1:
+            raise rt.TransmissionError("transmission-vpn-region-unknown", "region-selection",
+                                       {"field": "region"})
+        region = matching[0]
+        metas = _meta_candidates(region)
+        if not metas:
+            raise rt.TransmissionError("transmission-vpn-region-unknown", "region-selection",
+                                       {"field": "region"})
+        meta = metas[0]
+    selected = _protocol_server(region, protocol)
+    if selected is None:
+        raise rt.TransmissionError("transmission-vpn-region-unknown", "region-selection",
+                                   {"field": "region"})
+    return region, meta, selected
+
+
+def _read_endpoint() -> dict[str, Any] | None:
     try:
-        auth_id = rt.write_atomic(auth_path,
-                                  f"{token[:62]}\n{token[62:]}\n".encode("utf-8"), 0o600)
-        conf = (
-            "client\n"
-            f"dev {TUNNEL_INTERFACE}\n"
-            f"proto {TUNNEL_PROTOCOL}\n"
-            f"remote {endpoint.vpn_address} {TUNNEL_PORT}\n"
-            "nobind\nresolv-retry infinite\npersist-key\npersist-tun\n"
-            "tls-client\nremote-cert-tls server\n"
-            f"verify-x509-name {endpoint.vpn_hostname} name\n"
-            f"auth-user-pass {mapped_auth}\nca {_CA_FILE}\n"
-            "cipher aes-128-cbc\nauth sha1\nreneg-sec 0\nverb 1\n"
-        )
-        config_id = rt.write_atomic(config_path, conf.encode("utf-8"), 0o600)
-        for logical, identity in ((auth_path, auth_id), (config_path, config_id)):
-            info = os.stat(rt.runtime_path(logical), follow_symlinks=False)
-            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
-                    or (rt._scratch_root() is None and info.st_uid != 0)
-                    or (info.st_dev, info.st_ino) != identity):
-                raise OSError("unsafe-runtime-file")
-        return config_path, config_id, auth_path, auth_id
-    except Exception as failure:
-        if config_id is not None:
-            rt.safe_unlink(config_path, config_id)
-        if auth_id is not None:
-            rt.safe_unlink(auth_path, auth_id)
-        if isinstance(failure, rt.TransmissionError):
-            raise
-        raise rt.TransmissionError("transmission-pia-runtime-file-create-failed", "pia-runtime-files") from None
+        _private_directory()
+        raw, metadata = rt.read_regular(_ENDPOINT_PATH, 8192)
+        if (stat.S_IMODE(metadata.st_mode) != 0o600
+                or (rt._scratch_root() is None and metadata.st_uid != 0)):
+            return None
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, rt.TransmissionError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    if (not _valid_host(value.get("metaHostname")) or not _valid_host(value.get("vpnHostname"))
+            or not isinstance(value.get("regionId"), str)
+            or value.get("protocol") not in _PROTOCOLS):
+        return None
+    for field in ("metaAddress", "vpnAddress"):
+        try:
+            parsed = ipaddress.ip_address(value.get(field))
+        except (TypeError, ValueError):
+            return None
+        if parsed.version != 4:
+            return None
+        value[field] = parsed.compressed
+    return value
 
 
-def connect(namespace: str) -> _Tunnel:
-    if not isinstance(namespace, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", namespace):
-        raise rt.TransmissionError("transmission-pia-namespace-invalid", "vpn-connect")
-    if _state.tunnel is not None:
-        if _state.tunnel.process.poll() is None:
-            raise rt.TransmissionError("transmission-pia-tunnel-already-active", "vpn-connect")
-        teardown()
+def _endpoint_compatible(value: Mapping[str, Any], options: Mapping[str, Any]) -> bool:
+    return (value.get("protocol") == options.get("protocol")
+            and value.get("dip") is False
+            and (options.get("region") is None or value.get("regionId") == options.get("region")))
 
-    endpoint = _read_prepared_endpoint()
-    config_path = auth_path = None
-    config_id = auth_id = None
-    process = None
-    try:
+
+def _endpoint_failure_diagnostic(failure: rt.TransmissionError) -> dict[str, str]:
+    call = failure.detail.get("call", "serverlist")
+    if not isinstance(call, str):
+        call = "serverlist"
+    call = re.sub(r"[^A-Za-z0-9_.-]", "_", call)[:64] or "serverlist"
+    detail = rt._safe_diagnostic(failure.detail.get("curlError"))
+    return {"call": call, "curlError": (detail or failure.signal_name)[:160]}
+
+
+def _prepare_endpoint_record(options: Mapping[str, Any],
+                             dip_info: Mapping[str, Any] | None = None
+                             ) -> tuple[dict[str, Any], str, dict[str, str] | None]:
+    protocol = options.get("protocol")
+    if not isinstance(protocol, str) or protocol not in _PROTOCOLS:
+        raise rt.TransmissionError("transmission-vpn-protocol-unknown", "vpn-options", {"field": "protocol"})
+    dip = options.get("dip") is True
+    if dip and dip_info is None:
         with rt.exported_credentials("pia") as (username, password):
             token = _token(username, password)
-            config_path, config_id, auth_path, auth_id = _write_openvpn_files(endpoint, token)
-        command = rt.command_argv([
-            _IP, "netns", "exec", namespace, _OPENVPN,
-            "--config", str(rt.runtime_path(config_path)),
-        ])
-        env = os.environ.copy()
-        scratch = rt._scratch_root()
-        if scratch is not None:
-            env["PATH"] = str(scratch / "bin")
-        process = subprocess.Popen(
-            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, env=env, close_fds=True, start_new_session=True)
-        tunnel = _Tunnel(namespace, process, config_path, config_id, auth_path, auth_id)
-        _state.tunnel = tunnel
-        _state.endpoint = endpoint
-        _state.token = token
-        _state.signed = None
-        return tunnel
-    except rt.TransmissionError:
-        if process is not None:
-            _terminate_process(process)
-        if config_path is not None and config_id is not None:
-            rt.safe_unlink(config_path, config_id)
-        if auth_path is not None and auth_id is not None:
-            rt.safe_unlink(auth_path, auth_id)
-        raise
-    except Exception:
-        if process is not None:
-            _terminate_process(process)
-        if config_path is not None and config_id is not None:
-            rt.safe_unlink(config_path, config_id)
-        if auth_path is not None and auth_id is not None:
-            rt.safe_unlink(auth_path, auth_id)
-        raise rt.TransmissionError("transmission-pia-vpn-start-failed", "vpn-connect") from None
+        with rt.exported_pia_dip_credentials() as credentials:
+            dip_info = _dedicated_ip(token, credentials[1])
+    selected_region = options.get("region")
+    actual_region = dip_info.get("regionId") if dip and isinstance(dip_info, Mapping) else None
+    if (isinstance(selected_region, str) and isinstance(actual_region, str)
+            and selected_region != actual_region):
+        raise rt.TransmissionError("transmission-vpn-region-unknown", "region-selection",
+                                   {"field": "region"})
+    cache_region = actual_region if isinstance(actual_region, str) else selected_region
+    try:
+        regions = _regions_from_serverlist()
+    except rt.TransmissionError as failure:
+        cached = _read_endpoint()
+        cache_options = {"protocol": protocol, "dip": False, "region": cache_region}
+        if cached is None or not _endpoint_compatible(cached, cache_options):
+            raise failure
+        record = dict(cached)
+        if dip and isinstance(dip_info, Mapping):
+            record.update({"vpnHostname": dip_info["hostname"],
+                           "vpnAddress": dip_info["address"],
+                           "regionId": actual_region or record["regionId"], "dip": True})
+        return record, "cache-fallback", _endpoint_failure_diagnostic(failure)
+    else:
+        selection = dict(options)
+        if dip and isinstance(actual_region, str):
+            selection["region"] = actual_region
+        region, meta, server = _select_region(regions, selection)
+        vpn_server = ({"hostname": dip_info["hostname"], "address": dip_info["address"]}
+                      if dip and isinstance(dip_info, Mapping) else server)
+        record = {
+            "metaHostname": meta["hostname"], "metaAddress": meta["address"],
+            "vpnHostname": vpn_server["hostname"], "vpnAddress": vpn_server["address"],
+            "regionId": region["id"], "protocol": protocol, "dip": dip,
+            "preparedAt": time.time(),
+        }
+        return record, "serverlist", None
 
 
-def _api_json(endpoint: _Endpoint, namespace: str, path: str,
-              query: dict[str, str], step: str) -> dict[str, Any]:
-    gateway = _tunnel_gateway(namespace)
-    url = f"https://{endpoint.meta_hostname}:19999/{path}?{urlencode(query)}"
+def _persist_endpoint(record: Mapping[str, Any]) -> None:
+    stable_fields = ("metaHostname", "metaAddress", "vpnHostname", "vpnAddress",
+                     "regionId", "protocol", "dip")
+    existing = _read_endpoint()
+    if existing is not None and all(existing.get(key) == record.get(key) for key in stable_fields):
+        return
+    _private_directory()
     try:
-        status, _headers, raw = rt._curl_http(
-            url, connect_to=f"{endpoint.meta_hostname}::{gateway}:",
-            ca_file=str(_API_CA_FILE), namespace=namespace, step=step)
-    except rt.TransmissionError:
-        raise
-    except Exception:
-        raise rt.TransmissionError("transmission-pia-api-failed", step) from None
-    if status != 200:
-        raise rt.TransmissionError("transmission-pia-api-failed", step)
+        rt.write_atomic(_ENDPOINT_PATH,
+                        json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"), 0o600)
+        observed = _read_endpoint()
+        if observed is None or any(observed.get(key) != record.get(key) for key in stable_fields):
+            raise OSError("endpoint-readback-mismatch")
+    except (OSError, rt.TransmissionError):
+        raise rt.TransmissionError("transmission-provider-endpoint-write-failed", "provider-endpoint-write") from None
+
+
+def prepare_endpoint(options: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(options, Mapping):
+        raise rt.TransmissionError("transmission-vpn-options-invalid", "provider-endpoint")
+    protocol = options.get("protocol")
+    if not isinstance(protocol, str) or protocol not in _PROTOCOLS:
+        raise rt.TransmissionError("transmission-vpn-protocol-unknown", "vpn-options", {"field": "protocol"})
+    record, source, diagnostic = _prepare_endpoint_record(options)
+    if options.get("dip") is not True and source == "serverlist":
+        _persist_endpoint(record)
+    backend = select_protocol(protocol)
+    return {
+        "address": record["vpnAddress"],
+        "protocol": "udp",
+        "port": 1198 if protocol == "openvpn" else None,
+        "tunnelInterface": backend.interface_name(),
+        "regionId": record["regionId"],
+        "provider": "pia",
+        "endpointSource": source,
+        "endpointDiagnostic": diagnostic,
+    }
+
+
+def _decode_json(raw: bytes, step: str, signal: str) -> Any:
     try:
-        result = json.loads(raw.decode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
-        raise rt.TransmissionError("transmission-pia-api-response-invalid", step) from None
-    if not isinstance(result, dict) or result.get("status") != "OK":
-        raise rt.TransmissionError("transmission-pia-api-rejected", step)
-    return result
+        raise rt.TransmissionError(signal, step, {"call": step, "curlError": "invalid JSON response"}) from None
+
+
+def _token(username: str, password: str) -> str:
+    def request() -> str:
+        status, _headers, raw = rt._curl_http(
+            _AUTH_URL, form={"username": username, "password": password}, step="pia-auth")
+        if status != 200:
+            raise rt.TransmissionError("transmission-pia-auth-failed", "pia-auth",
+                                       {"call": "token", "curlError": f"HTTP status {status}"})
+        result = _decode_json(raw, "pia-auth", "transmission-pia-auth-response-invalid")
+        value = result.get("token") if isinstance(result, Mapping) else None
+        if not isinstance(value, str) or not value or any(ch in value for ch in "\r\n\x00"):
+            raise rt.TransmissionError("transmission-pia-auth-response-invalid", "pia-auth",
+                                       {"call": "token", "curlError": "token missing from response"})
+        return value
+    return _retry_pia_call("token", request)
+
+
+def _dedicated_ip(token: str, dip_token: str) -> dict[str, Any]:
+    def request() -> dict[str, Any]:
+        body = json.dumps({"tokens": [dip_token]}, separators=(",", ":"))
+        status, _headers, raw = rt._curl_http(
+            _DEDICATED_IP_URL, body=body,
+            headers={"Authorization": "Token " + token}, method="POST",
+            ca_file=str(_API_CA_FILE), step="pia-dedicated-ip")
+        if status != 200:
+            raise rt.TransmissionError("transmission-pia-dedicated-ip-failed", "pia-dedicated-ip",
+                                       {"call": "dedicated_ip", "curlError": f"HTTP status {status}"})
+        result = _decode_json(raw, "pia-dedicated-ip", "transmission-pia-dedicated-ip-response-invalid")
+        item = result[0] if isinstance(result, list) and result else None
+        if not isinstance(item, Mapping) or item.get("status") != "active":
+            raise rt.TransmissionError("transmission-pia-dedicated-ip-rejected", "pia-dedicated-ip",
+                                       {"call": "dedicated_ip", "curlError": "no active dedicated IP"})
+        address, hostname, region_id = item.get("ip"), item.get("cn"), item.get("id")
+        try:
+            parsed = ipaddress.ip_address(address)
+        except (TypeError, ValueError):
+            raise rt.TransmissionError("transmission-pia-dedicated-ip-response-invalid", "pia-dedicated-ip",
+                                       {"call": "dedicated_ip", "curlError": "invalid endpoint address"}) from None
+        if (parsed.version != 4 or not _valid_host(hostname)
+                or not isinstance(region_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", region_id)):
+            raise rt.TransmissionError("transmission-pia-dedicated-ip-response-invalid", "pia-dedicated-ip",
+                                       {"call": "dedicated_ip", "curlError": "invalid endpoint or region fields"})
+        return {"address": parsed.compressed, "hostname": hostname, "regionId": region_id}
+    return _retry_pia_call("dedicated_ip", request)
+
+
+def connect(namespace: str, options: Mapping[str, Any]):
+    backend = select_protocol(options.get("protocol"))
+    with rt.exported_credentials("pia") as (username, password):
+        token = _token(username, password)
+    if options.get("dip") is True:
+        with rt.exported_pia_dip_credentials() as dip_credentials:
+            dip_info = _dedicated_ip(token, dip_credentials[1])
+            active_endpoint, _source, _diagnostic = _prepare_endpoint_record(options, dip_info)
+            tunnel = backend.connect(namespace, active_endpoint, token, options,
+                                     dip_credentials=dip_credentials, dip_info=dip_info,
+                                     retry_call=_retry_pia_call)
+    else:
+        active_endpoint = _read_endpoint()
+        if active_endpoint is None or not _endpoint_compatible(active_endpoint, options):
+            active_endpoint, source, _diagnostic = _prepare_endpoint_record(options)
+            if source == "serverlist":
+                _persist_endpoint(active_endpoint)
+        tunnel = backend.connect(namespace, active_endpoint, token, options,
+                                 dip_credentials=None, dip_info=None,
+                                 retry_call=_retry_pia_call)
+    _state.endpoint = active_endpoint
+    _state.options = dict(options)
+    _state.token = token
+    _state.signed = None
+    _state.tunnel = tunnel
+    _state.tunnel_face = backend
+    return tunnel
+
+
+def _tunnel_gateway(namespace: str) -> str | None:
+    result = rt.run([rt.IP, "-j", "-n", namespace, "-4", "route", "show"],
+                    step="pia-gateway-readback")
+    if result.returncode != 0:
+        return None
+    try:
+        routes = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError):
+        return None
+    interface = _state.tunnel_face.interface_name() if _state.tunnel_face else None
+    if isinstance(routes, list):
+        for row in routes:
+            if not isinstance(row, dict) or row.get("dev") != interface:
+                continue
+            gateway = row.get("gateway")
+            try:
+                parsed = ipaddress.ip_address(gateway)
+            except (TypeError, ValueError):
+                continue
+            if parsed.version == 4:
+                return parsed.compressed
+    if (_state.options is not None and _state.options.get("protocol") == "wireguard"
+            and _state.tunnel is not None):
+        for candidate in (getattr(_state.tunnel, "server_vip", None),
+                          getattr(_state.tunnel, "peer_address", None)):
+            if not isinstance(candidate, str):
+                continue
+            try:
+                parsed = (ipaddress.ip_interface(candidate).ip if "/" in candidate
+                          else ipaddress.ip_address(candidate))
+            except (TypeError, ValueError):
+                continue
+            if parsed.version == 4:
+                return parsed.compressed
+    return None
+
+
+def _api_json(path: str, query: Mapping[str, str], call: str, step: str) -> dict[str, Any]:
+    endpoint = _state.endpoint
+    token = _state.token
+    if endpoint is None or token is None:
+        raise rt.TransmissionError("transmission-pia-forward-state-missing", step)
+    host = endpoint["metaHostname"]
+    url = f"https://{host}:19999/{path}?{urlencode(query)}"
+    gateway = _tunnel_gateway(rt.VPN_NAMESPACE)
+    if gateway is None and _state.options is not None \
+            and _state.options.get("protocol") == "wireguard":
+        raise rt.TransmissionError("transmission-pia-tunnel-gateway-unavailable", "pia-gateway",
+                                   {"call": call, "curlError": "WireGuard server VIP and peer unavailable"})
+    connect_target = gateway or endpoint["metaAddress"]
+
+    def request() -> dict[str, Any]:
+        status, _headers, raw = rt._curl_http(
+            url, namespace=rt.VPN_NAMESPACE, ca_file=str(_API_CA_FILE),
+            connect_to=f"{host}:19999:{connect_target}:19999", step=step)
+        if status != 200:
+            raise rt.TransmissionError("transmission-pia-api-failed", step,
+                                       {"call": call, "curlError": f"HTTP status {status}"})
+        value = _decode_json(raw, call, "transmission-pia-api-response-invalid")
+        if not isinstance(value, Mapping) or value.get("status") != "OK":
+            raise rt.TransmissionError("transmission-pia-api-rejected", step,
+                                       {"call": call, "curlError": "PIA rejected request"})
+        return dict(value)
+    return _retry_pia_call(call, request)
 
 
 def _expiry(value: Any) -> float:
@@ -396,140 +530,94 @@ def _expiry(value: Any) -> float:
     except (TypeError, ValueError):
         if not isinstance(value, str):
             raise ValueError from None
-        try:
-            result = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-        except ValueError:
-            raise ValueError from None
+        result = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     if not math.isfinite(result) or result <= time.time():
         raise ValueError
     return result
 
 
-def _tunnel_gateway(namespace: str) -> str:
-    result = rt.run([rt.IP, "-j", "-n", namespace, "-4", "route", "show"],
-                    step="pia-gateway-readback")
-    if result.returncode != 0:
-        raise rt.TransmissionError("transmission-pia-tunnel-gateway-unavailable", "pia-gateway")
-    try:
-        routes = json.loads(result.stdout.decode("utf-8"))
-    except (UnicodeError, json.JSONDecodeError):
-        raise rt.TransmissionError("transmission-pia-tunnel-gateway-unavailable", "pia-gateway") from None
-    if isinstance(routes, list):
-        for row in routes:
-            if not isinstance(row, dict) or row.get("dev") != TUNNEL_INTERFACE:
-                continue
-            gateway = row.get("gateway")
-            if not isinstance(gateway, str):
-                continue
-            try:
-                parsed = ipaddress.ip_address(gateway)
-            except (TypeError, ValueError):
-                continue
-            if parsed.version == 4:
-                return parsed.compressed
-
-    addresses = rt.run([rt.IP, "-j", "-n", namespace, "-4", "addr", "show",
-                        "dev", TUNNEL_INTERFACE], step="pia-gateway-peer-readback")
-    if addresses.returncode == 0:
-        try:
-            rows = json.loads(addresses.stdout.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError):
-            rows = []
-        if isinstance(rows, list):
-            for row in rows:
-                if not isinstance(row, dict) or row.get("ifname") != TUNNEL_INTERFACE:
-                    continue
-                for info in row.get("addr_info", []):
-                    if not isinstance(info, dict):
-                        continue
-                    peer = info.get("peer")
-                    if not isinstance(peer, str):
-                        continue
-                    try:
-                        parsed = (ipaddress.ip_interface(peer).ip
-                                  if "/" in peer
-                                  else ipaddress.ip_address(peer))
-                    except (TypeError, ValueError):
-                        continue
-                    if parsed.version == 4:
-                        return parsed.compressed
-    raise rt.TransmissionError("transmission-pia-tunnel-gateway-unavailable", "pia-gateway")
-
-
-def _get_signature(namespace: str, endpoint: _Endpoint, token: str) -> _Signature:
-    result = _api_json(endpoint, namespace, "getSignature", {"token": token}, "pia-signature")
+def _get_signature() -> _Signature:
+    result = _api_json("getSignature", {"token": _state.token or ""},
+                       "getSignature", "pia-signature")
     payload, signature = result.get("payload"), result.get("signature")
     if not isinstance(payload, str) or not isinstance(signature, str) or not signature:
-        raise rt.TransmissionError("transmission-pia-signature-invalid", "pia-signature")
+        raise rt.TransmissionError("transmission-pia-signature-invalid", "pia-signature",
+                                   {"call": "getSignature", "curlError": "signature fields missing"})
     try:
-        decoded = base64.b64decode(payload, validate=True).decode("utf-8")
+        decoded = __import__("base64").b64decode(payload, validate=True).decode("utf-8")
         payload_data = json.loads(decoded)
         port = payload_data.get("port")
         expires_at = _expiry(payload_data.get("expires_at"))
     except (ValueError, UnicodeError, json.JSONDecodeError, AttributeError):
-        raise rt.TransmissionError("transmission-pia-signature-invalid", "pia-signature") from None
+        raise rt.TransmissionError("transmission-pia-signature-invalid", "pia-signature",
+                                   {"call": "getSignature", "curlError": "signature payload invalid"}) from None
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
-        raise rt.TransmissionError("transmission-pia-signature-invalid", "pia-signature")
+        raise rt.TransmissionError("transmission-pia-signature-invalid", "pia-signature",
+                                   {"call": "getSignature", "curlError": "forward port invalid"})
     return _Signature(payload, signature, port, expires_at)
 
 
-def _bind(namespace: str, endpoint: _Endpoint, signed: _Signature) -> None:
-    _api_json(endpoint, namespace, "bindPort",
-              {"payload": signed.payload, "signature": signed.signature}, "pia-bind-port")
+def _bind(signed: _Signature) -> None:
+    _api_json("bindPort", {"payload": signed.payload, "signature": signed.signature},
+              "bindPort", "pia-bind-port")
 
 
-def _live_tunnel() -> _Tunnel:
-    tunnel = _state.tunnel
-    if tunnel is None:
-        raise rt.TransmissionError("transmission-pia-tunnel-unavailable", "vpn-tunnel")
-    tunnel.wait_ready(timeout=0)
-    return tunnel
-
-
-def _fresh_token() -> str:
-    with rt.exported_credentials("pia") as (username, password):
-        return _token(username, password)
-
-
-def _public_forward(signed: _Signature) -> dict[str, int]:
-    return {"port": signed.port, "keepaliveInterval": KEEPALIVE_INTERVAL}
+def _tunnel_diagnostic() -> dict[str, str]:
+    diagnostic = getattr(_state.tunnel, "last_diagnostic", None)
+    if isinstance(diagnostic, str) and diagnostic:
+        return {"tunnelDiagnostic": rt._safe_diagnostic(diagnostic)[:160]}
+    return {}
 
 
 def forward() -> dict[str, int]:
-    tunnel = _live_tunnel()
-    if _state.endpoint is None or _state.token is None:
-        raise rt.TransmissionError("transmission-pia-forward-state-missing", "pia-forward")
-    signed = _get_signature(tunnel.namespace, _state.endpoint, _state.token)
-    _bind(tunnel.namespace, _state.endpoint, signed)
+    if _state.tunnel is None or _state.tunnel_face is None:
+        raise rt.TransmissionError("transmission-pia-tunnel-unavailable", "pia-forward")
+    try:
+        alive = _state.tunnel_face.is_alive(_state.tunnel)
+    except Exception:
+        alive = False
+    if not alive:
+        raise rt.TransmissionError("transmission-vpn-tunnel-exited", "vpn-tunnel",
+                                   _tunnel_diagnostic())
+    signed = _get_signature()
+    _bind(signed)
     _state.signed = signed
-    return _public_forward(signed)
+    return {"port": signed.port, "keepaliveInterval": 900}
 
 
 def keepalive(current: dict[str, Any]) -> dict[str, int]:
-    tunnel = _live_tunnel()
+    if _state.tunnel is None or _state.tunnel_face is None:
+        raise rt.TransmissionError("transmission-pia-tunnel-unavailable", "pia-keepalive")
+    try:
+        alive = _state.tunnel_face.is_alive(_state.tunnel)
+    except Exception:
+        alive = False
+    if not alive:
+        raise rt.TransmissionError("transmission-vpn-tunnel-exited", "vpn-tunnel",
+                                   _tunnel_diagnostic())
     signed = _state.signed
     endpoint = _state.endpoint
-    if (not isinstance(current, dict) or isinstance(current.get("port"), bool)
-            or not isinstance(current.get("port"), int)
-            or current.get("keepaliveInterval") != KEEPALIVE_INTERVAL
-            or signed is None or endpoint is None or current.get("port") != signed.port):
+    if (not isinstance(current, dict) or endpoint is None or signed is None
+            or current.get("port") != signed.port or current.get("keepaliveInterval") != 900):
         raise rt.TransmissionError("transmission-pia-forward-state-invalid", "pia-keepalive")
-    if signed.expires_at <= time.time() + KEEPALIVE_INTERVAL + 60:
-        token = _fresh_token()
-        signed = _get_signature(tunnel.namespace, endpoint, token)
-        _state.token = token
-    _bind(tunnel.namespace, endpoint, signed)
+    if signed.expires_at <= time.time() + 960:
+        with rt.exported_credentials("pia") as (username, password):
+            _state.token = _token(username, password)
+        signed = _get_signature()
+    _bind(signed)
     _state.signed = signed
-    return _public_forward(signed)
+    return {"port": signed.port, "keepaliveInterval": 900}
 
 
 def teardown() -> None:
-    tunnel = _state.tunnel
+    tunnel, backend = _state.tunnel, _state.tunnel_face
     try:
-        if tunnel is not None:
-            tunnel.stop()
+        if tunnel is not None and backend is not None:
+            backend.teardown(tunnel)
     finally:
-        _state.tunnel = None
         _state.endpoint = None
+        _state.options = None
         _state.token = None
         _state.signed = None
+        _state.tunnel = None
+        _state.tunnel_face = None

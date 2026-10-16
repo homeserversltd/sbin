@@ -1,62 +1,73 @@
-"""Keep the selected provider tunnel and its forwarded peer port alive."""
+"""Keep the selected provider tunnel and forwarded peer port alive."""
 from __future__ import annotations
 
 import signal
-import time
 import threading
-from typing import Any
+import time
+from typing import Any, Mapping
 
 from agathodaimon.transmission import runtime as rt
 
-_DAEMON_START_TIMEOUT = 180
 _POLL_INTERVAL = 1
+_PEER_RETRY_INTERVAL = 10
 
 
-def _tunnel_alive(tunnel: Any) -> None:
-    process = getattr(tunnel, "process", None)
-    poll = getattr(process, "poll", None)
-    if callable(poll) and poll() is not None:
-        raise rt.TransmissionError("transmission-vpn-tunnel-exited", "vpn-tunnel")
+def _tunnel_alive(protocol_face: Any, tunnel: Any) -> None:
+    try:
+        alive = bool(protocol_face.is_alive(tunnel))
+    except Exception:
+        alive = False
+    if not alive:
+        diagnostic = getattr(tunnel, "last_diagnostic", None)
+        detail = ({"tunnelDiagnostic": rt._safe_diagnostic(diagnostic)[:160]}
+                  if isinstance(diagnostic, str) and diagnostic else {})
+        raise rt.TransmissionError("transmission-vpn-tunnel-exited", "vpn-tunnel", detail)
 
 
-def _wait_for_peer_port(stop: threading.Event, tunnel: Any,
-                        forward: dict[str, Any]) -> tuple[int, int] | None:
-    deadline = time.monotonic() + _DAEMON_START_TIMEOUT
-    last_port_error: rt.TransmissionError | None = None
-    last_rpc_error: rt.TransmissionError | None = None
-    while not stop.is_set():
-        _tunnel_alive(tunnel)
-        try:
-            rpc_port = rt.portal_port()
-            last_port_error = None
-        except rt.TransmissionError as failure:
-            last_port_error = failure
-            if time.monotonic() >= deadline:
-                raise failure
-            stop.wait(_POLL_INTERVAL)
-            continue
+def _attempt_peer_port(forward: Mapping[str, Any]) -> tuple[int, int, str] | None:
+    """Best-effort RPC synchronization; absence never takes down the hold."""
+    try:
+        rpc_port = rt.portal_port()
+        if not rt.unit_active(rt.NATIVE_UNIT, step="daemon-readback"):
+            return None
+        peer_port = forward.get("port")
+        if isinstance(peer_port, bool) or not isinstance(peer_port, int):
+            return None
+        rt.rpc_call(rpc_port, "session-set", {"peer-port": peer_port})
+        readback = rt.rpc_get_peer_port(rpc_port)
+        if readback != peer_port:
+            return None
+        return rpc_port, readback, rt.now_utc()
+    except rt.TransmissionError:
+        return None
 
-        daemon_unit = rt.NATIVE_UNIT
-        if rt.unit_active(daemon_unit, step="daemon-readback"):
-            # An active unit is not yet a listening RPC; retry until the deadline.
-            peer_port = forward.get("port")
-            try:
-                rt.rpc_call(rpc_port, "session-set", {"peer-port": peer_port})
-                readback = rt.rpc_get_peer_port(rpc_port)
-                if readback != peer_port:
-                    raise rt.TransmissionError("transmission-peer-port-readback-mismatch",
-                                               "peer-port-readback")
-                return rpc_port, readback
-            except rt.TransmissionError as failure:
-                last_rpc_error = failure
-        if time.monotonic() >= deadline:
-            if last_rpc_error is not None:
-                raise last_rpc_error
-            if last_port_error is not None:
-                raise last_port_error
-            raise rt.TransmissionError("transmission-daemon-start-timeout", "daemon")
-        stop.wait(_POLL_INTERVAL)
-    return None
+
+def _write_state(provider: str, protocol: str, forward: Mapping[str, Any],
+                 interface: str, bound_at: str,
+                 peer_state: tuple[int, int, str] | None) -> tuple[int, int]:
+    rpc_port = peer_state[0] if peer_state is not None else None
+    readback = peer_state[1] if peer_state is not None else None
+    timestamp = peer_state[2] if peer_state is not None else None
+    return rt.write_provider_state(
+        provider, forward, interface, protocol=protocol,
+        peer_port_applied=peer_state is not None,
+        peer_port_readback=readback, peer_port_readback_at=timestamp,
+        rpc_port=rpc_port, bound_at=bound_at)
+
+
+def _publish_peer_state(result: dict[str, Any], peer_state: tuple[int, int, str] | None) -> None:
+    result["peerPortApplied"] = peer_state is not None
+    result["rpcPort"] = peer_state[0] if peer_state is not None else None
+    result["peerPortReadback"] = peer_state[1] if peer_state is not None else None
+    result["peerPortReadbackAt"] = peer_state[2] if peer_state is not None else None
+    rt._stamp(
+        result, "peer-port",
+        {"daemonRpcAvailable": peer_state is not None,
+         "rpcPort": peer_state[0] if peer_state is not None else None},
+        ["Transmission peer-port setting"],
+        "best-effort-session-set-then-session-get",
+        {"peerPortApplied": peer_state is not None,
+         "peerPortReadback": peer_state[1] if peer_state is not None else None})
 
 
 def _failure(value: dict[str, Any], failure: Exception, rung: str) -> None:
@@ -83,6 +94,7 @@ def dispatch(request: Any) -> dict[str, Any]:
     previous_handlers: dict[int, Any] = {}
     provider: str | None = None
     face = None
+    protocol_face = None
     tunnel = None
     state_identity: tuple[int, int] | None = None
     rung = "provider"
@@ -98,20 +110,28 @@ def dispatch(request: Any) -> dict[str, Any]:
         signal.signal(signum, request_stop)
 
     try:
-        provider, _providers = rt.resolve_provider(request)
+        options, providers = rt.resolve_bound_vpn(request)
+        provider = options["provider"]
+        protocol = options["protocol"]
+        if not isinstance(provider, str) or not isinstance(protocol, str):
+            raise rt.TransmissionError("transmission-vpn-options-invalid", "vpn-options")
         result["provider"] = provider
-        rt._stamp(result, "provider", {"selected": provider}, False,
-                  "resolve", {"provider": provider})
+        result["protocol"] = protocol
+        result["unitOverridePropagated"] = False
+        result["nextStartConfigurationSource"] = rt.CONFIG_PATH
+        rt._stamp(result, "provider", {"selected": provider, "protocol": protocol}, False,
+                  "compose-config-and-envelope-vpn-fields", {"provider": provider})
 
         rung = "tunnel"
-        face = rt.provider_face(provider)
-        tunnel = face.connect(rt.VPN_NAMESPACE)
+        face = rt.provider_face(provider, protocol)
+        protocol_face = face.select_protocol(protocol)
+        tunnel = face.connect(rt.VPN_NAMESPACE, options)
         tunnel.wait_ready(timeout=60)
-        interface = getattr(face, "TUNNEL_INTERFACE", None)
+        interface = protocol_face.interface_name()
         if not isinstance(interface, str):
             raise rt.TransmissionError("transmission-provider-interface-invalid", "tunnel")
         result["tunnelInterface"] = interface
-        rt._stamp(result, "tunnel", {"namespace": rt.VPN_NAMESPACE},
+        rt._stamp(result, "tunnel", {"namespace": rt.VPN_NAMESPACE, "protocol": protocol},
                   ["provider tunnel"], "connect-and-wait-ready",
                   {"ready": True, "interface": interface})
 
@@ -119,20 +139,20 @@ def dispatch(request: Any) -> dict[str, Any]:
         forward = face.forward()
         bound_monotonic = time.monotonic()
         bound_at = rt.now_utc()
-        state_identity = rt.write_provider_state(
-            provider, forward, interface, bound_at=bound_at)
+        peer_state: tuple[int, int, str] | None = None
+        peer_retry_at = bound_monotonic
+        state_identity = _write_state(provider, protocol, forward, interface, bound_at, peer_state)
         state_readback = rt.read_provider_state(provider)
         if (state_readback is None or state_readback.get("forwardPort") != forward.get("port")
+                or state_readback.get("protocol") != protocol
                 or state_readback.get("tunnelInterface") != interface
                 or not rt.state_is_fresh(state_readback)):
             raise rt.TransmissionError("transmission-forward-state-readback-mismatch", "forward-state-readback")
         result["forwardPort"] = forward.get("port")
         result["keepaliveInterval"] = forward.get("keepaliveInterval")
-        result["peerPortApplied"] = False
-        result["peerPortReadback"] = None
-        result["rpcPort"] = None
+        _publish_peer_state(result, None)
         rt._stamp(result, "forward-state", {"forwardPort": forward.get("port")},
-                  ["private provider state"], "publish-before-daemon-readiness",
+                  ["private provider state"], "publish-bind-before-daemon-rpc",
                   {"written": True, "readback": True, "mode": "0600"})
 
         rung = "notify-ready"
@@ -142,82 +162,59 @@ def dispatch(request: Any) -> dict[str, Any]:
                   "send-READY=1-after-bind-and-state-write", {"ready": True})
 
         rung = "daemon"
-        peer_state = _wait_for_peer_port(stop, tunnel, forward)
-        if peer_state is not None:
-            rpc_port, readback = peer_state
-            state_identity = rt.write_provider_state(
-                provider, forward, interface, peer_port_applied=True,
-                peer_port_readback=readback, rpc_port=rpc_port, bound_at=bound_at)
-            result["rpcPort"] = rpc_port
-            result["peerPortApplied"] = True
-            result["peerPortReadback"] = readback
-            rt._stamp(result, "peer-port", {"daemonActive": True, "rpcPort": rpc_port},
-                      ["Transmission peer-port setting"],
-                      "session-set-then-session-get",
-                      {"peerPortApplied": True, "peerPortReadback": readback})
+        peer_state = _attempt_peer_port(forward)
+        state_identity = _write_state(provider, protocol, forward, interface, bound_at, peer_state)
+        _publish_peer_state(result, peer_state)
+        peer_retry_at = time.monotonic() + (_PEER_RETRY_INTERVAL if peer_state is None else forward["keepaliveInterval"])
+        rt._stamp(result, "peer-port", {"daemonRpcAvailable": peer_state is not None,
+                                         "rpcPort": peer_state[0] if peer_state else None},
+                  ["Transmission peer-port setting"], "initial-best-effort-rpc-readback",
+                  {"peerPortApplied": peer_state is not None})
 
-        if stop.is_set():
-            result["ok"] = True
-            result["firstMissingSignal"] = "none"
-            result["stopped"] = True
-            result["stopSignal"] = signal_seen[0]
-            rt._stamp(result, "stop", {"signal": signal_seen[0]},
-                      ["provider tunnel", "provider state"],
-                      "teardown-on-worker-exit", {"stopped": True})
-        else:
-            interval = forward["keepaliveInterval"]
-            keepalive_due = bound_monotonic + interval * 0.8
-            while not stop.is_set():
-                _tunnel_alive(tunnel)
-                remaining = max(0.0, keepalive_due - time.monotonic())
-                if stop.wait(min(_POLL_INTERVAL, remaining)):
-                    break
-                if time.monotonic() < keepalive_due:
-                    continue
-
-                rung = "keepalive"
-                previous_port = forward.get("port")
-                renewed = face.keepalive(forward)
-                bound_monotonic = time.monotonic()
-                bound_at = rt.now_utc()
-                state_identity = rt.write_provider_state(
-                    provider, renewed, interface, bound_at=bound_at)
-                forward = renewed
-                result["forwardPort"] = forward.get("port")
-                result["keepaliveInterval"] = forward.get("keepaliveInterval")
-                result["peerPortApplied"] = False
-                result["peerPortReadback"] = None
-                rt._stamp(result, "keepalive", {"previousForwardPort": previous_port},
-                          ["private provider state", "Transmission peer-port setting"],
-                          "provider-keepalive-and-publish-bind",
-                          {"forwardPort": forward.get("port"), "stateWritten": True})
-
+        keepalive_due = bound_monotonic + forward["keepaliveInterval"] * 0.8
+        while not stop.is_set():
+            _tunnel_alive(protocol_face, tunnel)
+            now = time.monotonic()
+            if now >= peer_retry_at and now < keepalive_due:
                 rung = "daemon"
-                peer_state = _wait_for_peer_port(stop, tunnel, forward)
-                if peer_state is not None:
-                    rpc_port, readback = peer_state
-                    state_identity = rt.write_provider_state(
-                        provider, forward, interface, peer_port_applied=True,
-                        peer_port_readback=readback, rpc_port=rpc_port, bound_at=bound_at)
-                    result["rpcPort"] = rpc_port
-                    result["peerPortApplied"] = True
-                    result["peerPortReadback"] = readback
-                    rt._stamp(result, "peer-port", {"daemonActive": True, "rpcPort": rpc_port},
-                              ["Transmission peer-port setting"],
-                              "session-set-then-session-get",
-                              {"peerPortApplied": True, "peerPortReadback": readback})
-                if stop.is_set():
-                    break
-                rung = "keepalive"
-                keepalive_due = bound_monotonic + forward["keepaliveInterval"] * 0.8
+                peer_state = _attempt_peer_port(forward)
+                state_identity = _write_state(provider, protocol, forward, interface, bound_at, peer_state)
+                _publish_peer_state(result, peer_state)
+                peer_retry_at = time.monotonic() + (
+                    _PEER_RETRY_INTERVAL if peer_state is None else forward["keepaliveInterval"])
+            next_due = min(keepalive_due, peer_retry_at)
+            if stop.wait(min(_POLL_INTERVAL, max(0.0, next_due - time.monotonic()))):
+                break
+            if time.monotonic() < keepalive_due:
+                continue
 
-            result["ok"] = True
-            result["firstMissingSignal"] = "none"
-            result["stopped"] = True
-            result["stopSignal"] = signal_seen[0]
-            rt._stamp(result, "stop", {"signal": signal_seen[0]},
-                      ["provider tunnel", "provider state"],
-                      "teardown-on-worker-exit", {"stopped": True})
+            rung = "keepalive"
+            previous_port = forward.get("port")
+            renewed = face.keepalive(forward)
+            bound_monotonic = time.monotonic()
+            bound_at = rt.now_utc()
+            forward = renewed
+            peer_state = _attempt_peer_port(forward)
+            state_identity = _write_state(provider, protocol, forward, interface, bound_at, peer_state)
+            result["forwardPort"] = forward.get("port")
+            result["keepaliveInterval"] = forward.get("keepaliveInterval")
+            _publish_peer_state(result, peer_state)
+            rt._stamp(result, "keepalive", {"previousForwardPort": previous_port},
+                      ["private provider state", "Transmission peer-port setting"],
+                      "renew-provider-bind-and-reconcile-daemon-peer-port",
+                      {"forwardPort": forward.get("port"), "stateWritten": True,
+                       "peerPortApplied": peer_state is not None})
+            peer_retry_at = time.monotonic() + (
+                _PEER_RETRY_INTERVAL if peer_state is None else forward["keepaliveInterval"])
+            keepalive_due = bound_monotonic + forward["keepaliveInterval"] * 0.8
+
+        result["ok"] = True
+        result["firstMissingSignal"] = "none"
+        result["stopped"] = True
+        result["stopSignal"] = signal_seen[0]
+        rt._stamp(result, "stop", {"signal": signal_seen[0]},
+                  ["provider tunnel", "provider state"], "teardown-on-worker-exit",
+                  {"stopped": True})
     except Exception as failure:
         failed = True
         _failure(result, failure, rung)

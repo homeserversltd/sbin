@@ -8,7 +8,7 @@ from typing import Any
 from agathodaimon.transmission import runtime as rt
 from agathodaimon.transmission.keys._credentials import seed_daemon_credentials
 
-_RUNUSER = "/usr/sbin/runuser"
+_SETPRIV = "/usr/bin/setpriv"
 
 
 def _scratch_attempt(request: Any, provider: str, rpc_port: int,
@@ -29,6 +29,8 @@ def _scratch_attempt(request: Any, provider: str, rpc_port: int,
         "scratchLogicalArgv": list(logical_argv),
         "credentialSeed": dict(seed_metadata),
         "interimDebt": "staff-writes-daemon-rpc-credential-seat",
+        "unitOverridePropagated": False,
+        "nextStartConfigurationSource": rt.CONFIG_PATH,
         "execReplacementAttempted": True,
         "pid": os.getpid(),
         "firstMissingSignal": "none",
@@ -37,7 +39,7 @@ def _scratch_attempt(request: Any, provider: str, rpc_port: int,
             "observed": {"portalPort": rpc_port, "namespacePresent": True,
                          "scratchRoot": str(root)},
             "could-change": [rt.NATIVE_UNIT + " process"],
-            "attempt": "exec-ip-netns-runuser-transmission-daemon",
+            "attempt": "exec-ip-netns-setpriv-transmission-daemon",
             "finalState": {"execReplacementAttempted": True, "pid": os.getpid()},
         }],
     }, request)
@@ -46,8 +48,8 @@ def _scratch_attempt(request: Any, provider: str, rpc_port: int,
 def _daemon_argv(rpc_port: int) -> list[str]:
     return [
         rt.IP, "netns", "exec", rt.VPN_NAMESPACE,
-        _RUNUSER, "-u", "debian-transmission", "--",
-        "transmission-daemon", "--foreground", "--config-dir", "/etc/transmission-daemon",
+        _SETPRIV, "--reuid=debian-transmission", "--regid=debian-transmission",
+        "--init-groups", "--", "transmission-daemon", "--foreground", "--config-dir", "/etc/transmission-daemon",
         "--watch-dir", "/mnt/nas/downloads/objectives/",
         "--port", str(rpc_port),
     ]
@@ -63,7 +65,10 @@ def main(argv=None) -> int:
     }
     try:
         request = rt.read_request(known_fields=("provider", "flags"), declared_flags=("vpn",))
-        provider, _providers = rt.resolve_bound_provider(request)
+        options, _provider_names = rt.resolve_bound_vpn(request)
+        provider = options["provider"]
+        if not isinstance(provider, str):
+            raise rt.TransmissionError("transmission-vpn-provider-unknown", "provider-resolution")
         rpc_port = rt.portal_port()
         namespace_present = rt.VPN_NAMESPACE in rt.namespace_names()
         if not namespace_present:
@@ -94,7 +99,7 @@ def main(argv=None) -> int:
             attempt = _scratch_attempt(
                 request, provider, rpc_port, logical_argv, root, seed_metadata,
             )
-            print(json.dumps(attempt, sort_keys=True, separators=(",", ":")), flush=True)
+            rt.print_receipt(attempt)
         try:
             os.execvpe(command[0], command, environment)
         except OSError:
@@ -105,8 +110,7 @@ def main(argv=None) -> int:
         failed["interimDebt"] = "staff-writes-daemon-rpc-credential-seat"
         if isinstance(failure, rt.TransmissionError):
             failed["failedRung"] = failure.step
-        print(json.dumps(rt.finish(failed, request), sort_keys=True, separators=(",", ":")), flush=True)
-        return 1
+        return rt.print_receipt(rt.finish(failed, request))
     return 0
 
 
