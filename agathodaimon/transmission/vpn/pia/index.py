@@ -170,11 +170,13 @@ def _meta_candidates(region: Mapping[str, Any]) -> list[dict[str, str]]:
     return result
 
 
-def _protocol_server(region: Mapping[str, Any], protocol: str) -> dict[str, Any] | None:
+def _protocol_server(region: Mapping[str, Any], protocol: str,
+                    preferred_hostname: str | None = None) -> dict[str, Any] | None:
     servers = region.get("servers")
     entries = servers.get("ovpnudp" if protocol == "openvpn" else "wg") if isinstance(servers, Mapping) else None
     if not isinstance(entries, list):
         return None
+    first_eligible = None
     for server in entries:
         if not isinstance(server, Mapping):
             continue
@@ -185,9 +187,14 @@ def _protocol_server(region: Mapping[str, Any], protocol: str) -> dict[str, Any]
             parsed = ipaddress.ip_address(address)
         except ValueError:
             continue
-        if parsed.version == 4:
-            return {"hostname": hostname, "address": parsed.compressed}
-    return None
+        if parsed.version != 4:
+            continue
+        candidate = {"hostname": hostname, "address": parsed.compressed}
+        if hostname == preferred_hostname:
+            return candidate
+        if first_eligible is None:
+            first_eligible = candidate
+    return first_eligible
 
 
 def _is_forward_region(region: Mapping[str, Any]) -> bool:
@@ -238,7 +245,7 @@ def _select_region(regions: list[dict[str, Any]], options: Mapping[str, Any]
             raise rt.TransmissionError("transmission-vpn-region-unknown", "region-selection",
                                        {"field": "region"})
         meta = metas[0]
-    selected = _protocol_server(region, protocol)
+    selected = _protocol_server(region, protocol, meta["hostname"])
     if selected is None:
         raise rt.TransmissionError("transmission-vpn-region-unknown", "region-selection",
                                    {"field": "region"})
@@ -498,9 +505,9 @@ def _api_json(path: str, query: Mapping[str, str], call: str, step: str) -> dict
     token = _state.token
     if endpoint is None or token is None:
         raise rt.TransmissionError("transmission-pia-forward-state-missing", step)
-    host = endpoint["metaHostname"]
-    url = f"https://{host}:19999/{path}?{urlencode(query)}"
     gateway = _tunnel_gateway(rt.VPN_NAMESPACE)
+    host = endpoint["vpnHostname"] if gateway is not None else endpoint["metaHostname"]
+    url = f"https://{host}:19999/{path}?{urlencode(query)}"
     if gateway is None and _state.options is not None \
             and _state.options.get("protocol") == "wireguard":
         raise rt.TransmissionError("transmission-pia-tunnel-gateway-unavailable", "pia-gateway",
