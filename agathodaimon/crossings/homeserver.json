@@ -33,7 +33,7 @@
     "network/linker",
     "network/tailscale",
     "network/wake-on-lan",
-    "settings/datetime",
+    "settings/datetime/household-time",
     "settings/samba",
     "settings/ssh",
     "storage/backup/forgejo/credential",
@@ -163,15 +163,15 @@
     ],
     [
       "settings",
-      "datetime"
-    ],
-    [
-      "settings",
       "samba"
     ],
     [
       "settings",
       "ssh"
+    ],
+    [
+      "time",
+      "household-time"
     ],
     [
       "transmission",

@@ -26,6 +26,7 @@
     "network/wifi",
     "settings/appearance",
     "settings/datetime",
+    "settings/datetime/household-time",
     "settings/default-apps",
     "settings/display",
     "settings/input",
@@ -129,6 +130,10 @@
     [
       "settings",
       "ssh"
+    ],
+    [
+      "time",
+      "household-time"
     ],
     [
       "update",
