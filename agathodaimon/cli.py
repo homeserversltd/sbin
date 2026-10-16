@@ -512,6 +512,19 @@ def _envelope_operation(envelope: dict | None, remainder: list[str]) -> str | No
     return None
 
 
+def _display_startup_reapplication_without_pin(
+    target: str, remainder: list[str], envelope: dict | None,
+) -> bool:
+    if target != "settings/display" or remainder != ["apply"] or envelope is not None:
+        return False
+    try:
+        module = _load(ROOT / "settings" / "display" / "index.py")
+        allowed = getattr(module, "startup_apply_allowed", None)
+        return bool(callable(allowed) and allowed())
+    except Exception:
+        return False
+
+
 def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | None) -> bool:
     if target == "transmission/keys":
         try:
@@ -521,6 +534,8 @@ def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | 
             return True
         return action in {"replace", "rotate"}
     operation = _envelope_operation(envelope, remainder)
+    if _display_startup_reapplication_without_pin(target, remainder, envelope):
+        return False
     read_only = {"get", "read", "status", "list", "show", "observed", "validate", "verify"}
     mutation = {"set", "change", "apply", "mutate", "write", "create", "remove", "update", "start", "stop", "restart", "enable", "disable", "reset-default", "unlock", "open", "register", "unregister"}
     if target.startswith("settings/"):

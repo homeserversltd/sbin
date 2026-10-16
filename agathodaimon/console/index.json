@@ -1,5 +1,6 @@
 {
   "children": [
-    "restart"
+    "restart",
+    "session"
   ]
 }
