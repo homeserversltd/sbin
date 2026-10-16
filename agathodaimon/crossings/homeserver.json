@@ -33,6 +33,7 @@
     "network/linker",
     "network/tailscale",
     "network/wake-on-lan",
+    "settings/datetime",
     "settings/samba",
     "settings/ssh",
     "storage/backup/forgejo/credential",
@@ -159,6 +160,10 @@
     [
       "network",
       "wake-on-lan"
+    ],
+    [
+      "settings",
+      "datetime"
     ],
     [
       "settings",
