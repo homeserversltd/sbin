@@ -129,14 +129,18 @@ def _write_files(endpoint: dict[str, Any], username: str, password: str
     config_path = f"{_RUNTIME_DIR}/openvpn-{nonce}.conf"
     mapped_auth = rt.runtime_path(auth_path)
     mapped_config = rt.runtime_path(config_path)
-    for value in (str(mapped_auth), str(mapped_config), str(_CA_FILE)):
-        if any(ch.isspace() or ch in "\r\n\x00\"" for ch in value):
-            raise rt.TransmissionError("transmission-pia-runtime-path-invalid", "pia-runtime-files")
     auth_identity = config_identity = None
     address, hostname = _valid_endpoint(endpoint)
     port = endpoint.get("vpnPort", TUNNEL_PORT)
     if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
         raise rt.TransmissionError("transmission-provider-endpoint-invalid", "vpn-endpoint")
+    legacy_profile = port == TUNNEL_PORT
+    ca_file = _CA_FILE if legacy_profile else _BAND / "ca.rsa.4096.crt"
+    cipher, auth = (("aes-128-cbc", "sha1") if legacy_profile
+                    else ("aes-256-cbc", "sha256"))
+    for value in (str(mapped_auth), str(mapped_config), str(ca_file)):
+        if any(ch.isspace() or ch in "\r\n\x00\"" for ch in value):
+            raise rt.TransmissionError("transmission-pia-runtime-path-invalid", "pia-runtime-files")
     try:
         auth_identity = rt.write_atomic(auth_path, f"{username}\n{password}\n".encode("utf-8"), 0o600)
         config = (
@@ -148,8 +152,8 @@ def _write_files(endpoint: dict[str, Any], username: str, password: str
             "nobind\nresolv-retry infinite\npersist-key\npersist-tun\n"
             "auth-nocache\ntls-client\nremote-cert-tls server\n"
             f"verify-x509-name {hostname} name\n"
-            f"auth-user-pass {mapped_auth}\nca {_CA_FILE}\n"
-            "cipher aes-128-cbc\nauth sha1\nreneg-sec 0\nverb 3\n"
+            f"auth-user-pass {mapped_auth}\nca {ca_file}\n"
+            f"cipher {cipher}\nauth {auth}\nreneg-sec 0\nverb 3\n"
         )
         config_identity = rt.write_atomic(config_path, config.encode("utf-8"), 0o600)
         for logical, identity in ((auth_path, auth_identity), (config_path, config_identity)):
