@@ -333,6 +333,7 @@ def _systemctl_environment(account: pwd.struct_passwd, home: Path, runtime: Path
 def _owner_session_environment(
     *, home: Path | None = None, discover: bool = True,
     require_sway: bool = False, require_wayland: bool = False,
+    enter_owner: bool = False,
 ) -> tuple[dict[str, str], str]:
     account = _owner()
     selected_home = home or Path(account.pw_dir)
@@ -344,7 +345,7 @@ def _owner_session_environment(
         "XDG_CACHE_HOME": str(selected_home / ".cache"),
         "XDG_STATE_HOME": str(selected_home / ".local/state"),
     }
-    if not discover and not (require_sway or require_wayland):
+    if not discover and not (require_sway or require_wayland) and not enter_owner:
         return env, "not-required"
 
     proc_observation = _benchmark_call(
@@ -353,6 +354,8 @@ def _owner_session_environment(
         success=lambda result: isinstance(result, tuple) and len(result) == 2 and result[1] is True,
     )
     proc_sources = proc_observation[0]
+    if enter_owner:
+        _benchmark_call("staff.owner-switch", _volume_owner_switch)
     system_observation = _benchmark_call(
         "staff.session-env.systemctl",
         lambda: _systemctl_environment_observed(account, selected_home, runtime),
@@ -432,12 +435,14 @@ def _owner_session_environment(
 def owner_session_environment(
     *, home: Path | None = None, discover: bool = True,
     require_sway: bool = False, require_wayland: bool = False,
+    enter_owner: bool = False,
 ) -> tuple[dict[str, str], str]:
     return _benchmark_call(
         "staff.session-env",
         lambda: _owner_session_environment(
             home=home, discover=discover,
             require_sway=require_sway, require_wayland=require_wayland,
+            enter_owner=enter_owner,
         ),
     )
 
@@ -895,11 +900,33 @@ def app(payload: dict[str, Any]) -> Mapping[str, Any]:
         return {"ok": True, "firstMissingSignal": "none", "changed": True, "program": program, "running": True, "pid": process.pid, "lock_path": str(lock_path), "socket_source": socket_source}
 
 
+def _volume_owner_switch() -> None:
+    account = _owner()
+    if account.pw_uid == 0:
+        raise FaceError("owner-session-identity-refused")
+    if os.geteuid() == account.pw_uid:
+        return
+    try:
+        os.initgroups(OWNER_USER, account.pw_gid)
+        os.setgid(account.pw_gid)
+        os.setuid(account.pw_uid)
+        if hasattr(os, "getresuid") and hasattr(os, "getresgid"):
+            uids = os.getresuid()
+            gids = os.getresgid()
+        else:
+            uids = (os.getuid(), os.geteuid())
+            gids = (os.getgid(), os.getegid())
+    except Exception:
+        raise FaceError("owner-session-identity-refused") from None
+    if any(uid != account.pw_uid for uid in uids) or any(gid != account.pw_gid for gid in gids):
+        raise FaceError("owner-session-identity-refused")
+
+
 def volume(payload: dict[str, Any]) -> Mapping[str, Any]:
     step = _require_string(payload, "step", "face-volume-step-required")
     if step not in {"+5", "-5", "mute"}:
         raise FaceError("face-volume-step-invalid")
-    environment, socket_source = owner_session_environment(discover=True)
+    environment, socket_source = owner_session_environment(discover=True, enter_owner=True)
     pactl = _owner_utility("pactl")
     if pactl is None:
         raise FaceError("face-volume-pactl-unavailable", socket_source=socket_source)
