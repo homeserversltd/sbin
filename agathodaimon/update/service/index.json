@@ -10,5 +10,31 @@
       "off",
       "status"
     ]
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "update",
+            "service"
+          ]
+        ],
+        "routes": [
+          "/api/v1/sync/now",
+          "/api/v1/update/check",
+          "/api/v1/update/now",
+          "/api/v1/update/service/status",
+          "/api/v1/update/service/toggle"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
   }
 }

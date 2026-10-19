@@ -1,3 +1,21 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "games",
+    "features": {
+      "games": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/games/provider-keys",
+          "/api/v1/gaming/provider-keys"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

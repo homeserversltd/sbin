@@ -1,3 +1,21 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/cert/bundle/download",
+          "/api/v1/cert/status"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

@@ -1,1 +1,25 @@
-{"children":[]}
+{
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "settings",
+            "samba"
+          ]
+        ],
+        "routes": [
+          "/api/v1/settings/samba/status"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

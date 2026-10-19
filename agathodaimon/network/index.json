@@ -10,5 +10,9 @@
     "cert",
     "wifi",
     "tailscale"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

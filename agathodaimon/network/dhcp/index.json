@@ -1,3 +1,46 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "kea",
+    "features": {
+      "kea": {
+        "band": true,
+        "verbs": [
+          [
+            "network",
+            "dhcp"
+          ]
+        ],
+        "routes": [
+          "/api/v1/network/dhcp",
+          "/api/v1/network/dhcp/pool-boundary",
+          "/api/v1/network/dhcp/reservations",
+          "/api/v1/network/dhcp/reservations/:reservation_id"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": [
+            "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
+            "POST /api/v1/network/dhcp",
+            "POST /api/v1/network/dhcp/pool-boundary",
+            "POST /api/v1/network/dhcp/reservations",
+            "PUT /api/v1/network/dhcp/reservations/{reservation_id}"
+          ]
+        }
+      },
+      "all": {
+        "band": false,
+        "verbs": [],
+        "routes": [
+          "/api/v1/network/dhcp/reservations"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

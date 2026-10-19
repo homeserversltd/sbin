@@ -1,5 +1,9 @@
 {
   "children": [
     "matrix-converge"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

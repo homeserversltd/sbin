@@ -4,5 +4,9 @@
     "create-key",
     "key-status",
     "update-key"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

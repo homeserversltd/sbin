@@ -2,5 +2,9 @@
   "children": [
     "sync",
     "provider-keys"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

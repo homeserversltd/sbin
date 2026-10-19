@@ -3,5 +3,9 @@
     "credential",
     "backup-b2",
     "migrate"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

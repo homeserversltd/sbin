@@ -1,1 +1,26 @@
-{"children":["up","down","status","vpn","daemon","settings","keys"]}
+{
+  "children": [
+    "up",
+    "down",
+    "status",
+    "vpn",
+    "daemon",
+    "settings",
+    "keys"
+  ],
+  "sclerite": {
+    "name": "transmission",
+    "features": {
+      "transmission": {
+        "band": false,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

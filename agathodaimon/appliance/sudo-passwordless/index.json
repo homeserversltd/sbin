@@ -1,0 +1,22 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/access/sudo/mode"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/access/sudo/mode"
+          ]
+        }
+      }
+    }
+  }
+}

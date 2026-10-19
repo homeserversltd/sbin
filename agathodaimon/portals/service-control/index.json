@@ -19,5 +19,9 @@
       "website-hard-reset"
     ],
     "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {}
   }
 }

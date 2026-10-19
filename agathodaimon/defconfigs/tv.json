@@ -1,0 +1,12 @@
+{
+  "schema": "agathodaimon.defconfig.v1",
+  "profile": "tv",
+  "features": [
+    "sway",
+    "pactl",
+    "desktop",
+    "nmcli",
+    "gtk4"
+  ],
+  "choices": {}
+}

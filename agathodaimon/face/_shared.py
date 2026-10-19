@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import fcntl
 import json
 import os
@@ -36,6 +37,90 @@ class FaceError(ValueError):
         self.fields = fields
 
 
+_BENCHMARK_SCHEMA = "caduceus.benchmark.v1"
+_BENCHMARK_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "agathodaimon_face_benchmark", default=None
+)
+
+
+def _benchmark_enabled(request: Request) -> bool:
+    if not request.envelope:
+        return False
+    flags = request.value.get("flags")
+    return isinstance(flags, Mapping) and flags.get("benchmark") is True
+
+
+def _process_boot_elapsed_ms() -> tuple[int, bool]:
+    try:
+        stat_text = Path("/proc/self/stat").read_text(encoding="ascii")
+        closing = stat_text.rfind(")")
+        if closing < 0:
+            return 0, False
+        fields = stat_text[closing + 1 :].split()
+        if len(fields) <= 19:
+            return 0, False
+        start_ticks = int(fields[19])
+        ticks_per_second = int(os.sysconf("SC_CLK_TCK"))
+        if start_ticks < 0 or ticks_per_second <= 0:
+            return 0, False
+        process_start_ns = start_ticks * 1_000_000_000 // ticks_per_second
+        boot_now_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+        elapsed_ns = boot_now_ns - process_start_ns
+        if elapsed_ns < 0:
+            return 0, False
+        return elapsed_ns // 1_000_000, True
+    except (OSError, ValueError, IndexError, AttributeError, OverflowError):
+        return 0, False
+
+
+def _benchmark_call(
+    locus: str,
+    operation: Callable[[], Any],
+    *,
+    success: Callable[[Any], bool] | None = None,
+) -> Any:
+    context = _BENCHMARK_CONTEXT.get()
+    if context is None:
+        return operation()
+    try:
+        started_ns = time.perf_counter_ns()
+    except Exception:
+        try:
+            operation_result = operation()
+        except BaseException:
+            context["timings"].append({"locus": locus, "elapsed_ms": 0, "ok": False})
+            raise
+        context["timings"].append({"locus": locus, "elapsed_ms": 0, "ok": False})
+        return operation_result
+    ok = False
+    try:
+        result = operation()
+        ok = success(result) if success is not None else True
+        return result
+    except BaseException:
+        ok = False
+        raise
+    finally:
+        try:
+            elapsed_ns = time.perf_counter_ns() - started_ns
+            if elapsed_ns < 0:
+                elapsed_ns = 0
+                ok = False
+        except Exception:
+            elapsed_ns = 0
+            ok = False
+        context["timings"].append({
+            "locus": locus,
+            "elapsed_ms": elapsed_ns // 1_000_000,
+            "ok": bool(ok),
+        })
+
+
+def _benchmark_boot_entry() -> dict[str, Any]:
+    elapsed_ms, ok = _process_boot_elapsed_ms()
+    return {"locus": "staff.boot", "elapsed_ms": elapsed_ms, "ok": ok}
+
+
 def read_payload() -> Request:
     """Read the public envelope and select the fields used by FaceDoor verbs."""
     return read(known_fields=("payload", "direction", "action", "desktop_id", "menu", "id", "kind", "step", "carry", "ring"))
@@ -44,8 +129,14 @@ def read_payload() -> Request:
 def invoke(verb: str, operation: Callable[[dict[str, Any]], Mapping[str, Any]]) -> int:
     """Emit exactly one transient receipt for a verb, including refusals."""
     request: Request | None = None
+    benchmark_context: dict[str, Any] | None = None
+    benchmark_token: contextvars.Token[dict[str, Any] | None] | None = None
     try:
         request = read_payload()
+        if _benchmark_enabled(request):
+            benchmark_context = {"timings": []}
+            benchmark_token = _BENCHMARK_CONTEXT.set(benchmark_context)
+            benchmark_context["timings"].append(_benchmark_boot_entry())
         if request.envelope:
             payload = request.payload
         else:
@@ -66,8 +157,19 @@ def invoke(verb: str, operation: Callable[[dict[str, Any]], Mapping[str, Any]]) 
         }
     except Exception:
         receipt = {"verb": verb, "ok": False, "firstMissingSignal": f"face-{verb}-operation-failed"}
-    if request is not None:
-        receipt = attach(receipt, request)
+    try:
+        if request is not None:
+            receipt = attach(receipt, request)
+        if benchmark_context is not None:
+            receipt["benchmark"] = {
+                "schema": _BENCHMARK_SCHEMA,
+                "timings": list(benchmark_context["timings"]),
+            }
+    finally:
+        if benchmark_context is not None:
+            benchmark_context["timings"].clear()
+        if benchmark_token is not None:
+            _BENCHMARK_CONTEXT.reset(benchmark_token)
     return emit(receipt)
 
 
@@ -146,12 +248,12 @@ def _socket_path(value: str, runtime: Path) -> Path | None:
     return candidate
 
 
-def _proc_sway_environments(uid: int) -> list[tuple[str, dict[str, str]]]:
+def _proc_sway_environments_observed(uid: int) -> tuple[list[tuple[str, dict[str, str]]], bool]:
     found: list[tuple[str, dict[str, str]]] = []
     try:
         entries = list(Path("/proc").iterdir())
     except OSError:
-        return found
+        return found, False
     for entry in entries:
         if not entry.name.isdigit():
             continue
@@ -175,7 +277,11 @@ def _proc_sway_environments(uid: int) -> list[tuple[str, dict[str, str]]]:
             except UnicodeError:
                 continue
         found.append((entry.name, values))
-    return found
+    return found, True
+
+
+def _proc_sway_environments(uid: int) -> list[tuple[str, dict[str, str]]]:
+    return _proc_sway_environments_observed(uid)[0]
 
 
 def _runuser_command(command: Sequence[str], environment: Mapping[str, str]) -> tuple[list[str], dict[str, str]]:
@@ -190,10 +296,12 @@ def _runuser_command(command: Sequence[str], environment: Mapping[str, str]) -> 
     return [runuser, "-u", OWNER_USER, "--", env_program, *assignments, *command], {"PATH": os.environ.get("PATH", os.defpath)}
 
 
-def _systemctl_environment(account: pwd.struct_passwd, home: Path, runtime: Path) -> dict[str, str]:
+def _systemctl_environment_observed(
+    account: pwd.struct_passwd, home: Path, runtime: Path,
+) -> tuple[dict[str, str], bool]:
     utility = shutil.which("systemctl")
     if utility is None:
-        return {}
+        return {}, False
     environment = {
         "HOME": str(home), "USER": OWNER_USER, "LOGNAME": OWNER_USER,
         "PATH": os.environ.get("PATH", os.defpath), "XDG_RUNTIME_DIR": str(runtime),
@@ -207,18 +315,22 @@ def _systemctl_environment(account: pwd.struct_passwd, home: Path, runtime: Path
         command, outer = _runuser_command([utility, "--user", "show-environment"], environment)
         result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False, env=outer)
     except (OSError, subprocess.SubprocessError, FaceError):
-        return {}
+        return {}, False
     if result.returncode != 0:
-        return {}
+        return {}, False
     values: dict[str, str] = {}
     for line in result.stdout.splitlines():
         key, separator, value = line.partition("=")
         if separator and key in {"SWAYSOCK", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PULSE_SERVER"}:
             values[key] = value
-    return values
+    return values, True
 
 
-def owner_session_environment(
+def _systemctl_environment(account: pwd.struct_passwd, home: Path, runtime: Path) -> dict[str, str]:
+    return _systemctl_environment_observed(account, home, runtime)[0]
+
+
+def _owner_session_environment(
     *, home: Path | None = None, discover: bool = True,
     require_sway: bool = False, require_wayland: bool = False,
 ) -> tuple[dict[str, str], str]:
@@ -235,8 +347,18 @@ def owner_session_environment(
     if not discover and not (require_sway or require_wayland):
         return env, "not-required"
 
-    proc_sources = _proc_sway_environments(account.pw_uid)
-    system_values = _systemctl_environment(account, selected_home, runtime)
+    proc_observation = _benchmark_call(
+        "staff.session-env.proc",
+        lambda: _proc_sway_environments_observed(account.pw_uid),
+        success=lambda result: isinstance(result, tuple) and len(result) == 2 and result[1] is True,
+    )
+    proc_sources = proc_observation[0]
+    system_observation = _benchmark_call(
+        "staff.session-env.systemctl",
+        lambda: _systemctl_environment_observed(account, selected_home, runtime),
+        success=lambda result: isinstance(result, tuple) and len(result) == 2 and result[1] is True,
+    )
+    system_values = system_observation[0]
     values_by_key: dict[str, list[tuple[str, str]]] = {key: [] for key in ("SWAYSOCK", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PULSE_SERVER")}
     for pid, values in proc_sources:
         for key in values_by_key:
@@ -307,13 +429,26 @@ def owner_session_environment(
     return env, source_text
 
 
+def owner_session_environment(
+    *, home: Path | None = None, discover: bool = True,
+    require_sway: bool = False, require_wayland: bool = False,
+) -> tuple[dict[str, str], str]:
+    return _benchmark_call(
+        "staff.session-env",
+        lambda: _owner_session_environment(
+            home=home, discover=discover,
+            require_sway=require_sway, require_wayland=require_wayland,
+        ),
+    )
+
+
 def owner_session_command(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[list[str], dict[str, str]]:
     if not argv or not all(isinstance(item, str) and "\x00" not in item for item in argv):
         raise FaceError("owner-command-argv-invalid")
     return _runuser_command(argv, environment)
 
 
-def owner_run(
+def _owner_run(
     argv: Sequence[str], environment: Mapping[str, str], *, timeout: float = 8,
 ) -> subprocess.CompletedProcess[str]:
     command, outer = owner_session_command(argv, environment)
@@ -321,6 +456,16 @@ def owner_run(
         return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=outer)
     except (OSError, subprocess.TimeoutExpired) as error:
         return subprocess.CompletedProcess(command, 127, "", type(error).__name__)
+
+
+def owner_run(
+    argv: Sequence[str], environment: Mapping[str, str], *, timeout: float = 8,
+) -> subprocess.CompletedProcess[str]:
+    return _benchmark_call(
+        "staff.act",
+        lambda: _owner_run(argv, environment, timeout=timeout),
+        success=lambda result: isinstance(result, subprocess.CompletedProcess) and result.returncode == 0,
+    )
 
 
 def owner_spawn(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[subprocess.Popen, int | None]:
@@ -812,11 +957,15 @@ def volume(payload: dict[str, Any]) -> Mapping[str, Any]:
     if dunstify is not None:
         notify_value = 0 if mute else level
         notify_text = "Muted" if mute else f"{level}%"
-        notified = owner_run([
-            dunstify, "--app-name=volume", "--replace-id=91190", "--stack-tag=volume",
-            "--urgency=low", "--expire-time=1200", f"--hint=int:value:{notify_value}",
-            "Volume", notify_text,
-        ], environment, timeout=5)
+        notified = _benchmark_call(
+            "staff.notify",
+            lambda: owner_run([
+                dunstify, "--app-name=volume", "--replace-id=91190", "--stack-tag=volume",
+                "--urgency=low", "--expire-time=1200", f"--hint=int:value:{notify_value}",
+                "Volume", notify_text,
+            ], environment, timeout=5),
+            success=lambda result: isinstance(result, subprocess.CompletedProcess) and result.returncode == 0,
+        )
         notify = {"available": True, "ok": notified.returncode == 0}
     return {"ok": True, "firstMissingSignal": "none", "sink": sink, "level": level, "mute": mute, "notification": notify, "socket_source": socket_source}
 

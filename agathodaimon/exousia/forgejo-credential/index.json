@@ -1,3 +1,7 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

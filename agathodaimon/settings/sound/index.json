@@ -1,3 +1,32 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "desktop",
+    "features": {
+      "desktop": {
+        "band": true,
+        "verbs": [
+          [
+            "settings",
+            "sound"
+          ]
+        ],
+        "routes": [
+          "/api/v1/settings/sound"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [
+            [
+              "settings",
+              "sound"
+            ]
+          ],
+          "routes": [
+            "/api/v1/settings/sound"
+          ]
+        }
+      }
+    }
+  }
 }

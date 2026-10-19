@@ -8,5 +8,9 @@
     "sacred_credential",
     "source_map",
     "keyman_export"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

@@ -2,5 +2,9 @@
   "children": [
     "house-ca",
     "refresh"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

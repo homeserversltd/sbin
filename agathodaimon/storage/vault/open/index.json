@@ -1,0 +1,29 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "vault",
+            "open"
+          ]
+        ],
+        "routes": [
+          "/api/v1/storage/vault/auto-decrypt",
+          "/api/v1/storage/vault/unlock"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/storage/vault/auto-decrypt",
+            "/api/v1/storage/vault/unlock"
+          ]
+        }
+      }
+    }
+  }
+}

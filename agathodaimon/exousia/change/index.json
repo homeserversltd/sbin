@@ -1,1 +1,28 @@
-{"children":[]}
+{
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "exousia",
+            "change"
+          ]
+        ],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [
+            [
+              "exousia",
+              "change"
+            ]
+          ],
+          "routes": []
+        }
+      }
+    }
+  }
+}

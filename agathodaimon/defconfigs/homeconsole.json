@@ -1,0 +1,12 @@
+{
+  "schema": "agathodaimon.defconfig.v1",
+  "profile": "homeconsole",
+  "features": [
+    "sway",
+    "pactl",
+    "desktop",
+    "nmcli",
+    "steam"
+  ],
+  "choices": {}
+}

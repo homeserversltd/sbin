@@ -14,5 +14,9 @@
       "key-status"
     ],
     "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {}
   }
 }

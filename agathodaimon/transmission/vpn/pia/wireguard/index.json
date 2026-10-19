@@ -1,1 +1,18 @@
-{"children":[]}
+{
+  "children": [],
+  "sclerite": {
+    "name": "wireguard",
+    "features": {
+      "wireguard": {
+        "band": false,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

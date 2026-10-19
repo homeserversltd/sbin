@@ -1,0 +1,16 @@
+{
+  "schema": "agathodaimon.defconfig.v1",
+  "profile": "homeserver",
+  "features": [
+    "kea",
+    "unbound",
+    "keyman",
+    "nas",
+    "linker",
+    "transmission",
+    "tailscale"
+  ],
+  "choices": {
+    "transmission-pia-protocol": "openvpn"
+  }
+}

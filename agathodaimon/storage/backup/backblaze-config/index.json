@@ -2,8 +2,15 @@
   "children": [],
   "envelope": {
     "stdin": "json",
-    "keys": ["actuator", "metadata"],
+    "keys": [
+      "actuator",
+      "metadata"
+    ],
     "actions": [],
     "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {}
   }
 }

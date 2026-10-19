@@ -1,3 +1,32 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "keyman",
+    "features": {
+      "keyman": {
+        "band": true,
+        "verbs": [
+          [
+            "keyman",
+            "update-key"
+          ]
+        ],
+        "routes": [
+          "/api/v1/keyman/update-key"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "keyman",
+              "update-key"
+            ]
+          ],
+          "routes": [
+            "/api/v1/keyman/update-key"
+          ]
+        }
+      }
+    }
+  }
 }

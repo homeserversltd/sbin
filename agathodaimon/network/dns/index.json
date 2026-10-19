@@ -1,3 +1,55 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "unbound",
+    "features": {
+      "unbound": {
+        "band": true,
+        "verbs": [
+          [
+            "network",
+            "dns"
+          ]
+        ],
+        "routes": [
+          "/api/v1/network/dns",
+          "/api/v1/network/dns/adblock",
+          "/api/v1/network/dns/alias/create",
+          "/api/v1/network/dns/alias/remove",
+          "/api/v1/network/dns/blocklist/update",
+          "/api/v1/network/dns/device-name/create",
+          "/api/v1/network/dns/device-name/remove",
+          "/api/v1/network/dns/upstream"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "POST /api/v1/network/dns",
+            "POST /api/v1/network/dns/adblock",
+            "POST /api/v1/network/dns/alias/create",
+            "POST /api/v1/network/dns/alias/remove",
+            "POST /api/v1/network/dns/blocklist/update",
+            "POST /api/v1/network/dns/device-name/create",
+            "POST /api/v1/network/dns/device-name/remove",
+            "POST /api/v1/network/dns/upstream"
+          ]
+        }
+      },
+      "all": {
+        "band": false,
+        "verbs": [],
+        "routes": [
+          "/api/v1/network/dns/read",
+          "/api/v1/network/dns/resolver/status",
+          "/api/v1/network/dns/status"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

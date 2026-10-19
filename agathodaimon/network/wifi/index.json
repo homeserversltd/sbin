@@ -1,3 +1,24 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "nmcli",
+    "features": {
+      "nmcli": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/network/device/wifi/connect",
+          "/api/v1/network/device/wifi/disconnect",
+          "/api/v1/network/device/wifi/forget",
+          "/api/v1/network/device/wifi/ipv4",
+          "/api/v1/network/device/wifi/radio"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

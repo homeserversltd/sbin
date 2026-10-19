@@ -6,5 +6,9 @@
     "hardlink-scan",
     "mkdir",
     "rename"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

@@ -2,5 +2,9 @@
   "children": [
     "restart",
     "session"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

@@ -2,7 +2,33 @@
   "children": [],
   "envelope": {
     "stdin": "json",
-    "keys": ["actuator", "metadata"],
-    "actions": ["send", "probe"]
+    "keys": [
+      "actuator",
+      "metadata"
+    ],
+    "actions": [
+      "send",
+      "probe"
+    ]
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "network",
+            "wake-on-lan"
+          ]
+        ],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
   }
 }

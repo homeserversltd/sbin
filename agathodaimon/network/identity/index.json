@@ -1,3 +1,37 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "identity",
+    "features": {
+      "identity": {
+        "band": true,
+        "verbs": [
+          [
+            "network",
+            "identity"
+          ]
+        ],
+        "routes": [
+          "/api/v1/network/device/claim"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      },
+      "all": {
+        "band": false,
+        "verbs": [],
+        "routes": [
+          "/api/v1/network/device"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

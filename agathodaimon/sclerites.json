@@ -1,0 +1,153 @@
+{
+  "schema": "agathodaimon.sclerites.v1",
+  "always": [
+    "all"
+  ],
+  "features": {
+    "all": {},
+    "kea": {
+      "requires": [
+        "gateway"
+      ]
+    },
+    "unbound": {
+      "requires": [
+        "gateway"
+      ]
+    },
+    "gateway": {},
+    "nft": {},
+    "firewall": {
+      "requires": [
+        "kea",
+        "unbound",
+        "nft"
+      ]
+    },
+    "identity": {
+      "requires": [
+        "gateway"
+      ]
+    },
+    "sway": {},
+    "pactl": {},
+    "desktop": {},
+    "nmcli": {},
+    "keyman": {},
+    "nas": {
+      "requires": [
+        "keyman"
+      ],
+      "implies": [
+        "luks",
+        "xfs"
+      ]
+    },
+    "luks": {
+      "requires": [
+        "nas"
+      ]
+    },
+    "xfs": {
+      "requires": [
+        "nas"
+      ]
+    },
+    "linker": {
+      "requires": [
+        "nas"
+      ]
+    },
+    "games": {},
+    "transmission": {
+      "implies": [
+        "games",
+        "vpn-namespace"
+      ]
+    },
+    "vpn-namespace": {
+      "requires": [
+        "transmission"
+      ],
+      "implies": [
+        "pia"
+      ]
+    },
+    "pia": {
+      "requires": [
+        "vpn-namespace"
+      ]
+    },
+    "openvpn": {
+      "requires": [
+        "pia"
+      ]
+    },
+    "wireguard": {
+      "requires": [
+        "pia"
+      ]
+    },
+    "tailscale": {},
+    "steam": {
+      "implies": [
+        "games",
+        "console-restart"
+      ]
+    },
+    "console-restart": {
+      "requires_any": [
+        "steam",
+        "sunshine",
+        "sddm"
+      ]
+    },
+    "sunshine": {},
+    "sddm": {},
+    "gtk4": {
+      "requires": [
+        "sway"
+      ]
+    }
+  },
+  "implications": [
+    {
+      "when_all": [
+        "kea",
+        "unbound"
+      ],
+      "implies": [
+        "gateway"
+      ]
+    },
+    {
+      "when_all": [
+        "gateway"
+      ],
+      "implies": [
+        "nft",
+        "firewall",
+        "identity"
+      ]
+    }
+  ],
+  "choices": {
+    "transmission-pia-protocol": {
+      "when_all": [
+        "pia"
+      ],
+      "options": {
+        "openvpn": {
+          "features": [
+            "openvpn"
+          ]
+        },
+        "wireguard": {
+          "features": [
+            "wireguard"
+          ]
+        }
+      }
+    }
+  }
+}

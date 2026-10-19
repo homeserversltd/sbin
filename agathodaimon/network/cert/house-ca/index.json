@@ -40,5 +40,28 @@
         }
       ]
     }
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "cert",
+            "house-ca"
+          ]
+        ],
+        "routes": [
+          "/api/v1/cert/trust-fetch",
+          "/api/v1/cert/trust-install"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

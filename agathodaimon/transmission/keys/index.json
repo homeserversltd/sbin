@@ -12,5 +12,32 @@
       "rotate"
     ],
     "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "transmission",
+    "features": {
+      "transmission": {
+        "band": true,
+        "verbs": [
+          [
+            "transmission",
+            "keys"
+          ]
+        ],
+        "routes": [
+          "/api/v1/transmission/keys",
+          "/api/v1/transmission/keys/replace",
+          "/api/v1/transmission/keys/rotate"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/transmission/keys/replace",
+            "/api/v1/transmission/keys/rotate"
+          ]
+        }
+      }
+    }
   }
 }

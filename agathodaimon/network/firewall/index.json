@@ -1,3 +1,44 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "firewall",
+    "features": {
+      "firewall": {
+        "band": true,
+        "verbs": [
+          [
+            "network",
+            "firewall"
+          ]
+        ],
+        "routes": [
+          "/api/v1/network/firewall/children",
+          "/api/v1/network/firewall/children/:mac",
+          "/api/v1/network/firewall/children/:mac/whitelist"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": [
+            "DELETE /api/v1/network/firewall/children/{mac}",
+            "POST /api/v1/network/firewall/children",
+            "PUT /api/v1/network/firewall/children/{mac}/whitelist"
+          ]
+        }
+      },
+      "all": {
+        "band": false,
+        "verbs": [],
+        "routes": [
+          "/api/v1/network/firewall/children",
+          "/api/v1/network/firewall/children/:mac/whitelist"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

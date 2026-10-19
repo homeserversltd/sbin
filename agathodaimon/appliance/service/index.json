@@ -1,3 +1,56 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "gateway",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": []
+        }
+      },
+      "gateway": {
+        "band": false,
+        "verbs": [],
+        "routes": [
+          "/api/v1/appliance/service/:service/disable",
+          "/api/v1/appliance/service/:service/enable",
+          "/api/v1/appliance/service/:service/restart",
+          "/api/v1/appliance/service/:service/start",
+          "/api/v1/appliance/service/:service/status",
+          "/api/v1/appliance/service/:service/stop",
+          "/api/v1/appliance/stats/admin",
+          "/api/v1/service/:service/disable",
+          "/api/v1/service/:service/enable",
+          "/api/v1/service/:service/restart",
+          "/api/v1/service/:service/start",
+          "/api/v1/service/:service/status",
+          "/api/v1/service/:service/stop"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": [
+            "/api/v1/appliance/service/:service/disable",
+            "/api/v1/appliance/service/:service/enable",
+            "/api/v1/appliance/service/:service/restart",
+            "/api/v1/appliance/service/:service/start",
+            "/api/v1/appliance/service/:service/status",
+            "/api/v1/appliance/service/:service/stop",
+            "/api/v1/appliance/stats/admin",
+            "/api/v1/service/:service/disable",
+            "/api/v1/service/:service/enable",
+            "/api/v1/service/:service/restart",
+            "/api/v1/service/:service/start",
+            "/api/v1/service/:service/status",
+            "/api/v1/service/:service/stop"
+          ]
+        }
+      }
+    }
+  }
 }

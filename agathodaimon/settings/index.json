@@ -9,5 +9,9 @@
     "notifications",
     "ssh",
     "samba"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

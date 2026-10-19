@@ -1,3 +1,25 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "console-restart",
+    "features": {
+      "console-restart": {
+        "band": true,
+        "verbs": [
+          [
+            "console",
+            "restart"
+          ]
+        ],
+        "routes": [
+          "/api/v1/console/restart"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

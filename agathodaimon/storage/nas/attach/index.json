@@ -1,1 +1,27 @@
-{"children":[]}
+{
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [
+          [
+            "nas",
+            "attach"
+          ]
+        ],
+        "routes": [
+          "/api/v1/storage/nas/attach"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/storage/nas/attach"
+          ]
+        }
+      }
+    }
+  }
+}

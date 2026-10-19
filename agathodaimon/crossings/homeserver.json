@@ -10,6 +10,8 @@
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
+    "face/badge",
+    "face/meter",
     "games/provider-keys",
     "games/sync",
     "gui/update",
@@ -72,6 +74,14 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "face",
+      "badge"
+    ],
+    [
+      "face",
+      "meter"
     ],
     [
       "gui",
@@ -223,6 +233,8 @@
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
+    "/api/v1/face/badge",
+    "/api/v1/face/meter",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/games/provider-keys",
@@ -370,18 +382,6 @@
       "/api/v1/linker/deploy",
       "/api/v1/linker/mkdir",
       "/api/v1/linker/rename",
-      "/api/v1/network/dhcp",
-      "/api/v1/network/dhcp/pool-boundary",
-      "/api/v1/network/dhcp/reservations",
-      "/api/v1/network/dhcp/reservations/:reservation_id",
-      "/api/v1/network/dns",
-      "/api/v1/network/dns/adblock",
-      "/api/v1/network/dns/alias/create",
-      "/api/v1/network/dns/alias/remove",
-      "/api/v1/network/dns/blocklist/update",
-      "/api/v1/network/dns/device-name/create",
-      "/api/v1/network/dns/device-name/remove",
-      "/api/v1/network/dns/upstream",
       "/api/v1/network/tailscale/authkey",
       "/api/v1/network/tailscale/down",
       "/api/v1/network/tailscale/tailnet",
@@ -400,8 +400,24 @@
       "/api/v1/transmission/down",
       "/api/v1/transmission/keys/replace",
       "/api/v1/transmission/keys/rotate",
+      "/api/v1/transmission/up",
+      "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
+      "DELETE /api/v1/network/firewall/children/{mac}",
+      "POST /api/v1/network/dhcp",
+      "POST /api/v1/network/dhcp/pool-boundary",
+      "POST /api/v1/network/dhcp/reservations",
+      "POST /api/v1/network/dns",
+      "POST /api/v1/network/dns/adblock",
+      "POST /api/v1/network/dns/alias/create",
+      "POST /api/v1/network/dns/alias/remove",
+      "POST /api/v1/network/dns/blocklist/update",
+      "POST /api/v1/network/dns/device-name/create",
+      "POST /api/v1/network/dns/device-name/remove",
+      "POST /api/v1/network/dns/upstream",
+      "POST /api/v1/network/firewall/children",
       "POST /api/v1/transmission/vpn/settings",
-      "/api/v1/transmission/up"
+      "PUT /api/v1/network/dhcp/reservations/{reservation_id}",
+      "PUT /api/v1/network/firewall/children/{mac}/whitelist"
     ]
   }
 }

@@ -1,1 +1,27 @@
-{"children":[]}
+{
+  "children": [],
+  "sclerite": {
+    "name": "transmission",
+    "features": {
+      "transmission": {
+        "band": true,
+        "verbs": [
+          [
+            "transmission",
+            "down"
+          ]
+        ],
+        "routes": [
+          "/api/v1/transmission/down"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/transmission/down"
+          ]
+        }
+      }
+    }
+  }
+}

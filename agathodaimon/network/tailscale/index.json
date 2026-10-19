@@ -1,3 +1,33 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "tailscale",
+    "features": {
+      "tailscale": {
+        "band": true,
+        "verbs": [
+          [
+            "network",
+            "tailscale"
+          ]
+        ],
+        "routes": [
+          "/api/v1/network/tailscale/authkey",
+          "/api/v1/network/tailscale/down",
+          "/api/v1/network/tailscale/tailnet",
+          "/api/v1/network/tailscale/up"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": [
+            "/api/v1/network/tailscale/authkey",
+            "/api/v1/network/tailscale/down",
+            "/api/v1/network/tailscale/tailnet",
+            "/api/v1/network/tailscale/up"
+          ]
+        }
+      }
+    }
+  }
 }

@@ -1,1 +1,29 @@
-{"children":["openvpn","wireguard"],"defaultProtocol":"openvpn","nativeUnit":"transmissionVPN.service","protocols":["openvpn","wireguard"]}
+{
+  "children": [
+    "openvpn",
+    "wireguard"
+  ],
+  "defaultProtocol": "openvpn",
+  "nativeUnit": "transmissionVPN.service",
+  "protocols": [
+    "openvpn",
+    "wireguard"
+  ],
+  "sclerite": {
+    "name": "pia",
+    "features": {
+      "pia": {
+        "band": false,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": [
+            "POST /api/v1/transmission/vpn/settings"
+          ]
+        }
+      }
+    }
+  }
+}

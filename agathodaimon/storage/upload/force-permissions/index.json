@@ -1,3 +1,25 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "upload",
+            "force-permissions"
+          ]
+        ],
+        "routes": [
+          "/api/v1/upload/force-permissions"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

@@ -1,3 +1,32 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "linker",
+    "features": {
+      "linker": {
+        "band": true,
+        "verbs": [
+          [
+            "linker",
+            "deploy"
+          ]
+        ],
+        "routes": [
+          "/api/v1/linker/deploy"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "linker",
+              "deploy"
+            ]
+          ],
+          "routes": [
+            "/api/v1/linker/deploy"
+          ]
+        }
+      }
+    }
+  }
 }

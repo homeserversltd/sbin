@@ -1,5 +1,34 @@
 {
   "children": [
     "desktop-cache"
-  ]
+  ],
+  "sclerite": {
+    "name": "desktop",
+    "features": {
+      "desktop": {
+        "band": true,
+        "verbs": [
+          [
+            "settings",
+            "default-apps"
+          ]
+        ],
+        "routes": [
+          "/api/v1/settings/default-apps"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [
+            [
+              "settings",
+              "default-apps"
+            ]
+          ],
+          "routes": [
+            "/api/v1/settings/default-apps"
+          ]
+        }
+      }
+    }
+  }
 }

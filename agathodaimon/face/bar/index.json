@@ -1,3 +1,25 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "desktop",
+    "features": {
+      "desktop": {
+        "band": true,
+        "verbs": [
+          [
+            "face",
+            "bar"
+          ]
+        ],
+        "routes": [
+          "/api/v1/face/bar"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

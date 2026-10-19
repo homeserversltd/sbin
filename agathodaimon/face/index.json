@@ -10,5 +10,9 @@
     "meter",
     "volume",
     "workspace"
-  ]
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

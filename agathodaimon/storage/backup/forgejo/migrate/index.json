@@ -2,7 +2,18 @@
   "children": [],
   "envelope": {
     "stdin": "json",
-    "keys": ["schema", "payload", "op", "operation"],
-    "actions": ["get"]
+    "keys": [
+      "schema",
+      "payload",
+      "op",
+      "operation"
+    ],
+    "actions": [
+      "get"
+    ]
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {}
   }
 }

@@ -1,5 +1,34 @@
 {
   "children": [
     "household-time"
-  ]
+  ],
+  "sclerite": {
+    "name": "desktop",
+    "features": {
+      "desktop": {
+        "band": true,
+        "verbs": [
+          [
+            "settings",
+            "datetime"
+          ]
+        ],
+        "routes": [
+          "/api/v1/settings/datetime"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "settings",
+              "datetime"
+            ]
+          ],
+          "routes": [
+            "/api/v1/settings/datetime"
+          ]
+        }
+      }
+    }
+  }
 }

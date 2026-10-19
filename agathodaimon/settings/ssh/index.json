@@ -1,3 +1,25 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "settings",
+            "ssh"
+          ]
+        ],
+        "routes": [
+          "/api/v1/settings/ssh/status"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }

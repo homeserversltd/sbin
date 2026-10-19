@@ -1,4 +1,8 @@
 {
   "noun": "reload",
-  "verbs": []
+  "verbs": [],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
 }

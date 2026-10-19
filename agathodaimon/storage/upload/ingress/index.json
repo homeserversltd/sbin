@@ -1,3 +1,26 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "upload",
+            "ingress"
+          ]
+        ],
+        "routes": [
+          "/api/v1/file/ingress",
+          "/api/v1/file/ingress/:upload_id/complete"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
 }
