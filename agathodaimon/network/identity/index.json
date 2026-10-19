@@ -1,37 +1,42 @@
 {
   "children": [],
   "sclerite": {
-    "name": "identity",
     "features": {
-      "identity": {
+      "all": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
         "band": true,
+        "routes": [
+          "/api/v1/network/device"
+        ],
         "verbs": [
           [
             "network",
             "identity"
           ]
-        ],
+        ]
+      },
+      "kea": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
+        "band": true,
         "routes": [
           "/api/v1/network/device/claim"
         ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
-      },
-      "all": {
-        "band": false,
-        "verbs": [],
-        "routes": [
-          "/api/v1/network/device"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
+        "verbs": [
+          [
+            "network",
+            "identity"
+          ]
+        ]
       }
-    }
+    },
+    "name": "kea"
   }
 }

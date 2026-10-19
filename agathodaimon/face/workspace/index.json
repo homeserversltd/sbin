@@ -1,25 +1,25 @@
 {
   "children": [],
   "sclerite": {
-    "name": "sway",
     "features": {
-      "sway": {
+      "gtk4": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
         "band": true,
+        "routes": [
+          "/api/v1/face/workspace"
+        ],
         "verbs": [
           [
             "face",
             "workspace"
           ]
-        ],
-        "routes": [
-          "/api/v1/face/workspace"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
+        ]
       }
-    }
+    },
+    "name": "gtk4"
   }
 }

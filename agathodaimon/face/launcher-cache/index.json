@@ -1,25 +1,25 @@
 {
   "children": [],
   "sclerite": {
-    "name": "desktop",
     "features": {
-      "desktop": {
+      "gtk4": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
         "band": true,
+        "routes": [
+          "/api/v1/face/launcher-cache"
+        ],
         "verbs": [
           [
             "face",
             "launcher-cache"
           ]
-        ],
-        "routes": [
-          "/api/v1/face/launcher-cache"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
+        ]
       }
-    }
+    },
+    "name": "gtk4"
   }
 }

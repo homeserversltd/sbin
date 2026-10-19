@@ -1,25 +1,25 @@
 {
   "children": [],
   "sclerite": {
-    "name": "all",
     "features": {
-      "all": {
+      "gtk4": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
         "band": true,
+        "routes": [
+          "/api/v1/face/badge"
+        ],
         "verbs": [
           [
             "face",
             "badge"
           ]
-        ],
-        "routes": [
-          "/api/v1/face/badge"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
+        ]
       }
-    }
+    },
+    "name": "gtk4"
   }
 }

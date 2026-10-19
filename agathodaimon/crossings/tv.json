@@ -21,10 +21,13 @@
     "face/volume",
     "face/workspace",
     "gui/update",
-    "keyman/key-status",
     "network/cert/house-ca",
     "network/cert/refresh",
     "network/child-device",
+    "network/dhcp",
+    "network/dns",
+    "network/firewall",
+    "network/identity",
     "network/linker",
     "network/wake-on-lan",
     "network/wifi",
@@ -44,7 +47,6 @@
     "storage/upload/ingress",
     "storage/vault/open",
     "storage/vault/policy",
-    "transmission/status",
     "update/service",
     "update/sources-reseed"
   ],
@@ -114,12 +116,24 @@
       "update"
     ],
     [
-      "keyman",
-      "key-status"
+      "network",
+      "child-device"
     ],
     [
       "network",
-      "child-device"
+      "dhcp"
+    ],
+    [
+      "network",
+      "dns"
+    ],
+    [
+      "network",
+      "firewall"
+    ],
+    [
+      "network",
+      "identity"
     ],
     [
       "network",
@@ -170,10 +184,6 @@
       "household-time"
     ],
     [
-      "transmission",
-      "status"
-    ],
-    [
       "update",
       "service"
     ],
@@ -215,7 +225,6 @@
     "/api/v1/gui/update/now",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
-    "/api/v1/keyman/key-status",
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/device/wifi/connect",
@@ -243,7 +252,6 @@
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
-    "/api/v1/transmission/status",
     "/api/v1/update/check",
     "/api/v1/update/now",
     "/api/v1/update/service/status",

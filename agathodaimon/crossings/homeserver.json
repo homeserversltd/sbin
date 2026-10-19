@@ -10,8 +10,6 @@
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
-    "face/badge",
-    "face/meter",
     "games/provider-keys",
     "games/sync",
     "gui/update",
@@ -74,14 +72,6 @@
     [
       "exousia",
       "verify"
-    ],
-    [
-      "face",
-      "badge"
-    ],
-    [
-      "face",
-      "meter"
     ],
     [
       "gui",
@@ -233,8 +223,6 @@
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
-    "/api/v1/face/badge",
-    "/api/v1/face/meter",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/games/provider-keys",

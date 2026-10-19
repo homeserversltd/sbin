@@ -1,16 +1,42 @@
 {
   "children": [],
   "sclerite": {
-    "name": "unbound",
     "features": {
-      "unbound": {
+      "all": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
         "band": true,
+        "routes": [
+          "/api/v1/network/dns/read",
+          "/api/v1/network/dns/resolver/status",
+          "/api/v1/network/dns/status"
+        ],
         "verbs": [
           [
             "network",
             "dns"
           ]
-        ],
+        ]
+      },
+      "unbound": {
+        "administrative": {
+          "band": true,
+          "routes": [
+            "POST /api/v1/network/dns",
+            "POST /api/v1/network/dns/adblock",
+            "POST /api/v1/network/dns/alias/create",
+            "POST /api/v1/network/dns/alias/remove",
+            "POST /api/v1/network/dns/blocklist/update",
+            "POST /api/v1/network/dns/device-name/create",
+            "POST /api/v1/network/dns/device-name/remove",
+            "POST /api/v1/network/dns/upstream"
+          ],
+          "verbs": []
+        },
+        "band": true,
         "routes": [
           "/api/v1/network/dns",
           "/api/v1/network/dns/adblock",
@@ -21,35 +47,14 @@
           "/api/v1/network/dns/device-name/remove",
           "/api/v1/network/dns/upstream"
         ],
-        "administrative": {
-          "band": true,
-          "verbs": [],
-          "routes": [
-            "POST /api/v1/network/dns",
-            "POST /api/v1/network/dns/adblock",
-            "POST /api/v1/network/dns/alias/create",
-            "POST /api/v1/network/dns/alias/remove",
-            "POST /api/v1/network/dns/blocklist/update",
-            "POST /api/v1/network/dns/device-name/create",
-            "POST /api/v1/network/dns/device-name/remove",
-            "POST /api/v1/network/dns/upstream"
+        "verbs": [
+          [
+            "network",
+            "dns"
           ]
-        }
-      },
-      "all": {
-        "band": false,
-        "verbs": [],
-        "routes": [
-          "/api/v1/network/dns/read",
-          "/api/v1/network/dns/resolver/status",
-          "/api/v1/network/dns/status"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
+        ]
       }
-    }
+    },
+    "name": "unbound"
   }
 }

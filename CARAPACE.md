@@ -14,19 +14,19 @@ Every `index.py` owner and the metadata-only `gui/update` owner declares one
 known `sclerite.name` beside its `features` contribution map in `index.json`;
 empty maps remain unpublished owners. A declaration maps feature names to that
 owner's `band`, alias `verbs`, `routes`, and optional `administrative`
-contributions. Keep read-only route contributions in `all`; keep mixed-band
-aliases and mutation-only routes under their owning feature. For a route shared
-by observation and mutation, the method-qualified administrative declaration
-identifies the mutating method without promoting the whole band to `all`. DHCP
-reservation reads, DNS status reads, firewall child/whitelist reads, and
-network-device observation follow that split; the identity claim route is
-gateway-scoped. `lib` is internal and cannot contribute crossing bands or
-routes. Feature ownership follows each source sclerite's real needs, not a
-renamed profile or UI-framework list: `face/focus`, `face/workspace`, and
-`face/fetch` use `sway`; `face/volume` uses `pactl`; and `face/app`, `face/bar`,
-`face/launch`, and `face/launcher-cache` use `desktop`. `gtk4` remains a
-separate Sway GTK profile constraint through its `requires: [sway]` relation;
-it does not own every face control.
+contributions. Keep read-only observation routes in `all`. The four network
+bands (`dhcp`, `dns`, `firewall`, `identity`) contribute their observation band
+and existing `network/<name>` verb under `all` in every sold profile. Their
+`all` administrative claims remain empty; gated mutation routes and
+method-qualified administrative claims stay with `kea` (DHCP), `unbound` (DNS),
+or `firewall`. Identity's `/api/v1/network/device/claim` is gated by `kea`;
+its `/api/v1/network/device` observer route remains in `all`. Preserve any gated
+duplicate band/verb needed for per-claim administrative validation; crossing
+unions are idempotent. `lib` is internal and cannot contribute crossing bands
+or routes. All ten `face/...` leaves (`app`, `badge`, `bar`, `fetch`, `focus`,
+`launch`, `launcher-cache`, `meter`, `volume`, and `workspace`) have feature and
+sclerite name `gtk4`; their crossing ownership follows the Caduceus GTK4 leaf,
+not the old `sway`, `pactl`, or `desktop` selections.
 
 The defconfigs explicitly select these sold features; declared implications
 and prerequisites add derived features without adding profile-band lists:
@@ -58,11 +58,14 @@ explicit feature list has no `steam-runtime` choice: selected `steam` implies
 policy preserving the existing HomeServer and HomeConsole games crossings;
 this is not a claim that either feature is a physical package dependency.
 
-Read-only `face/badge` and `face/meter`, `keyman/key-status`, and
-`transmission/status` are declared under `all` for every sold profile. These
-observer additions remain honest-not-found where dispatch has no implementation;
-the internal Transmission bands are not exposed by the crossings. `samba` is
-likewise common observer surface. `gui/update` remains a declared, unimplemented
+`keyman/key-status` is owned by `keyman`, and `transmission/status` by
+`transmission`; neither status is globally selected under `all`. `face/badge`
+and `face/meter` are among the ten `gtk4`-owned face leaves, not common `all`
+observers. Those key/status bands are available only to profiles selecting
+their owning feature (HomeServer here). These observer declarations remain
+honest-not-found where dispatch has no implementation; the internal
+Transmission bands are not exposed by the crossings. `samba` is likewise
+common observer surface. `gui/update` remains a declared, unimplemented
 GTK debt for each sold profile that already crossed it. Its metadata-only node
 intentionally has no `index.py`, so the staff dispatcher continues to report
 not-found rather than fabricating an implementation.

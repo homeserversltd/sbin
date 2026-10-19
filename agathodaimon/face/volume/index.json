@@ -1,25 +1,25 @@
 {
   "children": [],
   "sclerite": {
-    "name": "pactl",
     "features": {
-      "pactl": {
+      "gtk4": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
         "band": true,
+        "routes": [
+          "/api/v1/face/volume"
+        ],
         "verbs": [
           [
             "face",
             "volume"
           ]
-        ],
-        "routes": [
-          "/api/v1/face/volume"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
+        ]
       }
-    }
+    },
+    "name": "gtk4"
   }
 }

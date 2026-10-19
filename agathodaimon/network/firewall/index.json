@@ -1,44 +1,49 @@
 {
   "children": [],
   "sclerite": {
-    "name": "firewall",
     "features": {
-      "firewall": {
+      "all": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
         "band": true,
+        "routes": [
+          "/api/v1/network/firewall/children",
+          "/api/v1/network/firewall/children/:mac/whitelist"
+        ],
         "verbs": [
           [
             "network",
             "firewall"
           ]
-        ],
+        ]
+      },
+      "firewall": {
+        "administrative": {
+          "band": false,
+          "routes": [
+            "DELETE /api/v1/network/firewall/children/{mac}",
+            "POST /api/v1/network/firewall/children",
+            "PUT /api/v1/network/firewall/children/{mac}/whitelist"
+          ],
+          "verbs": []
+        },
+        "band": true,
         "routes": [
           "/api/v1/network/firewall/children",
           "/api/v1/network/firewall/children/:mac",
           "/api/v1/network/firewall/children/:mac/whitelist"
         ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": [
-            "DELETE /api/v1/network/firewall/children/{mac}",
-            "POST /api/v1/network/firewall/children",
-            "PUT /api/v1/network/firewall/children/{mac}/whitelist"
+        "verbs": [
+          [
+            "network",
+            "firewall"
           ]
-        }
-      },
-      "all": {
-        "band": false,
-        "verbs": [],
-        "routes": [
-          "/api/v1/network/firewall/children",
-          "/api/v1/network/firewall/children/:mac/whitelist"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
+        ]
       }
-    }
+    },
+    "name": "firewall"
   }
 }
