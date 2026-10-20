@@ -950,6 +950,21 @@ try:
 finally:
     os.close(fd)
 """
+_SCREENSHOT_SATTY_WAITER = r'''
+import os, stat, subprocess, sys
+satty, capture, uid, lock_fd = sys.argv[1:]
+uid = int(uid)
+lock_fd = int(lock_fd)
+metadata = os.fstat(lock_fd)
+if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != uid:
+    raise SystemExit(70)
+result = subprocess.run(
+    [satty, "-f", capture], stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    close_fds=True, check=False,
+)
+raise SystemExit(result.returncode)
+'''
 _SCREENSHOT_SWAPPY_WAITER = r'''
 import os, pathlib, stat, subprocess, sys
 capture, swappy, pictures_home, wl_paste, notify_send, uid, lock_fd = sys.argv[1:]
@@ -1035,7 +1050,7 @@ def notify(message):
         return
     try:
         subprocess.run(
-            [notify_send, "--icon", capture, message],
+            [notify_send, message],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, timeout=3, check=False,
         )
@@ -1662,7 +1677,10 @@ def screenshot(payload: dict[str, Any]) -> Mapping[str, Any]:
             if satty is not None:
                 editor_name = "satty"
                 process, _exit_code = _screenshot_spawn_with_fd(
-                    [satty, "-f", str(capture_path)], environment, capture_fd,
+                    [
+                        python, "-c", _SCREENSHOT_SATTY_WAITER,
+                        satty, str(capture_path), str(account.pw_uid), str(capture_fd),
+                    ], environment, capture_fd,
                 )
                 return {
                     "ok": True, "firstMissingSignal": "none", "mode": mode,
