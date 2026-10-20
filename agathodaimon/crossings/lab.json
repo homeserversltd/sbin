@@ -424,7 +424,6 @@
     "/api/v1/log/reflect",
     "/api/v1/log/write",
     "/api/v1/network/bandwidth/measure",
-    "/api/v1/network/cors/allowed-origins/add",
     "/api/v1/network/device",
     "/api/v1/network/device/claim",
     "/api/v1/network/device/connect",
