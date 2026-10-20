@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 
-VERBS = ["admin-password", "create-key", "key-status", "update-key"]
+VERBS = ["admin-password", "create-key", "key-status", "newkey", "update-key"]
 
 
 def main(argv=None):

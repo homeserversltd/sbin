@@ -1,0 +1,28 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "keyman",
+    "features": {
+      "keyman": {
+        "band": true,
+        "verbs": [
+          [
+            "keyman",
+            "newkey"
+          ]
+        ],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "keyman",
+              "newkey"
+            ]
+          ],
+          "routes": []
+        }
+      }
+    }
+  }
+}

@@ -3,6 +3,7 @@
     "admin-password",
     "create-key",
     "key-status",
+    "newkey",
     "update-key"
   ],
   "sclerite": {
