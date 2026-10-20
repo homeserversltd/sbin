@@ -1,4 +1,4 @@
-"""Bounded console restart ladder: steam, stream, then seat."""
+"""Bounded Arcadia OS console restart ladder: steam, stream, then seat."""
 from __future__ import annotations
 import argparse, json, os, subprocess, sys, time
 from pathlib import Path
@@ -8,6 +8,10 @@ SUNSHINE_UNIT="app-dev.lizardbyte.app.Sunshine.service"; SEAT_UNIT="sddm.service
 SCHEMA="agathodaimon.console.restart.v1"
 DISPLAY_KEYS=("WAYLAND_DISPLAY","DISPLAY")
 OPTIONAL_SESSION_KEYS=("DBUS_SESSION_BUS_ADDRESS","XDG_SESSION_ID","XDG_SESSION_TYPE")
+
+def steam_executable() -> str:
+    from agathodaimon.console.session.runtime import root_path
+    return str(root_path() / STEAM_EXECUTABLE.lstrip("/"))
 
 def _result(argv, completed=None, *, error=None):
     if error is not None: return {"argv":argv,"ok":False,"exit_code":None,"stdout":"","stderr":error}
@@ -118,14 +122,15 @@ def restart(degree):
         if not targets: return _refusal(degree,"console-restart-steam-graphical-session-coordinate-mismatch-or-process-absent",gamescope_pid=gamescope_pid)
         if len(targets)>1: return _refusal(degree,"console-restart-steam-ambiguous-graphical-session-matches",gamescope_pid=gamescope_pid,matching_pids=[target[0] for target in targets])
         old_pid,steam_env,coordinates=targets[0]
-        if not Path(STEAM_EXECUTABLE).is_file(): return _refusal(degree,"console-restart-steam-executable-absent",target_pid=old_pid,gamescope_pid=gamescope_pid,graphical_session_coordinates=coordinates)
+        steam_binary=steam_executable()
+        if not Path(steam_binary).is_file(): return _refusal(degree,"console-restart-steam-executable-absent",target_pid=old_pid,gamescope_pid=gamescope_pid,graphical_session_coordinates=coordinates)
         stop=_command(["kill","-TERM",str(old_pid)])
         stop_readback,stop_signal=_stop_readback(old_pid,gamescope_pid)
         if not stop["ok"]:
             return {"schema":SCHEMA,"ok":False,"degree":degree,"units_touched":[],"processes_touched":["Steam"],"command_results":[stop,stop_readback],"mutation_performed":True,"first_missing_signal":"console-restart-steam-stop-failed","target_pid":old_pid,"gamescope_pid":gamescope_pid,"graphical_session_coordinates":coordinates}
         if stop_signal:
             return {"schema":SCHEMA,"ok":False,"degree":degree,"units_touched":[],"processes_touched":["Steam"],"command_results":[stop,stop_readback],"mutation_performed":True,"first_missing_signal":stop_signal,"target_pid":old_pid,"gamescope_pid":gamescope_pid,"graphical_session_coordinates":coordinates}
-        launch_argv=["runuser","--preserve-environment","-u",OWNER,"--",STEAM_EXECUTABLE]
+        launch_argv=["runuser","--preserve-environment","-u",OWNER,"--",steam_binary]
         try:
             proc=subprocess.Popen(launch_argv,env={**os.environ,**gamescope_env},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             launch={"argv":launch_argv,"ok":True,"exit_code":None,"pid":proc.pid,"stdout":"","stderr":""}

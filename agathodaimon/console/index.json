@@ -1,7 +1,9 @@
 {
   "children": [
     "restart",
-    "session"
+    "select-branch",
+    "session",
+    "session-select"
   ],
   "sclerite": {
     "name": "all",
