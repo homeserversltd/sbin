@@ -20,6 +20,7 @@ from agathodaimon.keyman._common import (
     _emit,
     _scrub,
 )
+from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
 
 _MAX_SERVICE_NAME = 238
 _MAX_FIELD_VALUE = 511
@@ -288,6 +289,218 @@ def _write_stdin(stream, body: bytearray, state: dict[str, bool]) -> None:
             pass
 
 
+def _relay_input(source, target, state: dict[str, bool]) -> None:
+    reusable = bytearray(_READ_CHUNK)
+    try:
+        reader = getattr(source, "readinto", None)
+        if callable(reader):
+            while True:
+                try:
+                    count = reader(reusable)
+                except (OSError, UnicodeError, ValueError):
+                    state["read_failed"] = True
+                    break
+                if not isinstance(count, int):
+                    state["read_failed"] = True
+                    break
+                if count <= 0:
+                    break
+                try:
+                    view = memoryview(reusable)[:count]
+                    offset = 0
+                    while offset < count:
+                        written = target.write(view[offset:])
+                        if written is None or written <= 0:
+                            state["write_failed"] = True
+                            return
+                        offset += written
+                    target.flush()
+                except (BrokenPipeError, OSError, ValueError):
+                    state["write_failed"] = True
+                    break
+                finally:
+                    reusable[:count] = b"\0" * count
+            return
+
+        while True:
+            try:
+                chunk = source.read(_READ_CHUNK)
+            except (OSError, UnicodeError, ValueError):
+                state["read_failed"] = True
+                break
+            if not chunk:
+                break
+            try:
+                if isinstance(chunk, str):
+                    relay = bytearray(chunk.encode("utf-8", "surrogateescape"))
+                elif isinstance(chunk, (bytes, bytearray)):
+                    relay = bytearray(chunk)
+                else:
+                    state["read_failed"] = True
+                    break
+            except UnicodeEncodeError:
+                state["read_failed"] = True
+                break
+            finally:
+                chunk = None
+            try:
+                view = memoryview(relay)
+                offset = 0
+                while offset < len(relay):
+                    written = target.write(view[offset:])
+                    if written is None or written <= 0:
+                        state["write_failed"] = True
+                        break
+                    offset += written
+                target.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                state["write_failed"] = True
+                break
+            finally:
+                _zero(relay)
+    finally:
+        _zero(reusable)
+        try:
+            target.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _receipt_output(output: bytearray) -> bool:
+    try:
+        value = json.loads(output)
+    except (UnicodeError, json.JSONDecodeError, RecursionError, TypeError):
+        return False
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("schema"), str)
+        and isinstance(value.get("ok"), bool)
+        and isinstance(value.get("firstMissingSignal"), str)
+        and (
+            value.get("operation") == "newkey"
+            or value.get("schema") == "agathodaimon.front-door.v1"
+        )
+    )
+
+
+def _root_reexec(args: list[str]) -> tuple[bytearray, int] | None:
+    try:
+        interactive = bool(sys.stdin.isatty())
+    except (AttributeError, OSError, ValueError):
+        interactive = False
+    argv = [
+        "/usr/bin/sudo",
+        "-n",
+        "/usr/local/sbin/agathodaimon/cli.py",
+        "keyman",
+        "newkey",
+        *args,
+    ]
+    try:
+        process = subprocess.Popen(
+            argv,
+            stdin=None if interactive else subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    output = bytearray()
+    output_state = {"overflow": False, "read_failed": False}
+    input_state = {"read_failed": False, "write_failed": False}
+    if process.stdout is None or (not interactive and process.stdin is None):
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait()
+        except (OSError, subprocess.SubprocessError):
+            pass
+        for stream in (process.stdin, process.stdout):
+            if stream is not None:
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+        return None
+
+    output_thread = threading.Thread(
+        target=_drain_stream, args=(process.stdout, output, output_state), daemon=True
+    )
+    input_thread = None
+    if not interactive:
+        try:
+            source = getattr(sys.stdin, "buffer", sys.stdin)
+        except (AttributeError, OSError, UnicodeError, ValueError):
+            source = sys.stdin
+        input_thread = threading.Thread(
+            target=_relay_input, args=(source, process.stdin, input_state), daemon=True
+        )
+    started = []
+    try:
+        output_thread.start()
+        started.append(output_thread)
+        if input_thread is not None:
+            input_thread.start()
+            started.append(input_thread)
+    except RuntimeError:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    returncode = None
+    try:
+        returncode = process.wait()
+    except (OSError, subprocess.SubprocessError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            returncode = process.wait()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    for thread in started:
+        thread.join()
+    for stream in (process.stdin, process.stdout):
+        if stream is not None:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+
+    if (
+        returncode is None
+        or output_state["overflow"]
+        or output_state["read_failed"]
+        or (input_thread is not None and (input_state["read_failed"] or input_state["write_failed"]))
+        or not _receipt_output(output)
+    ):
+        _zero(output)
+        return None
+    return output, int(returncode)
+
+
+def _write_passthrough(output: bytearray) -> None:
+    stream = getattr(sys.stdout, "buffer", None)
+    if stream is not None:
+        view = memoryview(output)
+        offset = 0
+        while offset < len(view):
+            written = stream.write(view[offset:])
+            if written is None or written <= 0:
+                raise OSError("stdout-write-failed")
+            offset += written
+        stream.flush()
+        return
+    sys.stdout.write(output.decode("utf-8", "surrogateescape"))
+    sys.stdout.flush()
+
+
 def _run_child(argv: list[str], body: bytearray) -> dict[str, Any] | None:
     try:
         process = subprocess.Popen(
@@ -524,8 +737,9 @@ def main(argv=None):
     username_bytes: bytearray | None = None
     password_bytes: bytearray | None = None
     child_result: dict[str, Any] | None = None
+    root_result: tuple[bytearray, int] | None = None
     dispatch_begun = False
-    receipt: dict[str, Any]
+    receipt: dict[str, Any] | None = None
     try:
         if argv is None:
             args: list[str] = []
@@ -538,32 +752,68 @@ def main(argv=None):
         _validate_service(service)
         username_bytes = _field_bytes(username, "keyman-newkey-username-invalid")
 
-        password = (
-            _read_piped_password(secrets)
-            if password_stdin
-            else _prompt_password(service, secrets)
-        )
-        if password:
-            secrets.add(password)
-        password_bytes = _field_bytes(password, "keyman-newkey-password-invalid")
+        if os.geteuid() != 0:
+            root_result = _root_reexec(args)
+            if root_result is None:
+                receipt = _receipt(
+                    "keyman-newkey-root-required",
+                    mutation=False,
+                    secrets=secrets,
+                    service=service,
+                    username=username,
+                    replace=replace,
+                )
+        else:
+            password = (
+                _read_piped_password(secrets)
+                if password_stdin
+                else _prompt_password(service, secrets)
+            )
+            if password:
+                secrets.add(password)
+            password_bytes = _field_bytes(password, "keyman-newkey-password-invalid")
 
-        body = bytearray(b'username="')
-        body.extend(username_bytes)
-        body.extend(b'"\npassword="')
-        body.extend(password_bytes)
-        body.extend(b'"\n')
-        child_argv = PREFIX + ["newkey", "--stdin", service]
-        if replace:
-            child_argv.append("--replace")
-        dispatch_begun = True
-        child_result = _run_child(child_argv, body)
-        receipt = _backend_outcome(
-            child_result,
-            dispatched=child_result is not None,
+            body = bytearray(b'username="')
+            body.extend(username_bytes)
+            body.extend(b'"\npassword="')
+            body.extend(password_bytes)
+            body.extend(b'"\n')
+            scratch_root = os.environ.get("KEYMAN_ROOT")
+            with exchange_session(
+                scratch_root=scratch_root,
+                exporter=PREFIX[-1] if scratch_root is not None else None,
+                native=True,
+            ):
+                child_argv = [PREFIX[-1], "newkey", "--stdin", service]
+                if replace:
+                    child_argv.append("--replace")
+                dispatch_begun = True
+                child_result = _run_child(child_argv, body)
+                receipt = _backend_outcome(
+                    child_result,
+                    dispatched=child_result is not None,
+                    service=service,
+                    username=username,
+                    replace=replace,
+                    secrets=secrets,
+                )
+    except KeymanExportError as error:
+        dispatched = child_result is not None
+        backend_receipt = receipt.get("backendReceipt") if receipt is not None else None
+        mutation = (
+            True
+            if receipt is not None and receipt.get("mutationPerformed") is True
+            else None if dispatched else False
+        )
+        receipt = _receipt(
+            "keyman-newkey-" + error.signal,
+            mutation=mutation,
+            secrets=secrets,
+            dispatched=dispatched,
             service=service,
             username=username,
             replace=replace,
-            secrets=secrets,
+            backend_receipt=backend_receipt,
         )
     except RequestError as error:
         receipt = _receipt(
@@ -592,4 +842,14 @@ def main(argv=None):
             _zero(child_result.get("stdout"))
             _zero(child_result.get("stderr"))
 
+    if root_result is not None:
+        output, returncode = root_result
+        try:
+            _write_passthrough(output)
+        except OSError:
+            pass
+        finally:
+            _zero(output)
+        return returncode
+    assert receipt is not None
     return _emit(receipt, None, secrets)

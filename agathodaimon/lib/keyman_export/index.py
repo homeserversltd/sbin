@@ -8,9 +8,10 @@ import re
 import stat
 import subprocess
 import time
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import NoReturn
+from typing import Iterator, NoReturn
 
 KEYMAN = "/vault/keyman/keyman"
 SERVICE_NAMES = frozenset({"nas", "nas_backup", "service_suite"})
@@ -358,6 +359,24 @@ class _Exchange:
     underlay_identity: tuple[int, int] | None = None
 
 
+@dataclass
+class _ExchangeSession:
+    layout: _Layout
+    exchange: _Exchange
+    skeleton_dir_fd: int | None = None
+    keys_dir_fd: int | None = None
+    skeleton_fd: int | None = None
+    key_fds: list[int] = field(default_factory=list)
+    result_buffers: list[bytearray] = field(default_factory=list)
+
+    def own_key_fd(self, fd: int) -> None:
+        if fd not in self.key_fds:
+            self.key_fds.append(fd)
+
+    def register_result(self, result: bytearray) -> None:
+        self.result_buffers.append(result)
+
+
 class ExportedKey(bytearray):
     """Mutable key bytes with secret-free lifecycle metadata."""
 
@@ -408,20 +427,21 @@ def _silent_command(argv: list[str]) -> tuple[bool, int | None]:
 
 def _exchange_parent(state: _Exchange) -> int:
     try:
-        if state.scratch:
+        if state.layout.child_root is not None:
             assert state.layout.child_root is not None
             root_fd = _open_dir(state.layout.child_root)
             try:
                 root_stat = os.fstat(root_fd)
-                if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_uid != os.geteuid():
-                    _refuse(SCRATCH_CONTEXT_INVALID)
+                expected_uid = os.geteuid() if state.scratch else 0
+                if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_uid != expected_uid:
+                    _refuse(SCRATCH_CONTEXT_INVALID if state.scratch else EXCHANGE_MOUNT_FAILED)
             finally:
                 os.close(root_fd)
             parent_fd = _open_dir(os.path.dirname(state.layout.exchange_dir))
             parent_stat = os.fstat(parent_fd)
-            if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != os.geteuid():
+            if not stat.S_ISDIR(parent_stat.st_mode) or parent_stat.st_uid != expected_uid:
                 os.close(parent_fd)
-                _refuse(SCRATCH_CONTEXT_INVALID)
+                _refuse(SCRATCH_CONTEXT_INVALID if state.scratch else EXCHANGE_MOUNT_FAILED)
             return parent_fd
         parent_fd = _open_dir("/mnt")
         parent_stat = os.fstat(parent_fd)
@@ -893,119 +913,168 @@ def _acquire_export_lock(fd: int) -> None:
         return
 
 
+@contextmanager
+def exchange_session(*, scratch_root: str | os.PathLike[str] | None = None,
+                     exporter: str | os.PathLike[str] | None = None,
+                     native: bool = False) -> Iterator[_ExchangeSession]:
+    """Hold the Keyman serialization lock and one exchange lifecycle."""
+    if not isinstance(native, bool):
+        _refuse(SCRATCH_CONTEXT_INVALID)
+    rooted = scratch_root is not None or exporter is not None
+    if native and os.geteuid() != 0:
+        _refuse(NON_ROOT)
+    if not native and not rooted and os.geteuid() != 0:
+        _refuse(NON_ROOT)
+    if native and scratch_root is not None and exporter is None:
+        exporter = KEYMAN
+    layout = _layout(scratch_root, exporter)
+    state = _Exchange(layout, scratch=bool(rooted and not native))
+    session = _ExchangeSession(layout, state)
+    body_failed = False
+    cleanup_failed = False
+    try:
+        try:
+            session.skeleton_dir_fd = _open_dir(layout.skeleton_dir)
+            session.keys_dir_fd = _open_dir(layout.keys_dir)
+        except FileNotFoundError:
+            _refuse(UNINITIALIZED_SYSTEM)
+        skeleton = _open_key_file(session.skeleton_dir_fd, "skeleton.key")
+        if skeleton is None:
+            _refuse(UNINITIALIZED_SYSTEM)
+        session.skeleton_fd, _skeleton_metadata = skeleton
+        try:
+            _acquire_export_lock(session.skeleton_fd)
+            if not _same_path_inode(
+                session.skeleton_dir_fd, "skeleton.key", os.fstat(session.skeleton_fd)
+            ):
+                _refuse(PREFLIGHT_UNOBSERVABLE)
+        except OSError:
+            _refuse(PREFLIGHT_UNOBSERVABLE)
+        _begin_exchange(state)
+        yield session
+    except BaseException:
+        body_failed = True
+        raise
+    finally:
+        try:
+            _obliterate_exchange(state)
+        except BaseException:
+            cleanup_failed = True
+        if cleanup_failed or body_failed:
+            for result in session.result_buffers:
+                for index in range(len(result)):
+                    result[index] = 0
+        seen: set[int] = set()
+        for fd in reversed(session.key_fds):
+            if fd in seen:
+                continue
+            seen.add(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        for fd in (session.keys_dir_fd, session.skeleton_dir_fd, state.parent_fd):
+            if fd is None or fd in seen:
+                continue
+            seen.add(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        # The skeleton descriptor is the serialization lock and closes last.
+        if session.skeleton_fd is not None:
+            try:
+                os.close(session.skeleton_fd)
+            except OSError:
+                pass
+        if cleanup_failed:
+            _refuse(EXCHANGE_OBLITERATION_FAILED)
+
+
 def _export(service_name: str, scratch_root: str | os.PathLike[str] | None,
             exporter: str | os.PathLike[str] | None,
             username_out: bytearray | None) -> ExportedKey:
     scratch_mode = scratch_root is not None or exporter is not None
     if not scratch_mode and os.geteuid() != 0:
         _refuse(NON_ROOT)
-    layout = _layout(scratch_root, exporter)
-    state = _Exchange(layout, scratch_mode)
-    keys_fd = skeleton_dir_fd = skeleton_fd = service_fd = named_fd = None
-    result_secret: ExportedKey | None = None
     parsed_material: bytearray | None = None
-    cleanup_failed = False
     try:
-        try:
-            skeleton_dir_fd = _open_dir(layout.skeleton_dir)
-            keys_fd = _open_dir(layout.keys_dir)
-        except FileNotFoundError:
-            _refuse(UNINITIALIZED_SYSTEM)
-        skeleton = _open_key_file(skeleton_dir_fd, "skeleton.key")
-        if skeleton is None:
-            _refuse(UNINITIALIZED_SYSTEM)
-        skeleton_fd, _skeleton_metadata = skeleton
-        try:
-            _acquire_export_lock(skeleton_fd)
-            if not _same_path_inode(skeleton_dir_fd, "skeleton.key", os.fstat(skeleton_fd)):
+        with exchange_session(scratch_root=scratch_root, exporter=exporter,
+                              native=False) as session:
+            layout = session.layout
+            state = session.exchange
+            assert session.keys_dir_fd is not None
+            assert session.skeleton_dir_fd is not None
+            assert session.skeleton_fd is not None
+            keys_fd = session.keys_dir_fd
+            skeleton_dir_fd = session.skeleton_dir_fd
+            skeleton_fd = session.skeleton_fd
+            service = _open_key_file(keys_fd, "service_suite.key")
+            if service is None:
+                _refuse(UNINITIALIZED_SYSTEM)
+            service_fd, _service_metadata = service
+            session.own_key_fd(service_fd)
+            if service_name == "service_suite":
+                named = service
+            else:
+                named = _open_key_file(keys_fd, service_name + ".key")
+                if named is None:
+                    _refuse(MISSING_KEY)
+            named_fd, _named_metadata = named
+            session.own_key_fd(named_fd)
+            exchange_fd = state.exchange_fd
+            if exchange_fd is None:
+                _refuse(EXCHANGE_MOUNT_FAILED)
+            try:
+                os.stat(service_name, dir_fd=exchange_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            except OSError:
                 _refuse(PREFLIGHT_UNOBSERVABLE)
-        except OSError:
-            _refuse(PREFLIGHT_UNOBSERVABLE)
-        _begin_exchange(state)
-        service = _open_key_file(keys_fd, "service_suite.key")
-        if service is None:
-            _refuse(UNINITIALIZED_SYSTEM)
-        service_fd, _service_metadata = service
-        if service_name == "service_suite":
-            named = service
-        else:
-            named = _open_key_file(keys_fd, service_name + ".key")
-            if named is None:
-                _refuse(MISSING_KEY)
-        named_fd, _named_metadata = named
-        exchange_fd = state.exchange_fd
-        if exchange_fd is None:
-            _refuse(EXCHANGE_MOUNT_FAILED)
-        try:
-            os.stat(service_name, dir_fd=exchange_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            _refuse(PREFLIGHT_UNOBSERVABLE)
-        else:
-            _refuse(EXCHANGE_ARTIFACT_PREEXISTING)
-        if (not _same_path_inode(skeleton_dir_fd, "skeleton.key", os.fstat(skeleton_fd))
-                or not _same_path_inode(keys_fd, "service_suite.key", os.fstat(service_fd))
-                or not _same_path_inode(keys_fd, service_name + ".key", os.fstat(named_fd))):
-            _refuse(PREFLIGHT_UNOBSERVABLE)
-        child_environment = os.environ.copy()
-        child_environment.pop("KEYMAN_ROOT", None)
-        if layout.child_root is not None:
-            child_environment["KEYMAN_ROOT"] = layout.child_root
-        try:
-            result = subprocess.run([layout.keyman, "export", service_name],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, env=child_environment,
-                                    timeout=EXPORT_TIMEOUT_SECONDS, check=False, close_fds=True)
-        except subprocess.TimeoutExpired:
-            _cleanup_observed_exchange(
-                exchange_fd, service_name, _observe_exchange(exchange_fd, service_name))
-            _refuse(EXPORT_TIMEOUT)
-        except OSError:
-            _refuse(EXPORT_UNAVAILABLE)
-        observed_exchange = _observe_exchange(exchange_fd, service_name)
-        if (not _same_path_inode(skeleton_dir_fd, "skeleton.key", os.fstat(skeleton_fd))
-                or not _same_path_inode(keys_fd, "service_suite.key", os.fstat(service_fd))
-                or not _same_path_inode(keys_fd, service_name + ".key", os.fstat(named_fd))):
-            _cleanup_observed_exchange(exchange_fd, service_name, observed_exchange,
-                                       int(result.returncode) if result.returncode != 0 else None)
-            _refuse(PREFLIGHT_UNOBSERVABLE)
-        if result.returncode != 0:
-            _cleanup_observed_exchange(exchange_fd, service_name, observed_exchange,
-                                       int(result.returncode))
-            if result.returncode == 1:
-                _refuse(MALFORMED_KEY_FILE, int(result.returncode))
-            _refuse(EXPORT_FAILED, int(result.returncode))
-        parsed_material = _read_and_remove_exchange(exchange_fd, service_name,
-                                                    expected_identity=observed_exchange,
-                                                    require_identity=True,
-                                                    username_out=username_out)
-        result_secret = ExportedKey(parsed_material, exchange_reclaimed=state.reclaimed)
-        for index in range(len(parsed_material)):
-            parsed_material[index] = 0
-        return result_secret
+            else:
+                _refuse(EXCHANGE_ARTIFACT_PREEXISTING)
+            if (not _same_path_inode(skeleton_dir_fd, "skeleton.key", os.fstat(skeleton_fd))
+                    or not _same_path_inode(keys_fd, "service_suite.key", os.fstat(service_fd))
+                    or not _same_path_inode(keys_fd, service_name + ".key", os.fstat(named_fd))):
+                _refuse(PREFLIGHT_UNOBSERVABLE)
+            child_environment = os.environ.copy()
+            child_environment.pop("KEYMAN_ROOT", None)
+            if layout.child_root is not None:
+                child_environment["KEYMAN_ROOT"] = layout.child_root
+            try:
+                result = subprocess.run([layout.keyman, "export", service_name],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL, env=child_environment,
+                                        timeout=EXPORT_TIMEOUT_SECONDS, check=False, close_fds=True)
+            except subprocess.TimeoutExpired:
+                _cleanup_observed_exchange(
+                    exchange_fd, service_name, _observe_exchange(exchange_fd, service_name))
+                _refuse(EXPORT_TIMEOUT)
+            except OSError:
+                _refuse(EXPORT_UNAVAILABLE)
+            observed_exchange = _observe_exchange(exchange_fd, service_name)
+            if (not _same_path_inode(skeleton_dir_fd, "skeleton.key", os.fstat(skeleton_fd))
+                    or not _same_path_inode(keys_fd, "service_suite.key", os.fstat(service_fd))
+                    or not _same_path_inode(keys_fd, service_name + ".key", os.fstat(named_fd))):
+                _cleanup_observed_exchange(exchange_fd, service_name, observed_exchange,
+                                           int(result.returncode) if result.returncode != 0 else None)
+                _refuse(PREFLIGHT_UNOBSERVABLE)
+            if result.returncode != 0:
+                _cleanup_observed_exchange(exchange_fd, service_name, observed_exchange,
+                                           int(result.returncode))
+                if result.returncode == 1:
+                    _refuse(MALFORMED_KEY_FILE, int(result.returncode))
+                _refuse(EXPORT_FAILED, int(result.returncode))
+            parsed_material = _read_and_remove_exchange(exchange_fd, service_name,
+                                                        expected_identity=observed_exchange,
+                                                        require_identity=True,
+                                                        username_out=username_out)
+            result_secret = ExportedKey(parsed_material, exchange_reclaimed=state.reclaimed)
+            session.register_result(result_secret)
+            for index in range(len(parsed_material)):
+                parsed_material[index] = 0
+            return result_secret
     finally:
-        try:
-            _obliterate_exchange(state)
-        except BaseException:
-            cleanup_failed = True
         if parsed_material is not None:
             for index in range(len(parsed_material)):
                 parsed_material[index] = 0
-        if cleanup_failed and result_secret is not None:
-            for index in range(len(result_secret)):
-                result_secret[index] = 0
-        for fd in {item for item in (named_fd, service_fd, keys_fd, skeleton_dir_fd,
-                                     state.parent_fd) if item is not None}:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        # The skeleton descriptor is the staff serialization lock and closes last.
-        if skeleton_fd is not None:
-            try:
-                os.close(skeleton_fd)
-            except OSError:
-                pass
-        if cleanup_failed:
-            _refuse(EXCHANGE_OBLITERATION_FAILED)
