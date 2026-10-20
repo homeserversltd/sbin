@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import time
 from contextlib import contextmanager
@@ -38,6 +39,10 @@ class FaceError(ValueError):
 
 
 _BENCHMARK_SCHEMA = "caduceus.benchmark.v1"
+_SWAY_IPC_MAGIC = b"i3-ipc"
+_SWAY_IPC_HEADER_SIZE = 14
+_SWAY_IPC_MAX_REPLY_BYTES = 16 * 1024 * 1024
+_SWAY_IPC_TIMEOUT_SECONDS = 8.0
 _BENCHMARK_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "agathodaimon_face_benchmark", default=None
 )
@@ -248,6 +253,15 @@ def _socket_path(value: str, runtime: Path) -> Path | None:
     return candidate
 
 
+def _runtime_socket_candidates(key: str, account: pwd.struct_passwd, runtime: Path) -> list[Path]:
+    pattern = f"sway-ipc.{account.pw_uid}.*.sock" if key == "SWAYSOCK" else "wayland-*"
+    try:
+        candidates = sorted(runtime.glob(pattern))
+    except OSError:
+        return []
+    return [candidate for candidate in candidates if _is_live_owned_socket(candidate, account, runtime)]
+
+
 def _proc_sway_environments_observed(uid: int) -> tuple[list[tuple[str, dict[str, str]]], bool]:
     found: list[tuple[str, dict[str, str]]] = []
     try:
@@ -333,7 +347,7 @@ def _systemctl_environment(account: pwd.struct_passwd, home: Path, runtime: Path
 def _owner_session_environment(
     *, home: Path | None = None, discover: bool = True,
     require_sway: bool = False, require_wayland: bool = False,
-    enter_owner: bool = False,
+    enter_owner: bool = False, prefer_direct_keys: Sequence[str] = (),
 ) -> tuple[dict[str, str], str]:
     account = _owner()
     selected_home = home or Path(account.pw_dir)
@@ -356,17 +370,49 @@ def _owner_session_environment(
     proc_sources = proc_observation[0]
     if enter_owner:
         _benchmark_call("staff.owner-switch", _volume_owner_switch)
-    system_observation = _benchmark_call(
-        "staff.session-env.systemctl",
-        lambda: _systemctl_environment_observed(account, selected_home, runtime),
-        success=lambda result: isinstance(result, tuple) and len(result) == 2 and result[1] is True,
-    )
-    system_values = system_observation[0]
+
+    direct_mode = bool(prefer_direct_keys) and not enter_owner
+    runtime_values: dict[str, list[tuple[str, str]]] = {"SWAYSOCK": [], "WAYLAND_DISPLAY": []}
+    if direct_mode:
+        for key in runtime_values:
+            for candidate in _runtime_socket_candidates(key, account, runtime):
+                value = str(candidate) if key == "SWAYSOCK" else candidate.name
+                runtime_values[key].append(("runtime-discovered", value))
+        direct_ready = True
+        for key in prefer_direct_keys:
+            candidates: list[Path] = []
+            for _pid, values in proc_sources:
+                value = values.get(key)
+                path = _socket_path(value, runtime) if value else None
+                if path is not None and _is_live_owned_socket(path, account, runtime):
+                    candidates.append(path)
+            for _source, value in runtime_values.get(key, []):
+                path = _socket_path(value, runtime)
+                if path is not None:
+                    candidates.append(path)
+            if len(set(candidates)) != 1:
+                direct_ready = False
+                break
+    else:
+        direct_ready = False
+
+    if not direct_ready:
+        system_observation = _benchmark_call(
+            "staff.session-env.systemctl",
+            lambda: _systemctl_environment_observed(account, selected_home, runtime),
+            success=lambda result: isinstance(result, tuple) and len(result) == 2 and result[1] is True,
+        )
+        system_values = system_observation[0]
+    else:
+        system_values = {}
     values_by_key: dict[str, list[tuple[str, str]]] = {key: [] for key in ("SWAYSOCK", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PULSE_SERVER")}
     for pid, values in proc_sources:
         for key in values_by_key:
             if values.get(key):
                 values_by_key[key].append((f"proc:{pid}", values[key]))
+    if direct_mode and direct_ready:
+        for key, values in runtime_values.items():
+            values_by_key[key].extend(values)
     for key, value in system_values.items():
         if value:
             values_by_key[key].append(("systemctl-user", value))
@@ -379,25 +425,27 @@ def _owner_session_environment(
             if path is not None and _is_live_owned_socket(path, account, runtime):
                 valid.append((source, value))
         unique = {(source, value) for source, value in valid}
-        paths = {value for _source, value in unique}
+        paths = (
+            {_socket_path(value, runtime) for _source, value in unique}
+            if direct_mode else {value for _source, value in unique}
+        )
         if len(paths) == 1:
             source, value = next(iter(unique))
             env[key] = value
             sources[key] = source
         elif len(paths) > 1:
-            raise FaceError("owner-session-socket-ambiguous", socket=key)
+            required_key = (key == "SWAYSOCK" and require_sway) or (key == "WAYLAND_DISPLAY" and require_wayland)
+            if required_key or not direct_mode:
+                raise FaceError("owner-session-socket-ambiguous", socket=key)
         else:
-            pattern = f"sway-ipc.{account.pw_uid}.*.sock" if key == "SWAYSOCK" else "wayland-*"
-            try:
-                candidates = sorted(runtime.glob(pattern))
-            except OSError:
-                candidates = []
-            live = [candidate for candidate in candidates if _is_live_owned_socket(candidate, account, runtime)]
+            live = _runtime_socket_candidates(key, account, runtime)
             if len(live) == 1:
                 env[key] = str(live[0]) if key == "SWAYSOCK" else live[0].name
                 sources[key] = "runtime-unique"
-            elif len(live) > 1 and (require_sway or require_wayland):
-                raise FaceError("owner-session-socket-ambiguous", socket=key)
+            elif len(live) > 1:
+                required_key = (key == "SWAYSOCK" and require_sway) or (key == "WAYLAND_DISPLAY" and require_wayland)
+                if required_key or (not direct_mode and (require_sway or require_wayland)):
+                    raise FaceError("owner-session-socket-ambiguous", socket=key)
 
     dbus_candidates = values_by_key["DBUS_SESSION_BUS_ADDRESS"]
     for source, value in dbus_candidates:
@@ -435,14 +483,14 @@ def _owner_session_environment(
 def owner_session_environment(
     *, home: Path | None = None, discover: bool = True,
     require_sway: bool = False, require_wayland: bool = False,
-    enter_owner: bool = False,
+    enter_owner: bool = False, prefer_direct_keys: Sequence[str] = (),
 ) -> tuple[dict[str, str], str]:
     return _benchmark_call(
         "staff.session-env",
         lambda: _owner_session_environment(
             home=home, discover=discover,
             require_sway=require_sway, require_wayland=require_wayland,
-            enter_owner=enter_owner,
+            enter_owner=enter_owner, prefer_direct_keys=prefer_direct_keys,
         ),
     )
 
@@ -473,6 +521,22 @@ def owner_run(
     )
 
 
+def _root_process_run(
+    argv: Sequence[str], environment: Mapping[str, str], *, action: str, timeout: float = 5,
+) -> subprocess.CompletedProcess[str]:
+    def run() -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout, check=False, env=environment)
+        except (OSError, subprocess.SubprocessError) as error:
+            return subprocess.CompletedProcess(list(argv), 127, "", type(error).__name__)
+
+    accepted = (0, 1) if action == "pgrep" else (0,)
+    return _benchmark_call(
+        f"staff.act root {action}", run,
+        success=lambda result: isinstance(result, subprocess.CompletedProcess) and result.returncode in accepted,
+    )
+
+
 def owner_spawn(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[subprocess.Popen, int | None]:
     command, outer = owner_session_command(argv, environment)
     try:
@@ -500,24 +564,101 @@ def _owner_utility(name: str) -> str | None:
     return shutil.which(name, path=os.environ.get("PATH", os.defpath))
 
 
-def _sway_json(args: Sequence[str], environment: Mapping[str, str]) -> Any:
-    result = owner_run(["swaymsg", "-r", *args], environment, timeout=8)
-    if result.returncode != 0:
+def _sway_ipc_read_exact(connection: socket.socket, length: int) -> bytes:
+    data = bytearray()
+    while len(data) < length:
+        chunk = connection.recv(length - len(data))
+        if not chunk:
+            raise FaceError("swaymsg-query-failed")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _sway_ipc_exchange(query_type: int, body: bytes, environment: Mapping[str, str]) -> bytes:
+    socket_path = environment.get("SWAYSOCK")
+    if not socket_path or "\x00" in socket_path or len(body) > _SWAY_IPC_MAX_REPLY_BYTES:
         raise FaceError("swaymsg-query-failed")
     try:
-        return json.loads(result.stdout)
-    except (TypeError, json.JSONDecodeError):
-        raise FaceError("swaymsg-json-invalid")
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            connection.settimeout(_SWAY_IPC_TIMEOUT_SECONDS)
+            connection.connect(socket_path)
+            header = _SWAY_IPC_MAGIC + struct.pack("=II", len(body), query_type)
+            connection.sendall(header + body)
+            reply_header = _sway_ipc_read_exact(connection, _SWAY_IPC_HEADER_SIZE)
+            if reply_header[:6] != _SWAY_IPC_MAGIC:
+                raise FaceError("swaymsg-query-failed")
+            reply_length, reply_type = struct.unpack("=II", reply_header[6:])
+            if reply_type != query_type or reply_length > _SWAY_IPC_MAX_REPLY_BYTES:
+                raise FaceError("swaymsg-query-failed")
+            return _sway_ipc_read_exact(connection, reply_length)
+        finally:
+            connection.close()
+    except FaceError:
+        raise
+    except (OSError, struct.error, ValueError):
+        raise FaceError("swaymsg-query-failed")
+
+
+def _sway_json(query: str, environment: Mapping[str, str]) -> Any:
+    query_types = {"get_workspaces": 1, "get_outputs": 3, "get_tree": 4}
+    query_type = query_types.get(query)
+    if query_type is None:
+        raise FaceError("swaymsg-query-failed")
+
+    def exchange_and_parse() -> Any:
+        response = _sway_ipc_exchange(query_type, b"", environment)
+        try:
+            return json.loads(response)
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            raise FaceError("swaymsg-json-invalid")
+
+    return _benchmark_call(f"staff.act ipc {query}", exchange_and_parse)
+
+
+def _sway_command(
+    command: str, environment: Mapping[str, str], *, raw: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    argv = ["swaymsg", *(["-r"] if raw else []), command]
+
+    def exchange() -> tuple[subprocess.CompletedProcess[str], bool]:
+        try:
+            response = _sway_ipc_exchange(0, command.encode("utf-8"), environment)
+        except FaceError as error:
+            return subprocess.CompletedProcess(argv, 127, "", str(error)), False
+        output = response.decode("utf-8", errors="replace")
+        returncode = 0
+        parsed = True
+        try:
+            replies = json.loads(response)
+        except (TypeError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            replies = None
+            parsed = False
+            returncode = 1
+        if isinstance(replies, list) and any(
+            isinstance(row, dict) and row.get("success") is False for row in replies
+        ):
+            returncode = 2
+        completed = subprocess.CompletedProcess(argv, returncode, output, "")
+        return completed, parsed and returncode == 0
+
+    result = _benchmark_call(
+        "staff.act ipc command", exchange,
+        success=lambda value: isinstance(value, tuple) and len(value) == 2 and value[1] is True,
+    )
+    return result[0]
 
 
 def focus(payload: dict[str, Any]) -> Mapping[str, Any]:
     direction = _require_string(payload, "direction", "face-focus-direction-required")
     if direction not in {"next", "prev"}:
         raise FaceError("face-focus-direction-invalid")
-    environment, socket_source = owner_session_environment(discover=True, require_sway=True)
-    tree = _sway_json(["-t", "get_tree"], environment)
-    workspaces = _sway_json(["-t", "get_workspaces"], environment)
-    outputs = _sway_json(["-t", "get_outputs"], environment)
+    environment, socket_source = owner_session_environment(
+        discover=True, require_sway=True, prefer_direct_keys=("SWAYSOCK",),
+    )
+    tree = _sway_json("get_tree", environment)
+    workspaces = _sway_json("get_workspaces", environment)
+    outputs = _sway_json("get_outputs", environment)
     if not isinstance(workspaces, list) or not isinstance(outputs, list) or not isinstance(tree, dict):
         raise FaceError("swaymsg-response-shape-invalid")
     workspace_by_name = {row.get("name"): row for row in workspaces if isinstance(row, dict) and isinstance(row.get("name"), str)}
@@ -558,7 +699,10 @@ def focus(payload: dict[str, Any]) -> Mapping[str, Any]:
     walk(tree)
     windows.sort(key=lambda row: (row["workspace_num"], row["workspace"], row["output"], row["y"], row["x"], row["id"]))
     if not windows:
-        return {"ok": True, "firstMissingSignal": "none", "changed": False, "target": None, "socket_source": socket_source}
+        return {
+            "ok": True, "firstMissingSignal": "none", "changed": False,
+            "target": None, "socket_source": socket_source,
+        }
     active_index = next((i for i, row in enumerate(windows) if row["focused"]), -1)
     if direction == "next":
         index = (active_index + 1) % len(windows)
@@ -571,10 +715,16 @@ def focus(payload: dict[str, Any]) -> Mapping[str, Any]:
         f'[con_id="{target["id"]}"] focus',
     )
     for action in actions:
-        result = owner_run(["swaymsg", action], environment, timeout=8)
+        result = _sway_command(action, environment)
         if result.returncode != 0:
-            raise FaceError("swaymsg-focus-failed", target=target, socket_source=socket_source)
-    return {"ok": True, "firstMissingSignal": "none", "changed": True, "target": target, "socket_source": socket_source}
+            raise FaceError(
+                "swaymsg-focus-failed", target=target,
+                socket_source=socket_source,
+            )
+    return {
+        "ok": True, "firstMissingSignal": "none", "changed": True,
+        "target": target, "socket_source": socket_source,
+    }
 
 
 def workspace(payload: dict[str, Any]) -> Mapping[str, Any]:
@@ -592,8 +742,10 @@ def workspace(payload: dict[str, Any]) -> Mapping[str, Any]:
     elif not isinstance(ring, list) or any(type(number) is not int for number in ring):
         raise FaceError("face-workspace-ring-invalid")
     ring = sorted(set(ring))
-    environment, socket_source = owner_session_environment(discover=True, require_sway=True)
-    workspaces = _sway_json(["-t", "get_workspaces"], environment)
+    environment, socket_source = owner_session_environment(
+        discover=True, require_sway=True, prefer_direct_keys=("SWAYSOCK",),
+    )
+    workspaces = _sway_json("get_workspaces", environment)
     if not isinstance(workspaces, list):
         raise FaceError("face-workspace-workspaces-shape-invalid")
     focused = next((row for row in workspaces if isinstance(row, dict) and row.get("focused") is True), None)
@@ -626,7 +778,7 @@ def workspace(payload: dict[str, Any]) -> Mapping[str, Any]:
         "carry": carry, "socket_source": socket_source,
     }
     for command in commands:
-        result = owner_run(["swaymsg", "-r", command], environment, timeout=8)
+        result = _sway_command(command, environment, raw=True)
         if result.returncode != 0:
             signal = "swaymsg-workspace-move-failed" if carry else "swaymsg-workspace-focus-failed"
             raise FaceError(signal, **refusal_context)
@@ -648,8 +800,10 @@ def workspace(payload: dict[str, Any]) -> Mapping[str, Any]:
 
 
 def fetch(payload: dict[str, Any]) -> Mapping[str, Any]:
-    environment, socket_source = owner_session_environment(discover=True, require_sway=True)
-    workspaces = _sway_json(["-t", "get_workspaces"], environment)
+    environment, socket_source = owner_session_environment(
+        discover=True, require_sway=True, prefer_direct_keys=("SWAYSOCK",),
+    )
+    workspaces = _sway_json("get_workspaces", environment)
     if not isinstance(workspaces, list):
         raise FaceError("swaymsg-workspaces-shape-invalid")
     current = next((row for row in workspaces if isinstance(row, dict) and row.get("focused") is True), None)
@@ -657,7 +811,7 @@ def fetch(payload: dict[str, Any]) -> Mapping[str, Any]:
         raise FaceError("sway-focused-workspace-missing")
     current_name = current["name"]
     workspace_names = {row.get("name") for row in workspaces if isinstance(row, dict) and isinstance(row.get("name"), str)}
-    tree = _sway_json(["-t", "get_tree"], environment)
+    tree = _sway_json("get_tree", environment)
     if not isinstance(tree, dict):
         raise FaceError("swaymsg-tree-shape-invalid")
     windows: list[int] = []
@@ -685,18 +839,28 @@ def fetch(payload: dict[str, Any]) -> Mapping[str, Any]:
     try:
         for con_id in windows:
             selector = f'[con_id="{con_id}"] move container to workspace {json.dumps(current_name)}'
-            result = owner_run(["swaymsg", selector], environment, timeout=8)
+            result = _sway_command(selector, environment)
             if result.returncode != 0:
                 failure = "swaymsg-move-failed"
                 break
             moved.append(con_id)
     finally:
-        refocus = owner_run(["swaymsg", f"workspace {json.dumps(current_name)}"], environment, timeout=8)
+        refocus = _sway_command(f"workspace {json.dumps(current_name)}", environment)
     if failure:
-        raise FaceError(failure, moved_count=len(moved), requested_count=len(windows), refocus_ok=refocus.returncode == 0, socket_source=socket_source)
+        raise FaceError(
+            failure, moved_count=len(moved), requested_count=len(windows),
+            refocus_ok=refocus.returncode == 0, socket_source=socket_source,
+        )
     if refocus.returncode != 0:
-        raise FaceError("swaymsg-refocus-failed", moved_count=len(moved), requested_count=len(windows), socket_source=socket_source)
-    return {"ok": True, "firstMissingSignal": "none", "moved_count": len(moved), "requested_count": len(windows), "current_workspace": current_name, "socket_source": socket_source}
+        raise FaceError(
+            "swaymsg-refocus-failed", moved_count=len(moved),
+            requested_count=len(windows), socket_source=socket_source,
+        )
+    return {
+        "ok": True, "firstMissingSignal": "none", "moved_count": len(moved),
+        "requested_count": len(windows), "current_workspace": current_name,
+        "socket_source": socket_source,
+    }
 
 
 def launch(payload: dict[str, Any]) -> Mapping[str, Any]:
@@ -706,7 +870,10 @@ def launch(payload: dict[str, Any]) -> Mapping[str, Any]:
         if menu is not None or not isinstance(desktop_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.desktop", desktop_id):
             raise FaceError("face-launch-desktop-id-invalid")
         home = Path(DEFAULT_OWNER_HOME)
-        environment, socket_source = owner_session_environment(home=home, discover=True, require_wayland=True)
+        environment, socket_source = owner_session_environment(
+            home=home, discover=True, require_wayland=True,
+            prefer_direct_keys=("WAYLAND_DISPLAY",),
+        )
         gtk_launch = _owner_utility("gtk-launch")
         if gtk_launch:
             argv = [gtk_launch, desktop_id[:-8] if desktop_id.endswith(".desktop") else desktop_id]
@@ -737,7 +904,10 @@ def launch(payload: dict[str, Any]) -> Mapping[str, Any]:
         if menu not in (None, True):
             raise FaceError("face-launch-menu-invalid")
         home = Path(DEFAULT_OWNER_HOME)
-        environment, socket_source = owner_session_environment(home=home, discover=True, require_wayland=True)
+        environment, socket_source = owner_session_environment(
+            home=home, discover=True, require_wayland=True,
+            prefer_direct_keys=("WAYLAND_DISPLAY",),
+        )
         argv = [
             "wofi", "--show", "drun", "--conf", str(home / ".config/wofi/config"),
             "--style", str(home / ".config/wofi/style.css"),
@@ -757,7 +927,10 @@ def _pgrep(program: str, account: pwd.struct_passwd, environment: Mapping[str, s
     utility = _owner_utility("pgrep")
     if utility is None:
         raise FaceError("face-app-pgrep-unavailable")
-    result = owner_run([utility, "--exact", "--uid", str(account.pw_uid), "--", program], environment, timeout=5)
+    result = _root_process_run(
+        [utility, "--exact", "--uid", str(account.pw_uid), "--", program],
+        environment, action="pgrep",
+    )
     if result.returncode not in (0, 1):
         raise FaceError("face-app-pgrep-failed")
     return result.returncode
@@ -838,17 +1011,27 @@ def bar(payload: dict[str, Any]) -> Mapping[str, Any]:
     if action != "toggle":
         raise FaceError("face-bar-action-invalid")
     account = _owner()
-    environment, socket_source = owner_session_environment(discover=True)
+    environment, socket_source = owner_session_environment(discover=False)
     with _runtime_lock("agathodaimon-face-waybar-toggle.lock") as (fd, lock_path):
         prior = _lock_state(fd)
         utility = _owner_utility("pkill")
         if utility is None:
             raise FaceError("face-bar-pkill-unavailable", lock_path=str(lock_path))
-        result = owner_run([utility, "--signal", "USR1", "--exact", "--uid", str(account.pw_uid), "--", "waybar"], environment, timeout=5)
+        result = _root_process_run(
+            [utility, "--signal", "USR1", "--exact", "--uid", str(account.pw_uid), "--", "waybar"],
+            environment, action="pkill",
+        )
         if result.returncode != 0:
-            raise FaceError("face-bar-signal-failed", lock_path=str(lock_path), socket_source=socket_source)
+            raise FaceError(
+                "face-bar-signal-failed", lock_path=str(lock_path),
+                socket_source=socket_source,
+            )
         _write_lock_state(fd, not prior)
-    return {"ok": True, "firstMissingSignal": "none", "changed": True, "lock_path": str(lock_path), "hidden": not prior, "socket_source": socket_source}
+    return {
+        "ok": True, "firstMissingSignal": "none", "changed": True,
+        "lock_path": str(lock_path), "hidden": not prior,
+        "socket_source": socket_source,
+    }
 
 
 def app(payload: dict[str, Any]) -> Mapping[str, Any]:
@@ -859,7 +1042,7 @@ def app(payload: dict[str, Any]) -> Mapping[str, Any]:
     if action != "toggle":
         raise FaceError("face-app-action-invalid")
     account = _owner()
-    environment, socket_source = owner_session_environment(discover=True)
+    environment, socket_source = owner_session_environment(discover=False)
     lock_name = f"agathodaimon-face-app-{program}.lock"
     with _runtime_lock(lock_name) as (fd, lock_path):
         marked = _lock_state(fd)
@@ -868,7 +1051,10 @@ def app(payload: dict[str, Any]) -> Mapping[str, Any]:
             utility = _owner_utility("pkill")
             if utility is None:
                 raise FaceError("face-app-pkill-unavailable", lock_path=str(lock_path))
-            result = owner_run([utility, "--exact", "--uid", str(account.pw_uid), "--", program], environment, timeout=5)
+            result = _root_process_run(
+                [utility, "--exact", "--uid", str(account.pw_uid), "--", program],
+                environment, action="pkill",
+            )
             stopped = False
             for attempt in range(10):
                 if _pgrep(program, account, environment) == 1:
@@ -883,10 +1069,18 @@ def app(payload: dict[str, Any]) -> Mapping[str, Any]:
                     running=True,
                 )
             _write_lock_state(fd, False)
-            return {"ok": True, "firstMissingSignal": "none", "changed": True, "program": program, "running": False, "lock_path": str(lock_path), "socket_source": socket_source}
+            return {
+                "ok": True, "firstMissingSignal": "none", "changed": True,
+                "program": program, "running": False, "lock_path": str(lock_path),
+                "socket_source": socket_source,
+            }
         if marked:
             # Recover a stale marker before restarting so failures stay inactive.
             _write_lock_state(fd, False)
+        environment, socket_source = owner_session_environment(
+            discover=True,
+            prefer_direct_keys=("WAYLAND_DISPLAY",),
+        )
         process, exit_code = owner_spawn([program], environment)
         post_launch = _pgrep(program, account, environment)
         if post_launch != 0:
@@ -897,7 +1091,11 @@ def app(payload: dict[str, Any]) -> Mapping[str, Any]:
                 lock_path=str(lock_path), socket_source=socket_source,
             )
         _write_lock_state(fd, True)
-        return {"ok": True, "firstMissingSignal": "none", "changed": True, "program": program, "running": True, "pid": process.pid, "lock_path": str(lock_path), "socket_source": socket_source}
+        return {
+            "ok": True, "firstMissingSignal": "none", "changed": True,
+            "program": program, "running": True, "pid": process.pid,
+            "lock_path": str(lock_path), "socket_source": socket_source,
+        }
 
 
 def _volume_owner_switch() -> None:
