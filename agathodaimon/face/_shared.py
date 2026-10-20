@@ -7,6 +7,7 @@ import os
 import pwd
 import re
 import shutil
+import signal
 import socket
 import stat
 import struct
@@ -1502,13 +1503,87 @@ def _screenshot_hypr_geometry(environment: Mapping[str, str], hyprctl: str) -> s
     return f"{at[0]},{at[1]} {size[0]}x{size[1]}"
 
 
+def _screenshot_stop_process_group(process: subprocess.Popen[str]) -> None:
+    process_group = process.pid
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except OSError:
+        pass
+
+    deadline = time.monotonic() + 0.5
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            break
+        except OSError:
+            break
+        remaining = deadline - time.monotonic()
+        try:
+            process.communicate(timeout=min(0.05, remaining))
+        except subprocess.TimeoutExpired:
+            pass
+        except (OSError, subprocess.SubprocessError):
+            break
+        time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        group_exists = False
+    except OSError:
+        group_exists = True
+    else:
+        group_exists = True
+    if group_exists:
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except OSError:
+            pass
+
+    try:
+        process.communicate(timeout=1)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except OSError:
+            pass
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _screenshot_area_geometry(slurp: str, environment: Mapping[str, str]) -> str | None:
-    result = owner_run([slurp], environment)
-    if result.returncode == 1 and not result.stderr.strip():
+    command, outer = owner_session_command([slurp], environment)
+    try:
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, start_new_session=True, env=outer,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise FaceError("face-screenshot-slurp-failed", exit=127)
+    try:
+        stdout, stderr = process.communicate(timeout=100)
+    except subprocess.TimeoutExpired:
+        _screenshot_stop_process_group(process)
+        raise FaceError("face-screenshot-slurp-timeout", timeout=100)
+    except (OSError, subprocess.SubprocessError):
+        _screenshot_stop_process_group(process)
+        raise FaceError("face-screenshot-slurp-failed", exit=127)
+    if process.returncode == 1 and stderr.strip() in ("", "selection cancelled"):
         return None
-    if result.returncode != 0:
-        raise FaceError("face-screenshot-slurp-failed", exit=result.returncode)
-    match = re.fullmatch(r"\s*(-?\d+),(-?\d+)\s+(\d+)x(\d+)\s*", result.stdout)
+    if process.returncode != 0:
+        raise FaceError("face-screenshot-slurp-failed", exit=process.returncode)
+    match = re.fullmatch(r"\s*(-?\d+),(-?\d+)\s+(\d+)x(\d+)\s*", stdout)
     if match is None or int(match.group(3)) <= 0 or int(match.group(4)) <= 0:
         raise FaceError("face-screenshot-slurp-geometry-invalid")
     return f"{match.group(1)},{match.group(2)} {match.group(3)}x{match.group(4)}"
