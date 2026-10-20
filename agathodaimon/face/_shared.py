@@ -13,6 +13,7 @@ import struct
 import subprocess
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -95,7 +96,7 @@ def invoke(verb: str, operation: Callable[[dict[str, Any]], Mapping[str, Any]]) 
                 trace.set_outcome("failed" if receipt.get("ok") is False else "ok")
                 benchmark_report = trace.benchmark_report()
         if request is not None and trace is not None:
-            request.returned_load_context = trace.response_context()
+            request = replace(request, returned_load_context=trace.response_context())
     except EnvelopeError as error:
         receipt = {"verb": verb, "ok": False, "firstMissingSignal": str(error)}
     if request is not None:
