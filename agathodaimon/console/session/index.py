@@ -19,6 +19,10 @@ from agathodaimon.settings.display import policy
 
 
 STEAM_ARGUMENTS = ("steam", "-gamepadui", "-steamos3")
+FAST_FAILURE_WINDOW_SECONDS = 5.0
+INITIAL_RETRY_DELAY_SECONDS = 1.0
+MAX_RETRY_DELAY_SECONDS = 30.0
+DESKTOP_FAST_FAILURE_LIMIT = 3
 
 
 def _refresh_text(value: Any) -> str:
@@ -158,15 +162,19 @@ def _clear_stale_sentinels(directory_fd: int) -> None:
         _log("clear-stale-sentinels", "steam", "removed", time.monotonic())
 
 
-def _run_child(argv: list[str], env: dict[str, str], target: str) -> tuple[int | None, str | None]:
+def _run_child(
+    argv: list[str], env: dict[str, str], target: str
+) -> tuple[int | None, str | None, float]:
     started = time.monotonic()
     try:
         process = subprocess.Popen(argv, env=env, start_new_session=True)
     except OSError as error:
         signal_name = f"{target}-exec-{type(error).__name__}"
         _log("launch", target, "failed", started, signal_name)
-        return None, signal_name
-    _log("launch", target, "started", started)
+        return None, signal_name, max(0.0, time.monotonic() - started)
+    except KeyboardInterrupt:
+        _log("launch", target, "interrupted", started, "session-interrupted")
+        return None, "session-interrupted", max(0.0, time.monotonic() - started)
     try:
         status = process.wait()
     except KeyboardInterrupt:
@@ -175,9 +183,48 @@ def _run_child(argv: list[str], env: dict[str, str], target: str) -> tuple[int |
         except OSError:
             pass
         process.wait()
-        return process.returncode, "session-interrupted"
-    _log("exit", target, "returned", started, f"exit-{status}")
-    return status, None
+        _log("launch", target, "interrupted", started, "session-interrupted")
+        return (
+            process.returncode,
+            "session-interrupted",
+            max(0.0, time.monotonic() - started),
+        )
+    _log("launch", target, "returned", started, f"exit-{status}")
+    return status, None, max(0.0, time.monotonic() - started)
+
+
+def _reset_retry_state(
+    retry_delays: dict[str, float], fast_failure_streaks: dict[str, int]
+) -> None:
+    for mode in ("desktop", "steam"):
+        retry_delays[mode] = INITIAL_RETRY_DELAY_SECONDS
+        fast_failure_streaks[mode] = 0
+
+
+def _fallback_to_steam(directory_fd: int, owner: Any) -> str:
+    started = time.monotonic()
+    try:
+        with session_runtime.selector_lock(directory_fd, owner):
+            if session_runtime.read_selector(directory_fd, owner.pw_uid) != "desktop":
+                return "selector-changed"
+            session_runtime.atomic_write_selector(directory_fd, owner, "steam")
+    except Exception as error:
+        _log(
+            "desktop-fallback",
+            "steam",
+            "failed",
+            started,
+            f"desktop-fallback-{type(error).__name__}",
+        )
+        return "failed"
+    _log(
+        "desktop-fallback",
+        "steam",
+        "changed",
+        started,
+        "desktop-fast-failure-limit",
+    )
+    return "changed"
 
 
 def _power_action(directory_fd: int) -> tuple[str | None, bool]:
@@ -301,6 +348,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         os.close(directory_fd)
         print("console-session-must-run-as-owner", file=sys.stderr)
         return 1
+    retry_delays = {
+        "desktop": INITIAL_RETRY_DELAY_SECONDS,
+        "steam": INITIAL_RETRY_DELAY_SECONDS,
+    }
+    fast_failure_streaks = {"desktop": 0, "steam": 0}
     try:
         while True:
             mode = _selected_mode(directory_fd, owner.pw_uid)
@@ -322,13 +374,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 argv_out = ["sway"]
                 env = _desktop_environment()
-            _status, launch_error = _run_child(argv_out, env, mode)
+            _status, launch_error, duration = _run_child(argv_out, env, mode)
             if launch_error == "session-interrupted":
                 return 0
-            if launch_error is not None:
-                time.sleep(1)
-                continue
-            if mode == "steam":
+            if mode == "steam" and launch_error is None:
                 try:
                     action, accepted = _power_action(directory_fd)
                 except OSError as error:
@@ -342,7 +391,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     action, accepted = None, False
                 if action is not None and accepted:
                     return 0
-            time.sleep(0.25)
+            if _selected_mode(directory_fd, owner.pw_uid) != mode:
+                _reset_retry_state(retry_delays, fast_failure_streaks)
+                continue
+            if duration >= FAST_FAILURE_WINDOW_SECONDS:
+                retry_delays[mode] = INITIAL_RETRY_DELAY_SECONDS
+                fast_failure_streaks[mode] = 0
+                continue
+
+            streak = min(
+                fast_failure_streaks[mode] + 1,
+                DESKTOP_FAST_FAILURE_LIMIT,
+            )
+            fast_failure_streaks[mode] = streak
+            delay = retry_delays[mode]
+            retry_delays[mode] = min(delay * 2, MAX_RETRY_DELAY_SECONDS)
+            if mode == "desktop" and streak >= DESKTOP_FAST_FAILURE_LIMIT:
+                fallback = _fallback_to_steam(directory_fd, owner)
+                if fallback in {"changed", "selector-changed"}:
+                    _reset_retry_state(retry_delays, fast_failure_streaks)
+                    continue
+            time.sleep(delay)
     finally:
         os.close(directory_fd)
 
