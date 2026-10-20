@@ -12,7 +12,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request as UrlRequest, urlopen
+
+
+from agathodaimon import _load_trace
 
 
 class DhcpError(RuntimeError):
@@ -101,6 +104,15 @@ class DhcpManager:
         }
 
     def get_config(self) -> dict[str, Any]:
+        """Read and parse the DHCP configuration under one optional staff span."""
+        with _load_trace.span(
+            "agathodaimon.network.dhcp.configuration_read",
+            road="local-file",
+            source_state="kea-configuration",
+        ):
+            return self._read_config()
+
+    def _read_config(self) -> dict[str, Any]:
         try:
             raw = self.config_path.read_text(encoding="utf-8")
         except OSError as exc:
@@ -285,66 +297,92 @@ class DhcpManager:
         return {"hw-address": matches.get("hw-address", ""), "ip-address": new_ip, "hostname": matches.get("hostname", "")}
 
     def get_leases(self) -> list[dict[str, Any]]:
+        trace_active = _load_trace.context_active()
+        request: UrlRequest | None = None
         try:
-            appliance = json.loads(self.appliance_config_path.read_text(encoding="utf-8"))
-            bind = appliance["caduceus"]["bind"]
-            if not isinstance(bind, str) or not bind.strip():
-                raise ValueError("caduceus.bind must be a non-empty string")
-            bind = bind.strip()
-            if "://" not in bind:
-                bind = "http://" + bind
-            from urllib.parse import urlsplit
-            parsed = urlsplit(bind)
-            if parsed.scheme not in {"http", "https"} or not parsed.hostname or not parsed.port:
-                raise ValueError("caduceus.bind must identify an HTTP host and port")
-            host = parsed.hostname
-            if host in {"0.0.0.0", "::", "[::]"}:
-                host = "127.0.0.1"
-            elif host != "localhost":
+            with _load_trace.span(
+                "agathodaimon.network.dhcp.leases.prepare",
+                road="staff-dispatch-preparation",
+                source_state="appliance-caduceus-bind",
+            ):
+                appliance = json.loads(self.appliance_config_path.read_text(encoding="utf-8"))
+                bind = appliance["caduceus"]["bind"]
+                if not isinstance(bind, str) or not bind.strip():
+                    raise ValueError("caduceus.bind must be a non-empty string")
+                bind = bind.strip()
+                if "://" not in bind:
+                    bind = "http://" + bind
+                from urllib.parse import urlsplit
+                parsed = urlsplit(bind)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname or not parsed.port:
+                    raise ValueError("caduceus.bind must identify an HTTP host and port")
+                host = parsed.hostname
+                if host in {"0.0.0.0", "::", "[::]"}:
+                    host = "127.0.0.1"
+                elif host != "localhost":
+                    try:
+                        address = ipaddress.ip_address(host)
+                    except ValueError as exc:
+                        raise ValueError("caduceus.bind must identify a local listener") from exc
+                    if not address.is_loopback:
+                        raise ValueError("caduceus.bind must identify a local listener")
+                url = f"{parsed.scheme}://127.0.0.1:{parsed.port}{self.LEASES_PATH}"
+                if trace_active:
+                    request = UrlRequest(url)
+            if request is not None:
                 try:
-                    address = ipaddress.ip_address(host)
-                except ValueError as exc:
-                    raise ValueError("caduceus.bind must identify a local listener") from exc
-                if not address.is_loopback:
-                    raise ValueError("caduceus.bind must identify a local listener")
-            url = f"{parsed.scheme}://127.0.0.1:{parsed.port}{self.LEASES_PATH}"
-            with urlopen(url, timeout=10) as response:
-                envelope = json.loads(response.read().decode("utf-8"))
+                    for name, value in _load_trace.loopback_headers().items():
+                        request.add_header(name, value)
+                except (TypeError, ValueError, UnicodeError):
+                    request = UrlRequest(url)
+            with _load_trace.span(
+                "agathodaimon.network.dhcp.leases.loopback",
+                road="loopback-caduceus",
+                source_state="native-kea-lease-files",
+            ):
+                with urlopen(request if request is not None else url, timeout=10) as response:
+                    envelope = json.loads(response.read().decode("utf-8"))
+                _load_trace.merge_reply_context(envelope)
         except (HTTPError, URLError, TimeoutError) as exc:
             raise DhcpError(f"caduceus-leases-unavailable:{exc}") from exc
         except (OSError, KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise DhcpError(f"caduceus-leases-unavailable:{exc}") from exc
-        if not isinstance(envelope, dict):
-            raise DhcpError("caduceus-leases-malformed:envelope-must-be-object")
-        payload = envelope.get("payload", envelope)
-        if not isinstance(payload, dict):
-            raise DhcpError("caduceus-leases-malformed:payload-must-be-object")
-        if envelope.get("ok") is False or payload.get("ok") is False:
-            signal = payload.get("firstMissingSignal", envelope.get("firstMissingSignal"))
-            raise DhcpError(f"caduceus-leases-unavailable:{signal or 'door-reported-failure'}")
-        if envelope.get("ok") is not True and payload.get("ok") is not True:
-            raise DhcpError("caduceus-leases-malformed:ok-signal-missing")
-        rows = payload.get("result")
-        if not isinstance(rows, list):
-            raise DhcpError("caduceus-leases-malformed:result-must-be-list")
-        leases: list[dict[str, Any]] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                raise DhcpError("caduceus-leases-malformed:row-must-be-object")
-            mac = row.get("mac")
-            address = row.get("ip")
-            if not isinstance(mac, str) or not mac.strip():
-                raise DhcpError("caduceus-leases-malformed:missing-mac")
-            if not isinstance(address, str) or not address.strip():
-                raise DhcpError("caduceus-leases-malformed:missing-ip")
-            leases.append({
-                "hw-address": mac.lower(),
-                "ip-address": address,
-                "hostname": str(row.get("hostname", "")),
-                "last_activity": str(row.get("last_activity", "")),
-                "provenance": str(row.get("provenance", "")),
-            })
-        return leases
+        with _load_trace.span(
+            "agathodaimon.network.dhcp.leases.projection",
+            road="staff",
+            source_state="caduceus-native-lease-reply",
+        ):
+            if not isinstance(envelope, dict):
+                raise DhcpError("caduceus-leases-malformed:envelope-must-be-object")
+            payload = envelope.get("payload", envelope)
+            if not isinstance(payload, dict):
+                raise DhcpError("caduceus-leases-malformed:payload-must-be-object")
+            if envelope.get("ok") is False or payload.get("ok") is False:
+                signal = payload.get("firstMissingSignal", envelope.get("firstMissingSignal"))
+                raise DhcpError(f"caduceus-leases-unavailable:{signal or 'door-reported-failure'}")
+            if envelope.get("ok") is not True and payload.get("ok") is not True:
+                raise DhcpError("caduceus-leases-malformed:ok-signal-missing")
+            rows = payload.get("result")
+            if not isinstance(rows, list):
+                raise DhcpError("caduceus-leases-malformed:result-must-be-list")
+            leases: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise DhcpError("caduceus-leases-malformed:row-must-be-object")
+                mac = row.get("mac")
+                address = row.get("ip")
+                if not isinstance(mac, str) or not mac.strip():
+                    raise DhcpError("caduceus-leases-malformed:missing-mac")
+                if not isinstance(address, str) or not address.strip():
+                    raise DhcpError("caduceus-leases-malformed:missing-ip")
+                leases.append({
+                    "hw-address": mac.lower(),
+                    "ip-address": address,
+                    "hostname": str(row.get("hostname", "")),
+                    "last_activity": str(row.get("last_activity", "")),
+                    "provenance": str(row.get("provenance", "")),
+                })
+            return leases
 
     def leases(self) -> list[dict[str, str]]:
         """Project native Caduceus lease rows as observed state."""

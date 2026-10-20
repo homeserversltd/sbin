@@ -6,12 +6,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agathodaimon import _load_trace
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def emit(receipt: dict[str, Any]) -> int:
+    receipt = _load_trace.enrich_reply(receipt)
     receipt.setdefault("ok", True)
     receipt.setdefault("timestamp", now_iso())
     receipt.setdefault("host", socket.gethostname())

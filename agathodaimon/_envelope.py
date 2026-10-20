@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 import copy, json, os, re, sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from agathodaimon import _load_trace
 SCHEMA = "caduceus.staff.v1"
 KERNEL_KEYS = ("schema", "intent_id", "transition", "version", "timestamp")
 _RUNTIME_PATHS = {
@@ -46,6 +48,9 @@ class Request:
     transition: Any = None
     version: Any = None
     timestamp: Any = None
+    load_context_present: bool = False
+    load_context: Any = None
+    returned_load_context: Any = None
     @property
     def verb(self) -> str:
         if isinstance(self.transition, str) and self.transition:
@@ -60,8 +65,12 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise EnvelopeError("invalid JSON") from exc
     if not isinstance(value, dict): raise EnvelopeError("JSON object required")
+    load_context_present, load_context = _load_trace.extract_load_context(value)
     if "schema" not in value:
-        return Request(value, False, _selected(value, known_fields), raw)
+        return Request(
+            value, False, _selected(value, known_fields), raw,
+            load_context_present=load_context_present, load_context=load_context,
+        )
     if value.get("schema") != SCHEMA: raise EnvelopeError("foreign envelope schema")
     missing = [k for k in KERNEL_KEYS if k not in value]
     if missing: raise EnvelopeError("missing envelope kernel keys: " + ",".join(missing))
@@ -76,7 +85,10 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
                 if isinstance(scoped, Mapping): candidates.append(scoped)
                 candidates.append(nested)
         for candidate in candidates: payload.update(_selected(candidate, names))
-    return Request(value, True, payload, raw, value["intent_id"], value["transition"], value["version"], value["timestamp"])
+    return Request(
+        value, True, payload, raw, value["intent_id"], value["transition"],
+        value["version"], value["timestamp"], load_context_present, load_context,
+    )
 def _outcome(receipt: Mapping[str, Any]) -> str:
     first_missing_signal = receipt.get("firstMissingSignal")
     return "failed" if receipt.get("ok") is False or receipt.get("verified") is False or (first_missing_signal and first_missing_signal != "none") else "ok"
@@ -120,7 +132,13 @@ def _redact_pin_carriers(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
-    if not request.envelope: return receipt
+    explicit_context = (
+        request.returned_load_context
+        if request.returned_load_context is not None
+        else request.load_context if request.load_context_present else None
+    )
+    if not request.envelope:
+        return _load_trace.attach_context(receipt, explicit_context)
     result = dict(receipt); prior = request.value.get("stamps"); prior = list(prior) if isinstance(prior, list) else []
     stamp = {"verb": request.verb, "outcome": _outcome(result), "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     pin_bearing = _pin_bearing_exousia(request.value)
@@ -132,6 +150,6 @@ def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     if "stamps" not in request.value or isinstance(request.value.get("stamps"), list):
         envelope["stamps"] = prior + [dict(stamp)]
     result.update(intent_id=request.intent_id, raw_envelope=raw_envelope, envelope=envelope, stamps=prior + [dict(stamp)], staff=dict(stamp))
-    return result
+    return _load_trace.attach_context(result, explicit_context)
 def read_fields(*fields: str, flags: Sequence[str] = (), rooms: Sequence[str] = ()) -> Request:
     return read(known_fields=fields, declared_flags=flags, rooms=rooms)

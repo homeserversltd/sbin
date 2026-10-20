@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import contextvars
 import fcntl
 import json
 import os
@@ -17,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from agathodaimon import _load_trace
 from agathodaimon._envelope import EnvelopeError, Request, attach, read
 from agathodaimon.lib.receipts.index import emit
 
@@ -44,87 +44,12 @@ _SWAY_IPC_MAGIC = b"i3-ipc"
 _SWAY_IPC_HEADER_SIZE = 14
 _SWAY_IPC_MAX_REPLY_BYTES = 16 * 1024 * 1024
 _SWAY_IPC_TIMEOUT_SECONDS = 8.0
-_BENCHMARK_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
-    "agathodaimon_face_benchmark", default=None
-)
-
-
-def _benchmark_enabled(request: Request) -> bool:
-    if not request.envelope:
-        return False
-    flags = request.value.get("flags")
-    return isinstance(flags, Mapping) and flags.get("benchmark") is True
-
-
-def _process_boot_elapsed_ms() -> tuple[int, bool]:
-    try:
-        stat_text = Path("/proc/self/stat").read_text(encoding="ascii")
-        closing = stat_text.rfind(")")
-        if closing < 0:
-            return 0, False
-        fields = stat_text[closing + 1 :].split()
-        if len(fields) <= 19:
-            return 0, False
-        start_ticks = int(fields[19])
-        ticks_per_second = int(os.sysconf("SC_CLK_TCK"))
-        if start_ticks < 0 or ticks_per_second <= 0:
-            return 0, False
-        process_start_ns = start_ticks * 1_000_000_000 // ticks_per_second
-        boot_now_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-        elapsed_ns = boot_now_ns - process_start_ns
-        if elapsed_ns < 0:
-            return 0, False
-        return elapsed_ns // 1_000_000, True
-    except (OSError, ValueError, IndexError, AttributeError, OverflowError):
-        return 0, False
-
-
-def _benchmark_call(
-    locus: str,
-    operation: Callable[[], Any],
-    *,
-    success: Callable[[Any], bool] | None = None,
-) -> Any:
-    context = _BENCHMARK_CONTEXT.get()
-    if context is None:
-        return operation()
-    try:
-        started_ns = time.perf_counter_ns()
-    except Exception:
-        try:
-            operation_result = operation()
-        except BaseException:
-            context["timings"].append({"locus": locus, "elapsed_ms": 0, "ok": False})
-            raise
-        context["timings"].append({"locus": locus, "elapsed_ms": 0, "ok": False})
-        return operation_result
-    ok = False
-    try:
-        result = operation()
-        ok = success(result) if success is not None else True
-        return result
-    except BaseException:
-        ok = False
-        raise
-    finally:
-        try:
-            elapsed_ns = time.perf_counter_ns() - started_ns
-            if elapsed_ns < 0:
-                elapsed_ns = 0
-                ok = False
-        except Exception:
-            elapsed_ns = 0
-            ok = False
-        context["timings"].append({
-            "locus": locus,
-            "elapsed_ms": elapsed_ns // 1_000_000,
-            "ok": bool(ok),
-        })
-
-
-def _benchmark_boot_entry() -> dict[str, Any]:
-    elapsed_ms, ok = _process_boot_elapsed_ms()
-    return {"locus": "staff.boot", "elapsed_ms": elapsed_ms, "ok": ok}
+# Compatibility adapters: the sole clocks and ContextVar live in _load_trace.
+_BENCHMARK_CONTEXT = _load_trace.BENCHMARK_CONTEXT
+_benchmark_enabled = _load_trace.benchmark_enabled
+_process_boot_elapsed_ms = _load_trace.process_boot_elapsed_ms
+_benchmark_call = _load_trace.benchmark_call
+_benchmark_boot_entry = _load_trace.benchmark_boot_entry
 
 
 def read_payload() -> Request:
@@ -133,49 +58,50 @@ def read_payload() -> Request:
 
 
 def invoke(verb: str, operation: Callable[[dict[str, Any]], Mapping[str, Any]]) -> int:
-    """Emit exactly one transient receipt for a verb, including refusals."""
+    """Emit one transient receipt through the shared trace/timing scope."""
     request: Request | None = None
-    benchmark_context: dict[str, Any] | None = None
-    benchmark_token: contextvars.Token[dict[str, Any] | None] | None = None
+    trace: _load_trace.InvocationHandle | None = None
+    benchmark_report: dict[str, Any] | None = None
     try:
         request = read_payload()
-        if _benchmark_enabled(request):
-            benchmark_context = {"timings": []}
-            benchmark_token = _BENCHMARK_CONTEXT.set(benchmark_context)
-            benchmark_context["timings"].append(_benchmark_boot_entry())
-        if request.envelope:
-            payload = request.payload
-        else:
-            primitive_payload = request.value.get("payload")
-            payload = dict(primitive_payload) if isinstance(primitive_payload, Mapping) else {}
-        fields = dict(operation(payload))
-        fields.setdefault("ok", True)
-        fields.setdefault("firstMissingSignal", "none")
-        receipt = {"verb": verb, **fields}
+        with _load_trace.invocation(
+            request.load_context,
+            trace_present=request.load_context_present,
+            benchmark=_benchmark_enabled(request),
+            operation="agathodaimon.face.operation",
+        ) as trace:
+            try:
+                if request.envelope:
+                    payload = request.payload
+                else:
+                    primitive_payload = request.value.get("payload")
+                    payload = dict(primitive_payload) if isinstance(primitive_payload, Mapping) else {}
+                fields = dict(operation(payload))
+                fields.setdefault("ok", True)
+                fields.setdefault("firstMissingSignal", "none")
+                receipt = {"verb": verb, **fields}
+            except EnvelopeError as error:
+                receipt = {"verb": verb, "ok": False, "firstMissingSignal": str(error)}
+            except FaceError as error:
+                receipt = {
+                    "verb": verb,
+                    "ok": False,
+                    "firstMissingSignal": error.signal,
+                    **error.fields,
+                }
+            except Exception:
+                receipt = {"verb": verb, "ok": False, "firstMissingSignal": f"face-{verb}-operation-failed"}
+            if trace is not None:
+                trace.set_outcome("failed" if receipt.get("ok") is False else "ok")
+                benchmark_report = trace.benchmark_report()
+        if request is not None and trace is not None:
+            request.returned_load_context = trace.response_context()
     except EnvelopeError as error:
         receipt = {"verb": verb, "ok": False, "firstMissingSignal": str(error)}
-    except FaceError as error:
-        receipt = {
-            "verb": verb,
-            "ok": False,
-            "firstMissingSignal": error.signal,
-            **error.fields,
-        }
-    except Exception:
-        receipt = {"verb": verb, "ok": False, "firstMissingSignal": f"face-{verb}-operation-failed"}
-    try:
-        if request is not None:
-            receipt = attach(receipt, request)
-        if benchmark_context is not None:
-            receipt["benchmark"] = {
-                "schema": _BENCHMARK_SCHEMA,
-                "timings": list(benchmark_context["timings"]),
-            }
-    finally:
-        if benchmark_context is not None:
-            benchmark_context["timings"].clear()
-        if benchmark_token is not None:
-            _BENCHMARK_CONTEXT.reset(benchmark_token)
+    if request is not None:
+        receipt = attach(receipt, request)
+    if benchmark_report is not None:
+        receipt["benchmark"] = benchmark_report
     return emit(receipt)
 
 

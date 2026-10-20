@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
+from agathodaimon import _load_trace
 from agathodaimon.reload.index import reload_services
 
 SCHEMA = "caduceus.network.dns.receipt.v2"
@@ -734,6 +735,15 @@ class DnsManager:
         return records
 
     def read(self) -> dict[str, Any]:
+        """Read configured local-data identity under one optional transient span."""
+        with _load_trace.span(
+            "agathodaimon.network.dns.local_data_read",
+            road="local-file",
+            source_state="configured-unbound-files",
+        ):
+            return self._read_local_data()
+
+    def _read_local_data(self) -> dict[str, Any]:
         """Read every configured local-data identity; ownership only governs writes."""
         devices: dict[str, dict[str, Any]] = {}
         aliases: list[dict[str, str]] = []

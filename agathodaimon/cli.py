@@ -20,6 +20,7 @@ class _EnvelopeStdin(StringIO):
 ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 from agathodaimon._envelope import appliance_runtime_path
+from agathodaimon import _load_trace
 ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "upload": ("storage", "upload"), "nas": ("storage", "nas"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime"), "attendance": ("exousia", "attendance"), "pin": ("exousia", "pin")}
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
@@ -59,7 +60,8 @@ def _slash_target(raw_path: str) -> Path | None:
     return target if target.is_file() else None
 
 def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None) -> int:
-    mod = _load(path)
+    with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
+        mod = _load(path)
     fn = getattr(mod, "main", None)
     if fn is None:
         print(json.dumps({"schema":"agathodaimon.cli.read.v1","path":str(path.parent.relative_to(ROOT)),"ok":True,"envelope":envelope,"mutationPerformed":False}))
@@ -636,6 +638,18 @@ def _administrative_pin_admits(
     return True
 
 
+def _trace_operation(target: str | None, remainder: list[str]) -> str:
+    """Name only declared static staff loci; never copy argv or payload values."""
+    command = remainder[0].lower() if remainder and isinstance(remainder[0], str) else ""
+    if target == "network/identity" and command == "device-list":
+        return "agathodaimon.network.identity.device_list"
+    if target == "network/dhcp" and command in {"status", "config", "validate", "statistics", "health", "boundary"}:
+        return f"agathodaimon.network.dhcp.{command}"
+    if target == "network/dns" and command in {"read", "status"}:
+        return f"agathodaimon.network.dns.{command}"
+    return "agathodaimon.staff.cli.operation"
+
+
 def main(argv=None):
     args=list(sys.argv[1:] if argv is None else argv)
     if _transmission_keys_json_argv(args):
@@ -681,7 +695,10 @@ def main(argv=None):
         pin = None
         if not admitted:
             return 1
-        return _invoke_envelope(target, envelope, raw_envelope)
+        return _load_trace.run_cli(
+            envelope, _trace_operation(cli_target, remainder),
+            lambda: _invoke_envelope(target, envelope, raw_envelope),
+        )
     if len(args) == 2 and "/" in args[0]:
         try:
             envelope = json.loads(args[1])
@@ -702,7 +719,10 @@ def main(argv=None):
             False, None, publication,
         ):
             return 1
-        return _invoke_envelope(target, envelope, raw_envelope)
+        return _load_trace.run_cli(
+            envelope, _trace_operation(cli_target, remainder),
+            lambda: _invoke_envelope(target, envelope, raw_envelope),
+        )
     service_alias=args[0]=="service" and len(args)>1 and args[1] in SERVICE_ALIASES
     alias=SERVICE_ALIASES[args[1]] if service_alias else ALIASES.get(args[0],(args[0],))
     remainder=args[2:] if service_alias else args[1:]
@@ -724,11 +744,18 @@ def main(argv=None):
             print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
     if "--help" in remainder: _help(path); return 0
-    mod=_load(path/"index.py"); fn=getattr(mod,"main",None)
-    if fn is None:
-        print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False})); return 0
     envelope, pin_present, pin = _capture_piped_envelope()
     cli_target = path.relative_to(ROOT).as_posix()
+    trace_present, _ = _load_trace.extract_load_context(envelope)
+    mod = None
+    fn = None
+    if not trace_present:
+        # Preserve the ordinary primitive path's eager import/refusal ordering.
+        mod = _load(path / "index.py")
+        fn = getattr(mod, "main", None)
+        if fn is None:
+            print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False}))
+            return 0
     admitted = _administrative_pin_admits(
         cli_target, remainder, envelope, pin_required, caduceus_root,
         pin_present, pin, publication,
@@ -736,15 +763,29 @@ def main(argv=None):
     pin = None
     if not admitted:
         return 1
-    if original == ["cert", "house-ca"]:
+
+    def invoke_module() -> int:
+        nonlocal mod, fn
+        if mod is None:
+            with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
+                mod = _load(path / "index.py")
+            fn = getattr(mod, "main", None)
+        if fn is None:
+            print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False}))
+            return 0
+        if original == ["cert", "house-ca"]:
+            try:
+                payload = json.load(sys.stdin)
+                remainder.extend(payload.get("args", []))
+            except (json.JSONDecodeError, AttributeError):
+                pass
         try:
-            payload = json.load(sys.stdin)
-            remainder.extend(payload.get("args", []))
-        except (json.JSONDecodeError, AttributeError):
-            pass
-    try: return int(fn(remainder) or 0)
-    except TypeError as exc:
-        if "positional argument" not in str(exc) and "positional arguments" not in str(exc): raise
-        return int(fn() or 0)
+            return int(fn(remainder) or 0)
+        except TypeError as exc:
+            if "positional argument" not in str(exc) and "positional arguments" not in str(exc):
+                raise
+            return int(fn() or 0)
+
+    return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), invoke_module)
 
 if __name__ == "__main__": raise SystemExit(main())

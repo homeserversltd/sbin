@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from typing import Any, Sequence
 
+from agathodaimon import _load_trace
 from agathodaimon.network.dhcp.index import DhcpError, DhcpManager, normalize_mac
 from agathodaimon.network.dns.index import DnsError, DnsManager
 from agathodaimon.lib.receipts import emit
@@ -20,6 +21,15 @@ class IdentityError(RuntimeError):
 
 
 def _device_projection() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Fuse the real roster once under one transient staff span."""
+    with _load_trace.span(
+        "agathodaimon.network.identity.roster_fusion",
+        source_state="dhcp-dns-roster",
+    ):
+        return _device_projection_body()
+
+
+def _device_projection_body() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Separate device identities from DNS service names on infrastructure addresses."""
     dhcp = DhcpManager()
     dns = DnsManager().read()
