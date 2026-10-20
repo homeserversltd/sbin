@@ -128,7 +128,7 @@ def _benchmark_boot_entry() -> dict[str, Any]:
 
 def read_payload() -> Request:
     """Read the public envelope and select the fields used by FaceDoor verbs."""
-    return read(known_fields=("payload", "direction", "action", "desktop_id", "menu", "id", "kind", "step", "carry", "ring"))
+    return read(known_fields=("payload", "direction", "action", "desktop_id", "menu", "id", "kind", "step", "carry", "ring", "mode"))
 
 
 def invoke(verb: str, operation: Callable[[dict[str, Any]], Mapping[str, Any]]) -> int:
@@ -921,6 +921,707 @@ def launch(payload: dict[str, Any]) -> Mapping[str, Any]:
         "detached": True, "launcher": launcher, "pid": process.pid,
         "early_exit": exit_code, "socket_source": socket_source,
     }
+
+
+_SCREENSHOT_CAPTURE_NAME = "agathodaimon-face-screenshot.png"
+_SCREENSHOT_CREATE_CAPTURE = """
+import os, stat, sys
+path = sys.argv[1]
+fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+try:
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+        raise SystemExit(74)
+    os.fchmod(fd, 0o600)
+finally:
+    os.close(fd)
+"""
+_SCREENSHOT_TRUNCATE_CAPTURE = """
+import os, stat, sys
+path = sys.argv[1]
+fd = os.open(path, os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    metadata = os.fstat(fd)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_nlink != 1:
+        raise SystemExit(74)
+    os.fchmod(fd, 0o600)
+    os.ftruncate(fd, 0)
+finally:
+    os.close(fd)
+"""
+_SCREENSHOT_SWAPPY_WAITER = r'''
+import os, pathlib, stat, subprocess, sys
+capture, swappy, pictures_home, wl_paste, notify_send, uid, lock_fd = sys.argv[1:]
+uid = int(uid)
+lock_fd = int(lock_fd)
+metadata = os.fstat(lock_fd)
+if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != uid:
+    raise SystemExit(70)
+original = sys.stdin.buffer.read()
+home = pathlib.Path(pictures_home)
+screenshots = home / "Pictures" / "Screenshots"
+
+def files_now():
+    for directory in (home, home / "Pictures", screenshots):
+        try:
+            item = os.lstat(directory)
+        except FileNotFoundError:
+            return {}
+        except OSError:
+            return None
+        if stat.S_ISLNK(item.st_mode) or not stat.S_ISDIR(item.st_mode) or item.st_uid != uid:
+            return None
+    result = {}
+    try:
+        with os.scandir(screenshots) as entries:
+            for entry in entries:
+                try:
+                    item = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if stat.S_ISREG(item.st_mode) and item.st_uid == uid:
+                    result[entry.name] = item.st_mtime_ns
+    except OSError:
+        return None
+    return result
+
+before = files_now()
+try:
+    editor = subprocess.Popen(
+        [swappy, "-f", capture], stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+except OSError:
+    raise SystemExit(71)
+editor.wait()
+after = files_now()
+saved = None
+if before is not None and after is not None:
+    added = [name for name in after if name not in before]
+    if added:
+        saved = max(added, key=lambda name: after[name])
+
+def clipboard_changed():
+    if not wl_paste:
+        return False
+    try:
+        reader = subprocess.Popen(
+            [wl_paste, "--type", "image/png"], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    offset = 0
+    changed = False
+    try:
+        while True:
+            chunk = reader.stdout.read(65536)
+            if not chunk:
+                break
+            if offset + len(chunk) > len(original) or original[offset:offset + len(chunk)] != chunk:
+                changed = True
+            offset += len(chunk)
+        return reader.wait(timeout=8) == 0 and (changed or offset != len(original))
+    except (OSError, subprocess.SubprocessError):
+        try:
+            reader.kill()
+        except OSError:
+            pass
+        return False
+
+def notify(message):
+    if not notify_send or not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return
+    try:
+        subprocess.run(
+            [notify_send, "--icon", capture, message],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=3, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+if saved is not None:
+    safe_name = "".join(character for character in saved if character.isprintable())[:180]
+    notify("Saved " + safe_name)
+elif clipboard_changed():
+    notify("Copied to clipboard")
+'''
+
+
+def _screenshot_process_environments(account: pwd.struct_passwd) -> list[tuple[str, str, dict[str, str]]]:
+    found: list[tuple[str, str, dict[str, str]]] = []
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return found
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != account.pw_uid:
+                continue
+            comm = (entry / "comm").read_text(encoding="utf-8").strip().lower()
+            command = (entry / "cmdline").read_bytes().split(b"\x00", 1)[0].decode("utf-8", "replace")
+            name = Path(command).name.lower()
+            compositor = "sway" if comm == "sway" or name == "sway" else (
+                "hyprland" if comm == "hyprland" or name == "hyprland" else None
+            )
+            if compositor is None:
+                continue
+            raw = (entry / "environ").read_bytes()
+        except OSError:
+            continue
+        values: dict[str, str] = {}
+        for item in raw.split(b"\x00"):
+            key, separator, value = item.partition(b"=")
+            if not separator:
+                continue
+            try:
+                values[key.decode("ascii")] = value.decode("utf-8")
+            except UnicodeError:
+                continue
+        found.append((entry.name, compositor, values))
+    return found
+
+
+def _screenshot_systemd_environment(
+    account: pwd.struct_passwd, runtime: Path,
+) -> dict[str, str]:
+    systemctl = shutil.which("systemctl", path=os.environ.get("PATH", os.defpath))
+    if systemctl is None:
+        return {}
+    environment = {
+        "HOME": account.pw_dir, "USER": OWNER_USER, "LOGNAME": OWNER_USER,
+        "PATH": os.environ.get("PATH", os.defpath), "XDG_RUNTIME_DIR": str(runtime),
+    }
+    bus = runtime / "bus"
+    if _is_live_owned_socket(bus, account, runtime):
+        environment["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
+    result = owner_run([systemctl, "--user", "show-environment"], environment, timeout=3)
+    if result.returncode != 0:
+        return {}
+    values: dict[str, str] = {}
+    allowed = {
+        "PATH", "SWAYSOCK", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
+        "DBUS_SESSION_BUS_ADDRESS",
+    }
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in allowed:
+            values[key] = value
+    return values
+
+
+def _screenshot_safe_runtime(account: pwd.struct_passwd) -> Path:
+    runtime = _runtime_dir(account)
+    try:
+        metadata = os.lstat(runtime)
+    except OSError:
+        raise FaceError("face-screenshot-runtime-directory-unavailable")
+    if (
+        stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != account.pw_uid or metadata.st_mode & 0o077
+    ):
+        raise FaceError("face-screenshot-runtime-directory-unsafe")
+    return runtime
+
+
+def _screenshot_unique_value(
+    observations: Sequence[tuple[str, str]], key: str, *, source: str,
+) -> tuple[str, str] | None:
+    unique: dict[str, str] = {}
+    for origin, value in observations:
+        if value and "\x00" not in value:
+            unique.setdefault(value, origin)
+    if len(unique) > 1:
+        raise FaceError(f"face-screenshot-{key.lower().replace('_', '-')}-ambiguous")
+    if not unique:
+        return None
+    value, origin = next(iter(unique.items()))
+    return value, origin if origin else source
+
+
+def _screenshot_runtime_socket(
+    value: str, key: str, account: pwd.struct_passwd, runtime: Path,
+) -> Path | None:
+    path = _socket_path(value, runtime)
+    if path is None or not _is_live_owned_socket(path, account, runtime):
+        return None
+    return path
+
+
+def _screenshot_external_socket(path: str, account: pwd.struct_passwd, runtime: Path) -> bool:
+    candidate = Path(path)
+    if not candidate.is_absolute() or "\x00" in path or any(part in {".", ".."} for part in candidate.parts):
+        return False
+    try:
+        parts = candidate.parts
+        current = Path(parts[0])
+        for part in parts[1:-1]:
+            current = current / part
+            metadata = os.lstat(current)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                return False
+            if current == runtime or runtime in current.parents:
+                if metadata.st_uid != account.pw_uid:
+                    return False
+            if metadata.st_mode & 0o002 and not metadata.st_mode & stat.S_ISVTX:
+                return False
+        metadata = os.lstat(candidate)
+        if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != account.pw_uid:
+            return False
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(0.25)
+        try:
+            probe.connect(str(candidate))
+        finally:
+            probe.close()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _screenshot_bus_path(value: str) -> str | None:
+    first = value.split(";", 1)[0].split(",", 1)[0]
+    if not first.startswith("unix:path="):
+        return None
+    path = first[len("unix:path="):]
+    return path if path and Path(path).is_absolute() else None
+
+
+def _screenshot_owner_environment(
+    *, window: bool,
+) -> tuple[dict[str, str], str, pwd.struct_passwd, Path]:
+    account = _owner()
+    runtime = _screenshot_safe_runtime(account)
+    process_environments = _screenshot_process_environments(account)
+    systemd_environment = _screenshot_systemd_environment(account, runtime)
+
+    wayland_observations = [
+        (f"proc:{pid}", values["WAYLAND_DISPLAY"])
+        for pid, _compositor, values in process_environments
+        if values.get("WAYLAND_DISPLAY")
+        and _screenshot_runtime_socket(values["WAYLAND_DISPLAY"], "WAYLAND_DISPLAY", account, runtime)
+    ]
+    wayland = _screenshot_unique_value(wayland_observations, "WAYLAND_DISPLAY", source="proc")
+    if wayland is None:
+        value = systemd_environment.get("WAYLAND_DISPLAY", "")
+        if value and _screenshot_runtime_socket(value, "WAYLAND_DISPLAY", account, runtime):
+            wayland = (value, "systemd-user")
+    if wayland is None:
+        candidates = _runtime_socket_candidates("WAYLAND_DISPLAY", account, runtime)
+        if len(candidates) > 1:
+            raise FaceError("face-screenshot-wayland-display-ambiguous")
+        if candidates:
+            wayland = (candidates[0].name, "runtime-unique")
+    if wayland is None:
+        raise FaceError("face-screenshot-wayland-display-unavailable")
+
+    session_records = [
+        record for record in process_environments
+        if record[2].get("WAYLAND_DISPLAY") == wayland[0]
+    ]
+    path_observations = [
+        (f"proc:{pid}", values["PATH"])
+        for pid, _compositor, values in session_records if values.get("PATH")
+    ]
+    owner_path_value = None
+    if any(record[1] == "sway" for record in session_records):
+        owner_path_value = _screenshot_unique_value(path_observations, "OWNER_PATH", source="proc")
+    if owner_path_value is None and systemd_environment.get("PATH"):
+        owner_path_value = (systemd_environment["PATH"], "systemd-user")
+    if owner_path_value is None:
+        owner_path_value = _screenshot_unique_value(path_observations, "OWNER_PATH", source="proc")
+    if owner_path_value is None:
+        raise FaceError("face-screenshot-owner-path-unavailable")
+    owner_path, path_source = owner_path_value
+    path_entries = owner_path.split(os.pathsep)
+    if not owner_path or any(not entry or not Path(entry).is_absolute() for entry in path_entries):
+        raise FaceError("face-screenshot-owner-path-invalid")
+
+    environment = {
+        "HOME": account.pw_dir, "USER": OWNER_USER, "LOGNAME": OWNER_USER,
+        "PATH": owner_path, "XDG_RUNTIME_DIR": str(runtime),
+        "XDG_CONFIG_HOME": str(Path(account.pw_dir) / ".config"),
+        "XDG_CACHE_HOME": str(Path(account.pw_dir) / ".cache"),
+        "XDG_STATE_HOME": str(Path(account.pw_dir) / ".local/state"),
+        "WAYLAND_DISPLAY": wayland[0],
+    }
+    source_parts = [f"wayland:{wayland[1]}", f"path:{path_source}"]
+
+    compositor_records = [record for record in session_records if record[1] in {"sway", "hyprland"}]
+    bus_observations: list[tuple[str, str]] = []
+    for pid, _compositor, values in compositor_records:
+        address = values.get("DBUS_SESSION_BUS_ADDRESS", "")
+        path = _screenshot_bus_path(address) if address else None
+        if path and _screenshot_external_socket(path, account, runtime):
+            bus_observations.append((f"proc:{pid}", address))
+    bus = _screenshot_unique_value(bus_observations, "DBUS_SESSION_BUS_ADDRESS", source="proc")
+    if bus is None:
+        address = systemd_environment.get("DBUS_SESSION_BUS_ADDRESS", "")
+        path = _screenshot_bus_path(address) if address else None
+        if path and _screenshot_external_socket(path, account, runtime):
+            bus = (address, "systemd-user")
+    if bus is not None:
+        environment["DBUS_SESSION_BUS_ADDRESS"] = bus[0]
+        source_parts.append(f"dbus:{bus[1]}")
+
+    if window:
+        sway_observations = [
+            (f"proc:{pid}", values["SWAYSOCK"])
+            for pid, compositor, values in process_environments
+            if compositor == "sway" and values.get("SWAYSOCK")
+            and _screenshot_runtime_socket(values["SWAYSOCK"], "SWAYSOCK", account, runtime)
+        ]
+        sway = _screenshot_unique_value(sway_observations, "SWAYSOCK", source="proc")
+        if sway is None:
+            value = systemd_environment.get("SWAYSOCK", "")
+            if value and _screenshot_runtime_socket(value, "SWAYSOCK", account, runtime):
+                sway = (value, "systemd-user")
+        if sway is None:
+            candidates = _runtime_socket_candidates("SWAYSOCK", account, runtime)
+            if len(candidates) > 1:
+                raise FaceError("face-screenshot-sway-socket-ambiguous")
+            if candidates:
+                sway = (str(candidates[0]), "runtime-unique")
+        if sway is not None:
+            path = _screenshot_runtime_socket(sway[0], "SWAYSOCK", account, runtime)
+            environment["SWAYSOCK"] = str(path) if path is not None else sway[0]
+            source_parts.append(f"sway:{sway[1]}")
+
+        hypr_processes = [record for record in process_environments if record[1] == "hyprland"]
+        hypr_observations = [
+            (f"proc:{pid}", values["HYPRLAND_INSTANCE_SIGNATURE"])
+            for pid, _compositor, values in hypr_processes
+            if values.get("HYPRLAND_INSTANCE_SIGNATURE")
+        ]
+        hypr = _screenshot_unique_value(hypr_observations, "HYPRLAND_INSTANCE_SIGNATURE", source="proc")
+        manager_signature = systemd_environment.get("HYPRLAND_INSTANCE_SIGNATURE")
+        if hypr is not None and manager_signature and manager_signature != hypr[0]:
+            raise FaceError("face-screenshot-hyprland-instance-signature-ambiguous")
+        if hypr is None and systemd_environment.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            hypr = (systemd_environment["HYPRLAND_INSTANCE_SIGNATURE"], "systemd-user")
+        if hypr is not None:
+            signature, signature_source = hypr
+            if (
+                len(signature) > 256 or signature in {".", ".."}
+                or "/" in signature or "\\" in signature or "\x00" in signature
+            ):
+                raise FaceError("face-screenshot-hyprland-signature-invalid")
+            hypr_root = runtime / "hypr"
+            hypr_directory = hypr_root / signature
+            try:
+                root_metadata = os.lstat(hypr_root)
+                directory_metadata = os.lstat(hypr_directory)
+            except OSError:
+                raise FaceError("face-screenshot-hyprland-signature-unavailable")
+            if (
+                stat.S_ISLNK(root_metadata.st_mode) or not stat.S_ISDIR(root_metadata.st_mode)
+                or root_metadata.st_uid != account.pw_uid
+                or stat.S_ISLNK(directory_metadata.st_mode) or not stat.S_ISDIR(directory_metadata.st_mode)
+                or directory_metadata.st_uid != account.pw_uid
+            ):
+                raise FaceError("face-screenshot-hyprland-signature-unsafe")
+            control_socket = hypr_directory / ".socket.sock"
+            if not _is_live_owned_socket(control_socket, account, runtime):
+                raise FaceError("face-screenshot-hyprland-signature-unavailable")
+            environment["HYPRLAND_INSTANCE_SIGNATURE"] = signature
+            source_parts.append(f"hyprland:{signature_source}")
+        elif hypr_processes:
+            raise FaceError("face-screenshot-hyprland-signature-unavailable")
+        if sway is None and hypr is None:
+            raise FaceError("face-screenshot-window-compositor-unavailable")
+        if sway is not None and hypr is not None:
+            raise FaceError("face-screenshot-window-compositor-ambiguous")
+
+    return environment, ";".join(source_parts), account, runtime
+
+
+def _screenshot_utility(name: str, owner_path: str) -> str | None:
+    utility = shutil.which(name, path=owner_path)
+    if utility is None:
+        return None
+    try:
+        metadata = os.stat(utility)
+    except OSError:
+        return None
+    return utility if stat.S_ISREG(metadata.st_mode) and os.access(utility, os.X_OK) else None
+
+
+def _screenshot_prepare_capture(
+    path: Path, environment: Mapping[str, str], python: str,
+) -> int:
+    prepared = owner_run([python, "-c", _SCREENSHOT_CREATE_CAPTURE, str(path)], environment)
+    if prepared.returncode != 0:
+        raise FaceError("face-screenshot-capture-file-create-failed")
+    try:
+        fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise FaceError("face-screenshot-capture-file-open-failed")
+    try:
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != _owner().pw_uid
+            or metadata.st_nlink != 1 or metadata.st_mode & 0o077
+        ):
+            raise FaceError("face-screenshot-capture-file-unsafe")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise FaceError("face-screenshot-capture-busy")
+        reset = owner_run([python, "-c", _SCREENSHOT_TRUNCATE_CAPTURE, str(path)], environment)
+        if reset.returncode != 0:
+            raise FaceError("face-screenshot-capture-reset-failed")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _screenshot_capture_bytes(path: Path, fd: int, account: pwd.struct_passwd) -> bytes:
+    try:
+        path_metadata = os.lstat(path)
+        metadata = os.fstat(fd)
+        if (
+            stat.S_ISLNK(path_metadata.st_mode) or not stat.S_ISREG(path_metadata.st_mode)
+            or path_metadata.st_uid != account.pw_uid or metadata.st_ino != path_metadata.st_ino
+            or not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != account.pw_uid
+            or metadata.st_nlink != 1 or metadata.st_mode & 0o077 or metadata.st_size <= 0
+        ):
+            raise FaceError("face-screenshot-capture-file-unsafe")
+        os.lseek(fd, 0, os.SEEK_SET)
+        chunks: list[bytes] = []
+        remaining = metadata.st_size
+        while remaining:
+            chunk = os.read(fd, min(1024 * 1024, remaining))
+            if not chunk:
+                raise FaceError("face-screenshot-capture-read-failed")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+    except FaceError:
+        raise
+    except OSError:
+        raise FaceError("face-screenshot-capture-read-failed")
+
+
+def _screenshot_owner_run_bytes(
+    argv: Sequence[str], environment: Mapping[str, str], payload: bytes,
+) -> subprocess.CompletedProcess[bytes]:
+    command, outer = owner_session_command(argv, environment)
+    try:
+        return subprocess.run(
+            command, input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=12, check=False, env=outer,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return subprocess.CompletedProcess(command, 127, b"", type(error).__name__.encode())
+
+
+def _screenshot_spawn_with_fd(
+    argv: Sequence[str], environment: Mapping[str, str], capture_fd: int,
+    *, input_bytes: bytes | None = None,
+) -> tuple[subprocess.Popen, int | None]:
+    command, outer = owner_session_command(argv, environment)
+    try:
+        process = subprocess.Popen(
+            command, stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True, env=outer, pass_fds=(capture_fd,),
+        )
+    except OSError:
+        raise FaceError("face-screenshot-editor-launch-failed")
+    if input_bytes is not None:
+        try:
+            assert process.stdin is not None
+            process.stdin.write(input_bytes)
+            process.stdin.close()
+        except (BrokenPipeError, OSError):
+            try:
+                process.terminate()
+                process.wait(timeout=1)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            raise FaceError("face-screenshot-waiter-input-failed")
+    time.sleep(0.05)
+    exit_code = process.poll()
+    if exit_code not in (None, 0):
+        raise FaceError("face-screenshot-editor-launch-failed", exit=exit_code)
+    return process, exit_code
+
+
+def _screenshot_geometry_from_rect(rect: Any, signal: str) -> str:
+    if not isinstance(rect, Mapping):
+        raise FaceError(signal)
+    x, y, width, height = (rect.get(key) for key in ("x", "y", "width", "height"))
+    if (
+        type(x) is not int or type(y) is not int or type(width) is not int or type(height) is not int
+        or width <= 0 or height <= 0
+    ):
+        raise FaceError(signal)
+    return f"{x},{y} {width}x{height}"
+
+
+def _screenshot_sway_geometry(environment: Mapping[str, str]) -> str:
+    tree = _sway_json("get_tree", environment)
+    if not isinstance(tree, Mapping):
+        raise FaceError("face-screenshot-sway-tree-invalid")
+    focused: list[Mapping[str, Any]] = []
+
+    def visit(node: Mapping[str, Any]) -> None:
+        children = list(node.get("nodes") or []) + list(node.get("floating_nodes") or [])
+        if node.get("focused") is True and node.get("type") == "con" and not children:
+            focused.append(node)
+        for child in children:
+            if isinstance(child, Mapping):
+                visit(child)
+
+    visit(tree)
+    if len(focused) != 1:
+        raise FaceError("face-screenshot-sway-focused-window-ambiguous")
+    return _screenshot_geometry_from_rect(focused[0].get("rect"), "face-screenshot-sway-focused-rect-invalid")
+
+
+def _screenshot_hypr_geometry(environment: Mapping[str, str], hyprctl: str) -> str:
+    result = owner_run([hyprctl, "activewindow", "-j"], environment)
+    if result.returncode != 0:
+        raise FaceError("face-screenshot-hyprland-activewindow-failed")
+    try:
+        active = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError, RecursionError):
+        raise FaceError("face-screenshot-hyprland-activewindow-invalid")
+    if not isinstance(active, Mapping):
+        raise FaceError("face-screenshot-hyprland-activewindow-invalid")
+    at, size = active.get("at"), active.get("size")
+    if (
+        not isinstance(at, list) or len(at) != 2 or not isinstance(size, list) or len(size) != 2
+        or any(type(value) is not int for value in (*at, *size)) or size[0] <= 0 or size[1] <= 0
+    ):
+        raise FaceError("face-screenshot-hyprland-activewindow-rect-invalid")
+    return f"{at[0]},{at[1]} {size[0]}x{size[1]}"
+
+
+def _screenshot_area_geometry(slurp: str, environment: Mapping[str, str]) -> str | None:
+    result = owner_run([slurp], environment)
+    if result.returncode == 1 and not result.stderr.strip():
+        return None
+    if result.returncode != 0:
+        raise FaceError("face-screenshot-slurp-failed", exit=result.returncode)
+    match = re.fullmatch(r"\s*(-?\d+),(-?\d+)\s+(\d+)x(\d+)\s*", result.stdout)
+    if match is None or int(match.group(3)) <= 0 or int(match.group(4)) <= 0:
+        raise FaceError("face-screenshot-slurp-geometry-invalid")
+    return f"{match.group(1)},{match.group(2)} {match.group(3)}x{match.group(4)}"
+
+
+def screenshot(payload: dict[str, Any]) -> Mapping[str, Any]:
+    raw_mode = payload["mode"] if "mode" in payload else "area"
+    if not isinstance(raw_mode, str) or raw_mode not in {"area", "full", "window"}:
+        raise FaceError(
+            "face-screenshot-mode-invalid", mode=raw_mode if isinstance(raw_mode, str) else None,
+            editor=None, captured=False,
+        )
+    mode = raw_mode
+    editor_name: str | None = None
+    captured = False
+    try:
+        environment, socket_source, account, runtime = _screenshot_owner_environment(window=mode == "window")
+        owner_path = environment["PATH"]
+        grim = _screenshot_utility("grim", owner_path)
+        wl_copy = _screenshot_utility("wl-copy", owner_path)
+        python = _screenshot_utility("python3", owner_path)
+        if grim is None:
+            raise FaceError("face-screenshot-grim-unavailable")
+        if wl_copy is None:
+            raise FaceError("face-screenshot-wl-copy-unavailable")
+        if python is None:
+            raise FaceError("face-screenshot-owner-python-unavailable")
+
+        geometry: str | None = None
+        if mode == "area":
+            slurp = _screenshot_utility("slurp", owner_path)
+            if slurp is None:
+                raise FaceError("face-screenshot-slurp-unavailable")
+            geometry = _screenshot_area_geometry(slurp, environment)
+            if geometry is None:
+                return {
+                    "ok": True, "firstMissingSignal": "none", "mode": mode,
+                    "editor": None, "captured": False, "cancelled": True,
+                    "detached": False, "socket_source": socket_source,
+                }
+        elif mode == "window":
+            if environment.get("SWAYSOCK"):
+                geometry = _screenshot_sway_geometry(environment)
+            else:
+                hyprctl = _screenshot_utility("hyprctl", owner_path)
+                if hyprctl is None:
+                    raise FaceError("face-screenshot-hyprctl-unavailable")
+                geometry = _screenshot_hypr_geometry(environment, hyprctl)
+
+        satty = _screenshot_utility("satty", owner_path)
+        swappy = _screenshot_utility("swappy", owner_path) if satty is None else None
+        if satty is None and swappy is None:
+            raise FaceError("face-screenshot-editor-unavailable")
+        wl_paste = _screenshot_utility("wl-paste", owner_path) if swappy is not None else None
+        notify_send = _screenshot_utility("notify-send", owner_path) if swappy is not None and environment.get("DBUS_SESSION_BUS_ADDRESS") else None
+        if swappy is not None and wl_paste is None:
+            raise FaceError("face-screenshot-wl-paste-unavailable")
+        if swappy is not None and notify_send is None:
+            raise FaceError("face-screenshot-notification-unavailable")
+
+        capture_path = runtime / _SCREENSHOT_CAPTURE_NAME
+        capture_fd = _screenshot_prepare_capture(capture_path, environment, python)
+        try:
+            if geometry is None:
+                capture_argv = [grim, str(capture_path)]
+            else:
+                capture_argv = [grim, "-g", geometry, str(capture_path)]
+            captured_result = owner_run(capture_argv, environment, timeout=15)
+            if captured_result.returncode != 0:
+                raise FaceError("face-screenshot-grim-failed", exit=captured_result.returncode)
+            raw_capture = _screenshot_capture_bytes(capture_path, capture_fd, account)
+            captured = True
+            copied = _screenshot_owner_run_bytes([wl_copy, "--type", "image/png"], environment, raw_capture)
+            if copied.returncode != 0:
+                raise FaceError("face-screenshot-wl-copy-failed", captured=True, mode=mode)
+            if satty is not None:
+                editor_name = "satty"
+                process, _exit_code = _screenshot_spawn_with_fd(
+                    [satty, "-f", str(capture_path)], environment, capture_fd,
+                )
+                return {
+                    "ok": True, "firstMissingSignal": "none", "mode": mode,
+                    "editor": editor_name, "captured": True, "detached": True,
+                    "pid": process.pid, "socket_source": socket_source,
+                }
+            if swappy is not None:
+                editor_name = "swappy"
+                waiter_argv = [
+                    python, "-c", _SCREENSHOT_SWAPPY_WAITER,
+                    str(capture_path), swappy, str(Path(account.pw_dir)),
+                    wl_paste or "", notify_send or "", str(account.pw_uid), str(capture_fd),
+                ]
+                process, _exit_code = _screenshot_spawn_with_fd(
+                    waiter_argv, environment, capture_fd, input_bytes=raw_capture,
+                )
+                return {
+                    "ok": True, "firstMissingSignal": "none", "mode": mode,
+                    "editor": editor_name, "captured": True, "detached": True,
+                    "pid": process.pid, "socket_source": socket_source,
+                }
+            raise FaceError("face-screenshot-editor-unavailable", captured=True, mode=mode)
+        except FaceError as error:
+            error.fields.setdefault("mode", mode)
+            error.fields.setdefault("editor", editor_name)
+            error.fields.setdefault("captured", captured)
+            raise
+        finally:
+            os.close(capture_fd)
+    except FaceError as error:
+        error.fields.setdefault("mode", mode)
+        error.fields.setdefault("editor", editor_name)
+        error.fields.setdefault("captured", captured)
+        raise
 
 
 def _pgrep(program: str, account: pwd.struct_passwd, environment: Mapping[str, str]) -> int:
