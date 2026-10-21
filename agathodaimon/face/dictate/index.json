@@ -1,0 +1,25 @@
+{
+  "children": [],
+  "sclerite": {
+    "features": {
+      "gtk4": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
+        "band": true,
+        "routes": [
+          "/api/v1/face/dictate"
+        ],
+        "verbs": [
+          [
+            "face",
+            "dictate"
+          ]
+        ]
+      }
+    },
+    "name": "gtk4"
+  }
+}

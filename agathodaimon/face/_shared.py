@@ -11,6 +11,7 @@ import socket
 import stat
 import struct
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import replace
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from agathodaimon import _load_trace
-from agathodaimon._envelope import EnvelopeError, Request, attach, read
+from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
 from agathodaimon.lib.receipts.index import emit
 
 OWNER_USER = "owner"
@@ -204,7 +205,9 @@ def _proc_sway_environments_observed(uid: int) -> tuple[list[tuple[str, dict[str
                 continue
             comm = (entry / "comm").read_text(encoding="utf-8").strip()
             command = (entry / "cmdline").read_bytes().split(b"\x00", 1)[0].decode("utf-8", "replace")
-            if comm != "sway" and Path(command).name != "sway":
+            # These compositors all publish the owner's Wayland/session keys.
+            compositors = {"sway", "hyprland", "kwin_wayland"}
+            if comm.lower() not in compositors and Path(command).name.lower() not in compositors:
                 continue
             raw = (entry / "environ").read_bytes()
         except OSError:
@@ -1529,6 +1532,295 @@ def _screenshot_area_geometry(slurp: str, environment: Mapping[str, str]) -> str
     if match is None or int(match.group(3)) <= 0 or int(match.group(4)) <= 0:
         raise FaceError("face-screenshot-slurp-geometry-invalid")
     return f"{match.group(1)},{match.group(2)} {match.group(3)}x{match.group(4)}"
+
+
+_DICTATE_PID = "agathodaimon-face-dictate.pid"
+_DICTATE_WAV = "agathodaimon-face-dictate.wav"
+_DICTATE_UPLOAD_SECONDS = 30
+_DICTATE_STOP_SECONDS = 3
+
+
+def _dictate_config() -> dict[str, str]:
+    try:
+        value = json.loads(appliance_runtime_path("config").read_text(encoding="utf-8"))
+        block = value.get("dictate") if isinstance(value, dict) else None
+    except (OSError, ValueError):
+        block = None
+    if not isinstance(block, dict) or any(
+        not isinstance(block.get(key), str) or not block[key].strip()
+        for key in ("endpoint", "model")
+    ):
+        raise FaceError("face-dictate-endpoint-unset")
+    from urllib.parse import urlsplit
+    try:
+        endpoint = urlsplit(block["endpoint"])
+        valid = endpoint.scheme in {"http", "https"} and endpoint.hostname and endpoint.port != 0
+        valid = valid and not endpoint.username and not endpoint.password and not endpoint.fragment
+    except ValueError:
+        valid = False
+    if not valid:
+        raise FaceError("face-dictate-endpoint-invalid")
+    prompt = block.get("prompt", "")
+    if not isinstance(prompt, str):
+        raise FaceError("face-dictate-prompt-invalid")
+    return {"endpoint": block["endpoint"], "model": block["model"], "prompt": prompt}
+
+
+def _dictate_file(path: Path, account: pwd.struct_passwd) -> int:
+    flags = os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_NOFOLLOW
+    try:
+        try:
+            fd = os.open(path, flags, 0o600)
+        except FileExistsError:
+            fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        else:
+            if os.geteuid() == 0:
+                os.fchown(fd, account.pw_uid, account.pw_gid)
+        metadata = os.fstat(fd)
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != account.pw_uid
+                or metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o600):
+            os.close(fd)
+            raise FaceError("face-dictate-runtime-file-unsafe")
+        return fd
+    except OSError:
+        raise FaceError("face-dictate-runtime-file-unavailable")
+
+
+def _dictate_spawn(argv: Sequence[str], environment: Mapping[str, str], **kwargs: Any) -> subprocess.Popen:
+    # Spawn the program itself, not runuser: the recorded PID must be pw-record.
+    account = _owner()
+    identity = ({"user": account.pw_uid, "group": account.pw_gid,
+                 "extra_groups": os.getgrouplist(OWNER_USER, account.pw_gid)}
+                if os.geteuid() == 0 else {})
+    try:
+        return subprocess.Popen(
+            list(argv), env=dict(environment), start_new_session=True, close_fds=True,
+            umask=0o077, stderr=subprocess.DEVNULL, **identity, **kwargs,
+        )
+    except OSError:
+        raise FaceError("face-dictate-owner-exec-failed")
+
+
+def _dictate_identity(pid: int, account: pwd.struct_passwd, recorder: str) -> str | None:
+    try:
+        proc = Path("/proc") / str(pid)
+        fields = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        if fields[0] in {"Z", "X"}:
+            return None
+        if proc.stat().st_uid != account.pw_uid or (proc / "exe").resolve() != Path(recorder).resolve():
+            raise FaceError("face-dictate-recorder-identity-mismatch")
+        return fields[19]  # /proc stat field 22: starttime, after the parenthesized comm.
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+    except (OSError, IndexError, ValueError):
+        raise FaceError("face-dictate-recorder-identity-unavailable")
+
+
+def _dictate_notice(environment: Mapping[str, str], tools: Mapping[str, str], sound: str, message: str) -> None:
+    # Best-effort status only: no transcript ever enters argv, a toast, or a trace.
+    process = _dictate_spawn(
+        [tools["paplay"], f"/usr/share/sounds/freedesktop/stereo/{sound}.oga"],
+        environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+    )
+    process.poll()
+    owner_run([tools["notify-send"], "ASR", message], environment, timeout=2)
+
+
+def _dictate_upload() -> None:
+    """Private owner child pipe, not a staff receipt; the parent bounds its entire life."""
+    import http.client
+    import secrets
+    from urllib.parse import urlsplit
+    connection = None
+    try:
+        config = json.load(sys.stdin)
+        endpoint = urlsplit(config["endpoint"])
+        boundary = "dictate-" + secrets.token_hex(16)
+        prefix = b"".join(
+            (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n"
+             + config[key] + "\r\n").encode("utf-8")
+            for key in ("model", "prompt")
+        )
+        prefix += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+                   f"filename=\"dictate.wav\"\r\nContent-Type: audio/wav\r\n\r\n").encode()
+        suffix = f"\r\n--{boundary}--\r\n".encode()
+        constructor = http.client.HTTPSConnection if endpoint.scheme == "https" else http.client.HTTPConnection
+        connection = constructor(endpoint.hostname, endpoint.port, timeout=_DICTATE_UPLOAD_SECONDS)
+        fd = os.open(config["wav"], os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as audio:
+            metadata = os.fstat(audio.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+                raise ValueError("unsafe audio")
+            target = endpoint.path or "/"
+            if endpoint.query:
+                target += "?" + endpoint.query
+            connection.putrequest("POST", target)
+            connection.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
+            connection.putheader("Content-Length", str(len(prefix) + metadata.st_size + len(suffix)))
+            connection.endheaders()
+            connection.send(prefix)
+            while chunk := audio.read(65536):
+                connection.send(chunk)
+            connection.send(suffix)
+        response = connection.getresponse()
+        if not 200 <= response.status < 300:
+            print(json.dumps({"signal": "face-dictate-upload-http-failed", "http_status": response.status}))
+            return
+        raw = response.read(65537)
+        if len(raw) > 65536:
+            raise ValueError("response limit")
+        result = json.loads(raw)
+        text = result.get("text") if isinstance(result, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            print(json.dumps({"signal": "face-dictate-transcription-empty"}))
+            return
+        print(json.dumps({"text": text.strip()}))
+    except (TimeoutError, socket.timeout):
+        print(json.dumps({"signal": "face-dictate-upload-timeout"}))
+    except Exception:
+        print(json.dumps({"signal": "face-dictate-upload-failed"}))
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+def dictate(_payload: dict[str, Any]) -> Mapping[str, Any]:
+    config = _dictate_config()  # Refuse missing private settings before creating anything.
+    account = _owner()
+    runtime = _runtime_dir(account)
+    try:
+        metadata = runtime.lstat()
+    except OSError:
+        raise FaceError("face-dictate-runtime-directory-unavailable")
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != account.pw_uid or metadata.st_mode & 0o077:
+        raise FaceError("face-dictate-runtime-directory-unsafe")
+    environment, _source = owner_session_environment(require_wayland=True)
+    socket_path = runtime / ".ydotool_socket"
+    try:
+        metadata = socket_path.lstat()
+        socket_ok = stat.S_ISSOCK(metadata.st_mode) and metadata.st_uid in {0, account.pw_uid}
+    except OSError:
+        socket_ok = False
+    if not socket_ok:
+        raise FaceError("face-dictate-ydotool-socket-unavailable", ydotool_socket=str(socket_path))
+    environment["YDOTOOL_SOCKET"] = str(socket_path)
+    tools = {}
+    for name in ("pw-record", "wl-copy", "ydotool", "notify-send", "paplay"):
+        utility = shutil.which(name, path=environment["PATH"])
+        if utility is None:
+            raise FaceError(f"face-dictate-{name}-unavailable")
+        tools[name] = utility
+    wav = runtime / _DICTATE_WAV
+    fd = _dictate_file(runtime / _DICTATE_PID, account)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise FaceError("face-dictate-busy")
+        record = os.pread(fd, 128, 0).decode("ascii").strip()
+        pid, started = 0, ""
+        if record:
+            try:
+                raw_pid, started = record.split()
+                pid = int(raw_pid)
+                if pid <= 1 or not started.isdigit():
+                    raise ValueError("invalid pid")
+            except ValueError:
+                raise FaceError("face-dictate-pid-record-invalid")
+        current = _dictate_identity(pid, account, tools["pw-record"]) if pid else None
+        if current is not None and current != started:
+            raise FaceError("face-dictate-recorder-identity-mismatch")
+        if current is None:
+            audio_fd = _dictate_file(wav, account)
+            os.ftruncate(audio_fd, 0)
+            os.close(audio_fd)
+            process = _dictate_spawn(
+                [tools["pw-record"], "--rate", "16000", "--channels", "1", "--format", "s16", str(wav)],
+                environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            )
+            time.sleep(0.1)
+            if process.poll() is not None:
+                wav.unlink(missing_ok=True)
+                os.ftruncate(fd, 0)
+                raise FaceError("face-dictate-recorder-start-failed")
+            identity = _dictate_identity(process.pid, account, tools["pw-record"])
+            os.ftruncate(fd, 0)
+            os.pwrite(fd, f"{process.pid} {identity}\n".encode(), 0)
+            _dictate_notice(environment, tools, "message-new-instant", "On — recording")
+            return {"state": "recording", "ydotool_socket": str(socket_path)}
+
+        # A pidfd prevents a PID-reuse race between identity check and SIGINT.
+        import select
+        try:
+            pidfd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            os.ftruncate(fd, 0)
+            raise FaceError("face-dictate-recorder-exited")
+        try:
+            if _dictate_identity(pid, account, tools["pw-record"]) != started:
+                raise FaceError("face-dictate-recorder-identity-mismatch")
+            signal.pidfd_send_signal(pidfd, signal.SIGINT)
+            waiter = select.poll()
+            waiter.register(pidfd, select.POLLIN)
+            if not waiter.poll(_DICTATE_STOP_SECONDS * 1000):
+                raise FaceError("face-dictate-recorder-stop-timeout", timeout_seconds=_DICTATE_STOP_SECONDS)
+        finally:
+            os.close(pidfd)
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass  # Another CLI invocation started it; its parent/init reaps it.
+        os.ftruncate(fd, 0)
+        try:
+            _dictate_notice(environment, tools, "complete", "Off — transcribing…")
+            upload_env = dict(environment, PYTHONDONTWRITEBYTECODE="1",
+                              PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+            process = _dictate_spawn(
+                [sys.executable, "-B", "-c", "from agathodaimon.face._shared import _dictate_upload; _dictate_upload()"],
+                upload_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            )
+            try:
+                output, _ = process.communicate(
+                    json.dumps({**config, "wav": str(wav)}).encode(), timeout=_DICTATE_UPLOAD_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise FaceError("face-dictate-upload-timeout", timeout_seconds=_DICTATE_UPLOAD_SECONDS)
+            try:
+                result = json.loads(output)
+            except (UnicodeError, ValueError):
+                raise FaceError("face-dictate-upload-failed")
+            if "signal" in result:
+                if result["signal"] == "face-dictate-transcription-empty":
+                    _dictate_notice(environment, tools, "dialog-warning", "No transcription returned")
+                fields = {"timeout_seconds": _DICTATE_UPLOAD_SECONDS} if result["signal"].endswith("timeout") else {}
+                if "http_status" in result:
+                    fields["http_status"] = result["http_status"]
+                raise FaceError(result["signal"], **fields)
+            text = result["text"]
+            copy = _dictate_spawn([tools["wl-copy"]], environment,
+                                  stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+            try:
+                copy.communicate(text.encode("utf-8"), timeout=3)
+            except subprocess.TimeoutExpired:
+                copy.kill()
+                copy.communicate()
+                raise FaceError("face-dictate-wl-copy-timeout")
+            if copy.returncode != 0:
+                raise FaceError("face-dictate-wl-copy-failed")
+            pasted = owner_run(
+                [tools["ydotool"], "key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"],
+                environment, timeout=3,
+            )
+            if pasted.returncode != 0:
+                raise FaceError("face-dictate-paste-failed", ydotool_socket=str(socket_path))
+            owner_run([tools["notify-send"], "-t", "8000", "ASR — transcribed"], environment, timeout=2)
+            return {"state": "transcribed", "chars": len(text), "ydotool_socket": str(socket_path)}
+        finally:
+            wav.unlink(missing_ok=True)
+    finally:
+        os.close(fd)
 
 
 def screenshot(payload: dict[str, Any]) -> Mapping[str, Any]:

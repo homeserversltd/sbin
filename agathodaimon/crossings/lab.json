@@ -12,6 +12,7 @@
     "exousia/forgejo-credential",
     "exousia/reset-default",
     "exousia/verify",
+    "face/dictate",
     "face/screenshot",
     "games",
     "games/provider-keys",
@@ -129,6 +130,10 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "face",
+      "dictate"
     ],
     [
       "face",
@@ -394,6 +399,7 @@
     "/api/v1/exousia/posture",
     "/api/v1/exousia/touch",
     "/api/v1/exousia/validate",
+    "/api/v1/face/dictate",
     "/api/v1/face/screenshot",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id",
