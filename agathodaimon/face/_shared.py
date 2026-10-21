@@ -1583,14 +1583,17 @@ def _dictate_roster_seat() -> str:
         except (ValueError, OverflowError):
             continue
         local = row.get("ipv4") == gateway if isinstance(row, dict) else False
-        # Same local-address observation as gateway_is_local, without another child.
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as observer:
-            for _index, interface in socket.if_nameindex():
-                try:
-                    address = fcntl.ioctl(observer, 0x8915, struct.pack("256s", interface.encode()[:15]))
-                    local = local or socket.inet_ntoa(address[20:24]) == gateway
-                except OSError:
-                    continue
+        # Mirror gateway_is_local, including secondary IPv4 addresses.
+        try:
+            addresses = subprocess.run(
+                ["/usr/bin/ip", "-4", "-o", "addr", "show"], stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2, check=False,
+            )
+            local = local or (addresses.returncode == 0 and any(
+                word.split("/", 1)[0] == gateway for word in addresses.stdout.split()
+            ))
+        except (OSError, subprocess.TimeoutExpired):
+            pass  # An unavailable local-address observation does not invent a local seat.
         host = "127.0.0.1" if local else gateway
         return f"http://{host}:{port}/api/v1/ruyi"
     raise FaceError("ruyi-default-gateway-unavailable")
@@ -1603,7 +1606,7 @@ def _dictate_speech_server(environment: Mapping[str, str], tools: Mapping[str, s
         if curl is None:
             raise FaceError("ruyi-roster-client-unavailable")
         process = _dictate_spawn(
-            [curl, "--silent", "--fail", "--noproxy", "*", "--max-time", str(_DICTATE_ROSTER_SECONDS),
+            [curl, "--disable", "--silent", "--fail", "--noproxy", "*", "--max-time", str(_DICTATE_ROSTER_SECONDS),
              "--max-filesize", str(_DICTATE_ROSTER_LIMIT), "--url", seat],
             environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         )
@@ -1650,7 +1653,10 @@ def _dictate_speech_server(environment: Mapping[str, str], tools: Mapping[str, s
         raise FaceError("ruyi-speech-service-absent")
     except FaceError as error:
         _dictate_notice(environment, tools, "dialog-warning", "No speech server on this network")
-        raise FaceError("face-dictate-speech-server-absent", roster_signal=error.signal) from None
+        raise FaceError(
+            "face-dictate-speech-server-absent", first_missing_signal="face-dictate-speech-server-absent",
+            roster_signal=error.signal,
+        ) from None
 
 
 def _dictate_file(path: Path, account: pwd.struct_passwd) -> int:
