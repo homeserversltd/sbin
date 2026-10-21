@@ -1674,7 +1674,7 @@ def _dictate_upload() -> None:
         if not isinstance(text, str) or not text.strip():
             print(json.dumps({"signal": "face-dictate-transcription-empty"}))
             return
-        print(json.dumps({"text": text.strip()}))
+        print(json.dumps({"text": text}))
     except (TimeoutError, socket.timeout):
         print(json.dumps({"signal": "face-dictate-upload-timeout"}))
     except Exception:
@@ -1744,6 +1744,11 @@ def dictate(_payload: dict[str, Any]) -> Mapping[str, Any]:
                 os.ftruncate(fd, 0)
                 raise FaceError("face-dictate-recorder-start-failed")
             identity = _dictate_identity(process.pid, account, tools["pw-record"])
+            if identity is None:
+                process.poll()
+                wav.unlink(missing_ok=True)
+                os.ftruncate(fd, 0)
+                raise FaceError("face-dictate-recorder-start-failed")
             os.ftruncate(fd, 0)
             os.pwrite(fd, f"{process.pid} {identity}\n".encode(), 0)
             _dictate_notice(environment, tools, "message-new-instant", "On — recording")
