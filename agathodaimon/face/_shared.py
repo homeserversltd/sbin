@@ -1540,30 +1540,117 @@ _DICTATE_UPLOAD_SECONDS = 30
 _DICTATE_STOP_SECONDS = 3
 
 
-def _dictate_config() -> dict[str, str]:
+_DICTATE_ROSTER_SECONDS = 3
+_DICTATE_ROSTER_LIMIT = 4 * 1024 * 1024
+_DICTATE_PROMPT = "transcribe the speech with proper punctuation and capitalization."
+
+
+def _dictate_roster_seat() -> str:
+    """Mirror public harmonia registrant.rs:30-34,656-701,771-791;
+    stage-profile/groups.rs:256-263 owns caduceus.seat_port, with no default.
+    The existing scratch root redirects both config and the route observation.
+    """
+    config_path = appliance_runtime_path("config")
+    root = config_path.parents[2]
     try:
-        value = json.loads(appliance_runtime_path("config").read_text(encoding="utf-8"))
-        block = value.get("dictate") if isinstance(value, dict) else None
-    except (OSError, ValueError):
-        block = None
-    if not isinstance(block, dict) or any(
-        not isinstance(block.get(key), str) or not block[key].strip()
-        for key in ("endpoint", "model")
-    ):
-        raise FaceError("face-dictate-endpoint-unset")
-    from urllib.parse import urlsplit
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        port = config.get("caduceus", {}).get("seat_port")
+    except (OSError, ValueError, AttributeError):
+        port = None
+    if type(port) is not int or not 0 < port < 65536:
+        raise FaceError("ruyi-seat-undeclared")
     try:
-        endpoint = urlsplit(block["endpoint"])
-        valid = endpoint.scheme in {"http", "https"} and endpoint.hostname and endpoint.port != 0
-        valid = valid and not endpoint.username and not endpoint.password and not endpoint.fragment
-    except ValueError:
-        valid = False
-    if not valid:
-        raise FaceError("face-dictate-endpoint-invalid")
-    prompt = block.get("prompt", "")
-    if not isinstance(prompt, str):
-        raise FaceError("face-dictate-prompt-invalid")
-    return {"endpoint": block["endpoint"], "model": block["model"], "prompt": prompt}
+        perspective = json.loads((config_path.parent / "ruyi.json").read_text(encoding="utf-8"))
+        row = perspective.get("self", {})
+        gateway_mac = perspective.get("gateway_seat", {}).get("mac")
+        if isinstance(gateway_mac, str) and gateway_mac and row.get("mac") == gateway_mac:
+            return f"http://127.0.0.1:{port}/api/v1/ruyi"
+    except (OSError, ValueError, AttributeError):
+        row = {}
+    try:
+        routes = (root / "proc/net/route").read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        raise FaceError("ruyi-default-gateway-unavailable")
+    for line in routes.splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 3 or fields[1] != "00000000":
+            continue
+        try:
+            number = int(fields[2], 16)
+            if number == 0:
+                continue
+            gateway = socket.inet_ntoa(number.to_bytes(4, "little"))
+        except (ValueError, OverflowError):
+            continue
+        local = row.get("ipv4") == gateway if isinstance(row, dict) else False
+        # Same local-address observation as gateway_is_local, without another child.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as observer:
+            for _index, interface in socket.if_nameindex():
+                try:
+                    address = fcntl.ioctl(observer, 0x8915, struct.pack("256s", interface.encode()[:15]))
+                    local = local or socket.inet_ntoa(address[20:24]) == gateway
+                except OSError:
+                    continue
+        host = "127.0.0.1" if local else gateway
+        return f"http://{host}:{port}/api/v1/ruyi"
+    raise FaceError("ruyi-default-gateway-unavailable")
+
+
+def _dictate_speech_server(environment: Mapping[str, str], tools: Mapping[str, str]) -> dict[str, Any]:
+    try:
+        seat = _dictate_roster_seat()
+        curl = shutil.which("curl", path=environment["PATH"])
+        if curl is None:
+            raise FaceError("ruyi-roster-client-unavailable")
+        process = _dictate_spawn(
+            [curl, "--silent", "--fail", "--noproxy", "*", "--max-time", str(_DICTATE_ROSTER_SECONDS),
+             "--max-filesize", str(_DICTATE_ROSTER_LIMIT), "--url", seat],
+            environment, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        )
+        try:
+            output, _ = process.communicate(timeout=_DICTATE_ROSTER_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise FaceError("ruyi-roster-timeout")
+        if process.returncode:
+            signal_name = "ruyi-roster-timeout" if process.returncode == 28 else "ruyi-roster-unreachable"
+            raise FaceError(signal_name)
+        try:
+            roster = json.loads(output) if len(output) <= _DICTATE_ROSTER_LIMIT else None
+        except (ValueError, UnicodeError):
+            roster = None
+        if (not isinstance(roster, dict) or roster.get("schema") != "caduceus.ruyi.v1"
+                or ("ok" in roster and roster["ok"] is not True)
+                or not isinstance(roster.get("staves"), list)):
+            raise FaceError("ruyi-roster-malformed")
+        # GET serves only live responders; neither timestamps nor the stored perspective select a service.
+        for stave in roster["staves"]:
+            if not isinstance(stave, dict):
+                raise FaceError("ruyi-roster-malformed")
+            services = stave.get("services")
+            if services is None:
+                continue
+            if not isinstance(services, list):
+                raise FaceError("ruyi-roster-malformed")
+            for service in services:
+                if not isinstance(service, dict):
+                    raise FaceError("ruyi-roster-malformed")
+                if (service.get("kind") != "speech-to-text"
+                        or service.get("protocol") != "openai-audio-transcriptions"):
+                    continue
+                host = stave.get("canonical_name") or stave.get("ipv4")
+                port, path, model = service.get("port"), service.get("path"), service.get("model")
+                if (not isinstance(host, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host) is None
+                        or type(port) is not int or not 0 < port < 65536
+                        or not isinstance(path, str) or re.fullmatch(r"/[^\s\x00-\x1f?#]*", path) is None
+                        or (model is not None and not isinstance(model, str))):
+                    raise FaceError("ruyi-service-malformed")
+                return {"endpoint": f"http://{host}:{port}{path}", "model": model, "prompt": _DICTATE_PROMPT}
+        raise FaceError("ruyi-speech-service-absent")
+    except FaceError as error:
+        _dictate_notice(environment, tools, "dialog-warning", "No speech server on this network")
+        raise FaceError("face-dictate-speech-server-absent", roster_signal=error.signal) from None
 
 
 def _dictate_file(path: Path, account: pwd.struct_passwd) -> int:
@@ -1617,7 +1704,7 @@ def _dictate_identity(pid: int, account: pwd.struct_passwd, recorder: str) -> st
 
 
 def _dictate_notice(environment: Mapping[str, str], tools: Mapping[str, str], sound: str, message: str) -> None:
-    # Best-effort status only: no transcript ever enters argv, a toast, or a trace.
+    # Status only; the separate success toast carries text, never a staff receipt.
     process = _dictate_spawn(
         [tools["paplay"], f"/usr/share/sounds/freedesktop/stereo/{sound}.oga"],
         environment, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -1640,6 +1727,7 @@ def _dictate_upload() -> None:
             (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{key}\"\r\n\r\n"
              + config[key] + "\r\n").encode("utf-8")
             for key in ("model", "prompt")
+            if config[key] is not None
         )
         prefix += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
                    f"filename=\"dictate.wav\"\r\nContent-Type: audio/wav\r\n\r\n").encode()
@@ -1685,7 +1773,6 @@ def _dictate_upload() -> None:
 
 
 def dictate(_payload: dict[str, Any]) -> Mapping[str, Any]:
-    config = _dictate_config()  # Refuse missing private settings before creating anything.
     account = _owner()
     runtime = _runtime_dir(account)
     try:
@@ -1710,8 +1797,11 @@ def dictate(_payload: dict[str, Any]) -> Mapping[str, Any]:
         if utility is None:
             raise FaceError(f"face-dictate-{name}-unavailable")
         tools[name] = utility
+    pid_path = runtime / _DICTATE_PID
+    # A new idle press must discover before even creating the PID/lock record.
+    config = _dictate_speech_server(environment, tools) if not pid_path.exists() else None
     wav = runtime / _DICTATE_WAV
-    fd = _dictate_file(runtime / _DICTATE_PID, account)
+    fd = _dictate_file(pid_path, account)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1731,6 +1821,8 @@ def dictate(_payload: dict[str, Any]) -> Mapping[str, Any]:
         if current is not None and current != started:
             raise FaceError("face-dictate-recorder-identity-mismatch")
         if current is None:
+            if config is None:
+                config = _dictate_speech_server(environment, tools)
             audio_fd = _dictate_file(wav, account)
             os.ftruncate(audio_fd, 0)
             os.close(audio_fd)
@@ -1777,6 +1869,8 @@ def dictate(_payload: dict[str, Any]) -> Mapping[str, Any]:
             pass  # Another CLI invocation started it; its parent/init reaps it.
         os.ftruncate(fd, 0)
         try:
+            # Re-resolve after stopping; failure also clears the stopped capture.
+            config = _dictate_speech_server(environment, tools)
             _dictate_notice(environment, tools, "complete", "Off — transcribing…")
             upload_env = dict(environment, PYTHONDONTWRITEBYTECODE="1",
                               PYTHONPATH=str(Path(__file__).resolve().parents[2]))
@@ -1820,7 +1914,7 @@ def dictate(_payload: dict[str, Any]) -> Mapping[str, Any]:
             )
             if pasted.returncode != 0:
                 raise FaceError("face-dictate-paste-failed", ydotool_socket=str(socket_path))
-            owner_run([tools["notify-send"], "-t", "8000", "ASR — transcribed"], environment, timeout=2)
+            owner_run([tools["notify-send"], "-t", "8000", "ASR — transcribed", text], environment, timeout=2)
             return {"state": "transcribed", "chars": len(text), "ydotool_socket": str(socket_path)}
         finally:
             wav.unlink(missing_ok=True)
