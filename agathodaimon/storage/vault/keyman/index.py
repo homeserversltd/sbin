@@ -1,22 +1,21 @@
 """Caduceus Keyman door callers.
 
 This is deliberately only a redacting transport and strategy membrane around the
-standing Vault scripts and cryptsetup.  It never reads or rewrites Keyman files,
+native Rust Keyman and cryptsetup.  It never reads or rewrites Keyman files,
 SSH material, lan.key, or authorized_keys.
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from typing import Any, Sequence
 
-from agathodaimon.lib.keyman_export.index import KEYMAN, KeymanExportError, export_key
+from agathodaimon.lib.keyman_export.index import KEYMAN, KeymanExportError, exchange_session, export_key
 
 SCHEMA = "caduceus.keyman.door.v1"
 MAX_INPUT_BYTES = 64 * 1024
-VAULT_NEWKEY = "/vault/keyman/newkey.sh"
-CHANGE_SUITE = "/vault/keyman/change_service_suite_key.sh"
 CAPABILITY_ROTATE = "/usr/local/sbin/agathodaimon-keyman-rotate-capability"
 CRYPTSETUP = "/usr/sbin/cryptsetup"
 CHPASSWD = "/usr/sbin/chpasswd"
@@ -42,18 +41,50 @@ def _receipt(action: str, ok: bool, *, planned: bool, commands: list[list[str]],
 
 
 def _redacted(argv: Sequence[str]) -> list[str]:
-    redacted = list(argv)
-    if redacted[:3] == ["sudo", "-n", VAULT_NEWKEY]:
-        redacted[-1] = "[REDACTED]"
-    elif redacted[:4] == ["sudo", "-n", CHANGE_SUITE, "--non-interactive"]:
-        redacted[-2:] = ["[REDACTED]", "[REDACTED]"]
-    return redacted
+    # Native Keyman argv contains no credential fields; secrets ride stdin.
+    return list(argv)
 
 
 def _run(argv: list[str], *, secret_input: str | bytes | bytearray | None = None) -> subprocess.CompletedProcess[Any]:
     input_data: str | bytes | None = bytes(secret_input) if isinstance(secret_input, bytearray) else secret_input
-    return subprocess.run(argv, input=input_data, text=not isinstance(input_data, bytes),
-                          capture_output=True, check=False)
+    if argv[0] != KEYMAN:
+        return subprocess.run(argv, input=input_data, text=not isinstance(input_data, bytes),
+                              capture_output=True, check=False)
+    if os.geteuid() != 0:
+        raise Refusal("agathodaimon-keyman-root-required")
+    if not os.path.isfile(KEYMAN) or not os.access(KEYMAN, os.X_OK):
+        raise Refusal("agathodaimon-keyman-unavailable")
+    try:
+        with exchange_session(native=True):
+            result = subprocess.run(argv, input=input_data, text=not isinstance(input_data, bytes),
+                                    capture_output=True, check=False, timeout=60)
+            if result.returncode == 0:
+                try:
+                    receipt = json.loads(result.stdout)
+                except (ValueError, UnicodeError):
+                    raise Refusal("agathodaimon-keyman-receipt-invalid") from None
+                if (not isinstance(receipt, dict) or receipt.get("ok") is not True
+                        or receipt.get("operation") != argv[1] or receipt.get("secret_free") is not True
+                        or (argv[1] == "newkey" and receipt.get("service") != argv[-1])):
+                    raise Refusal("agathodaimon-keyman-receipt-invalid")
+            return result
+    except KeymanExportError as failure:
+        raise Refusal("agathodaimon-keyman-" + failure.signal) from None
+    except FileNotFoundError:
+        raise Refusal("agathodaimon-keyman-unavailable") from None
+    except (OSError, subprocess.SubprocessError):
+        raise Refusal("agathodaimon-keyman-command-refused") from None
+
+
+def _newkey_input(username: str, password: str) -> bytearray:
+    try:
+        fields = [username.encode("utf-8"), password.encode("utf-8")]
+    except UnicodeEncodeError:
+        raise Refusal("agathodaimon-keyman-credential-invalid") from None
+    if any(not field or len(field) > 511 or any(value in field for value in (0, 10, 13, 34))
+           for field in fields):
+        raise Refusal("agathodaimon-keyman-credential-invalid")
+    return bytearray(b'username="' + fields[0] + b'"\npassword="' + fields[1] + b'"\n')
 
 
 def _password_bytes(value: str | bytes | bytearray) -> bytes:
@@ -239,10 +270,15 @@ def create(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
         vault_password = _required(payload, "vaultPassword")
         commands.extend(_apply_strategy(devices[0], strategy, vault_password, password, flexible_option=payload.get("flexibleOption"), key_slot=payload.get("keySlot"), planned=planned))
     if target in {"external", "both"}:
-        newkey = _sudo([VAULT_NEWKEY, "nas", "admin", password])
+        # The former three-argument creator replaced an existing NAS record.
+        newkey = [KEYMAN, "newkey", "--stdin", "--replace", "nas"]
         commands.append(_redacted(newkey))
         if not planned:
-            _must(_run(newkey), "agathodaimon-keyman-nas-create-refused")
+            credential = _newkey_input("admin", password)
+            try:
+                _must(_run(newkey, secret_input=credential), "agathodaimon-keyman-nas-create-refused")
+            finally:
+                _zero(credential)
         export_commands, nas_password = _export_nas(planned=planned)
         try:
             commands.extend(export_commands)
@@ -289,8 +325,8 @@ def admin_password(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
     if not isinstance(samba_user, str) or not samba_user or any(not (part.isalnum() or part in "_-.") for part in samba_user):
         raise Refusal("agathodaimon-keyman-samba-user-invalid")
     export = [KEYMAN, "export", "service_suite"]
-    rotate = _sudo([CHANGE_SUITE, "--non-interactive", old, new])
-    rollback = _sudo([CHANGE_SUITE, "--non-interactive", new, old])
+    rotate = [KEYMAN, "rotate-suite", "--stdin"]
+    rollback = [KEYMAN, "rotate-suite", "--stdin"]
     chpasswd = _sudo([CHPASSWD])
     smbpwd = _sudo([SMBPASSWD, "-s", samba_user])
     ssh = _sudo([SYSTEMCTL, "restart", "ssh.service"])
@@ -309,10 +345,11 @@ def admin_password(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
         _zero(suite_password)
     if not old_password_matches:
         raise Refusal("agathodaimon-keyman-current-password-invalid")
-    _must(_run(rotate), "agathodaimon-keyman-service-suite-rotate-refused")
+    _must(_run(rotate, secret_input=json.dumps({"current_password": old, "new_password": new})),
+          "agathodaimon-keyman-service-suite-rotate-refused")
     owner = _run(chpasswd, secret_input=f"owner:{new}\n")
     if owner.returncode != 0:
-        reverted = _run(rollback)
+        reverted = _run(rollback, secret_input=json.dumps({"current_password": new, "new_password": old}))
         signal = "agathodaimon-keyman-owner-password-refused" if reverted.returncode == 0 else "agathodaimon-keyman-owner-password-and-rollback-refused"
         return _receipt("admin-password", False, planned=False, commands=commands, rollbackCommand=_redacted(rollback), signal=signal, serviceSuiteRolledBack=reverted.returncode == 0)
     _must(_run(smbpwd, secret_input=f"{new}\n{new}\n"), "agathodaimon-keyman-samba-password-refused")

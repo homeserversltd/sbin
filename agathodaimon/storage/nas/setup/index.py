@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
-from agathodaimon.lib.keyman_export.index import KeymanExportError, export_key
+from agathodaimon.lib.keyman_export.index import KEYMAN, KeymanExportError, exchange_session, export_credential
 from agathodaimon.storage.nas.runtime import (
     Refusal,
     ROLE,
@@ -43,8 +43,6 @@ MAX_INPUT = 65536
 LOCK_PATH = "/run/lock/agathodaimon-nas-setup.lock"
 CONFIG_PATHS = ("/etc/appliance/config.json", "/etc/appliance/config.factory")
 SYS_DEV_BLOCK = Path("/sys/dev/block")
-KEYMAN_CREATE = "/vault/keyman/keyman-crypto"
-KEYMAN_DELETE = "/vault/keyman/deletekey.sh"
 SGDISK = "/usr/sbin/sgdisk"
 UDEVADM = "/usr/bin/udevadm"
 LSBLK = "/usr/bin/lsblk"
@@ -172,7 +170,8 @@ def _record(receipt: dict[str, Any], step: str, ok: bool, **readback: Any) -> No
 
 def _export_named_key(receipt: dict[str, Any], service_name: str, step: str) -> bytearray:
     try:
-        material = export_key(service_name)
+        username, material = export_credential(service_name)
+        _zero(username)
     except KeymanExportError as failure:
         signal_name = _KEYMAN_SIGNAL_MAP.get(failure.signal, "agathodaimon-nas-key-export-failed")
         readback: dict[str, Any] = {"observed": signal_name}
@@ -701,28 +700,60 @@ def _key_path(service_role: str) -> str:
     return f"/vault/.keys/{service_role}.key"
 
 
+def _keyman_receipt(result: subprocess.CompletedProcess[bytes], operation: str, service: str) -> bool:
+    try:
+        value = json.loads(result.stdout)
+    except (ValueError, UnicodeError):
+        return False
+    return (isinstance(value, dict) and value.get("ok") is True
+            and value.get("operation") == operation and value.get("service") == service
+            and value.get("secret_free") is True
+            and (operation != "delete" or value.get("deleted") is True))
+
+
 def _create_key(receipt: dict[str, Any], service_role: str, info: dict[str, Any]) -> tuple[bytearray, dict[str, Any] | None]:
     path = _key_path(service_role)
-    existing = _read_key_file(path)
-    if existing is not None:
-        _record(receipt, "key-preflight", True, present=True, regular=True)
-        return _export_named_key(receipt, service_role, "key-export"), None
-    _record(receipt, "key-preflight", True, present=False, regular=False)
-    password = secrets.token_hex(32)
-    input_data = f"service={service_role}\nusername=nas\npassword={password}\n".encode("utf-8")
-    # The creator owns the encrypted record; neither child stream is surfaced.
-    result = _run([KEYMAN_CREATE, "create-exclusive", "/dev/stdin"], input_data=input_data, step="key-create")
-    del password, input_data
-    created = _read_key_file(path)
     created_identity = None
-    if result.returncode == 0 and created is not None:
-        created_identity = {"dev": created.st_dev, "ino": created.st_ino, "uid": created.st_uid,
-                            "mode": stat.S_IMODE(created.st_mode)}
-        info["createdKeyIdentity"] = created_identity
-    _record(receipt, "key-create", result.returncode == 0 and created is not None,
-            rc=result.returncode, created=created is not None, regular=created is not None)
-    if result.returncode != 0 or created is None:
-        raise Refusal("agathodaimon-nas-key-create-failed", "key-create", result.returncode)
+    if not os.access(runtime_path(KEYMAN), os.X_OK):
+        raise Refusal("agathodaimon-nas-keyman-unavailable", "key-create")
+    try:
+        # Share the exporter flock, and birth/obliterate the required tmpfs per call.
+        with exchange_session(native=True):
+            existing = _read_key_file(path)
+            _record(receipt, "key-preflight", True, present=existing is not None, regular=existing is not None)
+            if existing is not None and info.get("createdKeyIdentity") is not None:
+                # A fresh transaction may reuse a pre-existing NAS key, but this
+                # transaction must not silently repeat its own exclusive create.
+                _record(receipt, "key-create", False, rc=2, created=False, regular=True)
+                raise Refusal("agathodaimon-nas-key-already-exists", "key-create", 2)
+            if existing is None:
+                password = secrets.token_hex(32)
+                input_data = bytearray(f'username="nas"\npassword="{password}"\n'.encode("utf-8"))
+                del password
+                try:
+                    # Rust crypto has no create-exclusive arm (main.rs:1920-1950).
+                    # Native newkey without --replace uses O_EXCL, matching the old
+                    # C encrypt_service_credentials(..., exclusive) path (:996-1012).
+                    result = _run([KEYMAN, "newkey", "--stdin", service_role],
+                                  input_data=bytes(input_data), step="key-create")
+                finally:
+                    _zero(input_data)
+                created = _read_key_file(path)
+                accepted = result.returncode == 0 and _keyman_receipt(result, "newkey", service_role)
+                if accepted and created is not None:
+                    created_identity = {"dev": created.st_dev, "ino": created.st_ino, "uid": created.st_uid,
+                                        "mode": stat.S_IMODE(created.st_mode)}
+                    info["createdKeyIdentity"] = created_identity
+                _record(receipt, "key-create", accepted and created is not None,
+                        rc=result.returncode, created=created is not None, regular=created is not None)
+                if result.returncode == 2 and result.stderr.rstrip(b"\n") == b"ERROR: key file already exists":
+                    raise Refusal("agathodaimon-nas-key-already-exists", "key-create", result.returncode)
+                if not accepted or created is None:
+                    raise Refusal("agathodaimon-nas-key-create-failed", "key-create", result.returncode)
+    except KeymanExportError as failure:
+        signal_name = _KEYMAN_SIGNAL_MAP.get(failure.signal, "agathodaimon-nas-key-create-failed")
+        raise Refusal(signal_name, "key-create", failure.return_code) from None
+    # export_credential acquires the same lock itself; never nest its exchange session.
     return _export_named_key(receipt, service_role, "key-export"), created_identity
 
 
@@ -1391,29 +1422,37 @@ def _cleanup_key(receipt: dict[str, Any], service_role: str, identity: dict[str,
     if identity is None:
         return
     path = runtime_path(_key_path(service_role))
-    try:
-        st = os.lstat(path)
-        same = (stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode) and st.st_dev == identity["dev"]
-                and st.st_ino == identity["ino"] and st.st_uid == identity["uid"]
-                and stat.S_IMODE(st.st_mode) == identity["mode"])
-    except FileNotFoundError:
-        same = False
-    except OSError:
-        same = False
-    if not cleanup_certain or not same:
-        rollback.append({"step": "retain-created-key", "ok": False,
-                         "readback": {"present": same, "cleanupCertain": cleanup_certain,
-                                      "rc": None,
-                                      "reason": "rollback-incomplete" if not cleanup_certain else "key-identity-mismatch"}})
-        return
+    same = False
     result = None
+    result_rc = None
     failure_reason = None
     try:
-        result = _run([KEYMAN_DELETE, service_role], step="delete-created-key")
-        result_rc = result.returncode
+        if not os.access(runtime_path(KEYMAN), os.X_OK):
+            raise Refusal("agathodaimon-nas-keyman-unavailable", "delete-created-key")
+        with exchange_session(native=True):
+            try:
+                st = os.lstat(path)
+                same = (stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode) and st.st_dev == identity["dev"]
+                        and st.st_ino == identity["ino"] and st.st_uid == identity["uid"]
+                        and stat.S_IMODE(st.st_mode) == identity["mode"])
+            except OSError:
+                same = False
+            if not cleanup_certain or not same:
+                rollback.append({"step": "retain-created-key", "ok": False,
+                                 "readback": {"present": same, "cleanupCertain": cleanup_certain,
+                                              "rc": None,
+                                              "reason": "rollback-incomplete" if not cleanup_certain else "key-identity-mismatch"}})
+                return
+            result = _run([KEYMAN, "delete", service_role], step="delete-created-key")
+            result_rc = result.returncode
+            if result_rc == 0 and not _keyman_receipt(result, "delete", service_role):
+                failure_reason = "agathodaimon-nas-keyman-receipt-invalid"
     except Refusal as failure:
         result_rc = failure.return_code
         failure_reason = failure.signal_name
+    except KeymanExportError as failure:
+        result_rc = failure.return_code
+        failure_reason = _KEYMAN_SIGNAL_MAP.get(failure.signal, "agathodaimon-nas-key-delete-failed")
     try:
         os.lstat(path)
         absent = False
@@ -1421,7 +1460,7 @@ def _cleanup_key(receipt: dict[str, Any], service_role: str, identity: dict[str,
         absent = True
     except OSError:
         absent = False
-    okay = result is not None and result.returncode == 0 and absent
+    okay = result is not None and result.returncode == 0 and absent and failure_reason is None
     reason = "deleted-and-absent" if okay else (failure_reason or
              ("delete-command-failed" if result is not None and result.returncode != 0 else "key-still-present-or-unreadable"))
     rollback.append({"step": "delete-created-key", "ok": okay,

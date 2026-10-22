@@ -338,7 +338,7 @@ def _update_config_pin(
 
 
 def _keyman_binary() -> Path:
-    return Path(os.environ.get("CADUCEUS_KEYMAN_CRYPTO", "/vault/keyman/keyman-crypto"))
+    return Path(os.environ.get("CADUCEUS_KEYMAN_CRYPTO", "/vault/keyman/keyman"))
 
 
 def _keyman_temp_dir() -> Path:
@@ -371,27 +371,50 @@ def _keyman(operation: str, payload: bytearray, *, read_output: bool = False) ->
     """Invoke Keyman only for its separately seated non-PIN services."""
     binary = _keyman_binary()
     temporary_root: Path | None = None
-    input_path: Path | None = None
     output_path: Path | None = None
     output = bytearray()
     try:
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise CaduceusAccessRefused("agathodaimon-keyman-unavailable")
-        temporary_root = Path(tempfile.mkdtemp(prefix="agathodaimon-keyman-", dir=_keyman_temp_dir()))
+        rooted = os.environ.get("KEYMAN_ROOT")
+        native_root: Path | None = None
+        if rooted is not None:
+            # Rust rebases every explicit crypto path, unlike the old C reader.
+            # Keep rooted transaction files inside that root, and pass coordinates
+            # relative to it; never rebase /dev/stdin into an ordinary file by accident.
+            native_root = Path(rooted)
+            if (not native_root.is_absolute() or native_root == Path("/")
+                    or str(native_root.resolve(strict=True)) != rooted):
+                raise CaduceusAccessRefused("agathodaimon-keyman-root-invalid")
+        temporary_root = Path(tempfile.mkdtemp(prefix="agathodaimon-keyman-",
+                                              dir=native_root if native_root is not None else _keyman_temp_dir()))
         os.chmod(temporary_root, 0o700)
-        input_path = temporary_root / "input"
-        with input_path.open("xb", buffering=0) as handle:
-            os.fchmod(handle.fileno(), 0o600)
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        command = [str(binary), operation, str(input_path)]
-        if read_output:
+        input_argument = "/dev/stdin"
+        if native_root is not None:
+            # The native crypto ABI accepts an input file, not positional secrets.
+            input_path = temporary_root / "input"
+            with input_path.open("xb", buffering=0) as handle:
+                os.fchmod(handle.fileno(), 0o600)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            input_argument = "/" + input_path.relative_to(native_root).as_posix()
+        if operation == "create":
+            command = [str(binary), "crypto", "create", input_argument]
+        elif operation == "reencrypt":
+            command = [str(binary), "crypto", "reencrypt", input_argument]
+        elif operation == "encrypt_suite_key":
+            command = [str(binary), "crypto", "encrypt_suite_key", input_argument]
+        elif operation == "decrypt" and read_output:
             output_path = temporary_root / "output"
-            command.append(str(output_path))
+            output_argument = ("/" + output_path.relative_to(native_root).as_posix()
+                               if native_root is not None else str(output_path))
+            command = [str(binary), "crypto", "decrypt", input_argument, output_argument]
+        else:
+            raise CaduceusAccessRefused("agathodaimon-keyman-operation-refused")
         result = subprocess.run(
             command,
-            stdin=subprocess.DEVNULL,
+            input=bytes(payload),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -407,7 +430,7 @@ def _keyman(operation: str, payload: bytearray, *, read_output: bool = False) ->
             except OSError as exc:
                 raise CaduceusAccessRefused("agathodaimon-keyman-output-unavailable") from exc
         return output
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise CaduceusAccessRefused("agathodaimon-keyman-command-refused") from exc
     finally:
         _wipe(payload)

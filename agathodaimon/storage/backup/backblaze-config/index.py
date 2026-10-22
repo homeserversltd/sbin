@@ -1,7 +1,8 @@
 from __future__ import annotations
 import base64,json,os,re,stat,subprocess,sys,tempfile,urllib.error,urllib.request
 from pathlib import Path
-SCHEMA="caduceus.backblaze.config.v1"; URL="https://api.backblazeb2.com/b2api/v2/b2_authorize_account"; NEWKEY="/vault/keyman/newkey.sh"; CONFIG=Path("/etc/appliance/config.json")
+from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
+SCHEMA="caduceus.backblaze.config.v1"; URL="https://api.backblazeb2.com/b2api/v2/b2_authorize_account"; KEYMAN="/vault/keyman/keyman"; CONFIG=Path("/etc/appliance/config.json")
 class Refusal(ValueError):
  def __init__(self,step,reason): self.step,self.reason=step,reason
 def fail(step,reason): return {"schema":SCHEMA,"ok":False,"step":step,"reason":reason,"mutationPerformed":False}
@@ -54,9 +55,24 @@ def dispatch(e):
  if not isinstance(backblaze,dict): raise Refusal("config","tabs.backblaze must be a JSON object")
  if backblaze.get("locked") is True: return fail("locked","configuration is locked after initial setup")
  verify(k,a)
- try: r=subprocess.run([NEWKEY,s,k,a],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,check=False)
- except OSError as e: raise Refusal("seed_keyman",f"Keyman seed failed: {e}")
- if r.returncode: raise Refusal("seed_keyman",r.stderr.strip() or "Keyman seed failed")
+ if os.geteuid()!=0: raise Refusal("seed_keyman","agathodaimon-keyman-root-required")
+ if not os.path.isfile(KEYMAN) or not os.access(KEYMAN,os.X_OK): raise Refusal("seed_keyman","agathodaimon-keyman-unavailable")
+ try: fields=[k.encode("utf-8"),a.encode("utf-8")]
+ except UnicodeEncodeError: raise Refusal("seed_keyman","agathodaimon-keyman-credential-invalid") from None
+ if any(not v or len(v)>511 or any(c in v for c in (0,10,13,34)) for v in fields): raise Refusal("seed_keyman","agathodaimon-keyman-credential-invalid")
+ credential=bytearray(b'username="'+fields[0]+b'"\npassword="'+fields[1]+b'"\n')
+ try:
+  with exchange_session(native=True):
+   # Initial configuration historically replaced any bucket record already seated.
+   r=subprocess.run([KEYMAN,"newkey","--stdin","--replace",s],input=bytes(credential),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=False,timeout=30)
+   if r.returncode: raise Refusal("seed_keyman","agathodaimon-keyman-seed-refused")
+   try: seeded=json.loads(r.stdout)
+   except (ValueError,UnicodeError): raise Refusal("seed_keyman","agathodaimon-keyman-receipt-invalid") from None
+   if not isinstance(seeded,dict) or seeded.get("ok") is not True or seeded.get("operation")!="newkey" or seeded.get("service")!=s or seeded.get("secret_free") is not True: raise Refusal("seed_keyman","agathodaimon-keyman-receipt-invalid")
+ except KeymanExportError as e: raise Refusal("seed_keyman","agathodaimon-keyman-"+e.signal) from None
+ except FileNotFoundError: raise Refusal("seed_keyman","agathodaimon-keyman-unavailable") from None
+ except (OSError,subprocess.SubprocessError): raise Refusal("seed_keyman","agathodaimon-keyman-seed-refused") from None
+ finally: credential[:]=b"\0"*len(credential)
  cfg={"bucket":b,"paths":paths}
  if p is not None: cfg["prefix"]=p
  tabs=d.setdefault("tabs",{})
