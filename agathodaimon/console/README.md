@@ -8,6 +8,8 @@ is needed.
 
 ## CLI surface
 
+- `console steam-install --check --json` reads Steam state; the root deed requires `--accept-license` from the owner (exit 0 success/check, 1 observation/privilege/log failure, 6 unsupported manager, 7 already installed, 8 licence not accepted, 9 failed install command).
+
 - Select a mode with the helper argv
   `/usr/local/sbin/agathodaimon/cli.py console session-select desktop|steam`.
   The selector is atomically written to

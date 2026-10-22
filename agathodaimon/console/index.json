@@ -3,7 +3,8 @@
     "restart",
     "select-branch",
     "session",
-    "session-select"
+    "session-select",
+    "steam-install"
   ],
   "sclerite": {
     "name": "all",
