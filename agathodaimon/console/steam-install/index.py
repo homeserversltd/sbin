@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from agathodaimon.console.restart.index import steam_executable
-from agathodaimon.console.session.runtime import root_path
 
 SCHEMA = "agathodaimon.console.steam-install.v1"
 LOG = Path("/var/log/appliance/appliance.log")
@@ -198,12 +197,8 @@ def _state() -> dict:
         raise CommandFailure(argv, code, last)
     architectures: set[str] = set()
     _require(["dpkg", "--print-foreign-architectures"], consume=architectures.add)
-    executable = next((
-        str(path) for path in (
-            Path(steam_executable()), root_path() / "usr/games/steam",
-            root_path() / "usr/lib/steam/steam",
-        ) if path.is_file() and os.access(path, os.X_OK)
-    ), None)
+    steam_path = Path(steam_executable())
+    executable = str(steam_path) if steam_path.is_file() and os.access(steam_path, os.X_OK) else None
     return {
         "schema": SCHEMA,
         "installed": package.get("Status", "").split()[-2:] == ["ok", "installed"],
