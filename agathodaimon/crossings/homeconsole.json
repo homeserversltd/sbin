@@ -7,8 +7,6 @@
     "appliance/service",
     "appliance/sudo-passwordless",
     "console/restart",
-    "console/select-branch",
-    "console/session-select",
     "exousia/bind",
     "exousia/change",
     "exousia/reset-default",
@@ -53,14 +51,6 @@
     [
       "console",
       "restart"
-    ],
-    [
-      "console",
-      "select-branch"
-    ],
-    [
-      "console",
-      "session-select"
     ],
     [
       "exousia",
@@ -224,7 +214,6 @@
     "bands": [
       "appliance/service",
       "appliance/sudo-passwordless",
-      "console/session-select",
       "settings/datetime",
       "settings/input",
       "storage/vault/open",

@@ -1,0 +1,8 @@
+{
+  "schema": "agathodaimon.defconfig.v1",
+  "profile": "homesi",
+  "features": [
+    "nmcli"
+  ],
+  "choices": {}
+}

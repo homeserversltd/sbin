@@ -95,6 +95,8 @@
         "console-restart"
       ]
     },
+    "console-select-branch": {},
+    "console-session-select": {},
     "console-restart": {
       "requires_any": [
         "steam",

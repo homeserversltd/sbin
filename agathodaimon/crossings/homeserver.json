@@ -16,6 +16,7 @@
     "keyman/admin-password",
     "keyman/create-key",
     "keyman/key-status",
+    "keyman/newkey",
     "keyman/update-key",
     "linker/browse",
     "linker/delete",
@@ -88,6 +89,10 @@
     [
       "keyman",
       "key-status"
+    ],
+    [
+      "keyman",
+      "newkey"
     ],
     [
       "keyman",
@@ -301,6 +306,7 @@
       "appliance/sudo-passwordless",
       "keyman/admin-password",
       "keyman/create-key",
+      "keyman/newkey",
       "keyman/update-key",
       "linker/delete",
       "linker/deploy",
@@ -332,6 +338,10 @@
       [
         "keyman",
         "create-key"
+      ],
+      [
+        "keyman",
+        "newkey"
       ],
       [
         "keyman",
