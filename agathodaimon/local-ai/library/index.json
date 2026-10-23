@@ -1,0 +1,27 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "actions": [
+      "library"
+    ],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "local-ai",
+    "features": {
+      "local-ai": {
+        "band": true,
+        "verbs": [
+          [
+            "local-ai",
+            "library"
+          ]
+        ],
+        "routes": [
+          "/api/v1/local-ai/library"
+        ]
+      }
+    }
+  }
+}

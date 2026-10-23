@@ -1,0 +1,27 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "actions": [
+      "card"
+    ],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "local-ai",
+    "features": {
+      "local-ai": {
+        "band": true,
+        "verbs": [
+          [
+            "local-ai",
+            "card"
+          ]
+        ],
+        "routes": [
+          "/api/v1/local-ai/card"
+        ]
+      }
+    }
+  }
+}

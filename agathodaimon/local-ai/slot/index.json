@@ -1,0 +1,40 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "actions": [
+      "apply",
+      "run"
+    ],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "local-ai",
+    "features": {
+      "local-ai": {
+        "band": true,
+        "verbs": [
+          [
+            "local-ai",
+            "slot"
+          ]
+        ],
+        "routes": [
+          "/api/v1/local-ai/slot/:slot"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "local-ai",
+              "slot"
+            ]
+          ],
+          "routes": [
+            "PUT /api/v1/local-ai/slot/:slot"
+          ]
+        }
+      }
+    }
+  }
+}

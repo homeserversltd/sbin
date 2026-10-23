@@ -11,6 +11,9 @@
     "exousia/reset-default",
     "exousia/verify",
     "gui/update",
+    "local-ai/card",
+    "local-ai/library",
+    "local-ai/slot",
     "network/cert/house-ca",
     "network/cert/refresh",
     "network/child-device",
@@ -57,6 +60,18 @@
     [
       "gui",
       "update"
+    ],
+    [
+      "local-ai",
+      "card"
+    ],
+    [
+      "local-ai",
+      "library"
+    ],
+    [
+      "local-ai",
+      "slot"
     ],
     [
       "network",
@@ -130,6 +145,9 @@
     "/api/v1/gui/update/now",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
+    "/api/v1/local-ai/card",
+    "/api/v1/local-ai/library",
+    "/api/v1/local-ai/slot/:slot",
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/device/wifi/connect",
@@ -160,6 +178,7 @@
     "bands": [
       "appliance/service",
       "appliance/sudo-passwordless",
+      "local-ai/slot",
       "storage/vault/open",
       "storage/vault/policy"
     ],
@@ -171,12 +190,17 @@
       [
         "exousia",
         "reset-default"
+      ],
+      [
+        "local-ai",
+        "slot"
       ]
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
       "/api/v1/storage/vault/auto-decrypt",
-      "/api/v1/storage/vault/unlock"
+      "/api/v1/storage/vault/unlock",
+      "PUT /api/v1/local-ai/slot/:slot"
     ]
   }
 }

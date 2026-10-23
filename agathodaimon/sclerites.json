@@ -33,6 +33,7 @@
     "pactl": {},
     "desktop": {},
     "nmcli": {},
+    "local-ai": {},
     "keyman": {},
     "nas": {
       "requires": [

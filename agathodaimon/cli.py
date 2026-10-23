@@ -468,6 +468,7 @@ def _administrative_candidate(target: str | None) -> bool:
         return False
     return (
         target in {
+            "local-ai/slot",
             "appliance/service",
             "appliance/sudo-passwordless",
             "network/child-device",
@@ -528,6 +529,14 @@ def _display_startup_reapplication_without_pin(
 
 
 def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | None) -> bool:
+    if target == "local-ai/slot":
+        # The systemd launcher reads config and must remain noninteractive.
+        # All other actions (including malformed ones) retain the PIN gate.
+        try:
+            module = _load(ROOT / "local-ai" / "slot" / "index.py")
+            return module.select_action(envelope=envelope, argv=remainder) != "run"
+        except Exception:
+            return True
     if target == "transmission/keys":
         try:
             module = _load(ROOT / "transmission" / "keys" / "index.py")

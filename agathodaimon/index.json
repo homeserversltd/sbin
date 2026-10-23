@@ -1,6 +1,7 @@
 {
   "children": [
     "appliance",
+    "local-ai",
     "network",
     "settings",
     "face",

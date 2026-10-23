@@ -1,0 +1,7 @@
+{
+  "children": [
+    "card",
+    "library",
+    "slot"
+  ]
+}
