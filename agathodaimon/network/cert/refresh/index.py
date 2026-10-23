@@ -31,7 +31,7 @@ TRUST_BUNDLE = TRUST_CERTS / "ca-certificates.crt"
 TAILNET_LABEL = re.compile(r"^[a-z0-9-]{1,63}$")
 FALLBACK_HOSTS = (
     "jellyfin", "git", "vault", "photos", "docs", "transmission",
-    "music", "files", "books", "rss",
+    "music", "files", "books", "rss", "agora",
 )
 EXECUTABLE_SELECTORS = {"bin", "program", "path", "script", "command"}
 SECRET_MARKER = re.compile(r"tskey-", re.IGNORECASE)

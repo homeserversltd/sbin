@@ -72,18 +72,18 @@ def update_portals(config_url: str) -> dict:
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         raise RuntimeError("agathodaimon-config-unreachable")
 
-    expected_portal = {"name": "Element", "url": "https://element.home.arpa"}
-    element_portals = [item for item in portals if isinstance(item, dict) and item.get("name") == "Element"]
+    expected_portal = {"name": "Agora", "url": "https://agora.home.arpa"}
+    agora_portals = [item for item in portals if isinstance(item, dict) and item.get("name") == "Agora"]
     drift: list[dict] = []
-    if expected_portal not in element_portals:
-        drift.append({"path": "tabs.portals.data.portals", "expected": expected_portal, "actual": element_portals})
-    if visibility.get("Element") is not True:
-        drift.append({"path": "tabs.portals.visibility.elements.Element", "expected": True, "actual": visibility.get("Element")})
+    if not any(item.get("localURL", item.get("url")) == expected_portal["url"] for item in agora_portals):
+        drift.append({"path": "tabs.portals.data.portals", "expected": expected_portal, "actual": agora_portals})
+    if visibility.get("Agora") is not True:
+        drift.append({"path": "tabs.portals.visibility.elements.Agora", "expected": True, "actual": visibility.get("Agora")})
     return {"portalsConverged": not drift, "portalDrift": drift}
 
 
 def converge(plan: bool, config_url: str, state_root: Path) -> dict:
-    paths = {"secret": Path("/etc/matrix-synapse/conf.d/90-birth-secrets.yaml"), "nginx": (Path("/etc/nginx/sites-available/matrix.home.arpa"), Path("/etc/nginx/sites-enabled/matrix.home.arpa"), Path("/etc/nginx/sites-available/element.home.arpa"), Path("/etc/nginx/sites-enabled/element.home.arpa")), "unbound": (Path("/etc/unbound/unbound.conf"), Path("/etc/unbound/unbound.conf.d/matrix.conf"))}
+    paths = {"secret": Path("/etc/matrix-synapse/conf.d/90-birth-secrets.yaml"), "nginx": (Path("/etc/nginx/sites-available/matrix.home.arpa"), Path("/etc/nginx/sites-enabled/matrix.home.arpa"), Path("/etc/nginx/sites-available/agora.home.arpa"), Path("/etc/nginx/sites-enabled/agora.home.arpa")), "unbound": (Path("/etc/unbound/unbound.conf"), Path("/etc/unbound/unbound.conf.d/matrix.conf"))}
     planned = {"floor": list(FLOOR), "secret": str(paths["secret"]), "validate": [["nginx", "-t"], ["unbound-checkconf"], ["logrotate", "--debug", "/etc/logrotate.d/matrix-synapse"]], "config": config_url, "fingerprintState": str(state_root)}
     if plan: return {"schema": SCHEMA, "ok": True, "planned": True, "changed": None, "plan": planned, "firstMissingSignal": "none"}
     try:
