@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -47,7 +48,9 @@ def _config() -> dict:
     local = config.get("local_ai") if isinstance(config, dict) else None
     if not isinstance(local, dict):
         raise LocalAIError("local-ai-config-unavailable")
-    if local.get("schema") not in (None, "appliance.local_ai.v1"):
+    if "schema" not in local:
+        raise LocalAIError("local-ai-missing-schema")
+    if local["schema"] != "appliance.local_ai.v1":
         raise LocalAIError("local-ai-foreign-schema")
     shelf = local.get("shelf")
     if not isinstance(shelf, str) or not Path(shelf).is_absolute():
@@ -197,7 +200,7 @@ def _kv(header: dict) -> int:
             * (positive("attention.key_length", dimension) + positive("attention.value_length", dimension)))
 
 
-def _save(local: dict, filename: str, *, slot: dict | None = None, projectors: list[str] | None = None) -> dict:
+def _save(local: dict, filename: str, *, slot: dict | None = None, projectors: list[str] | None = None, allow_unpaired: bool = False) -> dict:
     path = _model_path(local["shelf"], filename)
     header = gguf_metadata(path)
     role = _role(header)
@@ -218,11 +221,13 @@ def _save(local: dict, filename: str, *, slot: dict | None = None, projectors: l
             matching = [item for item in candidates if Path(filename).stem.lower() in item.lower()]
             mmproj = matching[0] if len(matching) == 1 else candidates[0] if len(candidates) == 1 else None
         if mmproj is None:
-            raise LocalAIError("local-ai-speech-projector-ambiguous-or-missing")
-        projector = _model_path(local["shelf"], mmproj)
-        if _role(gguf_metadata(projector)) is not None and not mmproj.lower().startswith("mmproj"):
-            raise LocalAIError("local-ai-speech-projector-invalid")
-        mmproj_bytes = projector.stat().st_size
+            if not allow_unpaired:
+                raise LocalAIError("local-ai-speech-projector-ambiguous-or-missing")
+        else:
+            projector = _model_path(local["shelf"], mmproj)
+            if _role(gguf_metadata(projector)) is not None and not mmproj.lower().startswith("mmproj"):
+                raise LocalAIError("local-ai-speech-projector-invalid")
+            mmproj_bytes = projector.stat().st_size
     file_bytes = path.stat().st_size + mmproj_bytes
     per_ctx = _kv(header)
     kv_bytes = ctx * per_ctx
@@ -231,7 +236,9 @@ def _save(local: dict, filename: str, *, slot: dict | None = None, projectors: l
             "ctx": ctx, "kv_bytes_per_ctx": per_ctx, "kv_bytes": kv_bytes,
             "blocks": (file_bytes + kv_bytes + GIB - 1) // GIB,
             "architecture": header["values"].get("general.architecture"),
-            "header_bytes": header["header_bytes"]}
+            "header_bytes": header["header_bytes"],
+            "selectable": role != "speech-to-text" or mmproj is not None,
+            "firstMissingSignal": "local-ai-speech-projector-ambiguous-or-missing" if role == "speech-to-text" and mmproj is None else "none"}
 
 
 def library(local: dict) -> dict:
@@ -239,10 +246,37 @@ def library(local: dict) -> dict:
     if not root.is_dir():
         raise LocalAIError("local-ai-shelf-unavailable")
     files = sorted(item.name for item in root.iterdir() if item.name.lower().endswith(".gguf"))
-    projectors = [name for name in files if name.lower().startswith("mmproj")
-                  or _role(gguf_metadata(_model_path(local["shelf"], name))) is None]
-    saves = [_save(local, name, projectors=projectors) for name in files if name not in projectors]
+    projectors, headers, failures = [], {}, {}
+    for name in files:
+        if name.lower().startswith("mmproj"):
+            projectors.append(name)
+            continue
+        try:
+            headers[name] = gguf_metadata(_model_path(local["shelf"], name))
+            if _role(headers[name]) is None:
+                projectors.append(name)
+        except (LocalAIError, OSError, ValueError, UnicodeError) as error:
+            failures[name] = str(error) if isinstance(error, LocalAIError) else "local-ai-gguf-unreadable"
+    saves = []
+    for name in files:
+        if name in projectors:
+            continue
+        try:
+            if name in failures:
+                raise LocalAIError(failures[name])
+            saves.append(_save(local, name, projectors=projectors, allow_unpaired=True))
+        except (LocalAIError, OSError, ValueError, UnicodeError) as error:
+            # A broken save remains visible; never hide the rest of the shelf.
+            header = headers.get(name)
+            try:
+                size = _model_path(local["shelf"], name).stat().st_size
+            except (OSError, LocalAIError):
+                size = None
+            saves.append({"file": name, "role": _role(header) if header else None,
+                          "bytes": size, "blocks": None, "selectable": False,
+                          "firstMissingSignal": str(error) if isinstance(error, LocalAIError) else "local-ai-save-unreadable"})
     return {"ok": True, "shelf": local["shelf"], "saves": saves,
+            "unavailable_saves": sum(not save["selectable"] for save in saves),
             "formula": FORMULA, "kv_estimate": KV_ESTIMATE, "mutationPerformed": False}
 
 
@@ -318,6 +352,29 @@ def _command(argv: list[str], timeout: float = 15) -> tuple[int, str]:
             raise
 
 
+def _amdgpu_integrated(card_path: Path) -> bool | None:
+    """Read AMDGPU_INFO_DEV_INFO.ids_flags, independent of the Vulkan loader.
+
+    Linux UAPI drm/amdgpu_drm.h: INFO=0x05, DEV_INFO=0x16,
+    IDS_FLAGS_FUSION=1; ids_flags follows the fixed 136-byte device prefix.
+    This query neither allocates GPU memory nor changes hardware settings.
+    """
+    for node in sorted((card_path / "device" / "drm").glob("renderD*")):
+        try:
+            result = ctypes.create_string_buffer(144)
+            query = struct.pack("=QII16x", ctypes.addressof(result), len(result), 0x16)
+            operation = (1 << 30) | (len(query) << 16) | (ord("d") << 8) | 0x45
+            fd = os.open("/dev/dri/" + node.name, os.O_RDONLY | os.O_CLOEXEC)
+            try:
+                fcntl.ioctl(fd, operation, query)
+            finally:
+                os.close(fd)
+            return bool(struct.unpack_from("=Q", result.raw, 136)[0] & 1)
+        except OSError:
+            continue
+    return None
+
+
 def _gpu_memory() -> dict:
     try:
         devices = _vulkan_devices()
@@ -337,7 +394,12 @@ def _gpu_memory() -> dict:
             continue
         matching = next((row for row in devices if row["vendor"] == vendor and row["device"] == device), None)
         source = path / "mem_info_vram_total"
-        if matching and matching["kind"] == 1:
+        integrated = _amdgpu_integrated(card_path)
+        if integrated is None and matching is not None:
+            integrated = matching["kind"] == 1
+        if integrated is None:
+            raise LocalAIError("local-ai-amd-gpu-type-unavailable")
+        if integrated:
             source = path / "mem_info_gtt_total"
             try:
                 vram = int(source.read_text())
@@ -445,11 +507,24 @@ def slot_action(*, argv=None, envelope=None) -> str:
     return arguments[0]
 
 
+def _optional_request(*fields: str) -> Request | None:
+    if sys.stdin.isatty():
+        return None
+    raw = sys.stdin.read()
+    if not raw.strip():
+        return None
+    from io import StringIO
+    original = sys.stdin
+    try:
+        sys.stdin = StringIO(raw)
+        return read(known_fields=fields)
+    finally:
+        sys.stdin = original
+
+
 def _request(args: list[str]) -> tuple[list[str], Request | None]:
-    if args:
-        return slot_arguments(argv=args), None
-    request = read(known_fields=("args", "slot", "action", "op"))
-    return slot_arguments(envelope=request.value), request
+    request = _optional_request("args", "slot", "action", "op")
+    return slot_arguments(argv=args, envelope=request.value if request else None), request
 
 
 def main(verb: str, args=None) -> int:
@@ -471,17 +546,7 @@ def main(verb: str, args=None) -> int:
         else:
             if arguments:
                 raise LocalAIError("local-ai-read-arguments-invalid")
-            if not sys.stdin.isatty():
-                # CLI primitive reads have empty stdin; slash-band calls carry an envelope.
-                raw = sys.stdin.read()
-                if raw.strip():
-                    from io import StringIO
-                    original = sys.stdin
-                    try:
-                        sys.stdin = StringIO(raw)
-                        request = read()
-                    finally:
-                        sys.stdin = original
+            request = _optional_request()
             reply = card(_config()) if verb == "card" else library(_config())
     except (LocalAIError, EnvelopeError, OSError, UnicodeError, ValueError, RecursionError, subprocess.TimeoutExpired) as error:
         signal = str(error) if isinstance(error, (LocalAIError, EnvelopeError)) else "local-ai-observation-failed:" + type(error).__name__
