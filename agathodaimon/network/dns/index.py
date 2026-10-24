@@ -858,7 +858,7 @@ class DnsManager:
                 bindings[owner] = canonical
         return bindings
 
-    def _project_aliases(self, lines: list[str]) -> list[str]:
+    def _project_aliases(self, lines: list[str], *, removed_targets: set[str] | None = None) -> list[str]:
         """Refresh marked A aliases and migrate owned CNAMEs in one candidate."""
         bindings = self._alias_bindings(lines)
         base = [line for line in lines if self._record_parts(line)[1] != "CNAME" and self._record_parts(line)[3] is None]
@@ -872,10 +872,14 @@ class DnsManager:
             seen: set[str] = set()
             while owner in bindings:
                 if owner in seen:
-                    return set()
+                    raise DnsError("dns-alias-target-unresolved")
                 seen.add(owner)
                 owner = bindings[owner]
-            return addresses.get(owner, set())
+            if owner in (removed_targets or set()):
+                return set()
+            if owner not in addresses:
+                raise DnsError("dns-alias-target-unresolved")
+            return addresses[owner]
 
         for alias, canonical in sorted(bindings.items()):
             base.extend(f"{alias} IN A {address} # agathodaimon-alias {canonical}" for address in sorted(resolve(canonical)))
@@ -920,7 +924,9 @@ class DnsManager:
         if query_tool is None:
             raise DnsError("dns-live-query-tool-missing")
         previous_lines = self._owned_records()
-        lines = self._project_aliases(lines)
+        previous_targets = {owner for owner, kind, _target, marker in map(self._record_parts, previous_lines) if kind == "A" and marker is None} | self._alias_bindings(previous_lines).keys()
+        current_targets = {owner for owner, kind, _target, marker in map(self._record_parts, lines) if kind == "A" and marker is None} | self._alias_bindings(lines).keys()
+        lines = self._project_aliases(lines, removed_targets=previous_targets - current_targets)
         self._validate_candidate(lines, {self._record_parts(line)[0].rstrip(".") for line in lines})
         candidate = self._render_owned(lines)
         queries = set(expected)
