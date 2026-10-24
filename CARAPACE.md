@@ -10,7 +10,7 @@ non-regular outputs are rejected. Output arrays are sorted, writes are skipped
 when bytes already match, and malformed declarations stop with a source-located
 error.
 
-Every `index.py` owner and the metadata-only `gui/update` owner declares one
+Every `index.py` owner declares one
 known `sclerite.name` beside its `features` contribution map in `index.json`;
 empty maps remain unpublished owners. A declaration maps feature names to that
 owner's `band`, alias `verbs`, `routes`, and optional `administrative`
@@ -64,8 +64,5 @@ observers. Those key/status bands are available only to profiles selecting
 their owning feature (HomeServer here). These observer declarations remain
 honest-not-found where dispatch has no implementation; the internal
 Transmission bands are not exposed by the crossings. `samba` is likewise
-common observer surface. `gui/update` remains a declared, unimplemented
-GTK debt for each sold profile that already crossed it. Its metadata-only node
-intentionally has no `index.py`, so the staff dispatcher continues to report
-not-found rather than fabricating an implementation.
+common observer surface.
 `crossings/lab.json` remains separately owned and is not generated here.

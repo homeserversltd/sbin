@@ -12,7 +12,6 @@
     "exousia/verify",
     "games/provider-keys",
     "games/sync",
-    "gui/update",
     "keyman/admin-password",
     "keyman/create-key",
     "keyman/key-status",
@@ -73,10 +72,6 @@
     [
       "exousia",
       "verify"
-    ],
-    [
-      "gui",
-      "update"
     ],
     [
       "keyman",
@@ -234,7 +229,6 @@
     "/api/v1/games/sync",
     "/api/v1/gaming/provider-keys",
     "/api/v1/gaming/sync",
-    "/api/v1/gui/update/now",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
     "/api/v1/keyman/admin-password",

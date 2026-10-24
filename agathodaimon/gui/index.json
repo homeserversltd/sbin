@@ -3,8 +3,7 @@
     "shell",
     "plugs",
     "settings",
-    "launcher-cache",
-    "update"
+    "launcher-cache"
   ],
   "sclerite": {
     "name": "all",
