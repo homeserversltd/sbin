@@ -28,13 +28,14 @@ or routes. All ten `face/...` leaves (`app`, `badge`, `bar`, `fetch`, `focus`,
 sclerite name `gtk4`; their crossing ownership follows the Caduceus GTK4 leaf,
 not the old `sway`, `pactl`, or `desktop` selections.
 
-The defconfigs explicitly select these sold features; declared implications
+The defconfigs explicitly select these profile features; declared implications
 and prerequisites add derived features without adding profile-band lists:
 
 - `homeserver`: `kea`, `unbound`, `keyman`, `nas`, `linker`, `transmission`,
   `tailscale`; gateway implications add `gateway`, `nft`, `firewall`, and
   `identity`, while NAS derives its `luks` and `xfs` prerequisites.
-- `homeconsole`: `sway`, `pactl`, `desktop`, `nmcli`, `steam`.
+- `homeconsole`: `sway`, `pactl`, `desktop`, `nmcli`, `games`, `sddm`,
+  `console-restart`.
 - `tv`: `sway`, `pactl`, `desktop`, `nmcli`, `gtk4`.
 
 `all` is always on. `kea` and `unbound` each require the derived gateway
@@ -49,14 +50,12 @@ implies `pia`. PIA requires exactly one protocol choice, `openvpn` or
 `wireguard`; the generator rejects empty or overlapping option memberships and
 checks the final closed feature set so explicitly or transitively selecting a
 nonchosen protocol is an error. HomeServer selects `openvpn`, matching the
-existing `transmission/vpn/pia/index.json` `defaultProtocol`. HomeConsole's
-explicit feature list has no `steam-runtime` choice: selected `steam` implies
-`console-restart`, which requires any one of the declared features `steam`,
-`sunshine`, or `sddm`.
+existing `transmission/vpn/pia/index.json` `defaultProtocol`. `console-restart`
+requires either `sunshine` or `sddm`; HomeConsole selects `sddm` explicitly.
 
-`transmission` and `steam` each imply `games` as an explicit compatibility
-policy preserving the existing HomeServer and HomeConsole games crossings;
-this is not a claim that either feature is a physical package dependency.
+`transmission` implies `games` as an explicit compatibility policy preserving
+the existing HomeServer games crossings. HomeConsole selects `games` directly
+for its ROM library and artwork. These are not physical package dependencies.
 
 `keyman/key-status` is owned by `keyman`, and `transmission/status` by
 `transmission`; neither status is globally selected under `all`. `face/badge`

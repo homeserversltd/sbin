@@ -36,3 +36,5 @@ safe-nas-sync.sh (sbin)                 agathodaimon/storage/backup/safe-nas-syn
 homeserver-forgejo-migrate.py (sbin)    agathodaimon/storage/backup/homeserver-forgejo-migrate.py
 
 Not migrated yet: src/ non-PIA modules, teardown_standalone.py (vault).
+
+Steam and gamescope staff code: saved whole on private HOMESERVERSLTD/sbin-steam branch steam-console-20261024 at 7eebc9fa4bd3bbd63b6dc7cbff0035648f995442; removed from public main.

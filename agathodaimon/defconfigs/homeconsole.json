@@ -6,7 +6,9 @@
     "pactl",
     "desktop",
     "nmcli",
-    "steam"
+    "games",
+    "sddm",
+    "console-restart"
   ],
   "choices": {}
 }

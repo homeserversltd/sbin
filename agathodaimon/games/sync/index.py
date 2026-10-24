@@ -1,18 +1,14 @@
-"""Synchronize configured games into Steam shortcuts and artwork."""
+"""Synchronize the configured ROM library and its artwork cache."""
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json, os, pwd, re, shlex, shutil, subprocess, time, urllib.parse, urllib.request, zlib
+import argparse, json, re, shlex, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
-import vdf
 from PIL import Image, ImageDraw, ImageFont
 
 LIBRARY_ROOT = Path('/home/owner/Games')
 ARTWORK_ROOT = LIBRARY_ROOT / 'artwork'
 RUNNERS_PATH = Path('/etc/arch-game-sync/runners.json')
 PROVIDER_ENV = Path('/etc/arch-game-sync/providers.env')
-STEAM_HOME = Path('/home/owner')
-RECEIPT_DIR = LIBRARY_ROOT / 'receipts'
-OWNER_USER = 'owner'
 BIOS_ROOT = LIBRARY_ROOT / 'bios'
 BIOS_REQUIREMENTS = {
     'ps1': {'kind': 'user-bios-required', 'paths': ['ps1/scph5500.bin', 'ps1/scph5501.bin', 'ps1/scph5502.bin'], 'policy': 'user-owned PlayStation BIOS files only; never bundled'},
@@ -99,60 +95,6 @@ def download_file(url: str, out: Path, headers: dict[str, str] | None = None, ti
         except Exception:
             pass
         return False
-
-
-def appid_signed(exe: str, name: str) -> int:
-    raw = (zlib.crc32((exe + name).encode('utf-8')) | 0x80000000) % 4294967296
-    return raw - 4294967296 if raw >= 2147483648 else raw
-
-
-def appid_unsigned(value: int) -> int:
-    return value + 4294967296 if value < 0 else value
-
-
-def ensure_steam_dir(path: Path):
-    info = pwd.getpwnam(OWNER_USER)
-    created = []
-    current = path
-    while not current.exists():
-        created.append(current)
-        current = current.parent
-    path.mkdir(parents=True, exist_ok=True)
-    for directory in reversed(created):
-        os.chown(directory, info.pw_uid, info.pw_gid)
-    return info, list(reversed(created))
-
-
-def find_shortcuts_file():
-    candidates = sorted((STEAM_HOME/'.local/share/Steam/userdata').glob('*/config/shortcuts.vdf'))
-    if candidates:
-        return candidates[0]
-    default = STEAM_HOME/'.local/share/Steam/userdata/75467976/config/shortcuts.vdf'
-    ensure_steam_dir(default.parent)
-    return default
-
-
-def steam_grid_dir(shortcuts_path: Path) -> Path:
-    path = shortcuts_path.parent / 'grid'
-    ensure_steam_dir(path)
-    return path
-
-
-def read_shortcuts(path: Path):
-    if not path.exists() or path.stat().st_size == 0:
-        return {'shortcuts': {}}
-    with path.open('rb') as handle:
-        return vdf.binary_load(handle)
-
-
-def write_shortcuts(path: Path, data):
-    info, _ = ensure_steam_dir(path.parent)
-    tmp = path.with_suffix('.vdf.tmp')
-    with tmp.open('wb') as handle:
-        vdf.binary_dump(data, handle)
-    os.chown(tmp, info.pw_uid, info.pw_gid)
-    os.chmod(tmp, 0o644)
-    tmp.replace(path)
 
 
 def load_font(size: int):
@@ -259,31 +201,6 @@ def compose_provider_art(game: dict, art_dir: Path, provider: dict) -> None:
         logo.save(art_dir / 'logo.png')
 
 
-def resolve_steamgriddb_artwork(game: dict, env: dict[str, str], art_dir: Path) -> dict | None:
-    key = env.get('STEAMGRIDDB_API_KEY') or env.get('STEAMGRIDDB')
-    if not key:
-        return None
-    title = clean_game_title(game['appname'])
-    headers = {'Authorization': 'Bearer ' + key, 'User-Agent': 'arch-game-sync/0.1'}
-    try:
-        search = http_json('https://www.steamgriddb.com/api/v2/search/autocomplete/' + urllib.parse.quote(title), headers=headers)
-        rows = search.get('data') or []
-        if not rows: return None
-        gid = rows[0].get('id')
-        provider = {'provider': 'steamgriddb', 'game_id': gid, 'title': rows[0].get('name'), 'assets': []}
-        endpoints = [('grid', f'https://www.steamgriddb.com/api/v2/grids/game/{gid}?dimensions=600x900&types=static&nsfw=false&humor=false&epilepsy=false'), ('landscape', f'https://www.steamgriddb.com/api/v2/grids/game/{gid}?dimensions=920x430&types=static&nsfw=false&humor=false&epilepsy=false'), ('hero', f'https://www.steamgriddb.com/api/v2/heroes/game/{gid}?dimensions=1920x620&types=static&nsfw=false&humor=false&epilepsy=false'), ('logo', f'https://www.steamgriddb.com/api/v2/logos/game/{gid}?types=static&nsfw=false&humor=false&epilepsy=false'), ('icon', f'https://www.steamgriddb.com/api/v2/icons/game/{gid}?dimensions=512x512&types=static&nsfw=false&humor=false&epilepsy=false')]
-        for kind, url in endpoints:
-            try:
-                data = http_json(url, headers=headers); assets = data.get('data') or []
-                if assets and assets[0].get('url') and download_file(assets[0]['url'], art_dir / f'{kind}.png', headers={'User-Agent': 'arch-game-sync/0.1'}):
-                    provider['assets'].append({'type': kind, 'source_id': assets[0].get('id'), 'path': str(art_dir / f'{kind}.png')})
-            except Exception:
-                continue
-        return provider if provider['assets'] else None
-    except Exception as exc:
-        return {'provider': 'steamgriddb', 'error': type(exc).__name__}
-
-
 def resolve_tgdb_artwork(game: dict, env: dict[str, str], art_dir: Path) -> dict | None:
     key = env.get('THEGAMESDB_API_KEY') or env.get('THEGAMESDB')
     platform = TGDB_PLATFORM_IDS.get(game['system'])
@@ -332,7 +249,7 @@ def resolve_provider_artwork(game: dict, art_dir: Path) -> dict | None:
     env = read_provider_env()
     attempts = []
     required = ['grid.png', 'landscape.png', 'hero.png', 'logo.png', 'icon.png']
-    for resolver in [resolve_steamgriddb_artwork, resolve_tgdb_artwork, resolve_screenscraper_artwork]:
+    for resolver in [resolve_tgdb_artwork, resolve_screenscraper_artwork]:
         result = resolver(game, env, art_dir)
         if result: attempts.append(dict(result))
         elif result is not None: attempts.append(dict(result))
@@ -368,24 +285,6 @@ def ensure_cached_artwork(game: dict) -> dict:
     return metadata
 
 
-def install_steam_grid_art(game: dict, entry: dict, shortcuts_path: Path) -> dict:
-    appid = appid_unsigned(int(entry['appid']))
-    cache = ensure_cached_artwork(game)
-    grid = steam_grid_dir(shortcuts_path)
-    mapping = {f'{appid}p.png': cache['files']['grid'], f'{appid}.png': cache['files']['landscape'], f'{appid}_hero.png': cache['files']['hero'], f'{appid}_logo.png': cache['files']['logo'], f'{appid}_icon.png': cache['files']['icon']}
-    installed = []
-    for filename, src in mapping.items():
-        dst = grid / filename; shutil.copy2(src, dst); installed.append(str(dst))
-    try:
-        info = pwd.getpwnam(OWNER_USER)
-        for dst in grid.glob(f'{appid}*'):
-            os.chown(dst, info.pw_uid, info.pw_gid); os.chmod(dst, 0o644)
-        os.chown(grid, info.pw_uid, info.pw_gid)
-    except KeyError:
-        pass
-    return {'appname': game['appname'], 'system': game['system'], 'rom': str(game['path']), 'appid': appid, 'appid_signed': int(entry['appid']), 'artwork_cache': cache, 'steam_grid_files': installed}
-
-
 def missing_bios_for(system: str) -> list[str]:
     req = BIOS_REQUIREMENTS.get(system)
     if not req:
@@ -412,39 +311,18 @@ def scan_games(runners):
     return games, blocked
 
 
-def merge_shortcuts(data, games):
-    shortcuts = data.setdefault('shortcuts', {})
-    next_idx = max([int(k) for k in shortcuts.keys() if str(k).isdigit()] or [-1]) + 1
-    changed, written = False, []
-    for game in games:
-        key = next((k for k, v in shortcuts.items() if v.get('AppName') == game['appname'] or v.get('appname') == game['appname']), None)
-        if key is None:
-            key = str(next_idx); next_idx += 1
-        exe = f'"{game["exe"]}"'
-        entry = {'appid': appid_signed(game['exe'], game['appname']), 'AppName': game['appname'], 'appname': game['appname'], 'Exe': exe, 'exe': exe, 'StartDir': f'"{str(Path(game["exe"]).parent)}"', 'startdir': f'"{str(Path(game["exe"]).parent)}"', 'icon': '', 'ShortcutPath': '', 'LaunchOptions': game['launchoptions'], 'launchoptions': game['launchoptions'], 'IsHidden': 0, 'AllowDesktopConfig': 1, 'AllowOverlay': 1, 'OpenVR': 0, 'Devkit': 0, 'DevkitGameID': '', 'LastPlayTime': 0, 'FlatpakAppID': '', 'tags': {str(i): tag for i, tag in enumerate(game['tags'])}}
-        if shortcuts.get(key) != entry:
-            shortcuts[key] = entry; changed = True
-        written.append({'key': key, 'entry': entry, 'game': game})
-    return changed, written
-
-
 def _sync_main():
-    parser = argparse.ArgumentParser(description='Sync Arch gaming-console folders into Steam shortcuts and Steam grid artwork')
-    args = parser.parse_args()
-    RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(description='Sync configured RetroArch and DOSBox ROM folders and artwork')
+    parser.parse_args()
     runners = json.loads(RUNNERS_PATH.read_text())
     games, blocked_payloads = scan_games(runners)
-    shortcuts_path = find_shortcuts_file()
-    data = read_shortcuts(shortcuts_path)
-    changed, written = merge_shortcuts(data, games)
-    if changed:
-        write_shortcuts(shortcuts_path, data)
-    artwork = [install_steam_grid_art(item['game'], item['entry'], shortcuts_path) for item in written]
-    readback = read_shortcuts(shortcuts_path)
-    receipt = {'ok': True, 'schema': 'arch_game_sync.local.receipt.v2', 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'shortcuts_path': str(shortcuts_path), 'readback_count': len(readback.get('shortcuts', {})), 'changed': changed, 'artwork': artwork, 'restart_recommended': 'steam', 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
-    path = RECEIPT_DIR / f'arch-game-sync-{int(time.time())}.json'
-    path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + '\n')
-    print(json.dumps({**receipt, 'receipt_path': str(path)}, sort_keys=True))
+    artwork = [
+        {'appname': game['appname'], 'system': game['system'], 'rom': str(game['path']),
+         'artwork_cache': ensure_cached_artwork(game)}
+        for game in games
+    ]
+    receipt = {'ok': True, 'schema': 'arch_game_sync.local.receipt.v2', 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'artwork': artwork, 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
+    print(json.dumps(receipt, sort_keys=True))
 
 
 def main(argv=None):

@@ -118,14 +118,7 @@ def _sway_socket_for(pid: int, uid: int) -> str | None:
 
 
 def select_backend() -> dict[str, Any] | None:
-    """Gamescope owner process wins; Sway requires one owner-owned live IPC socket."""
-    # gamescope names its Wayland thread "gamescope-wl" at wlserver_run:
-    # https://github.com/ValveSoftware/gamescope/blob/6867f509874f9bc52e12d6f4c4596cdf0d5be6b4/src/wlserver.cpp#L2397-L2400
-    gamescope = _owner_processes(("gamescope-wl", "gamescope"))
-    if gamescope is None:
-        return None
-    if gamescope:
-        return {"kind": "gamescope", "pid": gamescope[0], "owner_process_count": len(gamescope)}
+    """Sway requires one owner-owned live IPC socket."""
     sway_pids = _owner_processes("sway")
     if sway_pids is None or not sway_pids:
         return None
@@ -391,17 +384,3 @@ def apply_sway_mode(socket_path: str, connector: Mapping[str, Any], mode: Mappin
         "physical_mode_verified": bool(same),
         "connectors": after.get("connectors", []),
     }
-
-
-def restart_gamescope_seat() -> dict[str, Any]:
-    """Use the existing seat restart actuator; do not duplicate its service logic."""
-    try:
-        from agathodaimon.console.restart.index import restart
-        reply = restart("seat")
-        return reply if isinstance(reply, dict) else {
-            "ok": False, "first_missing_signal": "console-restart-invalid-reply",
-            "mutation_performed": False,
-        }
-    except Exception as exc:
-        return {"ok": False, "first_missing_signal": f"console-restart-unavailable:{type(exc).__name__}",
-                "mutation_performed": False}

@@ -1,44 +1,21 @@
-# Arcadia OS console session subset
+# Arcadia OS owner console session
 
-This directory contains the Arcadia OS owner-session supervisor, sticky mode
-selection, and stable-only branch query. The installed Wayland entry execs
-`/usr/local/sbin/agathodaimon/cli.py console session`; that one long-lived owner
-process supervises either Steam/Gamescope or Sway. No SDDM configuration write
-is needed.
+This directory contains the Sway owner-session supervisor, bounded Sunshine
+and SDDM restart degrees, and stable-only branch query. The installed Wayland
+entry execs `/usr/local/sbin/agathodaimon/cli.py console session`; that one
+long-lived owner process supervises Sway. No SDDM configuration write is needed.
 
 ## CLI surface
 
-- Select a mode with the helper argv
-  `/usr/local/sbin/agathodaimon/cli.py console session-select desktop|steam`.
-  The selector is atomically written to
-  `/run/user/<owner-uid>/ARCADIA_CONSOLE_SESSION` and remains sticky for this
-  boot; absence selects Steam, and reboot clears `/run`. The supervisor rereads
-  the selector whenever it relaunches a child. Consuming it after the first
-  read would erase the selected mode, so a later supervisor/child cycle would
-  silently fall back to the Steam default.
-- A mode change writes the new selector and then stops only the matching owner
-  Gamescope or owner Sway session. A failed stop restores the prior selector.
-  Steam shutdown uses the existing owner-session command seam; Sway exit uses
-  `face/_shared.py` IPC and the verified owner socket. Switching happens in the
-  current login session without requiring a relogin.
+- `console session` launches Sway as the owner. A child that exits in less than
+  five seconds is relaunched with exponential backoff from one to thirty
+  seconds; a longer-lived child resets the delay. The runtime directory must
+  be owner-owned and private.
+- `console session --print` prints Sway's computed launch argv and environment
+  changes without launching a session process.
+- `console restart stream` restarts the owner's Sunshine user unit;
+  `console restart seat` restarts SDDM. Each degree requires its unit to exist
+  and reads its active state back after the restart.
 - `console select-branch -c|-l` accepts either option and prints exactly
   `stable`. It is a locked compatibility response and invokes no external
   branch helper.
-- `console session --print` prints the selected session's computed launch argv
-  and environment changes without launching a session process.
-
-## Steam session behavior
-
-The Steam argv is exactly `steam -gamepadui -steamos3`. Existing KMS
-resolution/refresh selection and the dimensionless Gamescope fallback remain
-unchanged. The session environment retains `MANGOHUD=1`, the existing
-`SDL_GAMECONTROLLERCONFIG` behavior, and the required power-sentinel interface;
-it adds no Gamescope capability exports.
-
-Before each fresh Steam launch, the supervisor removes stale
-`STEAMOS_STEAM_SHUTDOWN_SENTINEL` and
-`STEAMOS_STEAM_REBOOT_SENTINEL` entries from the owner runtime directory. After
-Gamescope returns, it removes any present sentinel before invoking exactly
-`loginctl poweroff` or `loginctl reboot`. If both are present, both are consumed
-and neither power action runs; Steam restarts under the selected mode. With no
-sentinel and Steam still selected, Steam restarts normally.

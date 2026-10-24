@@ -357,7 +357,6 @@
     "/api/v1/access/pin/mode",
     "/api/v1/access/pin/reset-default",
     "/api/v1/access/sudo/mode",
-    "/api/v1/appliance/gamescope/restart",
     "/api/v1/appliance/model-lanes/pulse",
     "/api/v1/appliance/poweroff",
     "/api/v1/appliance/reboot",

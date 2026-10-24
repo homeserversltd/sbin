@@ -671,7 +671,7 @@ def main(argv=None):
             os.environ.pop(name, None)
     if _argv_envelope_has_pin(args):
         return _refuse_administrative("agathodaimon-administrative-pin-required")
-    if not args:
+    if not args or args == ["--help"]:
         print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT)},indent=2)); return 0
     original=args[:]
     pin_required = _pin_required()

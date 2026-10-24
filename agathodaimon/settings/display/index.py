@@ -46,14 +46,7 @@ def _resolution_observation(connectors: Sequence[Mapping[str, Any]], settings: M
 def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict[str, Any]:
     kind = selected.get("kind")
     kms = _kms_observation()
-    if kind == "gamescope":
-        connectors = kms.get("connectors", []) if kms.get("ok") is True else []
-        resolution = (_resolution_observation(connectors, settings) if kms.get("ok") is True
-                      else {"ok": False, "connector": None, "mode": None,
-                            "reason": "drm-observation-unavailable", "fallback": False})
-        live = {"ok": kms.get("ok") is True, "source": "kms", "status": kms.get("status"),
-                "connectors": connectors, "errors": kms.get("errors", [])}
-    elif kind == "sway":
+    if kind == "sway":
         sway = backends.observe_sway(str(selected["socket"]), kms)
         connectors = sway.get("connectors", []) if sway.get("ok") is True else []
         resolution = (_resolution_observation(connectors, settings) if sway.get("ok") is True
@@ -151,21 +144,6 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
     except ValueError as exc:
         return _failure(f"invalid-display-setting:{exc}", settings=settings, backend=selected)
     kind = selected.get("kind")
-    if kind == "gamescope":
-        persisted = {
-            "resolution": settings.get("resolution", "auto"),
-            "refresh_rate": settings.get("refresh_rate", policy.DEFAULT_REFRESH_RATE),
-        }
-        changed_fields = [
-            field for field in supplied
-            if field in MODE_FIELDS and effective[field] != persisted[field]
-        ]
-        if changed_fields:
-            return _failure(
-                "display-setting-not-persisted", settings=settings, requested=effective,
-                backend=selected, fields=changed_fields,
-                guidance="Use Caduceus to persist display settings before restarting Gamescope.",
-            )
     if kind == "sway":
         kms = _kms_observation()
         observed = backends.observe_sway(str(selected["socket"]), kms)
@@ -197,36 +175,6 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
             "current": {"before": before, "after": result.get("current_mode")},
             "physicalModeVerified": result.get("physical_mode_verified") is True,
             "swayCommand": result.get("command"),
-        }
-    if kind == "gamescope":
-        kms = _kms_observation()
-        if kms.get("ok") is not True:
-            return _failure("display-drm-observation-unavailable", settings=settings,
-                            requested=effective, backend=selected, kms_errors=kms.get("errors", []))
-        connectors = kms.get("connectors", [])
-        resolved = _resolution_observation(connectors, effective)
-        no_screen = kms.get("status") == "no-connected-screen"
-        if not no_screen and resolved.get("ok") is not True:
-            return _failure("display-no-eligible-advertised-mode", settings=settings,
-                            requested=effective, backend=selected, resolved=resolved)
-        chosen_connector = resolved.get("connector") if resolved.get("ok") is True else None
-        current = _current_summary(chosen_connector)
-        restart_reply = backends.restart_gamescope_seat()
-        restart_ok = restart_reply.get("ok") is True
-        return {
-            "ok": bool(restart_ok and not no_screen),
-            "changed": False,
-            "mutationPerformed": restart_reply.get("mutation_performed") is True,
-            "firstMissingSignal": ("display-no-connected-screen" if no_screen else
-                                   restart_reply.get("first_missing_signal", "none") if not restart_ok else "none"),
-            "values": _values(settings),
-            "settingsSource": settings.get("source"),
-            "backend": dict(selected),
-            "requested": effective,
-            "resolved": resolved,
-            "current": current,
-            "physicalModeVerified": False,
-            "restartReply": restart_reply,
         }
     return _failure("display-backend-unavailable", settings=settings, backend=selected)
 

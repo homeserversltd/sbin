@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-SUPPORTED_KEYS = ("STEAMGRIDDB_API_KEY", "THEGAMESDB_API_KEY", "SCREENSCRAPER_API_KEY")
+SUPPORTED_KEYS = ("THEGAMESDB_API_KEY", "SCREENSCRAPER_API_KEY")
 DEFAULT_PATH = Path("/etc/arch-game-sync/providers.env")
 
 
