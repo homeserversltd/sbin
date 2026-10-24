@@ -867,6 +867,10 @@ class DnsManager:
             owner, kind, target, _alias_target = self._record_parts(line)
             if kind == "A":
                 addresses.setdefault(owner, set()).add(target)
+        other_addresses: dict[str, set[str]] = {}
+        for record in self._all_local_records():
+            if record["provenance"] != "owned" and record["type"] == "A":
+                other_addresses.setdefault(record["name"] + ".", set()).add(record["target"])
 
         def resolve(owner: str) -> set[str]:
             seen: set[str] = set()
@@ -875,11 +879,14 @@ class DnsManager:
                     raise DnsError("dns-alias-target-unresolved")
                 seen.add(owner)
                 owner = bindings[owner]
-            if owner in (removed_targets or set()):
+            if owner in addresses:
+                return addresses[owner]
+            fallback = other_addresses.get(owner, set())
+            if len(fallback) == 1:
+                return fallback
+            if not fallback and owner in (removed_targets or set()):
                 return set()
-            if owner not in addresses:
-                raise DnsError("dns-alias-target-unresolved")
-            return addresses[owner]
+            raise DnsError("dns-alias-target-unresolved")
 
         for alias, canonical in sorted(bindings.items()):
             base.extend(f"{alias} IN A {address} # agathodaimon-alias {canonical}" for address in sorted(resolve(canonical)))
@@ -927,7 +934,8 @@ class DnsManager:
         previous_targets = {owner for owner, kind, _target, marker in map(self._record_parts, previous_lines) if kind == "A" and marker is None} | self._alias_bindings(previous_lines).keys()
         current_targets = {owner for owner, kind, _target, marker in map(self._record_parts, lines) if kind == "A" and marker is None} | self._alias_bindings(lines).keys()
         lines = self._project_aliases(lines, removed_targets=previous_targets - current_targets)
-        self._validate_candidate(lines, {self._record_parts(line)[0].rstrip(".") for line in lines})
+        existing_owners = {self._record_parts(line)[0].rstrip(".") for line in previous_lines}
+        self._validate_candidate(lines, {self._record_parts(line)[0].rstrip(".") for line in lines} - existing_owners)
         candidate = self._render_owned(lines)
         queries = set(expected)
         queries.update(("A", alias) for alias in self._alias_bindings(previous_lines) | self._alias_bindings(lines))
@@ -935,6 +943,9 @@ class DnsManager:
         for line in lines:
             owner, kind, target, _alias_target = self._record_parts(line)
             values.setdefault((kind, owner), set()).add(target.rstrip(".").lower())
+        for record in self._all_local_records():
+            if record["provenance"] != "owned":
+                values.setdefault((record["type"], record["name"] + "."), set()).add(record["target"])
         previous = self.read_include.read_bytes() if self.read_include.exists() else None
         mode = self.read_include.stat().st_mode & 0o777 if self.read_include.exists() else 0o644
         receipt: dict[str, Any] = {"config_valid": False, "reload_outcome": "not-run", "live_query_readback": [], "mutationPerformed": False}
@@ -1022,13 +1033,8 @@ class DnsManager:
         bindings = self._alias_bindings(lines)
         if alias == canonical or any(self._record_parts(line)[0] == alias for line in lines) and bindings.get(alias) != canonical:
             raise DnsError("dns-alias-owner-conflict")
-        projected = self._project_aliases(lines)
-        addresses = {target for owner, kind, target, _marker in map(self._record_parts, projected) if owner == canonical and kind == "A"}
-        if not addresses:
-            raise DnsError("dns-alias-target-unresolved")
         retained = [line for line in lines if self._record_parts(line)[0] != alias]
-        additions = [f"{alias} IN A {address} # agathodaimon-alias {canonical}" for address in sorted(addresses)]
-        verification = self._candidate_apply(retained + additions, [("A", alias)])
+        verification = self._candidate_apply(retained + [f"{alias} IN CNAME {canonical}"], [("A", alias)])
         return {"action": "alias-create", "state": "applied" if verification["mutationPerformed"] else "noop", "alias": alias, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
 
     def remove_alias(self, alias_label: str, hostname: str) -> dict[str, Any]:
