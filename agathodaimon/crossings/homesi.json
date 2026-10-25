@@ -33,7 +33,11 @@
     "storage/vault/open",
     "storage/vault/policy",
     "update/service",
-    "update/sources-reseed"
+    "update/sources-reseed",
+    "thyrsus/propose",
+    "thyrsus/admit",
+    "thyrsus/forge-token",
+    "thyrsus/forge"
   ],
   "verbs": [
     [
@@ -127,6 +131,22 @@
     [
       "vault",
       "open"
+    ],
+    [
+      "thyrsus",
+      "propose"
+    ],
+    [
+      "thyrsus",
+      "admit"
+    ],
+    [
+      "thyrsus",
+      "forge-token"
+    ],
+    [
+      "thyrsus",
+      "forge"
     ]
   ],
   "routes": [
@@ -162,6 +182,10 @@
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
+    "/api/v1/thyrsus/propose",
+    "/api/v1/thyrsus/admit",
+    "/api/v1/thyrsus/forge-token",
+    "/api/v1/thyrsus/forge",
     "/api/v1/update/check",
     "/api/v1/update/now",
     "/api/v1/update/service/status",
@@ -174,7 +198,10 @@
       "appliance/sudo-passwordless",
       "local-ai/slot",
       "storage/vault/open",
-      "storage/vault/policy"
+      "storage/vault/policy",
+      "thyrsus/propose",
+      "thyrsus/admit",
+      "thyrsus/forge-token"
     ],
     "verbs": [
       [
@@ -188,13 +215,28 @@
       [
         "local-ai",
         "slot"
+      ],
+      [
+        "thyrsus",
+        "propose"
+      ],
+      [
+        "thyrsus",
+        "admit"
+      ],
+      [
+        "thyrsus",
+        "forge-token"
       ]
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/storage/vault/unlock",
-      "PUT /api/v1/local-ai/slot/:slot"
+      "PUT /api/v1/local-ai/slot/:slot",
+      "/api/v1/thyrsus/propose",
+      "/api/v1/thyrsus/admit",
+      "/api/v1/thyrsus/forge-token"
     ]
   }
 }

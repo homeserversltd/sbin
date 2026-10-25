@@ -49,6 +49,10 @@
     "transmission/keys",
     "transmission/status",
     "transmission/up",
+    "thyrsus/admit",
+    "thyrsus/forge",
+    "thyrsus/forge-token",
+    "thyrsus/propose",
     "update/service",
     "update/sources-reseed"
   ],
@@ -208,6 +212,22 @@
     [
       "vault",
       "open"
+    ],
+    [
+      "thyrsus",
+      "propose"
+    ],
+    [
+      "thyrsus",
+      "admit"
+    ],
+    [
+      "thyrsus",
+      "forge-token"
+    ],
+    [
+      "thyrsus",
+      "forge"
     ]
   ],
   "routes": [
@@ -282,6 +302,10 @@
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
+    "/api/v1/thyrsus/propose",
+    "/api/v1/thyrsus/admit",
+    "/api/v1/thyrsus/forge-token",
+    "/api/v1/thyrsus/forge",
     "/api/v1/transmission/down",
     "/api/v1/transmission/keys",
     "/api/v1/transmission/keys/replace",
@@ -314,7 +338,10 @@
       "storage/vault/policy",
       "transmission/down",
       "transmission/keys",
-      "transmission/up"
+      "transmission/up",
+      "thyrsus/propose",
+      "thyrsus/admit",
+      "thyrsus/forge-token"
     ],
     "verbs": [
       [
@@ -356,6 +383,18 @@
       [
         "linker",
         "rename"
+      ],
+      [
+        "thyrsus",
+        "propose"
+      ],
+      [
+        "thyrsus",
+        "admit"
+      ],
+      [
+        "thyrsus",
+        "forge-token"
       ]
     ],
     "routes": [
@@ -393,6 +432,9 @@
       "/api/v1/transmission/keys/replace",
       "/api/v1/transmission/keys/rotate",
       "/api/v1/transmission/up",
+      "/api/v1/thyrsus/propose",
+      "/api/v1/thyrsus/admit",
+      "/api/v1/thyrsus/forge-token",
       "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
       "DELETE /api/v1/network/firewall/children/{mac}",
       "POST /api/v1/network/dhcp",
