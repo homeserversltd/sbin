@@ -352,14 +352,34 @@ def _propose(payload, profile, receipt):
         raise Refusal("thyrsus-branch-invalid")
     if _git(repo, ["show-ref", "--verify", "--quiet", "refs/heads/" + branch]).returncode == 0:
         raise Refusal("thyrsus-branch-exists")
+    original_branch = _git(repo, ["symbolic-ref", "--quiet", "--short", "HEAD"])
+    original_head = _git(repo, ["rev-parse", "--verify", "HEAD"])
+    if original_branch.returncode not in {0, 1} or (original_branch.returncode and original_head.returncode):
+        raise Refusal("thyrsus-git-failed")
+    if original_branch.returncode == 0:
+        restore = ["switch", "--quiet", original_branch.stdout.decode("utf-8").strip()]
+        if original_head.returncode != 0:
+            restore = ["symbolic-ref", "HEAD", "refs/heads/" + original_branch.stdout.decode("utf-8").strip()]
+    else:
+        restore = ["switch", "--quiet", "--detach", original_head.stdout.decode("ascii").strip()]
     receipt["branch"] = branch
     receipt["observed"] = {"worktree": True}
-    for step, command in (("stage", ["add", "--all", "--"]),):
+    for step, command in (("branch", ["switch", "--quiet", "-c", branch]),
+                          ("stage", ["add", "--all", "--"])):
         if _git(repo, command, capture=False).returncode != 0:
             raise Refusal("thyrsus-git-failed")
+        receipt["mutationPerformed"] = True
         receipt["attempt"].append({"step": step, "ok": True})
     difference = _git(repo, ["diff", "--cached", "--quiet", "--exit-code"])
     if difference.returncode == 0:
+        if _git(repo, restore, capture=False).returncode != 0:
+            raise Refusal("thyrsus-git-failed")
+        receipt["attempt"].append({"step": "restore-original", "ok": True})
+        if original_head.returncode == 0:
+            if _git(repo, ["branch", "--delete", "--", branch], capture=False).returncode != 0:
+                raise Refusal("thyrsus-git-failed")
+            receipt["attempt"].append({"step": "delete-empty-branch", "ok": True})
+        receipt["mutationPerformed"] = False
         raise Refusal("thyrsus-nothing-to-propose")
     if difference.returncode != 1:
         raise Refusal("thyrsus-git-failed")
@@ -367,9 +387,6 @@ def _propose(payload, profile, receipt):
     if _git(repo, ["commit", "--quiet", "-m", message], capture=False).returncode != 0:
         raise Refusal("thyrsus-git-failed")
     receipt["attempt"].append({"step": "commit", "ok": True})
-    if _git(repo, ["switch", "--quiet", "-c", branch], capture=False).returncode != 0:
-        raise Refusal("thyrsus-git-failed")
-    receipt["attempt"].append({"step": "branch", "ok": True})
     # Local commits remain visible on failure. No remote rollback is invented.
     if not _reachable():
         raise Refusal("thyrsus-forge-unreachable")
