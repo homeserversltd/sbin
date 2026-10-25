@@ -564,7 +564,7 @@ def main_for(verb, arguments=None):
             receipt.update(token_present=_token_present(profile), reachable=_reachable())
             receipt["observed"] = {key: receipt[key] for key in ("forge", "token_present", "reachable")}
         elif verb == "propose":
-            receipt["could-change"] = ["stage", "commit", "branch", "push", "pull-request"]
+            receipt["could-change"] = ["branch", "stage", "commit", "push", "pull-request"]
             _propose(payload, profile, receipt)
         elif verb == "admit":
             receipt["could-change"] = ["merge"]
