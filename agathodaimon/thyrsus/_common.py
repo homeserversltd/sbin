@@ -73,7 +73,7 @@ def _configuration():
         raise Refusal("thyrsus-disabled")
     # This is a household coordinate, never a caller-selected credential destination.
     if block.get("forge", FORGE) != FORGE:
-        raise Refusal("thyrsus-forge-refused")
+        raise Refusal("thyrsus-forge-invalid")
     profile = _json_file("profile").get("profile")
     if profile not in {"homeserver", "homesi"}:
         raise Refusal("thyrsus-profile-unsupported")
@@ -173,14 +173,14 @@ def _api(profile, method, path, payload=None):
             if len(content) > MAX_RESPONSE:
                 raise Refusal("thyrsus-forge-refused", http_status=status_code)
             if not content:
-                return {}, owner
+                return {}, owner, status_code
             try:
                 value = json.loads(content)
             except (ValueError, UnicodeError):
                 raise Refusal("thyrsus-forge-refused", http_status=status_code) from None
             if not isinstance(value, dict):
                 raise Refusal("thyrsus-forge-refused", http_status=status_code)
-            return value, owner
+            return value, owner, status_code
         except Refusal:
             raise
         except (OSError, http.client.HTTPException, UnicodeError):
@@ -323,6 +323,8 @@ def _push(repo, branch, profile):
             if result.returncode != 0:
                 if not _reachable():
                     raise Refusal("thyrsus-forge-unreachable")
+                if result.http_status is None:
+                    raise Refusal("thyrsus-git-failed", git_status=result.returncode)
                 raise Refusal("thyrsus-forge-refused", http_status=result.http_status, git_status=result.returncode)
         finally:
             _zero(record)
@@ -371,22 +373,22 @@ def _propose(payload, profile, receipt):
     # Local commits remain visible on failure. No remote rollback is invented.
     if not _reachable():
         raise Refusal("thyrsus-forge-unreachable")
-    metadata, _ = _api(profile, "GET", lambda owner: _repo_api(repo, owner))
+    metadata, _, status_code = _api(profile, "GET", lambda owner: _repo_api(repo, owner))
     base = metadata.get("default_branch")
     if not isinstance(base, str) or not base:
-        raise Refusal("thyrsus-forge-refused")
+        raise Refusal("thyrsus-forge-refused", http_status=status_code)
     _push(repo, branch, profile)
     receipt["attempt"].append({"step": "push", "ok": True})
-    pull, owner = _api(profile, "POST", lambda owner: _repo_api(repo, owner) + "/pulls", {
+    pull, owner, status_code = _api(profile, "POST", lambda owner: _repo_api(repo, owner) + "/pulls", {
         "head": branch, "base": base, "title": message.splitlines()[0], "body": message,
     })
     number = pull.get("number")
     if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
-        raise Refusal("thyrsus-forge-refused")
-    confirmed, owner = _api(profile, "GET", lambda owner: _repo_api(repo, owner) + "/pulls/" + str(number))
+        raise Refusal("thyrsus-forge-refused", http_status=status_code)
+    confirmed, owner, status_code = _api(profile, "GET", lambda owner: _repo_api(repo, owner) + "/pulls/" + str(number))
     head = confirmed.get("head")
     if confirmed.get("state") != "open" or not isinstance(head, dict) or head.get("ref") != branch:
-        raise Refusal("thyrsus-pr-unobserved")
+        raise Refusal("thyrsus-pr-unobserved", http_status=status_code)
     receipt["pr_url"] = "https://" + FORGE + "/" + quote(owner, safe="") + "/" + quote(repo.name, safe="") + "/pulls/" + str(number)
     receipt["attempt"].append({"step": "pull-request", "ok": True})
 
@@ -404,10 +406,10 @@ def _admit(payload, profile, receipt):
     _api(profile, "POST", lambda owner: path(owner) + "/merge", {"Do": "merge"})
     receipt["mutationPerformed"] = True
     receipt["attempt"].append({"step": "merge", "ok": True})
-    pull, _ = _api(profile, "GET", path)
+    pull, _, status_code = _api(profile, "GET", path)
     merged_sha = pull.get("merge_commit_sha")
     if pull.get("merged") is not True or not isinstance(merged_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40,64}", merged_sha):
-        raise Refusal("thyrsus-merge-unobserved")
+        raise Refusal("thyrsus-merge-unobserved", http_status=status_code)
     receipt["merged_sha"] = merged_sha
     receipt["attempt"].append({"step": "merged-readback", "ok": True})
 
@@ -460,7 +462,9 @@ def _input(verb, arguments):
         raise Refusal("thyrsus-token-stdin-required")
     if verb == "forge" and arguments:
         raise Refusal("thyrsus-arguments-invalid")
-    raw = sys.stdin.read(MAX_INPUT + 1)
+    # Ordinary positional CLI calls never wait for stdin. A tty read belongs
+    # only to the explicit secret setter; envelope crossings arrive on a pipe.
+    raw = "" if arguments or (verb != "forge-token" and sys.stdin.isatty()) else sys.stdin.read(MAX_INPUT + 1)
     if len(raw) > MAX_INPUT:
         raise Refusal("thyrsus-request-too-large")
     request = None
