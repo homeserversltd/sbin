@@ -5,7 +5,9 @@ The household forge is always `git.home.arpa`. Enable `thyrsus.enabled` in
 The immutable appliance profile selects HomeServer or HomeSI.
 
 `cli.py thyrsus propose /path/to/repo -m "Describe the change" [--branch name]`
-stages everything, commits, creates a branch, pushes and opens a pull request.
+creates the branch, stages everything, commits on it, pushes and opens a pull
+request; the branch you stood on never moves. With nothing to propose it puts you
+back on your branch and deletes the empty one.
 An absent or null branch generates `thyrsus/<UTC yyyymmdd-hhmmss>`. Read `ok`,
 `branch`, `pr_url` and `firstMissingSignal`; show the human the pull request URL.
 A failed push or pull request never reports success. Earlier local commits,
