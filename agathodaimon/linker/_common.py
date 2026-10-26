@@ -687,8 +687,9 @@ def main_for(verb: str, argv: list[str] | None = None) -> int:
     if verb in MUTATIONS:
         try:
             record_deed(verb, receipt["ok"], receipt["firstMissingSignal"], started)
-        except OSError:
-            receipt.update(ok=False, firstMissingSignal="linker-ledger-write-failed")
+        except (OSError, ValueError):
+            if receipt["ok"]:
+                receipt.update(ok=False, firstMissingSignal="linker-ledger-write-failed")
     return _emit(receipt, request, secrets)
 
 
