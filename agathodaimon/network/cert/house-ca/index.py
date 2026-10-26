@@ -772,13 +772,16 @@ def trust_install(
     )
 
 
-def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, *, dry_run: bool = False) -> dict[str, Any]:
+def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, aliases: Sequence[str] = (), *, dry_run: bool = False) -> dict[str, Any]:
     if not portal or not upstream.startswith(("http://", "https://")):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+    names, ips = _split_sans([portal, *aliases])
+    if ips or not names or names[0] != portal:
         raise ValueError("agathodaimon-nginx-input-invalid")
     directory = _path("CADUCEUS_NGINX_DIR", "/etc/nginx/conf.d")
     target = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
     legacy = directory / f"caduceus-{portal.replace('.', '-')}.conf"
-    body = f"server {{ listen 443 ssl; server_name {portal}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; location / {{ proxy_buffering off; proxy_http_version 1.1; proxy_read_timeout 60s; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_pass {upstream}; }} }}\n"
+    body = f"server {{ listen 443 ssl; server_name {' '.join(names)}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; location / {{ proxy_buffering off; proxy_http_version 1.1; proxy_read_timeout 60s; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_pass {upstream}; }} }}\n"
     body_bytes = body.encode("utf-8")
     same = target.is_file() and target.read_bytes() == body_bytes
     legacy_present = legacy.is_file()
@@ -788,61 +791,165 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, *, 
             changed=False,
             dry_run=True,
             portal=portal,
+            aliases=names[1:],
+            server_names=names,
+            validated=False,
+            reloaded=False,
             legacy_path=str(legacy),
             legacy_present=legacy_present,
             legacy_retired=False,
             legacy_remaining=legacy_present,
             replacement_written=False,
             plan=["stage-nginx", "validate-nginx", "activate-nginx"],
+            commands=[["nginx", "-t"], ["systemctl", "reload", "nginx"]],
         )
-    replacement_written = False
-    if not same:
-        directory.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(".tmp")
+
+    # Keep preimages in this transaction only, including a legacy vhost retired
+    # by the replacement. Never reload a generation that failed validation.
+    previous = target.read_bytes() if target.is_file() else None
+    previous_mode = target.stat().st_mode & 0o777 if previous is not None else 0o644
+    legacy_bytes = legacy.read_bytes() if legacy_present else None
+    legacy_mode = legacy.stat().st_mode & 0o777 if legacy_present else 0o644
+
+    def replace_config(path: Path, payload: bytes, mode: int) -> None:
+        temporary = path.with_suffix(".tmp")
         try:
-            temporary.write_bytes(body_bytes)
-            os.replace(temporary, target)
+            temporary.write_bytes(payload)
+            temporary.chmod(mode)
+            os.replace(temporary, path)
         finally:
             temporary.unlink(missing_ok=True)
-        installed = target.is_file() and target.read_bytes() == body_bytes
-        if not installed:
-            raise RuntimeError("agathodaimon-nginx-readback-failed")
-        replacement_written = True
+
+    replacement_written = False
     legacy_retired = False
-    if legacy.is_file():
-        legacy.unlink()
-        legacy_retired = True
+    validated = False
+    validation_output = ""
+    stage = "stage-nginx"
+    try:
+        if not same:
+            directory.mkdir(parents=True, exist_ok=True)
+            replace_config(target, body_bytes, previous_mode)
+            replacement_written = True
+        if target.read_bytes() != body_bytes:
+            raise RuntimeError("agathodaimon-nginx-readback-failed")
+        if legacy_present:
+            legacy.unlink()
+            legacy_retired = True
+        stage = "validate-nginx"
+        validation = _run(["nginx", "-t"])
+        validation_output = (validation.stdout + validation.stderr).strip()
+        validated = True
+        stage = "activate-nginx"
+        reload = _run(["systemctl", "reload", "nginx"])
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        output = ((error.stdout or "") + (error.stderr or "")).strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
+        restored = False
+        restore_error = None
+        try:
+            if replacement_written:
+                if previous is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    replace_config(target, previous, previous_mode)
+            if legacy_retired and legacy_bytes is not None:
+                replace_config(legacy, legacy_bytes, legacy_mode)
+            restored = True
+        except OSError as rollback:
+            restore_error = str(rollback)
+        rollback_reloaded = False
+        if validated and restored:
+            # A failed activation is held at the previous configuration too.
+            # A validation failure never enters this branch or reloads nginx.
+            try:
+                _run(["nginx", "-t"])
+                _run(["systemctl", "reload", "nginx"])
+                rollback_reloaded = True
+            except (OSError, subprocess.CalledProcessError) as rollback:
+                restore_error = str(rollback)
+        return _receipt(
+            "apply_nginx", changed=not restored or (validated and not rollback_reloaded), ok=False, portal=portal,
+            aliases=names[1:], server_names=names, validated=validated,
+            reloaded=False, restored=restored, restore_error=restore_error,
+            rollback_reloaded=rollback_reloaded,
+            failed_step=stage, command_output=output,
+            validation_output=validation_output if validated else output,
+            firstMissingSignal=f"agathodaimon-nginx-{stage}-failed",
+            legacy_path=str(legacy), legacy_present=legacy_present,
+            legacy_retired=legacy_retired and not restored,
+            legacy_remaining=legacy.is_file(), replacement_written=replacement_written,
+            proof="nginx-activation-refused",
+        )
     legacy_remaining = legacy.is_file()
     return _receipt(
         "apply_nginx",
         changed=replacement_written or legacy_retired,
         portal=portal,
+        aliases=names[1:],
+        server_names=names,
+        validated=True,
+        reloaded=True,
+        validation_output=validation_output,
+        reload_output=(reload.stdout + reload.stderr).strip(),
         legacy_path=str(legacy),
         legacy_present=legacy_present,
         legacy_retired=legacy_retired,
         legacy_remaining=legacy_remaining,
         replacement_written=replacement_written,
-        proof="nginx-config-readback",
+        proof="nginx-validated-and-reloaded",
     )
 
 
-def constituent_lock(portal: str, lan_ip: str, *, dry_run: bool = False) -> dict[str, Any]:
+def constituent_lock(portal: str, lan_ip: str, aliases: Sequence[str] = (), *, dry_run: bool = False) -> dict[str, Any]:
+    from agathodaimon.network.dns.index import DnsManager, create_alias
+
     ip = str(ipaddress.ip_address(lan_ip))
-    if not portal:
+    names, ips = _split_sans([portal, *aliases])
+    if ips or not names or names[0] != portal or not portal.endswith(".home.arpa"):
         raise ValueError("agathodaimon-constituent-portal-invalid")
-    # V1 declares the adapter plan but does not pretend DHCP/DNS mutation occurred.
-    return _receipt("constituent_lock", changed=False, dry_run=dry_run, portal=portal, lan_ip=ip, dhcp_dns_applied=False, plan=["reserve-dhcp", "bind-dns"], proof="declared-constituent-plan")
+    manager = DnsManager(
+        root_config=_path("CADUCEUS_UNBOUND_CONFIG", "/etc/unbound/unbound.conf"),
+        dropin_dir=_path("CADUCEUS_UNBOUND_DROPIN_DIR", "/etc/unbound/unbound.conf.d"),
+        include_path=_path("CADUCEUS_UNBOUND_INCLUDE", "/etc/unbound/unbound.conf.d/agathodaimon-local-names.conf"),
+    )
+    dns_names = [name for name in names if name.endswith(".home.arpa")]
+    labels = [name.removesuffix(".home.arpa") for name in dns_names]
+    # Admit every label before the first mutation. The DNS adapter owns A-record
+    # projection and live readback; never create a device or reverse record.
+    for label in labels:
+        manager._alias_name(label)
+    results = [] if dry_run else [create_alias(label, "homeserver", manager=manager) for label in labels]
+    return _receipt(
+        "constituent_lock", changed=any(row["mutationPerformed"] for row in results),
+        dry_run=dry_run, portal=portal, aliases=names[1:], lan_ip=ip,
+        dns_target="homeserver", dns_names=dns_names,
+        names_bound=[] if dry_run else dns_names, dns_aliases=results,
+        dhcp_dns_applied=not dry_run, dhcp_reservation_applied=False,
+        dhcp_reservation="declared-only", plan=["reserve-dhcp-declared-only", "bind-dns"],
+        proof="declared-constituent-plan" if dry_run else "dns-alias-live-readback",
+    )
+
+
+def _merge_inventory(previous: Any, incoming: Any, key: str) -> list[dict[str, Any]]:
+    if not isinstance(previous, list) or not isinstance(incoming, list):
+        raise ValueError("agathodaimon-state-shape-invalid")
+    rows: dict[str, dict[str, Any]] = {}
+    for row in [*previous, *incoming]:
+        if not isinstance(row, dict) or not isinstance(row.get(key), str) or not row[key]:
+            raise ValueError("agathodaimon-state-shape-invalid")
+        rows[row[key]] = row
+    return list(rows.values())
 
 
 def _validated_state(transition: dict[str, Any], old: dict[str, Any]) -> dict[str, Any]:
     profile = _profile()
-    portals = transition.get("portals", old.get("portals", []))
-    constituents = transition.get("constituents", old.get("constituents", []))
+    portals = _merge_inventory(old.get("portals", []), transition.get("portals", []), "fqdn")
+    constituents = _merge_inventory(old.get("constituents", []), transition.get("constituents", []), "identity")
     if profile != "homeserver" and (portals or constituents):
         raise ValueError("agathodaimon-state-role-inventory-refused")
     if not isinstance(portals, list) or not isinstance(constituents, list):
         raise ValueError("agathodaimon-state-shape-invalid")
     return {
+        **old,
         "profile": profile,
         "root_fingerprint": transition.get("root_fingerprint", old.get("root_fingerprint")),
         "bundle_installed": bool(transition.get("bundle_installed", old.get("bundle_installed", False))),
@@ -883,19 +990,28 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
     if _profile() != "homeserver":
         return _refusal("portal_admit", "agathodaimon-portal-admit-profile-refused", portal=portal, failed_child="profile-gate")
     children: list[dict[str, Any]] = []
+    failed = "constituent_lock"
     try:
-        locked = constituent_lock(portal, lan_ip, dry_run=dry_run)
+        locked = constituent_lock(portal, lan_ip, aliases, dry_run=dry_run)
         children.append(locked)
+        if not locked.get("ok"):
+            raise RuntimeError(locked["firstMissingSignal"])
+        failed = "issue_leaf"
         leaf = issue_leaf(portal, aliases, [lan_ip], dry_run=dry_run)
         children.append(leaf)
-        applied = apply_nginx(portal, upstream, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), dry_run=dry_run)
+        if not leaf.get("ok"):
+            raise RuntimeError(leaf["firstMissingSignal"])
+        failed = "apply_nginx"
+        applied = apply_nginx(portal, upstream, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), aliases, dry_run=dry_run)
         children.append(applied)
-        transition = {"root_fingerprint": leaf.get("ca_fingerprint"), "portals": [{"fqdn": portal, "lan_ip": lan_ip, "upstream": upstream}], "constituents": [{"identity": portal, "lan_ip": lan_ip}]}
+        if not applied.get("ok"):
+            raise RuntimeError(applied["firstMissingSignal"])
+        failed = "state_commit"
+        transition = {"root_fingerprint": leaf.get("ca_fingerprint"), "portals": [{"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip, "upstream": upstream}], "constituents": [{"identity": portal, "lan_ip": lan_ip}]}
         committed = state_commit(transition, dry_run=dry_run)
         children.append(committed)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
-        failed = ("constituent_lock", "issue_leaf", "apply_nginx", "state_commit")[len(children)] if len(children) < 4 else "state_commit"
-        return _refusal("portal_admit", "agathodaimon-portal-child-failed", portal=portal, failed_child=failed, held_generation=_generation(), children=children)
+        return _receipt("portal_admit", changed=any(child.get("changed", False) for child in children), dry_run=dry_run, ok=False, firstMissingSignal="agathodaimon-portal-child-failed", portal=portal, failed_child=failed, child_signal=str(error), held_generation=_generation(), children=children)
     generation = committed.get("state_generation", _generation())
     return _receipt("portal_admit", changed=not dry_run, dry_run=dry_run, portal=portal, generation=generation, state_generation=generation, children=children, proof="four-child-composition")
 
@@ -955,8 +1071,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle = sub.add_parser("bundle-export"); bundle.add_argument("platform", choices=sorted(PLATFORMS)); bundle.add_argument("--dry-run", action="store_true")
     reader = sub.add_parser("bundle-read"); reader.add_argument("platform", choices=sorted(PLATFORMS))
     trust = sub.add_parser("trust-install"); trust.add_argument("bundle"); trust.add_argument("--platform", default="linux", choices=sorted(PLATFORMS)); trust.add_argument("--dry-run", action="store_true"); trust.add_argument("--fingerprint"); trust.add_argument("--renew-ring", action="store_true")
-    apply = sub.add_parser("apply-nginx"); apply.add_argument("portal"); apply.add_argument("upstream"); apply.add_argument("certificate"); apply.add_argument("key_path"); apply.add_argument("--dry-run", action="store_true")
-    lock = sub.add_parser("constituent-lock"); lock.add_argument("portal"); lock.add_argument("lan_ip"); lock.add_argument("--dry-run", action="store_true")
+    apply = sub.add_parser("apply-nginx"); apply.add_argument("portal"); apply.add_argument("upstream"); apply.add_argument("certificate"); apply.add_argument("key_path"); apply.add_argument("--aliases", default=""); apply.add_argument("--dry-run", action="store_true")
+    lock = sub.add_parser("constituent-lock"); lock.add_argument("portal"); lock.add_argument("lan_ip"); lock.add_argument("--aliases", default=""); lock.add_argument("--dry-run", action="store_true")
     commit = sub.add_parser("state-commit"); commit.add_argument("--dry-run", action="store_true")
     admit = sub.add_parser("portal-admit"); admit.add_argument("portal"); admit.add_argument("lan_ip"); admit.add_argument("upstream"); admit.add_argument("--aliases", default=""); admit.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
@@ -969,8 +1085,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.cmd == "bundle-export": return _emit(lambda: bundle_export(args.platform, dry_run=args.dry_run))
     if args.cmd == "bundle-read": return _emit(lambda: bundle_read(args.platform))
     if args.cmd == "trust-install": return _emit(lambda: trust_install(args.bundle, args.platform, dry_run=args.dry_run, fingerprint=args.fingerprint, renew_ring=args.renew_ring))
-    if args.cmd == "apply-nginx": return _emit(lambda: apply_nginx(args.portal, args.upstream, args.certificate, args.key_path, dry_run=args.dry_run))
-    if args.cmd == "constituent-lock": return _emit(lambda: constituent_lock(args.portal, args.lan_ip, dry_run=args.dry_run))
+    if args.cmd == "apply-nginx": return _emit(lambda: apply_nginx(args.portal, args.upstream, args.certificate, args.key_path, args.aliases.split(",") if args.aliases else (), dry_run=args.dry_run))
+    if args.cmd == "constituent-lock": return _emit(lambda: constituent_lock(args.portal, args.lan_ip, args.aliases.split(",") if args.aliases else (), dry_run=args.dry_run))
     if args.cmd == "state-commit": return _emit(lambda: state_commit(_json_stdin(), dry_run=args.dry_run))
     if args.cmd == "portal-admit": return _emit(lambda: portal_admit(args.portal, args.lan_ip, args.upstream, args.aliases.split(",") if args.aliases else (), dry_run=args.dry_run))
     return 2

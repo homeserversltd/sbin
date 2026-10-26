@@ -1104,6 +1104,45 @@ class DnsManager:
 
 
 
+def create_alias(alias_label: str, hostname: str, *, manager: DnsManager | None = None) -> dict[str, Any]:
+    """Compose alias admission without rewriting an already-correct legacy A.
+
+    Older portal names can live outside the managed include. They are reusable
+    only when their sole A answer is the target's and they own no reverse record;
+    every new or managed alias still goes through the ordinary alias writer.
+    """
+    manager = manager or DnsManager()
+    alias, canonical = manager._alias_name(alias_label), manager.canonical_name(hostname)
+    records = manager._all_local_records()
+    existing = [row for row in records if row["name"] == alias.rstrip(".")]
+    target = [row for row in records if row["name"] == canonical.rstrip(".") and row["type"] == "A"]
+    owned_target = [row for row in target if row["provenance"] == "owned"]
+    addresses = {row["target"] for row in owned_target or target}
+    if (
+        alias != canonical and len(addresses) == 1 and existing
+        and all(row["provenance"] != "owned" and row["type"] == "A" for row in existing)
+        and {row["target"] for row in existing} == addresses
+        and not any(row["type"] == "PTR" and row["target"] == alias.rstrip(".") for row in records)
+    ):
+        query_tool = shutil.which("dig")
+        if query_tool is None:
+            raise DnsError("dns-live-query-tool-missing")
+        manager._validate_live()
+        result = manager._command([query_tool, "@127.0.0.1", alias, "A", "+short"])
+        output = result.stdout.strip()
+        if set(output.splitlines()) != addresses:
+            raise DnsError(f"dns-live-query-mismatch: A {alias}")
+        return {
+            "action": "alias-create", "state": "noop", "alias": alias,
+            "mutationPerformed": False, "verification": {
+                "config_valid": True, "reload_outcome": "not-needed-idempotent",
+                "live_query_readback": [{"type": "A", "owner": alias, "output": output}],
+                "mutationPerformed": False,
+            },
+        }
+    return manager.create_alias(alias_label, hostname)
+
+
 class ResolverControl:
     """Bounded owner for the resolver-control portion of Unbound configuration."""
 
