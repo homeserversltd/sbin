@@ -917,15 +917,36 @@ def constituent_lock(portal: str, lan_ip: str, aliases: Sequence[str] = (), *, d
     # projection and live readback; never create a device or reverse record.
     for label in labels:
         manager._alias_name(label)
-    results = [] if dry_run else [create_alias(label, "homeserver", manager=manager) for label in labels]
+    results: list[dict[str, Any]] = []
+    names_bound: list[str] = []
+    failure: dict[str, Any] = {}
+    if not dry_run:
+        for name, label in zip(dns_names, labels):
+            try:
+                row = create_alias(label, "homeserver", manager=manager)
+            except Exception as error:
+                row = {"mutationPerformed": False, "first_failing_boundary": str(error)}
+            if not isinstance(row, dict):
+                row = {"mutationPerformed": False, "first_failing_boundary": "dns-alias-result-invalid"}
+            results.append(row)
+            if row.get("state") not in ("applied", "noop"):
+                failure = {
+                    "ok": False,
+                    "firstMissingSignal": "agathodaimon-constituent-dns-alias-failed",
+                    "first_failing_boundary": row.get("first_failing_boundary", "dns-alias-result-state-invalid"),
+                    "failed_name": name,
+                }
+                break
+            names_bound.append(name)
     return _receipt(
-        "constituent_lock", changed=any(row["mutationPerformed"] for row in results),
+        "constituent_lock", changed=any(row.get("mutationPerformed", False) for row in results),
         dry_run=dry_run, portal=portal, aliases=names[1:], lan_ip=ip,
         dns_target="homeserver", dns_names=dns_names,
-        names_bound=[] if dry_run else dns_names, dns_aliases=results,
-        dhcp_dns_applied=not dry_run, dhcp_reservation_applied=False,
+        names_bound=names_bound, dns_aliases=results,
+        dhcp_dns_applied=not dry_run and not failure, dhcp_reservation_applied=False,
         dhcp_reservation="declared-only", plan=["reserve-dhcp-declared-only", "bind-dns"],
-        proof="declared-constituent-plan" if dry_run else "dns-alias-live-readback",
+        proof="declared-constituent-plan" if dry_run else "dns-alias-refused" if failure else "dns-alias-live-readback",
+        **failure,
     )
 
 
