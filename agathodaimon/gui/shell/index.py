@@ -103,6 +103,7 @@ def ordered_plugs(registry: dict[str, Plug]) -> list[tuple[Plug, int]]:
 
 
 START_PLUG = "about-system"
+NOTIFICATIONS_PLUG = "notifications"
 PRODUCT_TITLES = {"tv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
 
 
@@ -410,12 +411,14 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             sidebar_box.append(listing)
             app_title = _app_title()
             sidebar_bar = Adw.HeaderBar(show_end_title_buttons=False)
-            sidebar_bar.set_title_widget(Adw.WindowTitle(title=app_title))
+            sidebar_bar.set_title_widget(Gtk.Box())
             sidebar_page = Adw.NavigationPage.new(_toolbar(Adw, sidebar_bar, sidebar_box), app_title)
             split.set_sidebar(sidebar_page)
             rows: dict[Any, Plug] = {}
             markers: dict[Any, Any] = {}
             first_row = None
+            notifications_row = None
+            notification_model_changed = None
             active = {"row": None, "content": None}
             for plug, depth in ordered_plugs(self.registry):
                 row = Gtk.ListBoxRow()
@@ -437,6 +440,8 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 listing.append(row)
                 rows[row] = plug
                 markers[row] = marker
+                if plug.ident == NOTIFICATIONS_PLUG:
+                    notifications_row = row
                 if first_row is None or plug.ident == START_PLUG:
                     first_row = row
 
@@ -444,8 +449,11 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 plug = rows.get(row)
                 if plug is None:
                     return
-                page, _scroller = _ensure_page_scroller(Gtk, plug.build_widget())
+                widget = (plug.module.build_widget(on_model=notification_model_changed)
+                          if plug.ident == NOTIFICATIONS_PLUG else plug.build_widget())
+                page, _scroller = _ensure_page_scroller(Gtk, widget)
                 content_bar = Adw.HeaderBar(show_start_title_buttons=False, decoration_layout=":close")
+                content_bar.set_title_widget(Gtk.Box())
                 content_view = _toolbar(Adw, content_bar, page)
                 split.set_content(Adw.NavigationPage.new(content_view, plug.title))
                 split.set_show_content(True)
@@ -455,6 +463,16 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                     markers[previous].set_visible(False)
                 active["row"] = row
                 markers[row].set_visible(True)
+
+            if notifications_row is not None:
+                def open_notifications() -> None:
+                    listing.select_row(notifications_row)
+                    activate_row(listing, notifications_row)
+
+                indicator, notification_model_changed = self.registry[NOTIFICATIONS_PLUG].module.build_indicator(
+                    open_notifications,
+                )
+                sidebar_bar.pack_end(indicator)
 
             listing.connect("row-activated", activate_row)
             self.window = Adw.ApplicationWindow(application=self)
