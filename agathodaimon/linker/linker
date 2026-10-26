@@ -1,0 +1,8 @@
+#!/var/lib/caduceus/venv/bin/python
+"""Keep the Linker terminal command on the staff's own CLI and interpreter."""
+import os
+from pathlib import Path
+import sys
+
+cli = Path(__file__).resolve().parents[1] / "cli.py"
+os.execv(sys.executable, [sys.executable, str(cli), "linker", "tui", *sys.argv[1:]])

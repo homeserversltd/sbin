@@ -1,17 +1,14 @@
-"""Run the Harmonia-managed Linker JSON read doors."""
+"""Run the staff-owned Linker JSON adapter."""
 from __future__ import annotations
 
-import os
 from typing import Sequence
 
-_PYTHON = "/usr/local/lib/linker/venv/bin/python"
-_SCRIPT = "/usr/local/lib/linker/linker_json.py"
+from agathodaimon.linker.linker_json import main as json_main
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
-    os.execv(_PYTHON, [_PYTHON, _SCRIPT])
-    return 127
+    return json_main()
 
 
 if __name__ == "__main__":

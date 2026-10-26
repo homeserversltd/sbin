@@ -1,2 +1,4 @@
 speedtest-cli
 cryptography
+textual
+rich

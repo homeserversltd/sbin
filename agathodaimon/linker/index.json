@@ -5,7 +5,8 @@
     "deploy",
     "hardlink-scan",
     "mkdir",
-    "rename"
+    "rename",
+    "tui"
   ],
   "sclerite": {
     "name": "all",

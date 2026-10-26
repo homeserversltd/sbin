@@ -1,20 +1,21 @@
-"""NAS-rooted staff bridge to retained Linker shelf operations."""
+"""NAS-rooted staff operations over the in-tree Linker core."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import copy
-import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import stat
-import sys
-import types
+import time
 from typing import Any, Mapping
 
+from agathodaimon.linker import core, link_index
+from agathodaimon.linker.logger_utils import MUTATIONS, quiet_mutations, record_deed
+
 SCHEMA = "caduceus.staff.v1"
-BACKEND = "linker-retained-core"
+BACKEND = "linker-staff-core"
 KERNEL_KEYS = ("schema", "intent_id", "transition", "version", "timestamp")
 MAX_INPUT = 1024 * 1024
 REDACTED = "[REDACTED]"
@@ -182,7 +183,7 @@ def _unknown_mutation(operation: str, signal: str, operation_path: Path,
                     could_change=[operation])
 
 
-def _roots() -> tuple[Path, Path, Path, bool]:
+def _roots() -> tuple[Path, Path]:
     scratch = os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
     isolated = scratch is not None
     if isolated:
@@ -191,10 +192,8 @@ def _roots() -> tuple[Path, Path, Path, bool]:
             raise StaffError("linker-scratch-root-invalid")
         base = Path(scratch)
         nas = base / "mnt" / "nas"
-        shelf = base / "usr" / "local" / "lib" / "linker"
     else:
         nas = Path("/mnt/nas")
-        shelf = Path("/usr/local/lib/linker")
     try:
         nas_info = nas.lstat()
         if not stat.S_ISDIR(nas_info.st_mode) or stat.S_ISLNK(nas_info.st_mode):
@@ -204,16 +203,7 @@ def _roots() -> tuple[Path, Path, Path, bool]:
         raise
     except OSError:
         raise StaffError("linker-nas-root-unavailable") from None
-    try:
-        shelf_info = shelf.lstat()
-        if not stat.S_ISDIR(shelf_info.st_mode) or stat.S_ISLNK(shelf_info.st_mode):
-            raise StaffError("linker-retained-core-unavailable")
-        shelf = shelf.resolve(strict=True)
-    except StaffError:
-        raise
-    except OSError:
-        raise StaffError("linker-retained-core-unavailable") from None
-    return nas, root, shelf, isolated
+    return nas, root
 
 
 def _inside(root: Path, candidate: Path) -> bool:
@@ -433,71 +423,6 @@ def _preflight_target(path: Path, nas: Path, root: Path) -> None:
         raise StaffError("linker-path-outside-root")
 
 
-def _import_file(name: str, path: Path):
-    if not path.is_file() or path.is_symlink():
-        raise StaffError("linker-retained-core-unavailable")
-    spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
-        raise StaffError("linker-retained-core-unavailable")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.modules.pop(name, None)
-    return module
-
-
-def _load_link_index(shelf: Path):
-    return _import_file("agathodaimon_linker_retained_index", shelf / "link_index.py")
-
-
-def _load_core(shelf: Path, isolated: bool):
-    """Load exact retained core bytes with its file logger replaced in-process."""
-    names = ("logger_utils", "config", "permissions_helper")
-    saved = {name: sys.modules.get(name) for name in names}
-    old_path = list(sys.path)
-    logger_stub = types.ModuleType("logger_utils")
-    class QuietLogger:
-        def __getattr__(self, _name):
-            return lambda *args, **kwargs: None
-    logger_stub.get_logger = lambda _name="linker": QuietLogger()
-    sys.modules["logger_utils"] = logger_stub
-    try:
-        config_module = _import_file("agathodaimon_linker_retained_config", shelf / "config.py")
-        config_stub = types.ModuleType("config")
-        config_stub.LOG_PATH = getattr(config_module, "LOG_PATH", "")
-        sys.modules["config"] = config_stub
-        if isolated:
-            permissions = types.ModuleType("permissions_helper")
-            permissions.get_app_permissions_for_path = lambda _path: None
-            permissions.set_file_ownership_and_permissions = lambda *args, **kwargs: None
-            sys.modules["permissions_helper"] = permissions
-        else:
-            sys.modules.pop("permissions_helper", None)
-            permissions_path = shelf / "permissions_helper.py"
-            if not permissions_path.is_file() or permissions_path.is_symlink():
-                raise StaffError("linker-retained-core-unavailable")
-            permissions_spec = importlib.util.spec_from_file_location("permissions_helper", permissions_path)
-            if permissions_spec is None or permissions_spec.loader is None:
-                raise StaffError("linker-retained-core-unavailable")
-            permissions = importlib.util.module_from_spec(permissions_spec)
-            sys.modules["permissions_helper"] = permissions
-            permissions_spec.loader.exec_module(permissions)
-        return _import_file("agathodaimon_linker_retained_core", shelf / "core.py")
-    except StaffError:
-        raise
-    except Exception:
-        raise StaffError("linker-retained-core-unavailable") from None
-    finally:
-        sys.path[:] = old_path
-        for name, module in saved.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
-
-
 def _required(payload: Mapping[str, Any], field: str) -> Any:
     if field not in payload or payload[field] is None:
         raise RequestError("linker-field-required")
@@ -517,13 +442,12 @@ def _read_operation(verb: str, payload: Mapping[str, Any], nas: Path, root: Path
     return receipt
 
 
-def _hardlink_scan(payload: Mapping[str, Any], nas: Path, root: Path, shelf: Path) -> dict[str, Any]:
+def _hardlink_scan(payload: Mapping[str, Any], nas: Path, root: Path) -> dict[str, Any]:
     _lexical, path = _path(_required(payload, "path"), nas, root)
     _require_directory(path, signal="linker-directory-unavailable")
     listing, _identity = _listing(path, root)
     try:
-        index = _load_link_index(shelf)
-        found = index.scan_hardlinks(path)
+        found = link_index.scan_hardlinks(path)
     except StaffError:
         raise
     except Exception:
@@ -563,8 +487,7 @@ def _parent_path(path: Path, nas: Path, root: Path) -> Path:
     return parent
 
 
-def _mutate(verb: str, payload: Mapping[str, Any], nas: Path, root: Path,
-            shelf: Path, isolated: bool) -> dict[str, Any]:
+def _mutate(verb: str, payload: Mapping[str, Any], nas: Path, root: Path) -> dict[str, Any]:
     parent: Path | None = None
     source: Path | None = None
     new_name: str | None = None
@@ -632,7 +555,6 @@ def _mutate(verb: str, payload: Mapping[str, Any], nas: Path, root: Path,
             target_signature = _tree_signature(target, root)
             source_plans.append((source, kind, members, target, target_signature))
         operation_path = destination
-        core = _load_core(shelf, isolated)
         before, before_identity = _listing(operation_path, root)
         outcomes = []
         any_failed = False
@@ -706,7 +628,6 @@ def _mutate(verb: str, payload: Mapping[str, Any], nas: Path, root: Path,
         raise RequestError("linker-verb-unknown")
 
     before, before_identity = _listing(operation_path, root)
-    core = _load_core(shelf, isolated)
     try:
         if verb == "mkdir":
             assert parent is not None and new_name is not None
@@ -741,6 +662,7 @@ def _mutate(verb: str, payload: Mapping[str, Any], nas: Path, root: Path,
 
 
 def main_for(verb: str, argv: list[str] | None = None) -> int:
+    started = time.monotonic()
     request = None
     secrets: set[str] = set()
     try:
@@ -749,18 +671,24 @@ def main_for(verb: str, argv: list[str] | None = None) -> int:
         _collect_secret_values(request[1], secrets)
         if argv:
             raise RequestError("linker-argv-not-supported")
-        nas, root, shelf, isolated = _roots()
+        nas, root = _roots()
         if verb in {"browse", "hardlink-scan"}:
             receipt = (_read_operation(verb, request[1], nas, root)
-                       if verb == "browse" else _hardlink_scan(request[1], nas, root, shelf))
+                       if verb == "browse" else _hardlink_scan(request[1], nas, root))
         elif verb in {"delete", "deploy", "mkdir", "rename"}:
-            receipt = _mutate(verb, request[1], nas, root, shelf, isolated)
+            with quiet_mutations():
+                receipt = _mutate(verb, request[1], nas, root)
         else:
             raise RequestError("linker-verb-unknown")
     except StaffError as error:
         receipt = _failure(verb, error.signal)
     except Exception:
         receipt = _failure(verb, "linker-staff-operation-failed")
+    if verb in MUTATIONS:
+        try:
+            record_deed(verb, receipt["ok"], receipt["firstMissingSignal"], started)
+        except OSError:
+            receipt.update(ok=False, firstMissingSignal="linker-ledger-write-failed")
     return _emit(receipt, request, secrets)
 
 
@@ -772,6 +700,6 @@ def main(argv=None):
         return 1
     print(json.dumps({"schema": SCHEMA, "ok": True, "firstMissingSignal": "none",
                       "noun": "linker",
-                      "verbs": ["browse", "delete", "deploy", "hardlink-scan", "mkdir", "rename"],
+                      "verbs": ["browse", "delete", "deploy", "hardlink-scan", "mkdir", "rename", "tui"],
                       "mutationPerformed": False}, separators=(",", ":")))
     return 0

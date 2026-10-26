@@ -1,1 +1,1 @@
-"""Staff operations over the NAS-backed retained Linker core."""
+"""Staff-owned Linker core, JSON operations and terminal browser."""

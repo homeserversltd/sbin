@@ -28,6 +28,7 @@ tailUp (sbin)                           sbin network/tailscale/up (legacy file r
 tailget (sbin)                          sbin network/tailscale/status (declaredTailnet; legacy file retained)
 tailnetName (sbin)                      sbin network/tailscale/tailnet (legacy file retained)
 sslKey.sh (sbin)                        sbin network/cert/refresh (native port; legacy file retained)
+core, JSON mode and TUI (linker)        sbin linker/* and linker tui (old linker repo retained)
 
 Duplicated in August 2026 by a move, so the old root path came back 2026-10-08:
 factoryFallback.sh (sbin)               agathodaimon/appliance/report/factoryFallback.sh
