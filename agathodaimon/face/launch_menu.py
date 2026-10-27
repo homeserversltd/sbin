@@ -89,10 +89,7 @@ def watch(pid):
                 os.kill(pid, signal.SIGTERM)
                 break
         except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
+            # An unavailable watcher must not close an otherwise usable menu.
             break
         time.sleep(0.1)
 
