@@ -1,4 +1,4 @@
-"""Owner-side cache and lifetime management for the Face launch menu."""
+"""Owner-side pin cache and focus-based lifetime for the Face launch menu."""
 import json
 import os
 from pathlib import Path
@@ -49,11 +49,6 @@ def walk(node):
         yield from walk(child)
 
 
-def move_command(output, menu, pid):
-    o, r = output["rect"], menu["rect"]
-    return f"[pid={pid}] move absolute position {o['x'] + 12} {o['y'] + o['height'] - r['height'] - 44}"
-
-
 def alive(pid):
     try:
         os.kill(pid, 0)
@@ -65,23 +60,13 @@ def alive(pid):
 
 
 def watch(pid):
-    placed = seen = False
+    seen = False
     deadline = time.monotonic() + 3
     while alive(pid):
         try:
             result = subprocess.run(["swaymsg", "-t", "get_tree"], capture_output=True,
                                     text=True, timeout=2, check=True)
             nodes = list(walk(json.loads(result.stdout)))
-            menu = next((node for node in nodes if node.get("pid") == pid), None)
-            if menu and not placed:
-                output = next((node for node in nodes if node.get("type") == "output"
-                               and node.get("name") != "__i3"
-                               and any(child is menu for child in walk(node))), None)
-                if output:
-                    subprocess.run(["swaymsg", "-q", move_command(output, menu, pid)],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                   timeout=2, check=True)
-                    placed = True
             focused = next((node for node in nodes if node.get("focused")), None)
             if focused is not None and focused.get("pid") == pid:
                 seen = True
