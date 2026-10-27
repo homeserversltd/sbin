@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import fcntl
 import json
 import os
@@ -243,6 +244,7 @@ def _runuser_command(command: Sequence[str], environment: Mapping[str, str]) -> 
 
 def _systemctl_environment_observed(
     account: pwd.struct_passwd, home: Path, runtime: Path,
+    *, keys: Sequence[str] = ("SWAYSOCK", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PULSE_SERVER"),
 ) -> tuple[dict[str, str], bool]:
     utility = shutil.which("systemctl")
     if utility is None:
@@ -266,7 +268,15 @@ def _systemctl_environment_observed(
     values: dict[str, str] = {}
     for line in result.stdout.splitlines():
         key, separator, value = line.partition("=")
-        if separator and key in {"SWAYSOCK", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PULSE_SERVER"}:
+        if separator and key in keys:
+            if key not in ("SWAYSOCK", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PULSE_SERVER"):
+                if value.startswith("$'"):
+                    try:
+                        value = ast.literal_eval(value[1:])
+                    except (SyntaxError, ValueError):
+                        continue
+                if not isinstance(value, str) or "\x00" in value:
+                    continue
             values[key] = value
     return values, True
 
@@ -846,11 +856,24 @@ def launch(payload: dict[str, Any]) -> Mapping[str, Any]:
             "--sort-order", "default", "--allow-images", "--parse-search", "--no-custom-entry",
         ]
         launcher = "wofi"
+    presentation_keys = (
+        "QT_QPA_PLATFORM", "QT_QPA_PLATFORMTHEME", "QT_AUTO_SCREEN_SCALE_FACTOR",
+        "QT_WAYLAND_DISABLE_WINDOWDECORATION", "XCURSOR_SIZE", "XDG_SESSION_TYPE",
+        "XDG_SESSION_DESKTOP", "XDG_CURRENT_DESKTOP", "GDK_BACKEND", "GTK_USE_PORTAL",
+        "SDL_VIDEODRIVER", "CLUTTER_BACKEND",
+    )
+    account = _owner()
+    presentation, observed = _systemctl_environment_observed(
+        account, home, _runtime_dir(account), keys=presentation_keys,
+    )
+    carried = {key: presentation[key] for key in presentation_keys if observed and key in presentation}
+    environment.update(carried)
     process, exit_code = owner_spawn(argv, environment)
     return {
         "ok": True, "firstMissingSignal": "none", "launched": True,
         "detached": True, "launcher": launcher, "pid": process.pid,
         "early_exit": exit_code, "socket_source": socket_source,
+        "presentation_keys": sorted(carried),
     }
 
 
