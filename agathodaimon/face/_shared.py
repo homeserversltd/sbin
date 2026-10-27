@@ -849,8 +849,16 @@ def launch(payload: dict[str, Any]) -> Mapping[str, Any]:
             home=home, discover=True, require_wayland=True,
             prefer_direct_keys=("WAYLAND_DISPLAY",),
         )
+        support = str(Path(__file__).with_name("launch_menu.py"))
+        pin_result = owner_run(["/usr/bin/python3", support, "pin", str(home)], environment)
+        if pin_result.returncode != 0:
+            raise FaceError("face-launch-pin-cache-failed")
+        try:
+            pinned = int(pin_result.stdout.strip())
+        except ValueError:
+            raise FaceError("face-launch-pin-cache-invalid")
         argv = [
-            "wofi", "--show", "drun", "--conf", str(home / ".config/wofi/config"),
+            "wofi", "--show", "drun", "--normal-window", "--conf", str(home / ".config/wofi/config"),
             "--style", str(home / ".config/wofi/style.css"),
             "--cache-file", str(home / ".local/state/hometv-launcher/wofi-drun-cache"),
             "--sort-order", "default", "--allow-images", "--parse-search", "--no-custom-entry",
@@ -869,12 +877,36 @@ def launch(payload: dict[str, Any]) -> Mapping[str, Any]:
     carried = {key: presentation[key] for key in presentation_keys if observed and key in presentation}
     environment.update(carried)
     process, exit_code = owner_spawn(argv, environment)
-    return {
+    result = {
         "ok": True, "firstMissingSignal": "none", "launched": True,
         "detached": True, "launcher": launcher, "pid": process.pid,
         "early_exit": exit_code, "socket_source": socket_source,
         "presentation_keys": sorted(carried),
     }
+    if launcher == "wofi":
+        # When root calls runuser, Popen's PID is the runuser supervisor, not
+        # the owner process that Sway identifies. Resolve its direct child.
+        wofi_pid = process.pid
+        if os.geteuid() != account.pw_uid:
+            wofi_pid = None
+            for _ in range(10):
+                try:
+                    children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
+                    if len(children) == 1:
+                        wofi_pid = int(children[0])
+                        break
+                except (OSError, ValueError):
+                    break
+                time.sleep(0.01)
+        watcher_started = False
+        if wofi_pid is not None and exit_code is None:
+            try:
+                owner_spawn(["/usr/bin/python3", support, "watch", str(wofi_pid)], environment)
+                watcher_started = True
+            except FaceError:
+                pass
+        result.update(pinned=pinned, watcher_started=watcher_started)
+    return result
 
 
 _SCREENSHOT_CAPTURE_NAME = "agathodaimon-face-screenshot.png"
