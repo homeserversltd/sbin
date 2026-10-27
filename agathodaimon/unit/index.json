@@ -1,0 +1,9 @@
+{
+  "children": [
+    "control"
+  ],
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
+}

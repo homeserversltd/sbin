@@ -32,6 +32,7 @@
     "storage/upload/ingress",
     "storage/vault/open",
     "storage/vault/policy",
+    "unit/control",
     "update/service",
     "update/sources-reseed",
     "thyrsus/propose",
@@ -111,6 +112,10 @@
     [
       "time",
       "household-time"
+    ],
+    [
+      "unit",
+      "control"
     ],
     [
       "update",

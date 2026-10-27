@@ -90,6 +90,7 @@
       ]
     },
     "tailscale": {},
+    "pid2-unit": {},
     "console-select-branch": {},
     "console-restart": {
       "requires_any": [

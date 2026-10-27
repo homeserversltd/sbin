@@ -3,7 +3,8 @@
   "profile": "homesi",
   "features": [
     "nmcli",
-    "local-ai"
+    "local-ai",
+    "pid2-unit"
   ],
   "choices": {}
 }
