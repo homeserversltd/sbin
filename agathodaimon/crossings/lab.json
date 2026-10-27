@@ -47,6 +47,9 @@
     "settings/default-apps",
     "settings/default-apps/desktop-cache",
     "settings/display",
+    "settings/energy",
+    "settings/keyboard",
+    "settings/region",
     "settings/input",
     "settings/notifications",
     "settings/sound",
@@ -273,6 +276,18 @@
     ],
     [
       "settings",
+      "energy"
+    ],
+    [
+      "settings",
+      "keyboard"
+    ],
+    [
+      "settings",
+      "region"
+    ],
+    [
+      "settings",
       "input"
     ],
     [
@@ -488,6 +503,9 @@
     "/api/v1/settings/datetime",
     "/api/v1/settings/default-apps",
     "/api/v1/settings/display",
+    "/api/v1/settings/energy",
+    "/api/v1/settings/keyboard",
+    "/api/v1/settings/region",
     "/api/v1/settings/input",
     "/api/v1/settings/notifications",
     "/api/v1/settings/sound",
@@ -536,6 +554,9 @@
       "settings/datetime",
       "settings/default-apps",
       "settings/display",
+      "settings/energy",
+      "settings/keyboard",
+      "settings/region",
       "settings/input",
       "settings/notifications",
       "settings/sound",
@@ -650,6 +671,9 @@
       "/api/v1/settings/datetime",
       "/api/v1/settings/default-apps",
       "/api/v1/settings/display",
+      "/api/v1/settings/energy",
+      "/api/v1/settings/keyboard",
+      "/api/v1/settings/region",
       "/api/v1/settings/input",
       "/api/v1/settings/notifications",
       "/api/v1/settings/sound",

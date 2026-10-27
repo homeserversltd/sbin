@@ -14,7 +14,7 @@ from agathodaimon.settings import _shared
 from agathodaimon.settings.display import backends, policy
 from agathodaimon._envelope import EnvelopeError, Request, attach, read
 
-DISPLAY_FIELDS = ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light")
+DISPLAY_FIELDS = ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan")
 MODE_FIELDS = {"resolution", "refresh_rate"}
 
 
@@ -32,6 +32,9 @@ def _values(settings: Mapping[str, Any]) -> dict[str, Any]:
         "orientation": None,
         "brightness": None,
         "night_light": None,
+        "hdr": None,
+        "adaptive_sync": None,
+        "overscan": None,
     }
 
 
@@ -41,6 +44,19 @@ def _kms_observation() -> dict[str, Any]:
 
 def _resolution_observation(connectors: Sequence[Mapping[str, Any]], settings: Mapping[str, Any]) -> dict[str, Any]:
     return policy.resolve_mode(connectors, settings)
+
+
+def _sway_output(selected: Mapping[str, Any]) -> dict[str, Any] | None:
+    if selected.get("kind") != "sway": return None
+    socket = str(selected["socket"])
+    argv, runtime, _ = backends._sway_argv(socket, ["-t", "get_outputs"])
+    result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
+    try:
+        raw = json.loads(result.get("stdout", "")) if result.get("ok") else []
+        active = [item for item in raw if isinstance(item, dict) and item.get("active") is True]
+        return active[0] if len(active) == 1 else None
+    except (ValueError, TypeError):
+        return None
 
 
 def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict[str, Any]:
@@ -72,6 +88,13 @@ def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict
             "resolved": resolution,
         },
     }
+    output = _sway_output(selected)
+    features = output.get("features") if output else None
+    if output and isinstance(features, dict) and features.get("hdr") is True and isinstance(output.get("hdr"), bool):
+        reply["values"]["hdr"] = output["hdr"]
+    adaptive = output.get("adaptive_sync_status") if output else None
+    if isinstance(features, dict) and features.get("adaptive_sync") is True and adaptive in {"enabled", "disabled"}:
+        reply["values"]["adaptive_sync"] = adaptive == "enabled"
     if live.get("ok") is not True:
         signal = live.get("signal")
         if not isinstance(signal, str) or not signal:
@@ -133,6 +156,30 @@ def _mode_matches_current(mode: Mapping[str, Any], current: Any) -> bool:
 
 def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, Any],
            settings: Mapping[str, Any]) -> dict[str, Any]:
+    if "adaptive_sync" in supplied or "hdr" in supplied:
+        if len(supplied) != 1: return _failure("mixed-display-fields", settings=settings, backend=selected)
+        field = "hdr" if "hdr" in supplied else "adaptive_sync"
+        value = supplied[field]
+        if not isinstance(value, bool): return _failure("invalid:" + field, settings=settings, backend=selected)
+        output = _sway_output(selected)
+        observed = output.get("hdr") if output and field == "hdr" else output.get("adaptive_sync_status") if output else None
+        features = output.get("features") if output else None
+        available = isinstance(features, dict) and features.get(field) is True and (isinstance(observed, bool) if field == "hdr" else observed in {"enabled", "disabled"})
+        if not output or not available or not isinstance(output.get("name"), str):
+            return _failure("unsupported:" + field, settings=settings, backend=selected)
+        socket = str(selected["socket"])
+        text = f"output {backends._escape_sway_name(output['name'])} {field} {'on' if value else 'off'}"
+        argv, runtime, _ = backends._sway_argv(socket, [text])
+        receipt = _shared.Receipt("display", [field])
+        result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
+        receipt.commands.append({"argv": argv, "returncode": result.get("returncode")})
+        try: responses = json.loads(result.get("stdout", "")) if result.get("ok") else []
+        except (TypeError, ValueError): responses = []
+        if not responses or not all(isinstance(x, dict) and x.get("success") is True for x in responses):
+            receipt.finish(False)
+            return _failure("sway-" + field + "-failed", settings=settings, backend=selected)
+        current = observed if field == "hdr" else observed == "enabled"
+        return receipt.finish(True, current != value)
     unsupported = _unsupported_field(supplied)
     if unsupported is not None:
         return _failure(f"unsupported:{unsupported}", settings=settings, backend=selected)
@@ -295,7 +342,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     original = list(sys.argv[1:] if argv is None else argv)
     selected = backends.select_backend()
     if selected is None:
-        return int(_shared.main(original) or 0)
+        return int(_shared.family_main("display", original) or 0)
     if original:
         result = _dispatch_argv(selected, original)
         if result is not None:
@@ -304,10 +351,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     if sys.stdin.isatty():
         return int(_shared.main(original) or 0)
     try:
-        request = read(known_fields=DISPLAY_FIELDS)
+        request = read(known_fields=DISPLAY_FIELDS + ("args",))
     except (EnvelopeError, ValueError) as exc:
         print(json.dumps({"ok": False, "firstMissingSignal": str(exc),
                           "mutationPerformed": False}, sort_keys=True, separators=(",", ":")))
+        return 1
+    args = request.payload.get("args")
+    if isinstance(args, list):
+        result = _dispatch_argv(selected, args)
+        if result is not None: return result
+        print(json.dumps({"ok": False, "firstMissingSignal": "cli-parse-failure", "mutationPerformed": False}))
         return 1
     return _dispatch_envelope(selected, request)
 

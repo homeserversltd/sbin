@@ -21,10 +21,13 @@ from typing import Any, Iterable, Sequence
 from agathodaimon._envelope import EnvelopeError, attach, read
 
 FIELDS: dict[str, tuple[str, ...]] = {
-    "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light"),
-    "appearance": ("color_scheme", "accent_color", "wallpaper", "icon_theme", "cursor_theme", "font"),
-    "sound": ("output_device", "input_device", "volume", "input_volume", "muted"),
-    "input": ("keyboard_layout", "keyboard_variant", "key_repeat", "repeat_delay_ms", "repeat_interval_ms", "natural_scroll", "tap_to_click", "pointer_speed", "scroll_factor"),
+    "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan"),
+    "appearance": ("color_scheme", "accent_color", "wallpaper", "icon_theme", "cursor_theme", "font", "cursor_size", "font_size", "text_scale"),
+    "sound": ("output_device", "input_device", "volume", "input_volume", "muted", "card_profile", "test_tone"),
+    "input": ("keyboard_layout", "keyboard_variant", "key_repeat", "repeat_delay_ms", "repeat_interval_ms", "natural_scroll", "tap_to_click", "pointer_speed", "accel_profile", "left_handed", "disable_while_typing"),
+    "keyboard": ("keyboard_layout", "repeat_rate", "repeat_delay"),
+    "region": ("locale", "measurement_units"),
+    "energy": ("screen_off_seconds", "sleep_seconds", "power_button_action"),
     "notifications": ("enabled", "do_not_disturb", "show_banners", "show_on_lock_screen", "sound_enabled"),
     "default-apps": ("browser", "mail", "calendar", "music", "video", "photos", "text_editor", "terminal", "file_manager"),
     "datetime": ("timezone", "ntp_enabled", "automatic_timezone", "date_format", "time_format"),
@@ -45,7 +48,7 @@ MIME_KEYS = {
 
 OWNER_USER = "owner"
 OWNER_HOME = Path("/home/owner")
-OWNER_SESSION_TOOLS = {"pactl", "wpctl", "hyprctl", "dunstctl", "xdg-settings"}
+OWNER_SESSION_TOOLS = {"pactl", "wpctl", "hyprctl", "dunstctl", "xdg-settings", "gsettings", "pw-play", "paplay"}
 
 
 def home() -> Path:
@@ -59,6 +62,8 @@ def owner_session_command(argv: Sequence[str]) -> tuple[list[str], dict[str, str
     owner_uid = pwd.getpwnam(OWNER_USER).pw_uid
     environment = os.environ.copy()
     environment["XDG_RUNTIME_DIR"] = f"/run/user/{owner_uid}"
+    environment["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{owner_uid}/bus"
+    environment["HOME"] = str(OWNER_HOME)
     return ["runuser", "-u", OWNER_USER, "--", *command_argv], environment
 
 
@@ -175,16 +180,19 @@ class Receipt:
         self.kind = kind
         self.fields = fields
         self.backups: list[dict[str, Any]] = []
+        self._saved: dict[Path, bytes | None] = {}
         self.commands: list[dict[str, Any]] = []
         self.changed = False
 
     def backup(self, path: Path) -> None:
-        original = path.read_bytes() if path.exists() else b""
-        name = f"backup-{len(self.backups):03d}-{path.name}"
-        target = self.run_dir / name
-        target.write_bytes(original)
-        mode = (path.stat().st_mode & 0o777) if path.exists() else None
-        self.backups.append({"path": str(path), "backupPath": str(target), "bytes": len(original), "mode": mode, "existed": path.exists()})
+        if path in self._saved:
+            return
+        existed = path.exists()
+        original = path.read_bytes() if existed else None
+        self._saved[path] = original
+        stat_result = path.stat() if existed else None
+        mode = (stat_result.st_mode & 0o777) if stat_result else None
+        self.backups.append({"path": str(path), "bytes": len(original) if original is not None else 0, "mode": mode, "uid": stat_result.st_uid if stat_result else None, "gid": stat_result.st_gid if stat_result else None, "existed": existed})
 
     def replace(self, path: Path, payload: bytes) -> bool:
         if path.exists() and path.read_bytes() == payload:
@@ -227,13 +235,38 @@ class Receipt:
         finally:
             if temporary is not None: temporary.unlink(missing_ok=True)
 
+    def restore_backups(self) -> None:
+        for path, payload in reversed(list(self._saved.items())):
+            if payload is None:
+                path.unlink(missing_ok=True)
+            else:
+                self.rollback(path, payload)
+                metadata = next(item for item in self.backups if item["path"] == str(path))
+                if metadata["mode"] is not None: os.chmod(path, metadata["mode"])
+                current = path.stat()
+                if (current.st_uid, current.st_gid) != (metadata["uid"], metadata["gid"]):
+                    os.chown(path, metadata["uid"], metadata["gid"])
+        self.changed = False
+
     def finish(self, ok: bool, changed: bool = False, error: str | None = None) -> dict[str, Any]:
         metadata = {"ok": ok, "changed": bool(changed), "kind": self.kind, "fields": self.fields,
                     "backups": self.backups, "commands": self.commands}
-        (self.run_dir / "run.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
         if ok:
-            return {"ok": True, "changed": bool(changed), "receiptPath": str(self.run_dir / "run.json")}
-        return {"ok": False, "firstMissingSignal": error or "failure"}
+            (self.run_dir / "run.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
+            return {"ok": True, "changed": bool(changed), "receiptPath": str(self.run_dir / "run.json"), "receipt": metadata}
+        self.run_dir.rmdir()
+        return {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
+
+
+class ReceiptFailure(ValueError):
+    def __init__(self, signal: str, receipt: dict[str, Any], mutation_performed: bool = False):
+        super().__init__(signal)
+        self.receipt = receipt
+        self.mutation_performed = mutation_performed
+
+    def reply(self) -> dict[str, Any]:
+        return {"ok": False, "changed": False, "mutationPerformed": self.mutation_performed,
+                "firstMissingSignal": str(self), "receipt": self.receipt}
 
 
 def hypr_json(name: str) -> Any:
@@ -256,8 +289,27 @@ def monitor_orientation(value: Any) -> int:
     if text not in TRANSFORMS: raise ValueError("invalid:orientation")
     return TRANSFORMS[text]
 
+def _default_card() -> tuple[str | None, str | None]:
+    ok, sink_name, _ = command(["pactl", "get-default-sink"])
+    good, text, _ = command(["pactl", "-f", "json", "list", "sinks"])
+    cards_ok, cards_text, _ = command(["pactl", "-f", "json", "list", "cards"])
+    if not ok or not good or not cards_ok:
+        return None, None
+    try:
+        sinks, cards = json.loads(text), json.loads(cards_text)
+        sink = next(item for item in sinks if isinstance(item, dict) and item.get("name") == sink_name)
+        card_id = sink.get("card")
+        card = next(item for item in cards if isinstance(item, dict) and item.get("index") == card_id)
+        active = card.get("active_profile")
+        profile = active.get("name") if isinstance(active, dict) else active
+        return (card.get("name") if isinstance(card.get("name"), str) else None,
+                profile if isinstance(profile, str) else None)
+    except (ValueError, TypeError, StopIteration):
+        return None, None
+
+
 def get_values(kind: str) -> dict[str, Any]:
-    values = {field: None for field in FIELDS[kind]}
+    values: dict[str, Any] = {field: None for field in FIELDS[kind]}
     p = paths()
     if kind == "display":
         monitors = hypr_json("monitors")
@@ -288,6 +340,21 @@ def get_values(kind: str) -> dict[str, Any]:
     elif kind == "appearance":
         lines = ini_read(p[kind]); dark = ini_get(lines, "gtk-application-prefer-dark-theme", "Settings")
         values.update(color_scheme=("dark" if dark == "1" else "light" if dark == "0" else None), icon_theme=ini_get(lines, "gtk-icon-theme-name", "Settings"), cursor_theme=ini_get(lines, "gtk-cursor-theme-name", "Settings"), font=ini_get(lines, "gtk-font-name", "Settings"))
+        for field, key in (("cursor_size", "cursor-size"), ("text_scale", "text-scaling-factor")):
+            good, text, _ = command(["gsettings", "get", "org.gnome.desktop.interface", key])
+            if good:
+                try: values[field] = int(text) if field == "cursor_size" else float(text)
+                except ValueError: pass
+        good, text, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "font-name"])
+        if good:
+            import ast
+            try:
+                font = ast.literal_eval(text)
+                if isinstance(font, str): values["font"] = font
+            except (ValueError, SyntaxError): pass
+        if isinstance(values["font"], str):
+            match = re.search(r"\s+(\d+(?:\.\d+)?)$", values["font"])
+            if match: values["font_size"] = float(match.group(1))
     elif kind == "sound":
         ok, text, _ = command(["pactl", "info"])
         if ok:
@@ -298,6 +365,7 @@ def get_values(kind: str) -> dict[str, Any]:
             good, out, _ = command(["pactl", sub, target])
             values[field] = out.split("/")[1].strip() if good and "/" in out else (out or None if good else None)
         good, out, _ = command(["pactl", "get-sink-mute", "@DEFAULT_SINK@"]) ; values["muted"] = ("yes" in out.lower()) if good else None
+        _, values["card_profile"] = _default_card()
     elif kind == "input":
         devices = hypr_json("devices") or {}
         keyboard = (devices.get("keyboards") or [{}])[0]
@@ -416,6 +484,7 @@ def hypr_set(receipt: Receipt, field: str, value: str) -> None:
 def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
     if field not in FIELDS[kind]: raise ValueError("unsupported:"+field)
     if kind == "display":
+        if field in {"hdr", "adaptive_sync", "overscan"}: raise ValueError("unsupported:" + field)
         if field == "night_light": raise ValueError("unsupported:night_light")
         if field == "brightness":
             if shutil.which("brightnessctl") is None: raise ValueError("unsupported:brightness")
@@ -424,6 +493,26 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
         else: monitor_edit(receipt,field,scalar(value,field))
         return
     if kind == "appearance":
+        if field in {"cursor_size", "font_size", "text_scale"}:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("invalid:" + field)
+            if field == "cursor_size":
+                if int(value) != value or not 8 <= value <= 256: raise ValueError("invalid:cursor_size")
+                gkey, gval = "cursor-size", str(int(value))
+            elif field == "text_scale":
+                if not 0.5 <= value <= 3: raise ValueError("invalid:text_scale")
+                gkey, gval = "text-scaling-factor", str(float(value))
+            else:
+                if not 6 <= value <= 72: raise ValueError("invalid:font_size")
+                font = get_values("appearance").get("font")
+                if not font or not re.search(r"\s+\d+(?:\.\d+)?$", font): raise ValueError("unsupported:font_size")
+                gkey, gval = "font-name", re.sub(r"\s+\d+(?:\.\d+)?$", " " + str(value), font)
+            require("gsettings", field)
+            cmd = ["gsettings", "set", "org.gnome.desktop.interface", gkey, gval]
+            good, _, result = command(cmd); receipt.commands.append({"argv": cmd, "returncode": result.returncode})
+            if not good: raise ValueError("command-failed:" + field)
+            receipt.changed = True
+            return
         if field in ("accent_color","wallpaper"): raise ValueError("unsupported:"+field)
         key={"color_scheme":"gtk-application-prefer-dark-theme","icon_theme":"gtk-icon-theme-name","cursor_theme":"gtk-cursor-theme-name","font":"gtk-font-name"}[field]
         if field == "color_scheme":
@@ -437,6 +526,26 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
             if not good: raise ValueError("command-failed:"+field)
         set_file_value(receipt,paths()[kind],key,val,"Settings"); return
     if kind == "sound":
+        if field == "test_tone":
+            if value is not True: raise ValueError("invalid:test_tone")
+            sounds = [Path("/usr/share/sounds/freedesktop/stereo/audio-test-signal.oga"), Path("/usr/share/sounds/freedesktop/stereo/audio-volume-change.oga")]
+            sample = next((path for path in sounds if path.is_file()), None)
+            player = shutil.which("pw-play") or shutil.which("paplay")
+            if sample is None or player is None: raise ValueError("unsupported:test_tone")
+            cmd = [Path(player).name, str(sample)]
+            good, _, result = command(cmd); receipt.commands.append({"argv": cmd, "returncode": result.returncode})
+            if not good: raise ValueError("command-failed:test_tone")
+            receipt.changed = True
+            return
+        if field == "card_profile":
+            card, _ = _default_card()
+            if not card: raise ValueError("unsupported:card_profile")
+            if not isinstance(value, str) or not value or len(value) > 256 or any(ord(c) < 32 for c in value): raise ValueError("invalid:card_profile")
+            cmd = ["pactl", "set-card-profile", card, value]
+            good, _, result = command(cmd); receipt.commands.append({"argv": cmd, "returncode": result.returncode})
+            if not good: raise ValueError("command-failed:card_profile")
+            receipt.changed = True
+            return
         require("pactl",field); val=percentage(value,field) if field in ("volume","input_volume") else ("1" if boolean(value,field) else "0") if field=="muted" else str(scalar(value,field))
         commands={"volume":["pactl","set-sink-volume","@DEFAULT_SINK@",val],"input_volume":["pactl","set-source-volume","@DEFAULT_SOURCE@",val],"muted":["pactl","set-sink-mute","@DEFAULT_SINK@",val],"output_device":["pactl","set-default-sink",val],"input_device":["pactl","set-default-source",val]}; cmd=commands[field]; good,_,result=command(cmd); receipt.commands.append({"argv":cmd,"returncode":result.returncode})
         if not good: raise ValueError("command-failed:"+field)
@@ -495,6 +604,33 @@ def parser() -> argparse.ArgumentParser:
     return p
 
 
+def family_main(kind: str, argv: Sequence[str] | None = None) -> int:
+    """Adapt the fixed crossing's args envelope to the family CLI grammar."""
+    original = list(sys.argv[1:] if argv is None else argv)
+    if original:
+        return main([kind, *original])
+    try:
+        request = read(known_fields=FIELDS[kind] + ("args",))
+        args = request.payload.get("args")
+        if isinstance(args, list):
+            return main([kind, *args])
+        if request.verb in {"read", "get", "state"}:
+            return emit(attach({"ok": True, "values": get_values(kind), "mutationPerformed": False}, request), 0)
+        changes = {field: value for field, value in request.payload.items() if field in FIELDS[kind]}
+        if not changes:
+            return emit(attach({"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}, request), 1)
+        receipt = Receipt(kind, list(changes))
+        try:
+            for field, value in changes.items():
+                set_value(kind, field, value, receipt)
+            return emit(attach(receipt.finish(True, receipt.changed), request), 0)
+        except Exception as error:
+            receipt.restore_backups()
+            return emit(attach(receipt.finish(False, False, str(error)), request), 1)
+    except (EnvelopeError, ValueError) as error:
+        return emit({"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}, 1)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     # cli.py invokes a slash target with an empty argv and delivers the staff
@@ -535,6 +671,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for field, raw in zip(args.field, args.value_json): set_value(args.kind, field, json.loads(raw), receipt)
             return emit(receipt.finish(True, receipt.changed), 0)
         except Exception as exc:
+            receipt.restore_backups()
             return emit(receipt.finish(False, False, str(exc)), 1)
     except SystemExit:
         return emit({"ok": False, "firstMissingSignal": "cli-parse-failure"}, 2)

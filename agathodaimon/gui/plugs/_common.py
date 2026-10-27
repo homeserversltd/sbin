@@ -138,6 +138,75 @@ def _number(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
+def add_manager_row(page: Any, title: str, button_text: str, program: str) -> None:
+    """Ask the admitted face door to toggle a manager, then show its receipt."""
+    import gi
+    gi.require_version("Gtk", "4.0")
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw, GLib, Gtk
+
+    group = Adw.PreferencesGroup()
+    page.add(group)
+    row = Adw.ActionRow(title=title, subtitle="Checking Caduceus door…")
+    button = Gtk.Button(label=button_text, valign=Gtk.Align.CENTER)
+    button.set_sensitive(False)
+    row.add_suffix(button)
+    group.add(row)
+
+    def checked(message: str, enabled: bool) -> bool:
+        row.set_subtitle(message)
+        button.set_sensitive(enabled)
+        return False
+
+    def discover() -> None:
+        try:
+            doors = _request("/api/v1/doors")
+            routes = doors.get("routes")
+            present = isinstance(routes, list) and "/api/v1/face/app" in routes
+            GLib.idle_add(checked, "Ready" if present else "Manager door unavailable", present)
+        except RuntimeError as error:
+            GLib.idle_add(checked, str(error), False)
+
+    def toggle() -> None:
+        try:
+            data = json.dumps({"id": program, "action": "toggle"}).encode("utf-8")
+            request = urllib.request.Request(CADUCEUS_URL + "/api/v1/face/app", data=data,
+                                             headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    raw = response.read(256 * 1024)
+            except urllib.error.HTTPError as error:
+                raw = error.read(256 * 1024)
+            receipt = json.loads(raw)
+            if not isinstance(receipt, dict):
+                raise ValueError("invalid receipt")
+            if receipt.get("ok") is True:
+                running = receipt.get("running")
+                message = "Opened" if running is True else "Closed" if running is False else "Request completed"
+            else:
+                message = _signal(receipt) or "Manager request refused"
+        except (OSError, urllib.error.URLError, ValueError, UnicodeDecodeError) as error:
+            message = f"Manager unavailable: {error}"
+        GLib.idle_add(checked, message, True)
+
+    def on_click(_button: Any) -> None:
+        button.set_sensitive(False)
+        row.set_subtitle("Waiting for Caduceus receipt…")
+        threading.Thread(target=toggle, daemon=True).start()
+
+    button.connect("clicked", on_click)
+    threading.Thread(target=discover, daemon=True).start()
+
+
+def build_manager_widget(plug: dict[str, Any], program: str) -> Any:
+    import gi
+    gi.require_version("Adw", "1")
+    from gi.repository import Adw
+    page = _page(Adw, plug)
+    add_manager_row(page, plug["title"], "Open", program)
+    return page
+
+
 def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, specs: list[dict[str, Any]], *, required_route: str | None = None, mutation_method: str = "PATCH") -> Any:
     """Build one receipt-backed settings pane over its admitted Caduceus door."""
     import gi
@@ -153,16 +222,27 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     state: dict[str, Any] = {"hydrating": False, "hydrated": False, "read_generation": 0, "busy": set(), "values": {}, "status": {}}
     rows: dict[str, Any] = {}
     status_rows: dict[str, Any] = {}
+    unavailable_rows: dict[str, Any] = {}
     getters: dict[str, Any] = {}
     setters: dict[str, Any] = {}
     static_signals: dict[str, str] = {}
+    action_fields: set[str] = set()
 
     for spec in specs:
         field = spec["field"]
         kind = spec.get("kind", "entry")
         title = spec["title"]
         signal = spec.get("signal", "")
-        if kind == "switch":
+        event_source = None
+        if kind == "action":
+            action_fields.add(field)
+            row = Adw.ActionRow(title=title)
+            event_source = Gtk.Button(label=spec.get("button", "Run"), valign=Gtk.Align.CENTER)
+            row.add_suffix(event_source)
+            getters[field] = lambda: True
+            setters[field] = lambda value: None
+            changed_signal = "clicked"
+        elif kind == "switch":
             row = Adw.SwitchRow(title=title)
             getters[field] = row.get_active
             setters[field] = lambda value, item=row: item.set_active(_bool(value))
@@ -210,36 +290,55 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             group.add(status_row)
         else:
             status_rows[field] = row
+        unavailable = Adw.ActionRow(title=title, subtitle="Unavailable")
+        unavailable.set_visible(False)
+        unavailable_rows[field] = unavailable
+        group.add(unavailable)
         if signal:
             static_signals[field] = signal
             status_rows[field].set_subtitle(signal)
         else:
-            status_rows[field].set_subtitle("Reading Caduceus…")
+            row.set_visible(False)
+            if status_rows[field] is not row:
+                status_rows[field].set_visible(False)
+            unavailable.set_subtitle("Reading Caduceus…")
+            unavailable.set_visible(True)
 
         def on_changed(_row: Any, _param: Any = None, selected: str = field) -> None:
             if not state["hydrated"] or state["hydrating"] or selected in state["busy"] or selected in static_signals:
                 return
             previous = state["values"].get(selected)
             value = getters[selected]()
-            if value == previous:
+            if value == previous and selected not in action_fields:
                 return
             state["busy"].add(selected)
             rows[selected].set_sensitive(False)
             status_rows[selected].set_subtitle("Waiting for Caduceus receipt…")
             threading.Thread(target=mutate, args=(selected, value, previous), daemon=True).start()
 
-        row.connect(changed_signal, on_changed)
+        (event_source if event_source is not None else row).connect(changed_signal, on_changed)
 
     def apply_values(values: dict[str, Any], message_field: str | None = None) -> None:
         state["hydrating"] = True
         try:
             for field, row in rows.items():
-                if field in values and field not in state["busy"]:
-                    setters[field](values[field])
+                available = field in action_fields or (field in values and values[field] is not None)
+                show_unavailable = not available and field not in static_signals
+                row.set_visible(not show_unavailable)
+                if status_rows[field] is not row:
+                    status_rows[field].set_visible(not show_unavailable)
+                if show_unavailable:
+                    unavailable_rows[field].set_subtitle("Unavailable")
+                unavailable_rows[field].set_visible(show_unavailable)
+                if available and field not in state["busy"]:
+                    setters[field](values.get(field))
                     state["values"][field] = getters[field]()
                 if field in static_signals:
                     status_rows[field].set_subtitle(static_signals[field])
                     row.set_sensitive(False)
+                elif not available:
+                    row.set_sensitive(False)
+                    status_rows[field].set_subtitle("Unavailable")
                 else:
                     row.set_sensitive(field not in state["busy"])
                     if field == message_field:
@@ -255,7 +354,11 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         if error is not None:
             for field, row in rows.items():
                 if field not in static_signals:
-                    status_rows[field].set_subtitle(error)
+                    row.set_visible(False)
+                    if status_rows[field] is not row:
+                        status_rows[field].set_visible(False)
+                    unavailable_rows[field].set_subtitle(error)
+                    unavailable_rows[field].set_visible(True)
                     row.set_sensitive(False)
             return False
         assert receipt is not None
@@ -263,7 +366,11 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             signal = _signal(receipt) or "Settings read refused"
             for field, row in rows.items():
                 if field not in static_signals:
-                    status_rows[field].set_subtitle(signal)
+                    row.set_visible(False)
+                    if status_rows[field] is not row:
+                        status_rows[field].set_visible(False)
+                    unavailable_rows[field].set_subtitle(signal)
+                    unavailable_rows[field].set_visible(True)
                     row.set_sensitive(False)
             return False
         state["hydrated"] = True

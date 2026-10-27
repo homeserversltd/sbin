@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+shelf=$(dirname "$(readlink -f "$0")")
+exec /usr/bin/python3 "$shelf/settings/energy/screen_idle.py" "$@"

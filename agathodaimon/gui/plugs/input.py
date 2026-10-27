@@ -9,11 +9,12 @@ except ImportError:
     from _common import build_settings_widget
 PLUG={"id":"input","title":"Input","icon":"input-keyboard-symbolic","order":60,"parent":None}
 SPECS=[
- {"field":"pointer_sensitivity","title":"Pointer sensitivity","kind":"spin","minimum":-1,"maximum":1,"step":0.05,"digits":2},
- {"field":"scroll_factor","title":"Scroll factor","kind":"spin","minimum":0.1,"maximum":10,"step":0.1,"digits":2},
+ {"field":"pointer_speed","title":"Pointer sensitivity","kind":"spin","minimum":-1,"maximum":1,"step":0.05,"digits":2},
  {"field":"natural_scroll","title":"Natural scrolling","kind":"switch"},
  {"field":"tap_to_click","title":"Tap to click","kind":"switch"},
- {"field":"middle_button_emulation","title":"Middle-button emulation","kind":"switch"},
+ {"field":"accel_profile","title":"Pointer acceleration","kind":"combo","options":["flat","adaptive"]},
+ {"field":"left_handed","title":"Left-handed buttons","kind":"switch"},
+ {"field":"disable_while_typing","title":"Disable touchpad while typing","kind":"switch"},
 ]
 def build_widget():
     return build_settings_widget(PLUG,"input","Input policy",SPECS,required_route="/api/v1/settings/input")

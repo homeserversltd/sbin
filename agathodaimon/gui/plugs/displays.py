@@ -15,5 +15,8 @@ SPECS=[
  {"field":"orientation","title":"Orientation","kind":"combo","options":["normal","90","180","270","flipped","flipped90","flipped180","flipped270"],"aliases":{"0":"normal","1":"90","2":"180","3":"270","4":"flipped","5":"flipped90","6":"flipped180","7":"flipped270"}},
  {"field":"brightness","title":"Brightness (%)","kind":"spin","minimum":0,"maximum":100,"step":1},
  {"field":"night_light","title":"Night light","kind":"switch"},
+ {"field":"hdr","title":"HDR","kind":"switch"},
+ {"field":"adaptive_sync","title":"Adaptive sync","kind":"switch"},
+ {"field":"overscan","title":"Overscan","kind":"spin","minimum":0,"maximum":100},
 ]
 def build_widget(): return build_settings_widget(PLUG,"display","Display configuration",SPECS)

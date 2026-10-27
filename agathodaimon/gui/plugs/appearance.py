@@ -15,5 +15,8 @@ SPECS=[
  {"field":"icon_theme","title":"Icon theme"},
  {"field":"cursor_theme","title":"Cursor theme"},
  {"field":"font","title":"Interface font"},
+ {"field":"cursor_size","title":"Cursor size","kind":"spin","minimum":8,"maximum":256},
+ {"field":"font_size","title":"Interface font size","kind":"spin","minimum":6,"maximum":72},
+ {"field":"text_scale","title":"Text scale","kind":"spin","minimum":0.5,"maximum":3,"step":0.05,"digits":2},
 ]
 def build_widget(): return build_settings_widget(PLUG,"appearance","Theme",SPECS)

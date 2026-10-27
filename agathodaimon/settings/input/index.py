@@ -74,6 +74,12 @@ def read_values() -> dict[str, Any]:
             sources[field] = str(source)
         else:
             values[field], sources[field] = raw.lower() == "true", str(source)
+    from agathodaimon.settings import _parity, _shared
+    sway = _parity.backends.select_backend()
+    if sway:
+        values = _parity.sway_input_values()
+    else:
+        values = {field: (values.get("pointer_sensitivity") if field == "pointer_speed" else values.get(field)) for field in _shared.FIELDS["input"]}
     return {"values": values, "sources": sources, "base": str(base), "override": str(override)}
 
 def validate(field: str, value: Any) -> str:
@@ -127,6 +133,39 @@ def reload_hypr() -> dict[str, Any]:
 
 def apply_changes(changes: dict[str, Any]) -> dict[str, Any]:
     if not changes: raise ValueError("no-fields-supplied")
+    from agathodaimon.settings import _parity, _shared
+    sway_fields = {"accel_profile", "left_handed", "disable_while_typing", "pointer_speed", "natural_scroll", "tap_to_click"}
+    selected = _parity.backends.select_backend()
+    if selected or (os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1" and any(field in {"accel_profile", "left_handed", "disable_while_typing"} for field in changes)):
+        if not all(field in sway_fields for field in changes): raise ValueError("unsupported:sway-input-field")
+        receipt = _shared.Receipt("input", list(changes))
+        reload_attempted = False
+        try:
+            for field, value in changes.items(): _parity._set_input(field, value, receipt)
+            if receipt.changed:
+                if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
+                    receipt.commands.append({"argv": ["swaymsg", "reload"], "dryRun": True})
+                else:
+                    reload_attempted = True
+                    _parity._sway_reload(receipt)
+            answer = receipt.finish(True, receipt.changed)
+            if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1": answer.update(dryRun=True, commands=receipt.commands)
+            return answer
+        except Exception as error:
+            mutated = receipt.changed
+            signal = str(error)
+            try:
+                receipt.restore_backups()
+                if reload_attempted: _parity._sway_reload(receipt)
+                uncertain = False
+            except Exception as rollback_error:
+                signal = "rollback-failed:" + str(rollback_error) + ":" + signal
+                uncertain = mutated
+            failure = receipt.finish(False, error=signal)
+            raise _shared.ReceiptFailure(signal, failure["receipt"], uncertain) from error
+    if any(field in {"accel_profile", "left_handed", "disable_while_typing"} for field in changes):
+        raise ValueError("sway-session-unavailable")
+    changes = {("pointer_sensitivity" if field == "pointer_speed" else field): value for field, value in changes.items()}
     normalized = {field: validate(field, value) for field, value in changes.items()}
     _, override = config_paths(); current = read_scoped_values(override)
     effective = dict(current["global"]); effective.update(current["touchpad"])
@@ -206,10 +245,14 @@ def main(argv: list[str] | None = None) -> int:
                 receipt = apply_changes(changes)
                 return emit(receipt, 0 if receipt.get("ok") else 1)
             except ValueError as error:
-                return emit({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, 1)
+                from agathodaimon.settings import _shared
+                failure = error.reply() if isinstance(error, _shared.ReceiptFailure) else {"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}
+                return emit(failure, 1)
     else:
+        from agathodaimon.settings import _shared
+        accepted_fields = tuple(dict.fromkeys((*FIELDS, *_shared.FIELDS["input"])))
         try:
-            request = read(known_fields=tuple(FIELDS) + ("args",))
+            request = read(known_fields=accepted_fields + ("args",))
         except EnvelopeError as error:
             return emit({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, 1)
         candidate = request.payload
@@ -221,18 +264,20 @@ def main(argv: list[str] | None = None) -> int:
                 receipt = apply_changes(crossing_changes(crossing_argv))
                 return emit(attach(receipt, request), 0 if receipt.get("ok") else 1)
             except ValueError as error:
-                return emit(attach({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, request), 1)
+                failure = error.reply() if isinstance(error, _shared.ReceiptFailure) else {"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}
+                return emit(attach(failure, request), 1)
         if request.envelope:
             operation = transition_operation(request.value)
             if operation == "read": return emit(attach({"schema": SCHEMA, "ok": True, "mutationPerformed": False, **read_values()}, request), 0)
             if operation not in {"set", "mutate", "change", "apply"}: return emit(attach({"schema": SCHEMA, "ok": False, "mutationPerformed": False, "firstMissingSignal": f"unsupported-operation:{operation}"}, request), 1)
             try:
-                changes = {field: value for field, value in candidate.items() if field in FIELDS}
+                changes = {field: value for field, value in candidate.items() if field in accepted_fields}
                 if not changes: raise ValueError("no-fields-supplied")
                 receipt = apply_changes(changes)
                 return emit(attach(receipt, request), 0 if receipt.get("ok") else 1)
             except ValueError as error:
-                return emit(attach({"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}, request), 1)
+                failure = error.reply() if isinstance(error, _shared.ReceiptFailure) else {"schema": SCHEMA, "ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}
+                return emit(attach(failure, request), 1)
         return emit({"schema": SCHEMA, "ok": False, "mutationPerformed": False, "firstMissingSignal": "cli-parse-failure"}, 2)
 
 if __name__ == "__main__": raise SystemExit(main())

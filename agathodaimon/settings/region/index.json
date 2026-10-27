@@ -1,0 +1,4 @@
+{
+  "children": [],
+  "sclerite": {"name": "desktop", "features": {"desktop": {"band": true, "verbs": [["settings", "region"]], "routes": ["/api/v1/settings/region"], "administrative": {"band": false, "verbs": [["settings", "region"]], "routes": ["/api/v1/settings/region"]}}}}
+}
