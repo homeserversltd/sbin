@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -1017,6 +1018,35 @@ class DnsManager:
             if record["name"] in new_owners or (record["type"] == "A" and record["target"] in device_addresses and device_addresses[record["target"]] != record["name"]):
                 raise DnsError("dns-observed-record-collision")
 
+    def _live_query_readback(self, query_tool: str, record_type: str, owner: str,
+                             wanted: set[str]) -> tuple[dict[str, Any], set[str], bool]:
+        command = [query_tool, "@127.0.0.1", owner, record_type, "+short", "+tries=1", "+time=1"]
+        for attempt in range(1, 6):
+            try:
+                result = self._command_runner(command)
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+                stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+                result = subprocess.CompletedProcess(command, 124, stdout, stderr)
+                timed_out = True
+            except OSError as exc:
+                raise DnsError(f"command failed: {' '.join(command)}: {exc}") from exc
+            else:
+                timed_out = False
+            output = result.stdout
+            diagnostic = timed_out or any(
+                line.lstrip().startswith(";") and
+                ("timed out" in line.lower() or "timeout" in line.lower() or "communications error" in line.lower())
+                for line in (output + "\n" + result.stderr).splitlines()
+            )
+            answered = {line.strip().rstrip(".").lower() for line in output.splitlines()
+                        if line.strip() and not line.lstrip().startswith(";")}
+            row = {"type": record_type, "owner": owner, "output": output, "readback_attempts": attempt}
+            if attempt == 5 or (not diagnostic and answered == wanted and result.returncode == 0):
+                return row, answered, result.returncode != 0 or (diagnostic and not answered)
+            time.sleep(1)
+        raise AssertionError("unreachable readback retry")
+
     def _candidate_apply(self, lines: list[str], expected: list[tuple[str, str]]) -> dict[str, Any]:
         query_tool = shutil.which("dig")
         if query_tool is None:
@@ -1066,17 +1096,17 @@ class DnsManager:
             else:
                 receipt["reload_outcome"] = "not-needed-idempotent"
             for record_type, owner in sorted(queries):
-                result = self._command([query_tool, "@127.0.0.1", owner, record_type, "+short"])
-                output = result.stdout.strip()
-                receipt["live_query_readback"].append({"type": record_type, "owner": owner, "output": output})
-                answered = {value.rstrip(".").lower() for value in output.splitlines()}
                 wanted = values.get((record_type, owner), set())
-                if wanted and not output:
+                row, answered, diagnostic = self._live_query_readback(query_tool, record_type, owner, wanted)
+                receipt["live_query_readback"].append(row)
+                if wanted and not answered:
                     raise DnsError(f"dns-live-query-empty: {record_type} {owner}")
-                if not wanted and output:
+                if not wanted and answered:
                     raise DnsError(f"dns-live-query-still-present: {record_type} {owner}")
                 if answered != wanted:
                     raise DnsError(f"dns-live-query-mismatch: {record_type} {owner}")
+                if diagnostic:
+                    raise DnsError(f"dns-live-query-unavailable: {record_type} {owner}")
             receipt["mutationPerformed"] = changed
             return receipt
         except (DnsError, OSError) as exc:
@@ -1251,14 +1281,7 @@ def create_alias(alias_label: str, hostname: str, *, manager: DnsManager | None 
         and {row["target"] for row in existing} == addresses
         and not any(row["type"] == "PTR" and row["target"] == alias.rstrip(".") for row in records)
     ):
-        query_tool = shutil.which("dig")
-        if query_tool is None:
-            raise DnsError("dns-live-query-tool-missing")
         verification = manager._candidate_apply(manager._owned_records(), [("A", alias)])
-        result = manager._command([query_tool, "@127.0.0.1", alias, "A", "+short"])
-        output = result.stdout.strip()
-        if set(output.splitlines()) != addresses:
-            raise DnsError(f"dns-live-query-mismatch: A {alias}")
         return {
             "action": "alias-create", "state": "applied" if verification["mutationPerformed"] else "noop", "alias": alias,
             "mutationPerformed": verification["mutationPerformed"], "verification": verification,
