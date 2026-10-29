@@ -13,6 +13,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 import io
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -34,7 +35,7 @@ from agathodaimon.storage.nas.runtime import (
     _update_services_not_running,
     attach_role,
     command_argv,
-    require_fixed_units,
+    drive_guard,
     runtime_path,
 )
 
@@ -533,7 +534,7 @@ def _preflight(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any
     if mapper_exists:
         raise Refusal("agathodaimon-nas-mapper-conflict", "mapper-preflight")
     _check_mountpoint_conflict(receipt, entries, expected["mountpoint"])
-    unit_states_before = require_fixed_units(role, receipt, require_mount_inactive=True)
+    unit_states_before: dict[str, dict[str, Any]] = {}
     config = _load_config(receipt, expected["mountpoint"])
     services = _list_enabled_nas_services(receipt, expected["mountpoint"])
     return {"deviceIdentity": identity, "deviceType": dev_type, "partition": partition,
@@ -1494,7 +1495,7 @@ def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity
         records.append({"step": "foreign-nested-mount-conflict", "ok": False,
                         "readback": {"nestedCount": len(nested), "rc": mount_state.get("findmntRc"),
                                      "reason": "nested-mount-present"}})
-    if mount_state.get("mounted") and not (attachment_attempted and mount_unit in owned_units
+    if mount_state.get("mounted") and not (attachment_attempted and info.get("directMountStarted") is True
                                              and mount_state.get("sourceMatches")
                                              and mount_state.get("fstype") == "xfs"):
         mount_conflict = True
@@ -1561,82 +1562,28 @@ def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity
                         "readback": {"reason": "service-ownership-without-attachment-attempt", "rc": None}})
 
     mount_absent = not mount_state.get("mounted") and not nested
-    if attachment_attempted:
-        running_states = {"active", "activating", "reloading", "refreshing", "deactivating"}
-        stop_ready = services_clean and not mount_conflict
-        mount_stop_clean = False
-        open_stop_clean = False
-        if not stop_ready:
-            reason = "dependent-service-not-stopped" if not services_clean else "foreign-or-nested-mount"
-            records.append({"step": "stop-mount-unit", "ok": False,
-                            "readback": {"unit": mount_unit, "owned": mount_unit in owned_units,
-                                         "rc": None, "reason": reason}})
-            records.append({"step": "stop-open-unit", "ok": False,
-                            "readback": {"unit": open_unit, "owned": open_unit in owned_units,
-                                         "rc": None, "reason": "mount-unit-not-stopped"}})
+    if attachment_attempted and mount_state.get("mounted"):
+        if services_clean and not mount_conflict and info.get("directMountStarted") is True:
+            try:
+                command = _run(["/usr/bin/umount", mountpoint], timeout=180, step="unmount-owned-mount")
+                rc = command.returncode
+            except Refusal as failure:
+                rc = failure.return_code
+            try:
+                observed = _mount_readback(info)
+                nested_after = [row for row in _mountinfo() if row["target"].startswith(mountpoint + "/")]
+                mount_absent = (observed.get("mounted") is False
+                                and observed.get("findmntAbsent") is True and not nested_after)
+            except Refusal:
+                mount_absent = False
+            units_clean = rc == 0 and mount_absent
+            records.append({"step": "unmount-owned-mount", "ok": units_clean,
+                            "readback": {"rc": rc, "absent": mount_absent,
+                                         "reason": "unmounted" if units_clean else "busy-or-unobservable"}})
         else:
-            mount_initial = _rollback_systemctl_state(receipt, mount_unit, "rollback-mount-unit-state")
-            mount_state_name = mount_initial.get("state")
-            if mount_unit in owned_units and mount_state_name in running_states | {"failed"}:
-                mount_stop_clean, _final = _rollback_stop_owned_unit(
-                    records, receipt, mount_unit, "stop-mount-unit", mount_initial)
-            elif mount_unit in owned_units and mount_state_name == "inactive":
-                mount_stop_clean = True
-                records.append({"step": "stop-mount-unit", "ok": True,
-                                "readback": {"unit": mount_unit, "owned": True, "state": mount_state_name,
-                                             "rc": mount_initial.get("rc"), "reason": "already-inactive"}})
-            elif mount_unit not in owned_units and mount_state_name == "inactive" and mount_absent:
-                mount_stop_clean = True
-                records.append({"step": "stop-mount-unit", "ok": True,
-                                "readback": {"unit": mount_unit, "owned": False, "state": mount_state_name,
-                                             "rc": mount_initial.get("rc"), "reason": "inactive-and-unmounted"}})
-            else:
-                records.append({"step": "stop-mount-unit", "ok": False,
-                                "readback": {"unit": mount_unit, "owned": mount_unit in owned_units,
-                                             "state": mount_state_name, "rc": mount_initial.get("rc"),
-                                             "reason": mount_initial.get("reason", "unit-not-transaction-owned")}})
-
-            if mount_stop_clean:
-                try:
-                    after_mount = _mount_readback(info)
-                    nested_after = [row for row in _mountinfo()
-                                    if row["target"].startswith(mountpoint + "/")]
-                    mount_absent = not after_mount.get("mounted") and not nested_after
-                except Exception:
-                    after_mount, nested_after, mount_absent = {
-                        "mounted": True, "sourceMatches": False, "reason": "mount-readback-unavailable"}, [], False
-                absent_ok = mount_stop_clean and mount_absent
-                records.append({"step": "mount-absence-after-unit-stop", "ok": absent_ok,
-                                "readback": {**after_mount, "nestedCount": len(nested_after),
-                                             "reason": "mount-absent" if mount_absent else "mount-remains-or-unreadable"}})
-                mount_stop_clean = absent_ok
-
-            if mount_stop_clean:
-                open_initial = _rollback_systemctl_state(receipt, open_unit, "rollback-open-unit-state")
-                open_state_name = open_initial.get("state")
-                if open_unit in owned_units and open_state_name in running_states | {"failed"}:
-                    open_stop_clean, _final = _rollback_stop_owned_unit(
-                        records, receipt, open_unit, "stop-open-unit", open_initial)
-                elif open_unit in owned_units and open_state_name == "inactive":
-                    open_stop_clean = True
-                    records.append({"step": "stop-open-unit", "ok": True,
-                                    "readback": {"unit": open_unit, "owned": True, "state": open_state_name,
-                                                 "rc": open_initial.get("rc"), "reason": "already-inactive"}})
-                elif open_unit not in owned_units and open_state_name == "inactive":
-                    open_stop_clean = True
-                    records.append({"step": "stop-open-unit", "ok": True,
-                                    "readback": {"unit": open_unit, "owned": False, "state": open_state_name,
-                                                 "rc": open_initial.get("rc"), "reason": "inactive-not-transaction-owned"}})
-                else:
-                    records.append({"step": "stop-open-unit", "ok": False,
-                                    "readback": {"unit": open_unit, "owned": open_unit in owned_units,
-                                                 "state": open_state_name, "rc": open_initial.get("rc"),
-                                                 "reason": open_initial.get("reason", "unit-not-transaction-owned")}})
-            else:
-                records.append({"step": "stop-open-unit", "ok": False,
-                                "readback": {"unit": open_unit, "owned": open_unit in owned_units,
-                                             "rc": None, "reason": "mount-unit-not-stopped"}})
-        units_clean = mount_stop_clean and open_stop_clean
+            units_clean = False
+            records.append({"step": "unmount-owned-mount", "ok": False,
+                            "readback": {"rc": None, "reason": "ownership-or-service-state-unproven"}})
 
     try:
         after_mount = _mount_readback(info)
@@ -1868,6 +1815,7 @@ def _rollback(receipt: dict[str, Any], info: dict[str, Any] | None, key_identity
 def _merge_attach_receipt(receipt: dict[str, Any], info: dict[str, Any], attachment: Any) -> None:
     if not isinstance(attachment, dict):
         return
+    info["directMountStarted"] = attachment.get("directMountStarted") is True
     before = attachment.get("unitStatesBefore")
     if isinstance(before, dict) and before:
         snapshot = {name: dict(value) for name, value in before.items()
@@ -2071,8 +2019,7 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
                          and mount_readback.get("sourceMatches") is True
                          and mount_readback.get("fstype") == "xfs")
         transaction_mount = (attachment_receipt.get("alreadyMounted") is False
-                             and isinstance(started_units, list)
-                             and info["mountUnit"] in started_units)
+                             and attachment_receipt.get("directMountStarted") is True)
         okay = partition_matches and mapper_matches and mount_matches and transaction_mount
         if not isinstance(created_partition_identity, str):
             reason = "partition-identity-unavailable"
@@ -2116,8 +2063,8 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
         raise
     _merge_attach_receipt(receipt, info, attachment)
     started_units = attachment.get("unitsStarted")
-    if (attachment.get("alreadyMounted") is not False or not isinstance(started_units, list)
-            or info["mountUnit"] not in started_units):
+    if (attachment.get("alreadyMounted") is not False
+            or attachment.get("directMountStarted") is not True):
         raise Refusal("agathodaimon-nas-attach-not-transaction-owned", "mount-start")
     mapper_readback = attachment.get("mapperReadback")
     mount_readback = attachment.get("mountReadback")
@@ -2190,12 +2137,18 @@ def _perform(request: dict[str, Any]) -> dict[str, Any]:
                                "servicesStarted": [], "servicesNotRunning": [],
                                "rolledBack": False, "rollbackSteps": []}
     lock_fd = None
+    sync_guard = None
+    sync_guard_entered = False
     info = None
     key_identity = None
     material = bytearray()
     try:
         if os.geteuid() != 0:
             raise Refusal("agathodaimon-nas-root-required", "root-preflight")
+        sync_guard = drive_guard()
+        sync_guard.__enter__()
+        sync_guard_entered = True
+        _record(receipt, "sync-lock", True, acquired=True)
         try:
             lock_fd = os.open(runtime_path(LOCK_PATH), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600)
             lock_st = os.fstat(lock_fd)
@@ -2250,6 +2203,8 @@ def _perform(request: dict[str, Any]) -> dict[str, Any]:
                 os.close(lock_fd)
             except OSError:
                 pass
+        if sync_guard_entered and sync_guard is not None:
+            sync_guard.__exit__(None, None, None)
 
 
 def _request(value: Any) -> dict[str, str]:
@@ -2290,6 +2245,8 @@ def _envelope_refusal(error: EnvelopeError) -> Refusal:
 
 
 def dispatch(value: Any) -> dict[str, Any]:
+    from agathodaimon.storage.nas import deed
+    started = time.monotonic()
     try:
         if all(hasattr(value, field) for field in ("value", "payload", "envelope")):
             envelope_request = value
@@ -2311,7 +2268,9 @@ def dispatch(value: Any) -> dict[str, Any]:
                 "mountpoint": None, "steps": [{"step": failure.step, "ok": False,
                 "readback": {"rc": None}}], "servicesStarted": [],
                 "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": []}
-    return attach_envelope(_perform(request), envelope_request)
+    receipt = _perform(request)
+    deed.finish("nas-setup", "nas-" + request["role"], receipt, started)
+    return attach_envelope(receipt, envelope_request)
 
 
 def _handle_signal(signum: int, _frame: Any) -> None:

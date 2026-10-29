@@ -1,0 +1,32 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [
+          [
+            "nas-sync",
+            "release"
+          ]
+        ],
+        "routes": [
+          "/api/v1/storage/backup/nas-sync/release"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "nas-sync",
+              "release"
+            ]
+          ],
+          "routes": [
+            "/api/v1/storage/backup/nas-sync/release"
+          ]
+        }
+      }
+    }
+  }
+}

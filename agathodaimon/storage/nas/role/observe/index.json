@@ -1,0 +1,14 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [["role", "observe"]],
+        "routes": ["/api/v1/storage/nas/role/observe"],
+        "administrative": {"band": false, "verbs": [], "routes": []}
+      }
+    }
+  }
+}

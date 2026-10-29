@@ -1,0 +1,18 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [["schedule", "disable"]],
+        "routes": ["/api/v1/storage/backup/nas-sync/schedule/disable"],
+        "administrative": {
+          "band": true,
+          "verbs": [["schedule", "disable"]],
+          "routes": ["/api/v1/storage/backup/nas-sync/schedule/disable"]
+        }
+      }
+    }
+  }
+}

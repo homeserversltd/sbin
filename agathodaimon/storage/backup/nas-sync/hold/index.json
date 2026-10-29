@@ -1,0 +1,32 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [
+          [
+            "nas-sync",
+            "hold"
+          ]
+        ],
+        "routes": [
+          "/api/v1/storage/backup/nas-sync/hold"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "nas-sync",
+              "hold"
+            ]
+          ],
+          "routes": [
+            "/api/v1/storage/backup/nas-sync/hold"
+          ]
+        }
+      }
+    }
+  }
+}

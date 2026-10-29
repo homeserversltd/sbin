@@ -56,7 +56,13 @@
     "thyrsus/forge-token",
     "thyrsus/propose",
     "update/service",
-    "update/sources-reseed"
+    "update/sources-reseed",
+    "storage/backup/nas-sync/hold",
+    "storage/backup/nas-sync/release",
+    "storage/backup/nas-sync/schedule/disable",
+    "storage/nas/role/observe",
+    "storage/nas/key/probe",
+    "storage/disk/partlabel/assign"
   ],
   "verbs": [
     [
@@ -238,6 +244,30 @@
     [
       "thyrsus",
       "forge"
+    ],
+    [
+      "nas-sync",
+      "hold"
+    ],
+    [
+      "nas-sync",
+      "release"
+    ],
+    [
+      "schedule",
+      "disable"
+    ],
+    [
+      "role",
+      "observe"
+    ],
+    [
+      "key",
+      "probe"
+    ],
+    [
+      "partlabel",
+      "assign"
     ]
   ],
   "routes": [
@@ -326,7 +356,14 @@
     "/api/v1/update/now",
     "/api/v1/update/service/status",
     "/api/v1/update/service/toggle",
-    "/api/v1/upload/force-permissions"
+    "/api/v1/upload/force-permissions",
+    "/api/v1/storage/backup/nas-sync/hold",
+    "/api/v1/storage/backup/nas-sync/release",
+    "/api/v1/storage/backup/nas-sync/schedule/disable",
+    "/api/v1/storage/nas/role/observe",
+    "/api/v1/storage/nas/key/probe",
+    "/api/v1/storage/disk/partlabel/assign",
+    "/api/v1/storage/nas/role/swap"
   ],
   "administrative": {
     "bands": [
@@ -351,7 +388,12 @@
       "transmission/up",
       "thyrsus/propose",
       "thyrsus/admit",
-      "thyrsus/forge-token"
+      "thyrsus/forge-token",
+      "storage/backup/nas-sync/hold",
+      "storage/backup/nas-sync/release",
+      "storage/backup/nas-sync/schedule/disable",
+      "storage/nas/key/probe",
+      "storage/disk/partlabel/assign"
     ],
     "verbs": [
       [
@@ -405,6 +447,26 @@
       [
         "thyrsus",
         "forge-token"
+      ],
+      [
+        "nas-sync",
+        "hold"
+      ],
+      [
+        "nas-sync",
+        "release"
+      ],
+      [
+        "schedule",
+        "disable"
+      ],
+      [
+        "key",
+        "probe"
+      ],
+      [
+        "partlabel",
+        "assign"
       ]
     ],
     "routes": [
@@ -461,7 +523,13 @@
       "POST /api/v1/network/firewall/children",
       "POST /api/v1/transmission/vpn/settings",
       "PUT /api/v1/network/dhcp/reservations/{reservation_id}",
-      "PUT /api/v1/network/firewall/children/{mac}/whitelist"
+      "PUT /api/v1/network/firewall/children/{mac}/whitelist",
+      "/api/v1/storage/backup/nas-sync/hold",
+      "/api/v1/storage/backup/nas-sync/release",
+      "/api/v1/storage/backup/nas-sync/schedule/disable",
+      "/api/v1/storage/nas/key/probe",
+      "/api/v1/storage/disk/partlabel/assign",
+      "/api/v1/storage/nas/role/swap"
     ]
   }
 }

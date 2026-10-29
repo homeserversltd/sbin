@@ -4,9 +4,11 @@ from __future__ import annotations
 import io
 import json
 import sys
+import time
 from typing import Any, Sequence
 
 from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
+from agathodaimon.storage.nas import deed
 from agathodaimon.storage.nas.runtime import MAX_INPUT, Refusal, open_role
 
 SCHEMA = "caduceus.nas.open.v1"
@@ -42,12 +44,15 @@ def _role(request: Any) -> str:
 
 
 def dispatch(request: Any) -> dict[str, Any]:
+    started = time.monotonic()
     role = None
     try:
         role = _role(request)
         receipt = open_role(role)
     except Refusal as failure:
         receipt = failure.receipt or _failure(failure.signal_name, failure.step, role)
+    if receipt.get("ok") is not True or receipt.get("alreadyOpen") is not True:
+        deed.finish("nas-open", "nas-" + role if role in {"primary", "backup"} else "nas-role", receipt, started)
     return attach_envelope(receipt, request)
 
 

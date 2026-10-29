@@ -9,13 +9,17 @@ mapped path must still exist.  This metadata is never consulted live.
 """
 from __future__ import annotations
 
+import fcntl
+import functools
 import json
 import os
 import re
 import signal
 import stat
 import subprocess
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, NoReturn, Sequence, cast
 
@@ -135,6 +139,85 @@ def runtime_path(path: str | os.PathLike[str]) -> Path:
     mapped = root.joinpath(*Path(text).parts[1:])
     _assert_inside_scratch(mapped, root)
     return mapped
+
+
+_drive_mutex = threading.RLock()
+_drive_depth = 0
+_drive_fd: int | None = None
+
+
+def sync_lock_path() -> Path:
+    """The legacy and current sync tools share this inode on a real body."""
+    root = _scratch_root()
+    if root is not None:
+        override = os.environ.get("CADUCEUS_NAS_LOCK")
+        if override:
+            candidate = Path(override)
+            if not candidate.is_absolute():
+                raise Refusal("agathodaimon-nas-sync-lock-invalid", "sync-lock")
+            _assert_inside_scratch(candidate, root)
+            return candidate
+    return runtime_path("/run/homeserver-nas-sync.lock")
+
+
+@contextmanager
+def drive_guard():
+    """Exclude sync with a shared flock; serialize drive work with a byte lock.
+
+    Sync takes exclusive flock. A persistent hold and drive operations take a
+    shared flock, while the byte-range lock serializes individual mutations and
+    release. Nested calls share the same descriptor so close cannot drop the
+    process's POSIX locks before the outer transaction and rollback complete.
+    """
+    global _drive_depth, _drive_fd
+    if not _drive_mutex.acquire(blocking=False):
+        raise Refusal("agathodaimon-nas-drive-operation-running", "sync-lock")
+    try:
+        if _drive_depth:
+            _drive_depth += 1
+            try:
+                yield
+            finally:
+                _drive_depth -= 1
+            return
+        fd = None
+        try:
+            fd = os.open(sync_lock_path(), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != 0:
+                raise OSError("unsafe lock file")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise Refusal("sync-hold-refused-running", "sync-lock") from None
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB, 1, 0, os.SEEK_SET)
+            except BlockingIOError:
+                raise Refusal("agathodaimon-nas-drive-operation-running", "sync-lock") from None
+        except (OSError, Refusal) as error:
+            if fd is not None:
+                os.close(fd)
+            if isinstance(error, Refusal):
+                raise
+            raise Refusal("agathodaimon-nas-sync-lock-unavailable", "sync-lock") from None
+        _drive_fd = fd
+        _drive_depth = 1
+        try:
+            yield
+        finally:
+            _drive_depth = 0
+            _drive_fd = None
+            os.close(fd)
+    finally:
+        _drive_mutex.release()
+
+
+def guarded_drive(function):
+    @functools.wraps(function)
+    def guarded(*args, **kwargs):
+        with drive_guard():
+            return function(*args, **kwargs)
+    return guarded
 
 
 def command_argv(argv: Sequence[str]) -> list[str]:
@@ -889,12 +972,16 @@ def _list_enabled_nas_services(receipt: dict[str, Any], mountpoint: str) -> list
     receipt["servicesNotRunning"] = []
     services: list[dict[str, Any]] = []
     skipped_units: list[str] = []
+    excluded_units: list[str] = []
     active_before_deadline: float | None = None
     for line in lines:
         fields = line.split()
         if len(fields) < 2 or not fields[0].endswith(".service"):
             continue
         unit, enabled_state = fields[0], fields[1]
+        if unit in {"sdc1.service", "sdb1.service"}:
+            excluded_units.append(unit)
+            continue
         if (unit.endswith("@.service")
                 or enabled_state in {"alias", "bad", "masked", "masked-runtime", "not-found"}):
             continue
@@ -1008,7 +1095,7 @@ def _list_enabled_nas_services(receipt: dict[str, Any], mountpoint: str) -> list
             "fragment": fragment_path,
         })
     receipt["services"] = [dict(service) for service in services]
-    receipt["excludedServices"] = []
+    receipt["excludedServices"] = excluded_units
     _record(receipt, "service-census", True, nasDependentCount=len(services),
             units=[service["unit"] for service in services],
             skippedUnits=skipped_units, skippedUnitCount=len(skipped_units))
@@ -1308,6 +1395,36 @@ def _observe_mount_and_mapper(receipt: dict[str, Any], info: dict[str, str]) -> 
     return mapper, mount
 
 
+def _observed_holder_info(receipt: dict[str, Any], info: dict[str, str]) -> dict[str, str]:
+    """Resolve the sole mapper holding the exact role partition, not its unit."""
+    partition_identity = _device_identity(info["partition"], "partition-holder-readback")
+    holders = _list_holders(partition_identity)
+    if len(holders) > 1:
+        _fail(receipt, "agathodaimon-nas-partition-holder-ambiguous", "partition-holder-readback", holders=holders)
+    resolved = dict(info)
+    if not holders:
+        _record(receipt, "partition-holder-readback", True, holders=[])
+        return resolved
+    holder_path = _safe_resolve(runtime_path(SYS_DEV_BLOCK) / partition_identity / "holders" / holders[0],
+                                "partition-holder-readback")
+    holder_identity = _sysfs_dev(holder_path)
+    if _direct_slaves(holder_identity) != {partition_identity}:
+        _fail(receipt, "agathodaimon-nas-mapper-backing-mismatch", "partition-holder-readback", holder=holders[0])
+    try:
+        name = (holder_path / "dm" / "name").read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        _fail(receipt, "agathodaimon-nas-holder-unobservable", "partition-holder-readback", holder=holders[0])
+    if not re.fullmatch(r"[A-Za-z0-9._+-]{1,128}", name):
+        _fail(receipt, "agathodaimon-nas-holder-invalid", "partition-holder-readback")
+    resolved["mapper"] = name
+    observed = _mapper_state(receipt, resolved)
+    if observed.get("identity") != holder_identity or observed.get("backingMatches") is not True:
+        _fail(receipt, "agathodaimon-nas-mapper-backing-mismatch", "partition-holder-readback", holder=holders[0])
+    _record(receipt, "partition-holder-readback", True, mapper=name, identity=holder_identity)
+    return resolved
+
+
+@guarded_drive
 def attach_role(role: str, *, start_services: bool = True,
                 after_mount_verified: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """Attach one fixed role; a correct existing mount is a strict no-op."""
@@ -1319,9 +1436,8 @@ def attach_role(role: str, *, start_services: bool = True,
         _vault_is_mounted(receipt)
         partition = role_partition(role)
         receipt["partition"] = partition
-        runtime_info = _info_for(role, partition)
-        before = require_fixed_units(role, receipt)
-        receipt["unitStatesBefore"] = {name: dict(value) for name, value in before.items()}
+        runtime_info = _observed_holder_info(receipt, _info_for(role, partition))
+        receipt["mapper"] = runtime_info["mapper"]
 
         current_mount = _mount_for_target(_mountinfo(), info["mountpoint"])
         nested_mounts = [entry["target"] for entry in _mountinfo()
@@ -1346,12 +1462,7 @@ def attach_role(role: str, *, start_services: bool = True,
             _record(receipt, "attach-noop", True, alreadyMounted=True,
                     startStopAttempted=False, mapperMatches=True, xfs=True)
             return receipt
-        if before["mount"]["active"]:
-            raise Refusal("agathodaimon-nas-mount-unit-active-without-mount", "mount-preflight",
-                          receipt=receipt)
-
         target_identity = _device_identity(partition, "partition-readback")
-        runtime_info = _info_for(role, partition)
         mapper_before = _mapper_state(receipt, runtime_info)
         expected_holders = {_sysfs_block_name(mapper_before["identity"])} if mapper_before.get("exists") else set()
         holders = _list_holders(target_identity)
@@ -1366,24 +1477,29 @@ def attach_role(role: str, *, start_services: bool = True,
 
         if mapper_before.get("exists"):
             receipt["mapperReadback"] = dict(mapper_before)
-
-        try:
-            start_result = _run([SYSTEMCTL, "start", info["mount_unit"]],
-                                step="mount-start", timeout=180)
-            start_rc = start_result.returncode
-        except Refusal as failure:
-            start_rc = failure.return_code
-            start_failure = failure
         else:
-            start_failure = None
-        after = _snapshot_after_start(receipt, info, before)
-        _record(receipt, "mount-start", start_failure is None and start_rc == 0,
-                unit=info["mount_unit"], rc=start_rc,
-                openerActive=after["opener"]["active"], mountActive=after["mount"]["active"])
-        if start_failure is not None:
-            raise Refusal(start_failure.signal_name, "mount-start", start_failure.return_code, receipt)
-        if start_rc != 0:
-            raise Refusal("agathodaimon-nas-mount-start-failed", "mount-start", start_rc, receipt)
+            try:
+                opened = open_role(role)
+            except Refusal as failure:
+                if isinstance(failure.receipt, dict):
+                    nested = failure.receipt
+                    receipt["alreadyOpen"] = nested.get("alreadyOpen", False)
+                    receipt["mapperReadback"] = nested.get("mapperReadback")
+                    receipt["steps"].extend(nested.get("steps", []))
+                raise
+            receipt["alreadyOpen"] = opened.get("alreadyOpen", False)
+            receipt["mapperReadback"] = opened.get("mapperReadback")
+            receipt["steps"].extend(opened.get("steps", []))
+            runtime_info = {**runtime_info, "mapper": info["mapper"]}
+        receipt["directMountAttempted"] = True
+        start_result = _run(["/usr/bin/mount", "-t", "xfs",
+                             f"/dev/mapper/{runtime_info['mapper']}", info["mountpoint"]],
+                            step="mount-start", timeout=180)
+        _record(receipt, "mount-start", start_result.returncode == 0,
+                rc=start_result.returncode, target=info["mountpoint"], mapper=runtime_info["mapper"])
+        if start_result.returncode != 0:
+            raise Refusal("agathodaimon-nas-mount-start-failed", "mount-start", start_result.returncode, receipt)
+        receipt["directMountStarted"] = True
         mapper, mount = _observe_mount_and_mapper(receipt, runtime_info)
         if (mapper.get("exists") is not True or mapper.get("backingMatches") is not True
                 or mount.get("mounted") is not True or mount.get("sourceMatches") is not True
@@ -1425,6 +1541,7 @@ def _export_for_role(role: str, scratch: Path | None) -> bytearray:
         return export_key("nas", scratch_root=str(scratch), exporter=exporter)
 
 
+@guarded_drive
 def open_role(role: str) -> dict[str, Any]:
     """Open only the canonical mapper; never attach, mount, or start dependents."""
     receipt = _receipt("caduceus.nas.open.v1", role if isinstance(role, str) else None)
@@ -1563,8 +1680,9 @@ def _stop_fixed_unit(receipt: dict[str, Any], unit: str, step: str,
         receipt["unitsStopped"].append(unit)
 
 
+@guarded_drive
 def detach_role(role: str) -> dict[str, Any]:
-    """Stop dependent services, then mount and opener; never force a busy close."""
+    """Stop dependent services and unmount and close the observed mapper."""
     receipt = _receipt("caduceus.nas.detach.v1", role if isinstance(role, str) else None)
     receipt["servicesStopped"] = []
     receipt["unitsStopped"] = []
@@ -1572,29 +1690,14 @@ def detach_role(role: str) -> dict[str, Any]:
         _require_root(receipt)
         info = _role_info(role)
         receipt.update(partlabel=info["partlabel"], mapper=info["mapper"], mountpoint=info["mountpoint"])
-        before = require_fixed_units(role, receipt)
-        receipt["unitStatesBefore"] = {name: dict(value) for name, value in before.items()}
-
-        # If a mapper exists, establish that it is the role's partition before stopping it.
-        mapper_path = runtime_path(f"/dev/mapper/{info['mapper']}")
-        try:
-            os.lstat(mapper_path)
-            mapper_exists = True
-        except FileNotFoundError:
-            mapper_exists = False
-        except OSError:
-            _fail(receipt, "agathodaimon-nas-mapper-readback-failed", "mapper-readback")
-        partition: str | None = None
-        runtime_info: dict[str, str] = dict(info)
-        if mapper_exists:
-            partition = role_partition(role)
-            receipt["partition"] = partition
-            runtime_info["partition"] = partition
-            mapper_state = _mapper_state(receipt, runtime_info)
-            receipt["mapperReadback"] = dict(mapper_state)
-            receipt["mapperReadbackBefore"] = dict(mapper_state)
-        else:
-            receipt["mapperReadback"] = {"exists": False, "backingMatches": False}
+        partition = role_partition(role)
+        receipt["partition"] = partition
+        runtime_info = _observed_holder_info(receipt, _info_for(role, partition))
+        receipt["mapper"] = runtime_info["mapper"]
+        mapper_state = _mapper_state(receipt, runtime_info)
+        receipt["mapperReadback"] = dict(mapper_state)
+        receipt["mapperReadbackBefore"] = dict(mapper_state)
+        mapper_exists = mapper_state.get("exists") is True
 
         current_mount = _mount_for_target(_mountinfo(), info["mountpoint"])
         mount = _mount_readback(runtime_info)
@@ -1614,19 +1717,20 @@ def detach_role(role: str) -> dict[str, Any]:
         for service in services:
             _stop_service(receipt, service["unit"])
 
-        try:
-            _stop_fixed_unit(receipt, info["mount_unit"], "mount-stop",
-                             attempt_if_inactive=current_mount is not None)
-        except Refusal as failure:
-            observed_mount = _mount_for_target(_mountinfo(), info["mountpoint"])
-            nested = [entry["target"] for entry in _mountinfo()
-                      if entry["target"].startswith(info["mountpoint"].rstrip("/") + "/")]
-            if observed_mount is not None or nested:
-                _record(receipt, "mount-busy-readback", False,
-                        mounted=observed_mount is not None, nestedMounts=nested)
-                raise Refusal("agathodaimon-nas-mount-busy", "mount-stop",
-                              failure.return_code, receipt) from None
-            raise
+        nested_before = [entry["target"] for entry in _mountinfo()
+                         if entry["target"].startswith(info["mountpoint"].rstrip("/") + "/")]
+        if nested_before:
+            _fail(receipt, "agathodaimon-nas-mount-busy", "mount-stop", nestedMounts=nested_before)
+        if current_mount is not None:
+            current_info = _observed_holder_info(receipt, _info_for(role, role_partition(role)))
+            if (current_info["mapper"] != runtime_info["mapper"]
+                    or _mount_readback(current_info).get("sourceMatches") is not True):
+                _fail(receipt, "agathodaimon-nas-mounted-state-mismatch", "mount-preflight")
+            unmount = _run(["/usr/bin/umount", info["mountpoint"]], step="mount-stop", timeout=180)
+            _record(receipt, "mount-stop", unmount.returncode == 0, rc=unmount.returncode,
+                    mountpoint=info["mountpoint"])
+            if unmount.returncode != 0:
+                raise Refusal("agathodaimon-nas-mount-busy", "mount-stop", unmount.returncode, receipt)
         after_mount = _mount_for_target(_mountinfo(), info["mountpoint"])
         nested = [entry["target"] for entry in _mountinfo()
                   if entry["target"].startswith(info["mountpoint"].rstrip("/") + "/")]
@@ -1640,29 +1744,20 @@ def detach_role(role: str) -> dict[str, Any]:
         _record(receipt, "mount-absent-readback", True, mounted=False, nestedMountCount=0,
                 findmntAbsent=True)
 
+        if mapper_exists:
+            if _device_identity(role_partition(role), "partition-readback") != _device_identity(partition, "partition-readback"):
+                _fail(receipt, "agathodaimon-nas-partition-identity-mismatch", "opener-stop")
+            current_info = _observed_holder_info(receipt, _info_for(role, partition))
+            current_state = _mapper_state(receipt, current_info)
+            if (current_info["mapper"] != runtime_info["mapper"]
+                    or current_state.get("identity") != mapper_state.get("identity")):
+                _fail(receipt, "agathodaimon-nas-mapper-backing-mismatch", "opener-stop")
+            close = _run([CRYPTSETUP, "close", runtime_info["mapper"]], step="opener-stop", timeout=180)
+            _record(receipt, "opener-stop", close.returncode == 0, mapper=runtime_info["mapper"], rc=close.returncode)
+            if close.returncode != 0:
+                raise Refusal("agathodaimon-nas-mapper-busy", "opener-stop", close.returncode, receipt)
         try:
-            _stop_fixed_unit(receipt, info["open_unit"], "opener-stop",
-                             attempt_if_inactive=mapper_exists)
-        except Refusal as failure:
-            try:
-                os.lstat(runtime_path(f"/dev/mapper/{info['mapper']}"))
-            except FileNotFoundError:
-                still_open = False
-            except OSError:
-                still_open = None
-            else:
-                still_open = True
-            if still_open is True:
-                _record(receipt, "mapper-busy-readback", False,
-                        mapper=info["mapper"], absent=False)
-                raise Refusal("agathodaimon-nas-mapper-busy", "opener-stop",
-                              failure.return_code, receipt) from None
-            if still_open is None:
-                raise Refusal("agathodaimon-nas-mapper-readback-failed", "mapper-absent-readback",
-                              failure.return_code, receipt) from None
-            raise
-        try:
-            os.lstat(runtime_path(f"/dev/mapper/{info['mapper']}"))
+            os.lstat(runtime_path(f"/dev/mapper/{runtime_info['mapper']}"))
         except FileNotFoundError:
             mapper_absent = True
         except OSError:
@@ -1670,7 +1765,7 @@ def detach_role(role: str) -> dict[str, Any]:
         else:
             mapper_absent = False
         _record(receipt, "mapper-absent-readback", mapper_absent,
-                mapper=info["mapper"], absent=mapper_absent)
+                mapper=runtime_info["mapper"], absent=mapper_absent)
         if not mapper_absent:
             raise Refusal("agathodaimon-nas-mapper-busy", "mapper-absent-readback", receipt=receipt)
         receipt["mapperReadback"] = {"exists": False, "backingMatches": False}

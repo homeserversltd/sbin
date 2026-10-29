@@ -12,7 +12,18 @@ def state_root(): return Path(os.environ.get("CADUCEUS_NAS_STATE_ROOT","/var/lib
 def state_file(): return Path(os.environ.get("CADUCEUS_NAS_STATE_FILE",str(state_root()/"last-good.json")))
 def receipt_root(): return Path(os.environ.get("CADUCEUS_NAS_RECEIPT_ROOT",str(state_root()/"receipts")))
 def job_root(): return Path(os.environ.get("CADUCEUS_NAS_JOB_ROOT",str(state_root()/"jobs")))
-def lock_file(): return Path(os.environ.get("CADUCEUS_NAS_LOCK","/run/homeserver-nas-sync.lock"))
+def lock_file():
+ root=os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
+ if root is None: return Path("/run/homeserver-nas-sync.lock")
+ try:
+  base=Path(root)
+  if not base.is_absolute(): raise ValueError("relative scratch root")
+  base=base.resolve(strict=True)
+  if base==Path("/"): raise ValueError("root scratch")
+  target=Path(os.environ.get("CADUCEUS_NAS_LOCK",str(base/"run/homeserver-nas-sync.lock")))
+  if not target.is_absolute() or not target.resolve(strict=False).is_relative_to(base): raise ValueError("lock outside scratch")
+  return target
+ except (OSError,RuntimeError,ValueError) as e: raise Refusal("single-instance-lock-invalid") from e
 def atomic(path,text,mode=0o640):
  path.parent.mkdir(parents=True,exist_ok=True); fd,tmp=tempfile.mkstemp(prefix="."+path.name+".",dir=path.parent,text=True)
  try:
@@ -130,7 +141,11 @@ def parse_rsync_stats(text):
  return out
 def acquire_lock():
  p=lock_file()
- try: p.parent.mkdir(parents=True,exist_ok=True); fd=os.open(p,os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o640)
+ try:
+  p.parent.mkdir(parents=True,exist_ok=True); fd=os.open(p,os.O_RDWR|os.O_CREAT|os.O_CLOEXEC|os.O_NOFOLLOW,0o640)
+  st=os.fstat(fd)
+  if not stat.S_ISREG(st.st_mode) or st.st_uid != 0:
+   os.close(fd); raise Refusal("single-instance-lock-invalid")
  except OSError as e: raise Refusal("single-instance-lock-unavailable:"+bounded(e)) from e
  try: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
  except OSError as e:
@@ -255,9 +270,10 @@ def schedule_read(planned,runner=command):
  except Exception as e: raise Refusal("agathodaimon-nas-schedule-state-unreadable") from e
  seated=parse_timer(tv) if tp.is_file() else default; enabled=systemctl_value(["is-enabled",TIMER],runner,{0,1})=="enabled"; active=systemctl_value(["is-active",TIMER],runner,{0,3})=="active"; next_fire=systemctl_value(["show",TIMER,"--property=NextElapseUSecRealtime","--value"],runner) or None; state={"enabled":enabled,"active":active,"nextFire":next_fire,"planned":False}; seated["enabled"]=enabled
  return finish(receipt("sync-schedule","ok",commands=cmds,unitPaths={"service":str(sp),"timer":str(tp)},unitContents={"service":sv,"timer":tv},schedule=seated,timerState=state))
-def schedule_update(p,planned,runner=command):
+def schedule_update(p,planned,runner=command,*,persist=True):
+ emit=finish if persist else (lambda value:value)
  s=schedule(p.get("schedule")); sv,tv=units(s); sp,tp=UNIT_DIR/SERVICE,UNIT_DIR/TIMER; cmds=[[SYSTEMCTL,"daemon-reload"],[SYSTEMCTL,"enable","--now",TIMER]] if s["enabled"] else [[SYSTEMCTL,"disable","--now",TIMER],[RM,"-f",str(sp),str(tp)],[SYSTEMCTL,"daemon-reload"]]; common={"commands":cmds,"unitPaths":{"service":str(sp),"timer":str(tp)},"unitContents":{"service":sv,"timer":tv},"schedule":s}
- if planned: return finish(receipt("sync-schedule-update","ok",planned=True,**common))
+ if planned: return emit(receipt("sync-schedule-update","ok",planned=True,**common))
  mutation=False
  try:
   if s["enabled"]: atomic(sp,sv,0o644); atomic(tp,tv,0o644); mutation=True
@@ -265,11 +281,16 @@ def schedule_update(p,planned,runner=command):
    r=run(cmd,runner)
    if r.returncode: raise Refusal("schedule-update-command-failed:"+cmd[1])
    mutation=True
+  if not s["enabled"] and not tp.exists():
+   active_state=systemctl_value(["show",TIMER,"--property=ActiveState","--value"],runner)
+   enabled_state=systemctl_value(["is-enabled",TIMER],runner,{0,1,4})
+   if active_state not in {"inactive","failed"} or enabled_state not in {"disabled","not-found","masked","static"}: raise Refusal("schedule-update-readback-mismatch")
+   return emit(receipt("sync-schedule-update","ok",mutation=mutation,timerState={"enabled":False,"active":False,"nextFire":None,"planned":False},**common))
   enabled=systemctl_value(["is-enabled",TIMER],runner,{0,1})=="enabled"; active=systemctl_value(["is-active",TIMER],runner,{0,3})=="active"; next_fire=systemctl_value(["show",TIMER,"--property=NextElapseUSecRealtime","--value"],runner) or None
   if enabled!=s["enabled"]: raise Refusal("schedule-update-readback-mismatch")
-  return finish(receipt("sync-schedule-update","ok",mutation=mutation,timerState={"enabled":enabled,"active":active,"nextFire":next_fire,"planned":False},**common))
- except Refusal as e: return finish(receipt("sync-schedule-update","refused",mutation=mutation,reason=str(e),**common))
- except Exception as e: return finish(receipt("sync-schedule-update","failed",mutation=mutation,reason="schedule-update-failed:"+bounded(e),**common))
+  return emit(receipt("sync-schedule-update","ok",mutation=mutation,timerState={"enabled":enabled,"active":active,"nextFire":next_fire,"planned":False},**common))
+ except Refusal as e: return emit(receipt("sync-schedule-update","refused",mutation=mutation,reason=str(e),**common))
+ except Exception as e: return emit(receipt("sync-schedule-update","failed",mutation=mutation,reason="schedule-update-failed:"+bounded(e),**common))
 
 def dispatch(x):
  if not isinstance(x,dict): raise Refusal("agathodaimon-nas-request-invalid")

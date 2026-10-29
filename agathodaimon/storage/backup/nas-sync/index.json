@@ -1,5 +1,5 @@
 {
-  "children": [],
+  "children": ["hold", "release", "schedule"],
   "envelope": {
     "stdin": "json",
     "keys": [

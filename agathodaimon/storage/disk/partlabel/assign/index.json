@@ -1,0 +1,8 @@
+{
+  "children": [],
+  "sclerite": {"name": "nas", "features": {"nas": {
+    "band": true, "verbs": [["partlabel", "assign"]],
+    "routes": ["/api/v1/storage/disk/partlabel/assign"],
+    "administrative": {"band": true, "verbs": [["partlabel", "assign"]], "routes": ["/api/v1/storage/disk/partlabel/assign"]}
+  }}}
+}

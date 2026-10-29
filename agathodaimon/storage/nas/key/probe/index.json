@@ -1,0 +1,8 @@
+{
+  "children": [],
+  "sclerite": {"name": "nas", "features": {"nas": {
+    "band": true, "verbs": [["key", "probe"]],
+    "routes": ["/api/v1/storage/nas/key/probe"],
+    "administrative": {"band": true, "verbs": [["key", "probe"]], "routes": ["/api/v1/storage/nas/key/probe"]}
+  }}}
+}
