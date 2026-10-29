@@ -10,6 +10,8 @@
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
+    "notify/act",
+    "notify/post",
     "face/app",
     "face/badge",
     "face/bar",
@@ -74,6 +76,14 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "notify",
+      "act"
+    ],
+    [
+      "notify",
+      "post"
     ],
     [
       "face",

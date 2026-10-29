@@ -10,6 +10,8 @@
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
+    "notify/act",
+    "notify/post",
     "local-ai/card",
     "local-ai/library",
     "local-ai/slot",
@@ -60,6 +62,14 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "notify",
+      "act"
+    ],
+    [
+      "notify",
+      "post"
     ],
     [
       "local-ai",

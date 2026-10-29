@@ -12,6 +12,8 @@
     "exousia/forgejo-credential",
     "exousia/reset-default",
     "exousia/verify",
+    "notify/act",
+    "notify/post",
     "face/dictate",
     "face/screenshot",
     "games",
@@ -133,6 +135,14 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "notify",
+      "act"
+    ],
+    [
+      "notify",
+      "post"
     ],
     [
       "face",

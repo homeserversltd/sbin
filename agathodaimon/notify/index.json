@@ -1,0 +1,4 @@
+{
+  "children": ["post", "act"],
+  "sclerite": {"name": "all", "features": {}}
+}

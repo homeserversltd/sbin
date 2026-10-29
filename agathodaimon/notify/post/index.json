@@ -1,0 +1,5 @@
+{
+  "children": [],
+  "envelope": {"stdin": "json", "keys": ["notification"], "actions": []},
+  "sclerite": {"name": "all", "features": {"all": {"band": true, "verbs": [["notify", "post"]], "routes": [], "administrative": {"band": false, "verbs": [], "routes": []}}}}
+}
