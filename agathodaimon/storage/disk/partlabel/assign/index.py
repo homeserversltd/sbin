@@ -49,7 +49,7 @@ def _preflight(current, target):
     return row, disk, disk_identity, number
 
 
-def perform(current, target):
+def perform(current, target, *, request=None):
     receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
                "current_label": current, "label": target, "steps": []}
     started = time.monotonic()
@@ -81,7 +81,7 @@ def perform(current, target):
     except runtime.Refusal as failure:
         runtime._attach_failure(receipt, failure)
     if attempted or receipt.get("ok") is not True:
-        deed.finish("partlabel-assign", "nas-partition", receipt, started)
+        deed.finish("partlabel-assign", "nas-partition", receipt, started, request=request)
     return receipt
 
 
@@ -89,7 +89,7 @@ def main(argv=None):
     request = None
     try:
         request = read(known_fields=("current_label", "label"))
-        receipt = perform(request.payload.get("current_label"), request.payload.get("label"))
+        receipt = perform(request.payload.get("current_label"), request.payload.get("label"), request=request.intent_id)
     except (EnvelopeError, ValueError, UnicodeError):
         receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
     if request is not None:

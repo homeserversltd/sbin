@@ -10,7 +10,7 @@ import uuid
 from agathodaimon.storage.nas import runtime
 
 
-def record(verb: str, target: str, receipt: dict, started: float) -> None:
+def record(verb: str, target: str, receipt: dict, started: float, *, request=None) -> None:
     # These values are internal labels, never envelope fields or key material.
     if verb not in {"sync-hold", "sync-release", "sync-schedule-disable", "partlabel-assign",
                     "nas-open", "nas-attach", "nas-detach", "nas-setup"}:
@@ -23,11 +23,14 @@ def record(verb: str, target: str, receipt: dict, started: float) -> None:
     step = receipt.get("failedStep")
     if not isinstance(step, str) or not re.fullmatch(r"[A-Za-z0-9._+-]{1,128}", step):
         step = None
-    line = json.dumps({"who": "agathodaimon", "verb": verb, "target": target,
+    fields = {"who": "agathodaimon", "verb": verb, "target": target,
                        "outcome": "ok" if receipt.get("ok") is True else "failed",
                        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
                        "id": uuid.uuid4().hex, "signal": signal,
-                       "first_missing_field": step}, separators=(",", ":")).encode("utf-8") + b"\n"
+                       "first_missing_field": step}
+    if isinstance(request, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request):
+        fields["request"] = request
+    line = json.dumps(fields, separators=(",", ":")).encode("utf-8") + b"\n"
     if len(line) >= 1024:
         raise OSError("nas-deed-too-large")
     path = runtime.runtime_path("/var/log/appliance/appliance.log")
@@ -40,9 +43,9 @@ def record(verb: str, target: str, receipt: dict, started: float) -> None:
         os.close(fd)
 
 
-def finish(verb: str, target: str, receipt: dict, started: float) -> None:
+def finish(verb: str, target: str, receipt: dict, started: float, *, request=None) -> None:
     try:
-        record(verb, target, receipt, started)
+        record(verb, target, receipt, started, request=request)
     except (OSError, ValueError, runtime.Refusal):
         receipt["deedLogSignal"] = "agathodaimon-nas-deed-log-unavailable"
         if receipt.get("ok") is True:

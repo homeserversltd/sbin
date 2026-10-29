@@ -52,7 +52,7 @@ def dispatch(request: Any) -> dict[str, Any]:
     except Refusal as failure:
         receipt = failure.receipt or _failure(failure.signal_name, failure.step, role)
     if receipt.get("ok") is not True or receipt.get("alreadyOpen") is not True:
-        deed.finish("nas-open", "nas-" + role if role in {"primary", "backup"} else "nas-role", receipt, started)
+        deed.finish("nas-open", "nas-" + role if role in {"primary", "backup"} else "nas-role", receipt, started, request=request.intent_id)
     return attach_envelope(receipt, request)
 
 

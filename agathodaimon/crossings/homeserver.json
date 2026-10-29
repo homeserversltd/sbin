@@ -62,7 +62,8 @@
     "storage/backup/nas-sync/schedule/disable",
     "storage/nas/role/observe",
     "storage/nas/key/probe",
-    "storage/disk/partlabel/assign"
+    "storage/disk/partlabel/assign",
+    "storage/nas/role/swap"
   ],
   "verbs": [
     [
@@ -268,6 +269,10 @@
     [
       "partlabel",
       "assign"
+    ],
+    [
+      "role",
+      "swap"
     ]
   ],
   "routes": [
@@ -393,7 +398,8 @@
       "storage/backup/nas-sync/release",
       "storage/backup/nas-sync/schedule/disable",
       "storage/nas/key/probe",
-      "storage/disk/partlabel/assign"
+      "storage/disk/partlabel/assign",
+      "storage/nas/role/swap"
     ],
     "verbs": [
       [
@@ -467,6 +473,10 @@
       [
         "partlabel",
         "assign"
+      ],
+      [
+        "role",
+        "swap"
       ]
     ],
     "routes": [

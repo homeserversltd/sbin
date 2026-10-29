@@ -57,7 +57,7 @@ def dispatch(request: Any) -> dict[str, Any]:
     previous = receipt.get("mapperReadbackBefore") or {}
     changed = bool(receipt.get("mountReadbackBefore") or previous.get("exists") or receipt.get("servicesStopped"))
     if receipt.get("ok") is not True or changed:
-        deed.finish("nas-detach", "nas-" + role if role in {"primary", "backup"} else "nas-role", receipt, started)
+        deed.finish("nas-detach", "nas-" + role if role in {"primary", "backup"} else "nas-role", receipt, started, request=request.intent_id)
     return attach_envelope(receipt, request)
 
 

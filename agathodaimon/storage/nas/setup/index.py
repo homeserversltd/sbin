@@ -2269,7 +2269,7 @@ def dispatch(value: Any) -> dict[str, Any]:
                 "readback": {"rc": None}}], "servicesStarted": [],
                 "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": []}
     receipt = _perform(request)
-    deed.finish("nas-setup", "nas-" + request["role"], receipt, started)
+    deed.finish("nas-setup", "nas-" + request["role"], receipt, started, request=envelope_request.intent_id)
     return attach_envelope(receipt, envelope_request)
 
 

@@ -13,7 +13,7 @@ from agathodaimon.storage.nas import deed, runtime
 SCHEMA = "caduceus.nas-sync.schedule.disable.v1"
 
 
-def perform():
+def perform(*, request=None):
     receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete", "steps": []}
     started = time.monotonic()
     attempted = False
@@ -57,7 +57,7 @@ def perform():
     except (OSError, UnicodeError, ValueError):
         runtime._attach_failure(receipt, runtime.Refusal("agathodaimon-nas-schedule-unobservable", "schedule-readback"))
     if attempted or receipt.get("ok") is not True:
-        deed.finish("sync-schedule-disable", "nas-sync", receipt, started)
+        deed.finish("sync-schedule-disable", "nas-sync", receipt, started, request=request)
     return receipt
 
 
@@ -65,7 +65,7 @@ def main(argv=None):
     request = None
     try:
         request = read()
-        receipt = perform()
+        receipt = perform(request=request.intent_id)
     except (EnvelopeError, ValueError, UnicodeError):
         receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
     if request is not None:

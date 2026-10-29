@@ -14,7 +14,7 @@ SYSTEMD_RUN = "/usr/bin/systemd-run"
 
 
 def _holder():
-    result = runtime._run([runtime.SYSTEMCTL, "show", UNIT, "--property=ActiveState", "--property=MainPID"], step="holder-readback")
+    result = runtime._run([runtime.SYSTEMCTL, "show", UNIT, "--property=ActiveState", "--property=MainPID", "--property=Description"], step="holder-readback")
     if result.returncode != 0:
         raise runtime.Refusal("agathodaimon-nas-sync-holder-unobservable", "holder-readback", result.returncode)
     try:
@@ -46,7 +46,7 @@ def _holder():
             if actual == (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino):
                 owns = True
                 break
-    return {"active": True, "state": state, "pid": pid, "ownsLock": owns, "lockIdentity": lock_id}
+    return {"active": True, "state": state, "pid": pid, "ownsLock": owns, "lockIdentity": lock_id, "description": values.get("Description")}
 
 
 def _exclusive_free():
@@ -64,20 +64,25 @@ def _exclusive_free():
             os.close(fd)
 
 
-def perform(action):
+def perform(action, hold_id=None, *, request=None):
     schema = f"caduceus.nas-sync.{action}.v1"
     receipt = {"schema": schema, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete", "steps": []}
     started = time.monotonic()
     attempted = False
+    marker = None
     try:
         runtime._require_root(receipt)
         if action not in {"hold", "release"}:
             raise runtime.Refusal("agathodaimon-nas-sync-action-invalid", "request")
+        if action == "release" and hold_id is not None and (not isinstance(hold_id, str) or not re.fullmatch(r"agathodaimon-nas-sync-hold-[0-9a-f]+", hold_id)):
+            raise runtime.Refusal("agathodaimon-nas-request-invalid", "request")
         with runtime.drive_guard():
             before = _holder()
             runtime._record(receipt, "holder-before", True, **before)
             if before["active"] and not before["ownsLock"]:
                 raise runtime.Refusal("agathodaimon-nas-sync-holder-unobservable", "holder-readback")
+            if action == "release" and hold_id is not None and before.get("description") != hold_id:
+                raise runtime.Refusal("agathodaimon-nas-sync-hold-not-owned", "holder-readback")
             if action == "hold" and before["active"]:
                 # A second transaction must not borrow the first transaction's
                 # hold and later release it between that transaction's steps.
@@ -96,7 +101,7 @@ def perform(action):
                     deadline = time.monotonic() + 3.0
                     while True:
                         after = _holder()
-                        if after["active"] and after["ownsLock"]:
+                        if after["active"] and after["ownsLock"] and after["description"] == marker:
                             break
                         if time.monotonic() >= deadline:
                             raise runtime.Refusal("agathodaimon-nas-sync-holder-unobservable", "holder-readback")
@@ -139,13 +144,14 @@ def perform(action):
             raise runtime.Refusal("agathodaimon-nas-sync-lock-readback-mismatch", "sync-lock-readback")
         if action == "hold":
             final_holder = _holder()
-            valid_holder = final_holder["active"] and final_holder["ownsLock"]
+            valid_holder = final_holder["active"] and final_holder["ownsLock"] and final_holder["description"] == marker
             runtime._record(receipt, "holder-final-readback", valid_holder, **final_holder)
             if not valid_holder:
                 raise runtime.Refusal("agathodaimon-nas-sync-holder-unobservable", "holder-final-readback")
+            receipt["holdId"] = marker
         receipt.update(ok=True, firstMissingSignal="none", state="sync-held" if action == "hold" else "sync-released")
     except runtime.Refusal as failure:
         runtime._attach_failure(receipt, failure)
     if attempted or receipt.get("ok") is not True:
-        deed.finish("sync-" + action, "nas-sync", receipt, started)
+        deed.finish("sync-" + action, "nas-sync", receipt, started, request=request)
     return receipt
