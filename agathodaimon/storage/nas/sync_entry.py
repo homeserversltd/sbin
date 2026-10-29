@@ -10,7 +10,7 @@ def main_for(action):
     request = None
     try:
         request = read(known_fields=("hold_id",) if action == "release" else ())
-        receipt = perform(action, request.payload.get("hold_id"), request=request.intent_id)
+        receipt = perform(action, request=request.intent_id, **request.payload)
     except (EnvelopeError, ValueError, UnicodeError):
         receipt = {"schema": f"caduceus.nas-sync.{action}.v1", "ok": False,
                    "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}

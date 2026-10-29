@@ -11,6 +11,7 @@ from agathodaimon.storage.nas import deed, runtime
 
 UNIT = "homeserver-nas-sync-hold.service"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
+ABSENT = object()
 
 
 def _holder():
@@ -64,7 +65,7 @@ def _exclusive_free():
             os.close(fd)
 
 
-def perform(action, hold_id=None, *, request=None):
+def perform(action, hold_id=ABSENT, *, request=None):
     schema = f"caduceus.nas-sync.{action}.v1"
     receipt = {"schema": schema, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete", "steps": []}
     started = time.monotonic()
@@ -74,14 +75,14 @@ def perform(action, hold_id=None, *, request=None):
         runtime._require_root(receipt)
         if action not in {"hold", "release"}:
             raise runtime.Refusal("agathodaimon-nas-sync-action-invalid", "request")
-        if action == "release" and hold_id is not None and (not isinstance(hold_id, str) or not re.fullmatch(r"agathodaimon-nas-sync-hold-[0-9a-f]+", hold_id)):
-            raise runtime.Refusal("agathodaimon-nas-request-invalid", "request")
+        if action == "release" and hold_id is not ABSENT and (not isinstance(hold_id, str) or not re.fullmatch(r"agathodaimon-nas-sync-hold-[0-9a-f]{32}", hold_id)):
+            raise runtime.Refusal("agathodaimon-nas-sync-hold-not-owned", "holder-readback")
         with runtime.drive_guard():
             before = _holder()
             runtime._record(receipt, "holder-before", True, **before)
             if before["active"] and not before["ownsLock"]:
                 raise runtime.Refusal("agathodaimon-nas-sync-holder-unobservable", "holder-readback")
-            if action == "release" and hold_id is not None and before.get("description") != hold_id:
+            if action == "release" and hold_id is not ABSENT and before.get("description") != hold_id:
                 raise runtime.Refusal("agathodaimon-nas-sync-hold-not-owned", "holder-readback")
             if action == "hold" and before["active"]:
                 # A second transaction must not borrow the first transaction's
