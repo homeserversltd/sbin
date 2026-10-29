@@ -65,7 +65,7 @@ def normalize_name(value: Any) -> str:
     if any(ord(char) < 33 or ord(char) == 127 for char in value) or any(char in value for char in '\"\\/;:*'):
         raise DnsRefused("dns-name-invalid")
     name = value.lower().rstrip(".")
-    if not name.endswith(".home.arpa") or name == "home.arpa":
+    if name != "home.arpa" and not name.endswith(".home.arpa"):
         raise DnsRefused("dns-name-outside-home-arpa")
     labels = name.split(".")
     if any(not label or len(label.encode("ascii", "ignore")) > MAX_LABEL_BYTES or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) for label in labels):
@@ -406,6 +406,8 @@ def dispatch(intent: Any, *, config_path: Path = DEFAULT_CONFIG, checkconf: Call
                 raise DnsRefused("dns-intent-invalid")
         else:
             name = normalize_name(intent.get("name"))
+            if name == "home.arpa.":
+                raise DnsRefused("dns-gateway-apex-base-owned")
             if action == "ensure-local-data":
                 address = admit_private_ipv4(intent.get("address"))
             elif set(intent) != {"action", "name"}:
@@ -499,6 +501,7 @@ class DnsManager:
         self.target = self.dropin_dir / self.TARGET_NAME
         self.read_include = Path(include_path or os.environ.get("CADUCEUS_UNBOUND_INCLUDE", self.READ_INCLUDE_PATH))
         self._command_runner = command_runner or self._run
+        self._incomplete_owned_restore = False
 
     @staticmethod
     def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -596,7 +599,7 @@ class DnsManager:
         finally:
             shutil.rmtree(stage, ignore_errors=True)
 
-    def _validate_owned_staged(self, candidate: bytes) -> None:
+    def _validate_owned_staged(self, candidate: bytes, gateway_candidate: bytes | None = None) -> None:
         root_text = self._root_text()
         expected_include = f'include-toplevel: "{self.dropin_dir}/*.conf"'
         if expected_include not in root_text:
@@ -609,7 +612,9 @@ class DnsManager:
                 for sibling in self.dropin_dir.iterdir():
                     if sibling.is_symlink() or not sibling.is_file():
                         raise DnsError("dns-neighbor-not-regular")
-                    if sibling != self.read_include:
+                    if sibling.name == "caduceus-local-names.conf" and gateway_candidate is not None:
+                        (stage_dropins / sibling.name).write_bytes(gateway_candidate)
+                    elif sibling != self.read_include:
                         shutil.copy2(sibling, stage_dropins / sibling.name)
             (stage_dropins / self.read_include.name).write_bytes(candidate)
             stage_root = stage / "unbound.conf"
@@ -712,17 +717,20 @@ class DnsManager:
         visit(self.root_config, required=True)
         return paths
 
-    def _all_local_records(self) -> list[dict[str, str]]:
-        records: list[dict[str, str]] = []
+    def _all_local_records(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
         for path in self._config_paths():
             text = path.read_text(encoding="utf-8")
             owned = False
+            inside_markers = False
             for line in text.splitlines():
                 if self.BEGIN in line:
+                    inside_markers = True
                     owned = path == self.read_include
                     continue
                 if self.END in line:
                     owned = False
+                    inside_markers = False
                     continue
                 match = None if line.lstrip().startswith("#") else self._LOCAL_DATA.search(line)
                 if not match:
@@ -732,6 +740,8 @@ class DnsManager:
                     "type": match.group(2).upper(),
                     "target": match.group(3).rstrip(".").lower(),
                     "provenance": "owned" if owned else "legacy",
+                    "source": str(path),
+                    "inside_markers": inside_markers,
                 })
                 marker = self._ALIAS_MARKER.search(line)
                 if owned and match.group(2).upper() == "A" and marker:
@@ -782,7 +792,7 @@ class DnsManager:
         label = hostname.strip().lower().rstrip(".")
         if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label):
             raise DnsError("dns-hostname-malformed")
-        return f"{label}.home.arpa."
+        return "home.arpa." if label == "home" else f"{label}.home.arpa."
 
     @staticmethod
     def _reverse_name(address: str) -> str:
@@ -797,6 +807,8 @@ class DnsManager:
         value = label.strip().lower().rstrip(".")
         if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", value):
             raise DnsError("dns-alias-label-malformed")
+        if value == "home":
+            raise DnsError("dns-alias-owner-conflict")
         return f"{value}.home.arpa."
 
     def _include_text(self) -> str:
@@ -816,13 +828,34 @@ class DnsManager:
 
     def _render_owned(self, lines: list[str]) -> bytes:
         text = self._include_text()
-        before, _owned, after = self._split_owned_include(text)
-        payload = before + self.BEGIN + "\n"
-        for line in sorted(lines):
+        before, owned, after = self._split_owned_include(text)
+        remaining = [(line, self._record_parts(line)) for line in lines]
+        rendered: list[str] = []
+        for raw in owned.splitlines(keepends=True):
+            match = re.fullmatch(r'\s*local-data:\s+"([^"\r\n]+)"\s*(#.*)?(?:\r?\n)?', raw, re.I)
+            if not match:
+                rendered.append(raw)
+                continue
+            suffix = match.group(2) or ""
+            marker = self._ALIAS_MARKER.fullmatch(" " + suffix)
+            old = self._record_parts(match.group(1) + (f" # agathodaimon-alias {marker.group(1)}" if marker else ""))
+            index = next((i for i, (_, parts) in enumerate(remaining) if parts == old), None)
+            if index is not None:
+                remaining.pop(index)
+                rendered.append(raw)
+                continue
+            index = next((i for i, (_, parts) in enumerate(remaining) if parts[0] == old[0] and (parts[1] == old[1] or old[1] == "CNAME" and parts[3] is not None)), None)
+            if index is None:
+                continue
+            line, _parts = remaining.pop(index)
             owner, kind, target, alias_target = self._record_parts(line)
             marker = f" # agathodaimon-alias {alias_target}" if alias_target else ""
-            payload += f'    local-data: "{owner} IN {kind} {target}"{marker}\n'
-        payload += self.END + after
+            rendered.append(f'    local-data: "{owner} IN {kind} {target}"{marker}\n')
+        for line, _parts in remaining:
+            owner, kind, target, alias_target = self._record_parts(line)
+            marker = f" # agathodaimon-alias {alias_target}" if alias_target else ""
+            rendered.append(f'    local-data: "{owner} IN {kind} {target}"{marker}\n')
+        payload = before + self.BEGIN + "".join(rendered) + self.END + after
         return payload.encode("utf-8")
 
     def _owned_records(self) -> list[str]:
@@ -858,6 +891,57 @@ class DnsManager:
                 bindings[owner] = canonical
         return bindings
 
+    def _migrate_gateway_records(self, lines: list[str]) -> list[str]:
+        """Retire the old gateway identity only in the owned record set."""
+        old = "homeserver.home.arpa."
+        apex = self.canonical_name("home")
+        migrated = []
+        for line in lines:
+            owner, kind, target, marker = self._record_parts(line)
+            if owner == old and kind == "A" and marker is None:
+                continue
+            if kind == "PTR" and target == old:
+                target = apex
+            if kind == "CNAME" and target == old:
+                target = apex
+            if marker == old:
+                marker = apex
+            migrated.append(f"{owner} IN {kind} {target}" + (f" # agathodaimon-alias {marker}" if marker else ""))
+        return migrated
+
+    def _gateway_file_candidate(self) -> tuple[Path, bytes | None, bytes | None]:
+        path = self.dropin_dir / "caduceus-local-names.conf"
+        if not path.exists():
+            return path, None, None
+        if path.is_symlink() or not path.is_file():
+            raise DnsError("dns-neighbor-not-regular")
+        original = path.read_bytes()
+        text = original.decode("utf-8")
+        if self.BEGIN not in text and self.END not in text:
+            return path, original, original
+        before, owned, after = self._split_owned_include(text)
+        old = "homeserver.home.arpa."
+        apex = self.canonical_name("home")
+        output = []
+        for raw in owned.splitlines(keepends=True):
+            match = re.fullmatch(r'(\s*local-data:\s+\")([^"\r\n]+)(\"[^\r\n]*)(\r?\n)?', raw, re.I)
+            if not match:
+                output.append(raw)
+                continue
+            try:
+                owner, kind, target, marker = self._record_parts(match.group(2))
+            except DnsError:
+                output.append(raw)
+                continue
+            if owner == old and kind == "A" and marker is None:
+                continue
+            if kind == "PTR" and target == old:
+                body = f"{owner} IN PTR {apex}"
+                raw = match.group(1) + body + match.group(3) + (match.group(4) or "")
+            output.append(raw)
+        candidate = (before + self.BEGIN + "".join(output) + self.END + after).encode("utf-8")
+        return path, original, candidate
+
     def _project_aliases(self, lines: list[str], *, removed_targets: set[str] | None = None) -> list[str]:
         """Refresh marked A aliases and migrate owned CNAMEs in one candidate."""
         bindings = self._alias_bindings(lines)
@@ -869,7 +953,7 @@ class DnsManager:
                 addresses.setdefault(owner, set()).add(target)
         other_addresses: dict[str, set[str]] = {}
         for record in self._all_local_records():
-            if record["provenance"] != "owned" and record["type"] == "A":
+            if record["provenance"] != "owned" and record["type"] == "A" and (record["name"] != "home.arpa" or record["source"] == str(self.root_config)):
                 other_addresses.setdefault(record["name"] + ".", set()).add(record["target"])
 
         def resolve(owner: str) -> set[str]:
@@ -920,8 +1004,15 @@ class DnsManager:
             raise DnsError("dns-cname-a-owner-conflict")
         if alias_names & owned_names or cname_names & alias_names:
             raise DnsError("dns-alias-owner-conflict")
-        for record in self._all_local_records():
+        observed = self._all_local_records()
+        proposed_apex = {target for target, owner in device_addresses.items() if owner == "home.arpa"}
+        base_apex = {record["target"] for record in observed if record["source"] == str(self.root_config) and record["name"] == "home.arpa" and record["type"] == "A"}
+        if proposed_apex and proposed_apex != base_apex:
+            raise DnsError("dns-gateway-apex-address-mismatch")
+        for record in observed:
             if record["provenance"] == "owned":
+                continue
+            if record["name"] == "home.arpa" and record["type"] == "A" and proposed_apex == base_apex and record["name"] in new_owners:
                 continue
             if record["name"] in new_owners or (record["type"] == "A" and record["target"] in device_addresses and device_addresses[record["target"]] != record["name"]):
                 raise DnsError("dns-observed-record-collision")
@@ -931,6 +1022,8 @@ class DnsManager:
         if query_tool is None:
             raise DnsError("dns-live-query-tool-missing")
         previous_lines = self._owned_records()
+        gateway_path, gateway_previous, gateway_candidate = self._gateway_file_candidate()
+        lines = self._migrate_gateway_records(lines)
         previous_targets = {owner for owner, kind, _target, marker in map(self._record_parts, previous_lines) if kind == "A" and marker is None} | self._alias_bindings(previous_lines).keys()
         current_targets = {owner for owner, kind, _target, marker in map(self._record_parts, lines) if kind == "A" and marker is None} | self._alias_bindings(lines).keys()
         lines = self._project_aliases(lines, removed_targets=previous_targets - current_targets)
@@ -945,15 +1038,29 @@ class DnsManager:
             values.setdefault((kind, owner), set()).add(target.rstrip(".").lower())
         for record in self._all_local_records():
             if record["provenance"] != "owned":
+                changed_gateway_row = gateway_candidate != gateway_previous and record["source"] == str(gateway_path) and record["inside_markers"]
+                if changed_gateway_row and record["name"] == "homeserver.home.arpa" and record["type"] == "A":
+                    continue
+                if changed_gateway_row and record["type"] == "PTR" and record["target"] == "homeserver.home.arpa":
+                    values.setdefault((record["type"], record["name"] + "."), set()).add("home.arpa")
+                    continue
                 values.setdefault((record["type"], record["name"] + "."), set()).add(record["target"])
         previous = self.read_include.read_bytes() if self.read_include.exists() else None
         mode = self.read_include.stat().st_mode & 0o777 if self.read_include.exists() else 0o644
+        gateway_mode = gateway_path.stat().st_mode & 0o777 if gateway_previous is not None else 0o644
+        changed = candidate != previous or gateway_candidate != gateway_previous
         receipt: dict[str, Any] = {"config_valid": False, "reload_outcome": "not-run", "live_query_readback": [], "mutationPerformed": False}
+        gateway_written = include_written = False
         try:
-            self._validate_owned_staged(candidate)
+            self._validate_owned_staged(candidate, gateway_candidate)
             receipt["config_valid"] = True
-            if candidate != previous:
-                self._replace_bytes(self.read_include, candidate, mode)
+            if changed:
+                if gateway_candidate != gateway_previous and gateway_candidate is not None:
+                    self._replace_bytes(gateway_path, gateway_candidate, gateway_mode)
+                    gateway_written = True
+                if candidate != previous:
+                    self._replace_bytes(self.read_include, candidate, mode)
+                    include_written = True
                 self._reload_service()
                 receipt["reload_outcome"] = "reloaded"
             else:
@@ -970,20 +1077,24 @@ class DnsManager:
                     raise DnsError(f"dns-live-query-still-present: {record_type} {owner}")
                 if answered != wanted:
                     raise DnsError(f"dns-live-query-mismatch: {record_type} {owner}")
-            receipt["mutationPerformed"] = candidate != previous
+            receipt["mutationPerformed"] = changed
             return receipt
-        except DnsError as exc:
+        except (DnsError, OSError) as exc:
             receipt["first_failing_boundary"] = str(exc)
             try:
-                if previous is None:
+                if include_written and previous is None:
                     self.read_include.unlink(missing_ok=True)
-                else:
+                elif include_written and previous is not None:
                     self._replace_bytes(self.read_include, previous, mode)
-                self._reload_service()
+                if gateway_written and gateway_previous is not None:
+                    self._replace_bytes(gateway_path, gateway_previous, gateway_mode)
+                if gateway_written or include_written:
+                    self._reload_service()
                 receipt["candidate"] = "restored"
-            except DnsError as rollback:
+            except (DnsError, OSError) as rollback:
                 receipt["candidate"] = "restore-failed"
                 receipt["rollback_error"] = str(rollback)
+                self._incomplete_owned_restore = True
             raise DnsError(json.dumps(receipt, sort_keys=True)) from exc
 
     def owned_preimage(self) -> bytes | None:
@@ -1000,12 +1111,23 @@ class DnsManager:
         restored = self.read_include.read_bytes() if self.read_include.exists() else None
         if restored != previous:
             raise DnsError("dns-preimage-restoration-mismatch")
+        if self._incomplete_owned_restore:
+            raise DnsError("dns-gateway-preimage-restoration-unproven")
         return {"config_valid": True, "reload_outcome": "reloaded", "restoration_verified": True}
 
     def create_device_name(self, hostname: str, address: str) -> dict[str, Any]:
         canonical = self.canonical_name(hostname)
         reverse = self._reverse_name(address)
         lines = self._owned_records()
+        if canonical == "home.arpa.":
+            records = self._all_local_records()
+            observed = {r["target"] for r in records if r["name"] == "home.arpa" and r["type"] == "A" and r["source"] == str(self.root_config)}
+            if observed != {address}:
+                raise DnsError("dns-gateway-apex-address-mismatch")
+            reverse_present = any(r["name"] == reverse.rstrip(".") and r["type"] == "PTR" and r["target"] in {"home.arpa", "homeserver.home.arpa"} for r in records)
+            additions = [] if reverse_present else [f"{reverse} IN PTR {canonical}"]
+            verification = self._candidate_apply(lines + additions, [("A", canonical), ("PTR", reverse)])
+            return {"action": "device-name-create", "state": "applied" if verification["mutationPerformed"] else "noop", "canonical_name": canonical, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
         if canonical in self._alias_bindings(lines):
             raise DnsError("dns-alias-owner-conflict")
         addresses = {target for owner, kind, target, marker in map(self._record_parts, lines) if owner == canonical and kind == "A" and marker is None}
@@ -1019,6 +1141,11 @@ class DnsManager:
 
     def remove_device_name(self, hostname: str, address: str) -> dict[str, Any]:
         canonical, reverse = self.canonical_name(hostname), self._reverse_name(address)
+        if canonical == "home.arpa.":
+            lines = self._owned_records()
+            retained = [line for line in lines if self._record_parts(line) != (reverse, "PTR", canonical, None)]
+            verification = self._candidate_apply(retained, [("PTR", reverse)])
+            return {"action": "device-name-remove", "state": "applied" if verification["mutationPerformed"] else "noop", "canonical_name": canonical, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
         removals = {(canonical, "A", address, None), (reverse, "PTR", canonical, None)}
         lines = self._owned_records()
         present = removals & set(map(self._record_parts, lines))
@@ -1029,7 +1156,7 @@ class DnsManager:
 
     def create_alias(self, alias_label: str, hostname: str) -> dict[str, Any]:
         alias, canonical = self._alias_name(alias_label), self.canonical_name(hostname)
-        lines = self._owned_records()
+        lines = self._migrate_gateway_records(self._owned_records())
         bindings = self._alias_bindings(lines)
         if alias == canonical or any(self._record_parts(line)[0] == alias for line in lines) and bindings.get(alias) != canonical:
             raise DnsError("dns-alias-owner-conflict")
@@ -1039,7 +1166,7 @@ class DnsManager:
 
     def remove_alias(self, alias_label: str, hostname: str) -> dict[str, Any]:
         alias, canonical = self._alias_name(alias_label), self.canonical_name(hostname)
-        lines = self._owned_records()
+        lines = self._migrate_gateway_records(self._owned_records())
         matches = self._alias_bindings(lines).get(alias) == canonical
         retained = [line for line in lines if not (matches and self._record_parts(line)[0] == alias)]
         verification = self._candidate_apply(retained, [("A", alias)] if matches else [])
@@ -1127,18 +1254,14 @@ def create_alias(alias_label: str, hostname: str, *, manager: DnsManager | None 
         query_tool = shutil.which("dig")
         if query_tool is None:
             raise DnsError("dns-live-query-tool-missing")
-        manager._validate_live()
+        verification = manager._candidate_apply(manager._owned_records(), [("A", alias)])
         result = manager._command([query_tool, "@127.0.0.1", alias, "A", "+short"])
         output = result.stdout.strip()
         if set(output.splitlines()) != addresses:
             raise DnsError(f"dns-live-query-mismatch: A {alias}")
         return {
-            "action": "alias-create", "state": "noop", "alias": alias,
-            "mutationPerformed": False, "verification": {
-                "config_valid": True, "reload_outcome": "not-needed-idempotent",
-                "live_query_readback": [{"type": "A", "owner": alias, "output": output}],
-                "mutationPerformed": False,
-            },
+            "action": "alias-create", "state": "applied" if verification["mutationPerformed"] else "noop", "alias": alias,
+            "mutationPerformed": verification["mutationPerformed"], "verification": verification,
         }
     return manager.create_alias(alias_label, hostname)
 

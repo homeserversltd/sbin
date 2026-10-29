@@ -923,7 +923,7 @@ def constituent_lock(portal: str, lan_ip: str, aliases: Sequence[str] = (), *, d
     if not dry_run:
         for name, label in zip(dns_names, labels):
             try:
-                row = create_alias(label, "homeserver", manager=manager)
+                row = create_alias(label, "home", manager=manager)
             except Exception as error:
                 row = {"mutationPerformed": False, "first_failing_boundary": str(error)}
             if not isinstance(row, dict):
@@ -941,7 +941,7 @@ def constituent_lock(portal: str, lan_ip: str, aliases: Sequence[str] = (), *, d
     return _receipt(
         "constituent_lock", changed=any(row.get("mutationPerformed", False) for row in results),
         dry_run=dry_run, portal=portal, aliases=names[1:], lan_ip=ip,
-        dns_target="homeserver", dns_names=dns_names,
+        dns_target="home.arpa", dns_names=dns_names,
         names_bound=names_bound, dns_aliases=results,
         dhcp_dns_applied=not dry_run and not failure, dhcp_reservation_applied=False,
         dhcp_reservation="declared-only", plan=["reserve-dhcp-declared-only", "bind-dns"],
