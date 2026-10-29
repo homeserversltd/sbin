@@ -80,10 +80,10 @@ def perform(action, hold_id=ABSENT, *, request=None):
         with runtime.drive_guard():
             before = _holder()
             runtime._record(receipt, "holder-before", True, **before)
-            if before["active"] and not before["ownsLock"]:
-                raise runtime.Refusal("agathodaimon-nas-sync-holder-unobservable", "holder-readback")
             if action == "release" and hold_id is not ABSENT and before.get("description") != hold_id:
                 raise runtime.Refusal("agathodaimon-nas-sync-hold-not-owned", "holder-readback")
+            if before["active"] and not before["ownsLock"]:
+                raise runtime.Refusal("agathodaimon-nas-sync-holder-unobservable", "holder-readback")
             if action == "hold" and before["active"]:
                 # A second transaction must not borrow the first transaction's
                 # hold and later release it between that transaction's steps.
