@@ -42,6 +42,7 @@
     "storage/disk/test",
     "storage/nas/attach",
     "storage/nas/detach",
+    "storage/nas/folders",
     "storage/nas/setup",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
@@ -63,7 +64,8 @@
     "storage/nas/role/observe",
     "storage/nas/key/probe",
     "storage/disk/partlabel/assign",
-    "storage/nas/role/swap"
+    "storage/nas/role/swap",
+    "unit/control"
   ],
   "verbs": [
     [
@@ -145,6 +147,10 @@
     [
       "nas",
       "detach"
+    ],
+    [
+      "nas",
+      "folders"
     ],
     [
       "nas",
@@ -273,6 +279,10 @@
     [
       "role",
       "swap"
+    ],
+    [
+      "unit",
+      "control"
     ]
   ],
   "routes": [
@@ -387,6 +397,7 @@
       "network/dns",
       "storage/nas/attach",
       "storage/nas/detach",
+      "storage/nas/folders",
       "storage/nas/setup",
       "storage/vault/open",
       "storage/vault/policy",

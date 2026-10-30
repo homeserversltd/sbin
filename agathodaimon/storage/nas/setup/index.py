@@ -30,7 +30,6 @@ from agathodaimon.storage.nas.runtime import (
     _mapper_state,
     _mount_readback,
     _mountinfo,
-    _start_nas_services,
     _systemctl_state,
     _update_services_not_running,
     attach_role,
@@ -885,7 +884,7 @@ def _permission_mount_guard(root_fd: int, mountpoint: str, mapper_identity: str,
 
 
 def _open_or_create_child(parent_fd: int, component: str, root_dev: int, root_fd: int,
-                          mountpoint: str, mapper_identity: str) -> int:
+                          mountpoint: str, mapper_identity: str, receipt: dict[str, Any]) -> int:
     if component in {"", ".", ".."} or "/" in component:
         raise Refusal("agathodaimon-nas-config-path-invalid", "permissions-preflight")
     root_stat = os.fstat(root_fd)
@@ -894,6 +893,7 @@ def _open_or_create_child(parent_fd: int, component: str, root_dev: int, root_fd
         raise Refusal("agathodaimon-nas-path-escape", "permissions-preflight")
     try:
         os.mkdir(component, 0o755, dir_fd=parent_fd)
+        receipt["mutationPerformed"] = True
     except FileExistsError:
         pass
     except OSError:
@@ -976,7 +976,7 @@ def _apply_permissions(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                     for component in components:
                         _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
                         child_fd = _open_or_create_child(current_fd, component, root_dev, root_fd,
-                                                         mountpoint, expected_mapper)
+                                                         mountpoint, expected_mapper, receipt)
                         os.close(current_fd)
                         current_fd = child_fd
                     targets = _collect_fd_tree(current_fd, root_dev) if app["recursive"] else [os.dup(current_fd)]
@@ -985,11 +985,15 @@ def _apply_permissions(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                         if st.st_dev != root_dev:
                             raise Refusal("agathodaimon-nas-path-escape", "permissions-apply")
                         _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
-                        os.fchown(fd, app["uid"], app["gid"])
+                        if (st.st_uid, st.st_gid) != (app["uid"], app["gid"]):
+                            receipt["mutationPerformed"] = True
+                            os.fchown(fd, app["uid"], app["gid"])
                         _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
-                        os.fchmod(fd, app["mode"])
-                    _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
-                    os.fchmod(current_fd, app["mode"] | stat.S_IWGRP)
+                        current_stat = os.fstat(current_fd)
+                        mode = app["mode"] | stat.S_IWGRP if (st.st_dev, st.st_ino) == (current_stat.st_dev, current_stat.st_ino) else app["mode"]
+                        if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
+                            receipt["mutationPerformed"] = True
+                            os.fchmod(fd, mode)
                     observed_entries = [os.fstat(fd) for fd in targets]
                     current = os.fstat(current_fd)
                     all_permissions = all(
@@ -1157,7 +1161,7 @@ def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                 if relative:
                     for component in relative.split("/"):
                         child_fd = _open_or_create_child(current_fd, component, root_dev, root_fd,
-                                                         mountpoint, mapper_identity)
+                                                         mountpoint, mapper_identity, receipt)
                         parent_fd = current_fd
                         current_fd = child_fd
                         try:
@@ -1168,9 +1172,15 @@ def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                 opened = os.fstat(current_fd)
                 if opened.st_dev != root_dev:
                     raise Refusal("agathodaimon-nas-path-escape", "portal-layout-row-refused")
-                os.fchown(current_fd, owner_entry.pw_uid, group_entry.gr_gid)
+                changed = (opened.st_uid, opened.st_gid) != (owner_entry.pw_uid, group_entry.gr_gid)
+                if changed:
+                    receipt["mutationPerformed"] = True
+                    os.fchown(current_fd, owner_entry.pw_uid, group_entry.gr_gid)
                 _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
-                os.fchmod(current_fd, mode)
+                if stat.S_IMODE(os.fstat(current_fd).st_mode) != mode:
+                    changed = True
+                    receipt["mutationPerformed"] = True
+                    os.fchmod(current_fd, mode)
                 _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
                 observed = _portal_layout_actual(current_fd, actual_path)
                 if (observed["actualDevice"] != root_dev
@@ -1181,7 +1191,7 @@ def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                         or observed["mode"] != expected_mode):
                     raise Refusal("agathodaimon-nas-portal-layout-readback-mismatch",
                                   "portal-layout-row-refused")
-                _record(receipt, "portal-layout-row-readback", True, applied=True, skipped=False,
+                _record(receipt, "portal-layout-row-readback", True, applied=changed, unchanged=not changed, skipped=False,
                         **expected, **observed)
                 row_recorded = True
             except Refusal as failure:
@@ -2088,9 +2098,8 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
         _record(receipt, "mount-readback", False, rc=None, **mount_readback)
         raise Refusal("agathodaimon-nas-mount-readback-mismatch", "mount-readback")
 
-    _start_nas_services(receipt, info)
     _record(receipt, "transaction-complete", True, applications=len(info["config"]["applications"]),
-            servicesStarted=list(info["servicesStarted"]))
+            servicesStarted=[])
     return key_identity, material
 
 

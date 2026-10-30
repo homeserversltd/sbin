@@ -51,7 +51,7 @@ def dispatch(request: Any) -> dict[str, Any]:
     role = None
     try:
         role = _role(request)
-        receipt = attach_role(role)
+        receipt = attach_role(role, start_services=False)
     except Refusal as failure:
         receipt = failure.receipt or _failure(failure.signal_name, failure.step, role)
     if receipt.get("ok") is not True or receipt.get("alreadyMounted") is not True:

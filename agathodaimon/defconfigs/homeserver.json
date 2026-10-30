@@ -6,6 +6,7 @@
     "unbound",
     "keyman",
     "nas",
+    "pid2-unit",
     "linker",
     "transmission",
     "tailscale"
