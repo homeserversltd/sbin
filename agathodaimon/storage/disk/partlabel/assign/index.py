@@ -71,13 +71,16 @@ def perform(current, target, *, request=None):
             runtime._record(receipt, "udev-settle", settle.returncode == 0, rc=settle.returncode)
             if settle.returncode != 0:
                 raise runtime.Refusal("agathodaimon-nas-udev-settle-failed", "udev-settle", settle.returncode)
-            if runtime._device_identity(row["path"], "partlabel-readback") != row["identity"]:
+            # A table re-read may renumber a dynamic-minor partition; it is the same
+            # partition when it is still partition `number` of the same disk.
+            identity = runtime._device_identity(row["path"], "partlabel-readback")
+            if _disk_for(identity) != (disk, disk_identity, number):
                 raise runtime.Refusal("agathodaimon-nas-partition-identity-mismatch", "partlabel-readback")
             check = runtime._run([runtime.BLKID, "-c", "/dev/null", "-s", "PARTLABEL", "-o", "value", "--", row["path"]], step="partlabel-readback")
             if check.returncode != 0 or runtime._decode_output(check, "partlabel-readback") != target:
                 raise runtime.Refusal("agathodaimon-nas-partlabel-readback-mismatch", "partlabel-readback", check.returncode)
-            runtime._record(receipt, "partlabel-readback", True, partition=row["path"], identity=row["identity"], label=target)
-            receipt.update(ok=True, firstMissingSignal="none", state="partlabel-assigned", partition=row["path"], deviceIdentity=row["identity"])
+            runtime._record(receipt, "partlabel-readback", True, partition=row["path"], identity=identity, label=target)
+            receipt.update(ok=True, firstMissingSignal="none", state="partlabel-assigned", partition=row["path"], deviceIdentity=identity)
     except runtime.Refusal as failure:
         runtime._attach_failure(receipt, failure)
     if attempted or receipt.get("ok") is not True:
