@@ -379,10 +379,9 @@ def build_widget() -> Any:
         payload: dict[str, Any] | None,
         callback: Callable[..., bool],
         *args: Any,
-        empty_body: bool = False,
     ) -> None:
         try:
-            receipt = _request(path, "POST", payload, empty_body=True) if empty_body else _request(path, "POST", payload)
+            receipt = _request(path, "POST", payload)
             post_to_ui(callback, receipt, None, *args)
         except Exception as error:  # transport failures remain visible in the pane
             post_to_ui(callback, None, str(error), *args)
@@ -1001,7 +1000,7 @@ def build_widget() -> Any:
                     request_read("interactables", INTERACTABLES_DOOR, finish_interactables)
             return False
 
-        threading.Thread(target=mutate_door, args=(path, None, finish), kwargs={"empty_body": True}, daemon=True).start()
+        threading.Thread(target=mutate_door, args=(path, None, finish), daemon=True).start()
 
     def update_now(_button: Any) -> None:
         if data["update_busy"] or not data["status_ready"]:
