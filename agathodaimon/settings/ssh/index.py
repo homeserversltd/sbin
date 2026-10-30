@@ -60,9 +60,20 @@ def _read_config() -> tuple[str, list[list[str]]]:
     return result.stdout, [command]
 
 
+def _split_global(raw: str) -> tuple[str, str]:
+    offset = 0
+    for line in raw.splitlines(keepends=True):
+        fields = line.split(None, 1)
+        if fields and fields[0].lower() == "match":
+            return raw[:offset], raw[offset:]
+        offset += len(line)
+    return raw, ""
+
+
 def _directive_values(raw: str) -> dict[str, str]:
+    global_region, _ = _split_global(raw)
     values: dict[str, str] = {}
-    for line in raw.splitlines():
+    for line in global_region.splitlines():
         match = DIRECTIVE_LINE.fullmatch(line)
         if match is None:
             continue
@@ -75,9 +86,10 @@ def _directive_values(raw: str) -> dict[str, str]:
 
 def _replace_directive(raw: str, directive: str, desired: str) -> tuple[str, dict[str, str] | None]:
     """Perform one literal string replacement, or append the named missing line."""
+    global_region, match_region = _split_global(raw)
     matches: list[tuple[int, str, re.Match[str]]] = []
     offset = 0
-    for line in raw.splitlines(keepends=True):
+    for line in global_region.splitlines(keepends=True):
         match = DIRECTIVE_LINE.fullmatch(line)
         if match is not None and match.group("name").lower() == directive.lower():
             matches.append((offset, line, match))
@@ -85,9 +97,9 @@ def _replace_directive(raw: str, directive: str, desired: str) -> tuple[str, dic
     if len(matches) > 1:
         raise Refusal("agathodaimon-ssh-exposure-directive-ambiguous")
     if not matches:
-        separator = "" if not raw or raw.endswith("\n") else "\n"
+        separator = "" if not global_region or global_region.endswith("\n") else "\n"
         inserted = f"{directive} {desired}\n"
-        return raw + separator + inserted, {"directive": directive, "from": "absent", "to": desired, "operation": "inserted"}
+        return global_region + separator + inserted + match_region, {"directive": directive, "from": "absent", "to": desired, "operation": "inserted"}
     position, original, match = matches[0]
     before = match.group("value").lower()
     if before == desired:
