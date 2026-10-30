@@ -1525,8 +1525,21 @@ def attach_role(role: str, *, start_services: bool = True,
         raise _attach_failure(receipt, failure) from None
 
 
+def key_record_for_role(role: str) -> str:
+    """Select the existing role record without reading its secret material."""
+    key_name = _role_info(role)["key"]
+    if role == "backup":
+        try:
+            os.lstat(runtime_path("/vault/.keys/nas_backup.key"))
+        except FileNotFoundError:
+            return "nas"
+        except OSError:
+            raise Refusal("agathodaimon-nas-key-unobservable", "key-preflight") from None
+    return key_name
+
+
 def _export_for_role(role: str, scratch: Path | None) -> bytearray:
-    key_name = ROLE[role]["key"]
+    key_name = key_record_for_role(role)
     exporter = (None if scratch is None else
                 str(runtime_path("/bin/" + os.path.basename(KEYMAN_EXPORTER))))
     try:
@@ -1534,7 +1547,7 @@ def _export_for_role(role: str, scratch: Path | None) -> bytearray:
             return export_key(key_name)
         return export_key(key_name, scratch_root=str(scratch), exporter=exporter)
     except KeymanExportError as failure:
-        if role != "backup" or failure.signal != MISSING_KEY:
+        if role != "backup" or key_name != "nas_backup" or failure.signal != MISSING_KEY:
             raise
         if exporter is None:
             return export_key("nas")

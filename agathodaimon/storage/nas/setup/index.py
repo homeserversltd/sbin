@@ -36,6 +36,7 @@ from agathodaimon.storage.nas.runtime import (
     attach_role,
     command_argv,
     drive_guard,
+    key_record_for_role,
     runtime_path,
 )
 
@@ -539,7 +540,7 @@ def _preflight(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any
     services = _list_enabled_nas_services(receipt, expected["mountpoint"])
     return {"deviceIdentity": identity, "deviceType": dev_type, "partition": partition,
             "mapper": mapper, "mountpoint": expected["mountpoint"], "partlabel": expected["partlabel"],
-            "serviceRole": expected["service"], "role": role,
+            "serviceRole": key_record_for_role(role), "role": role,
             "mountUnit": expected["mount_unit"], "openUnit": expected["open_unit"],
             "graph": graph, "targetComponent": target_component, "mountinfo": entries,
             "config": config, "services": services, "unitStatesBefore": unit_states_before,
@@ -672,6 +673,8 @@ def _preflight_reobserve(receipt: dict[str, Any], request: dict[str, Any], first
     second = _preflight(receipt, request["device"], request["role"])
     if second["deviceIdentity"] != first["deviceIdentity"]:
         raise Refusal("agathodaimon-nas-device-changed-before-erasure", "device-stability-preflight")
+    if second["serviceRole"] != first["serviceRole"]:
+        raise Refusal("agathodaimon-nas-key-record-changed", "key-preflight")
     _record(receipt, "device-stability-preflight", True, identity=second["deviceIdentity"], stable=True)
     return second
 
@@ -728,6 +731,8 @@ def _create_key(receipt: dict[str, Any], service_role: str, info: dict[str, Any]
                 _record(receipt, "key-create", False, rc=2, created=False, regular=True)
                 raise Refusal("agathodaimon-nas-key-already-exists", "key-create", 2)
             if existing is None:
+                if service_role != "nas":
+                    raise Refusal("agathodaimon-nas-key-record-changed", "key-preflight")
                 password = secrets.token_hex(32)
                 input_data = bytearray(f'username="nas"\npassword="{password}"\n'.encode("utf-8"))
                 del password
