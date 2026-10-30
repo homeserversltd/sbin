@@ -8,7 +8,9 @@
         "verbs": [],
         "routes": [
           "/api/v1/interactables",
-          "/api/v1/interactables/:id/run"
+          "/api/v1/interactables/:id/run",
+          "/api/v1/interactables/:id/silence",
+          "/api/v1/interactables/:id/unsilence"
         ],
         "administrative": {
           "band": false,

@@ -61,6 +61,8 @@ def _allowed_argv(argv: list[str]) -> bool:
         return True
     if len(args) == 3 and args[:2] == ["interactable", "run"]:
         return _IDENTIFIER.fullmatch(args[2]) is not None
+    if len(args) == 3 and args[:2] in (["interactable", "silence"], ["interactable", "unsilence"]):
+        return _IDENTIFIER.fullmatch(args[2]) is not None
     if len(args) in (4, 5) and args[0] == "update-module":
         if (
             _PROFILE_INDEX.fullmatch(args[1]) is None
