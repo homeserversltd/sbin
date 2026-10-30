@@ -296,6 +296,8 @@
     "/api/v1/gaming/sync",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
+    "/api/v1/interactables/:id/silence",
+    "/api/v1/interactables/:id/unsilence",
     "/api/v1/keyman/admin-password",
     "/api/v1/keyman/create-key",
     "/api/v1/keyman/key-status",

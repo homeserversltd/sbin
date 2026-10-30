@@ -89,8 +89,8 @@ def _staff_envelope(path: str, payload: dict[str, Any] | None = None) -> dict[st
     return envelope
 
 
-def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None) -> dict[str, Any]:
-    data = json.dumps(_staff_envelope(path, payload)).encode('utf-8')
+def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None, *, empty_body: bool = False) -> dict[str, Any]:
+    data = b'' if empty_body else json.dumps(_staff_envelope(path, payload)).encode('utf-8')
     headers = {'Content-Type': 'application/json'}
     request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=headers, method=method)
 

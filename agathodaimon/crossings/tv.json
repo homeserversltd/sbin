@@ -256,6 +256,8 @@
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
+    "/api/v1/interactables/:id/silence",
+    "/api/v1/interactables/:id/unsilence",
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/device/wifi/connect",

@@ -444,6 +444,8 @@
     "/api/v1/identity",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
+    "/api/v1/interactables/:id/silence",
+    "/api/v1/interactables/:id/unsilence",
     "/api/v1/legacy-sbin",
     "/api/v1/legacy-sbin/show",
     "/api/v1/local-ai/runtime/status",

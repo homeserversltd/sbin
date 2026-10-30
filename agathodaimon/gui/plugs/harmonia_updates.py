@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import importlib.util
-import json
-import os
+
 import re
 import sys
 import threading
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import NamedTemporaryFile
+
 from typing import Any, Callable
 
 try:
@@ -99,12 +98,6 @@ def _module_card_class(Gtk: Any) -> Any:
 
         _MODULE_CARD_CLASS = ModuleSquareCard
     return _MODULE_CARD_CLASS
-
-
-STATE_PATH = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / (
-    "appliance-settings/harmonia-updates.json"
-)
-STATE_SCHEMA = "agathodaimon.gui.settings.state.v1"
 
 
 def _text(value: Any) -> str:
@@ -214,89 +207,6 @@ def _normalise_history(runs: list[Any]) -> list[dict[str, Any]] | None:
     return normalized[:10]
 
 
-class State:
-    """Local hidden choices; legacy item-body maps are read as identifier sets."""
-
-    def __init__(self) -> None:
-        self.data: dict[str, Any] = {
-            "schema": STATE_SCHEMA,
-            "module_overrides": {},
-            "hidden_interactables": [],
-        }
-        self.error = ""
-        try:
-            raw = STATE_PATH.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            return
-        except (OSError, UnicodeError, ValueError):
-            self.error = "Local update choices could not be read."
-            return
-        try:
-            value = json.loads(raw)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            self.error = "Local update choices have an unreadable format."
-            return
-        if not isinstance(value, dict) or value.get("schema") != STATE_SCHEMA:
-            self.error = "Local update choices have an unrecognized format."
-            return
-        hidden = value.get("hidden_interactables", {})
-        if isinstance(hidden, dict):
-            identifiers = [key for key in hidden if isinstance(key, str) and key]
-        elif isinstance(hidden, list):
-            identifiers = [item for item in hidden if isinstance(item, str) and item]
-        else:
-            identifiers = []
-            self.error = "Local hidden-update choices have an invalid format."
-        self.data["hidden_interactables"] = sorted(set(identifiers))
-
-    def hidden(self) -> set[str]:
-        values = self.data.get("hidden_interactables", [])
-        if isinstance(values, dict):
-            return {key for key in values if isinstance(key, str) and key}
-        if isinstance(values, list):
-            return {item for item in values if isinstance(item, str) and item}
-        return set()
-
-    def _save(self) -> bool:
-        temporary: Path | None = None
-        try:
-            STATE_PATH.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-            with NamedTemporaryFile(
-                dir=STATE_PATH.parent,
-                prefix=".state.",
-                delete=False,
-                mode="w",
-                encoding="utf-8",
-            ) as stream:
-                temporary = Path(stream.name)
-                stream.write(json.dumps(self.data, sort_keys=True) + "\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.chmod(temporary, 0o600)
-            os.replace(temporary, STATE_PATH)
-        except OSError:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            self.error = "Local update choices could not be saved."
-            return False
-        self.error = ""
-        return True
-
-    def hide(self, identifier: str) -> bool:
-        identifier = _text(identifier)
-        if not identifier:
-            return False
-        self.data["hidden_interactables"] = sorted(self.hidden() | {identifier})
-        return self._save()
-
-    def unhide(self, identifier: str) -> bool:
-        self.data["hidden_interactables"] = sorted(self.hidden() - {identifier})
-        return self._save()
-
-
 def build_widget() -> Any:
     import gi
 
@@ -305,7 +215,7 @@ def build_widget() -> Any:
     from gi.repository import Adw, GLib, Gtk
 
     ModuleSquareCard = _module_card_class(Gtk)
-    state = State()
+
     reads = {name: 0 for name in ("status", "timer", "modules", "interactables", "history")}
     data: dict[str, Any] = {
         "alive": True,
@@ -397,10 +307,10 @@ def build_widget() -> Any:
     pending_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     pending_group.add(pending_box)
 
-    hidden_group = Adw.PreferencesGroup(title="Hidden updates")
-    updates_page.add(hidden_group)
-    hidden_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-    hidden_group.add(hidden_box)
+    silenced_group = Adw.PreferencesGroup(title="Silenced updates")
+    updates_page.add(silenced_group)
+    silenced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    silenced_group.add(silenced_box)
 
     modules_group = Adw.PreferencesGroup(title="Update modules")
     updates_page.add(modules_group)
@@ -469,15 +379,17 @@ def build_widget() -> Any:
         payload: dict[str, Any] | None,
         callback: Callable[..., bool],
         *args: Any,
+        empty_body: bool = False,
     ) -> None:
         try:
-            receipt = _request(path, "POST", payload)
+            receipt = _request(path, "POST", payload, empty_body=True) if empty_body else _request(path, "POST", payload)
             post_to_ui(callback, receipt, None, *args)
         except Exception as error:  # transport failures remain visible in the pane
             post_to_ui(callback, None, str(error), *args)
 
     def render_status() -> None:
-        count_text = str(len(data["interactables"])) if data["interactables_ready"] else "?"
+        pending = [item for item in data["interactables"] if not item["silenced"]]
+        count_text = str(len(pending)) if data["interactables_ready"] else "?"
         update_button.set_label(f"Update Now ({count_text})")
         update_button.set_sensitive(data["status_ready"] and not data["update_busy"])
 
@@ -491,8 +403,8 @@ def build_widget() -> Any:
             elif latest_failed is None and data["history"]:
                 headline = "Update status unavailable"
                 style = "error"
-            elif data["interactables"]:
-                headline = f"{len(data['interactables'])} updates waiting"
+            elif pending:
+                headline = f"{len(pending)} updates waiting"
                 style = ""
             else:
                 headline = "Up to date"
@@ -661,17 +573,11 @@ def build_widget() -> Any:
                 data["interactables_error"] or "Pending updates unavailable.",
                 error=True,
             )
-            render_hidden()
+            render_silenced()
             return
-        hidden = state.hidden()
-        visible_items = [item for item in data["interactables"] if item["id"] not in hidden]
+        visible_items = [item for item in data["interactables"] if not item["silenced"]]
         if not visible_items:
-            message = (
-                "No visible pending updates; hidden updates remain waiting."
-                if data["interactables"]
-                else "No pending updates."
-            )
-            append_message(pending_box, message)
+            append_message(pending_box, "No pending updates.")
         for item in visible_items:
             identifier = item["id"]
             card = make_card()
@@ -697,23 +603,22 @@ def build_widget() -> Any:
             disagree_button = Gtk.Button(label="Disagree", valign=Gtk.Align.CENTER)
             disagree_button.set_sensitive(False)
             disagree_button.set_tooltip_text("No admitted Disagree door.")
-            hide_button = Gtk.Button(label="Hide", valign=Gtk.Align.CENTER)
-            hide_button.connect("clicked", hide, identifier)
+            silence_button = Gtk.Button(label="Silence", valign=Gtk.Align.CENTER)
+            silence_button.set_sensitive(identifier not in data["agree_busy"])
+            silence_button.connect("clicked", set_silence, identifier, True)
             actions.append(agree_button)
             actions.append(disagree_button)
-            actions.append(hide_button)
+            actions.append(silence_button)
             card.append(actions)
             pending_box.append(card)
-        render_hidden()
+        render_silenced()
 
-    def render_hidden() -> None:
-        clear(hidden_box)
-        hidden_group.set_visible(bool(state.hidden()) or bool(state.error))
-        if state.error:
-            append_message(hidden_box, state.error, error=True)
-        live = {item["id"]: item for item in data["interactables"]}
-        for identifier in sorted(state.hidden()):
-            item = live.get(identifier, {})
+    def render_silenced() -> None:
+        clear(silenced_box)
+        items = [item for item in data["interactables"] if item["silenced"]] if data["interactables_ready"] else []
+        silenced_group.set_visible(bool(items))
+        for item in items:
+            identifier = item["id"]
             card = make_card()
             title = item.get("name") or _humanize(identifier)
             title_label = Gtk.Label(label=title, xalign=0, wrap=True)
@@ -724,10 +629,14 @@ def build_widget() -> Any:
                 summary_label = Gtk.Label(label=summary, xalign=0, wrap=True)
                 summary_label.add_css_class("dim-label")
                 card.append(summary_label)
-            restore = Gtk.Button(label="Unhide", valign=Gtk.Align.CENTER)
-            restore.connect("clicked", unhide, identifier)
+            message = data["agree_messages"].get(identifier, "")
+            if message:
+                append_message(card, message, error=True)
+            restore = Gtk.Button(label="Unsilence", valign=Gtk.Align.CENTER)
+            restore.set_sensitive(identifier not in data["agree_busy"])
+            restore.connect("clicked", set_silence, identifier, False)
             card.append(restore)
-            hidden_box.append(card)
+            silenced_box.append(card)
 
     def render_history() -> None:
         clear(history_box)
@@ -873,13 +782,13 @@ def build_widget() -> Any:
         render_modules()
         return False
 
-    def _normalise_interactables(receipt: Any) -> list[dict[str, str]] | None:
+    def _normalise_interactables(receipt: Any) -> list[dict[str, Any]] | None:
         if not isinstance(receipt, dict) or receipt.get("ok") is False:
             return None
         values = receipt.get("interactables")
         if not isinstance(values, list):
             return None
-        result: list[dict[str, str]] = []
+        result: list[dict[str, Any]] = []
         seen: set[str] = set()
         for item in values:
             if not isinstance(item, dict):
@@ -894,7 +803,7 @@ def build_widget() -> Any:
             raw_summary = item.get("description")
             name = raw_name if isinstance(raw_name, str) else ""
             summary = raw_summary if isinstance(raw_summary, str) else ""
-            result.append({"id": identifier, "name": name, "summary": summary})
+            result.append({"id": identifier, "name": name, "summary": summary, "silenced": item.get("silenced") is True})
         return result
 
     def finish_interactables(receipt: Any, error: str | None, generation: int) -> bool:
@@ -1069,16 +978,30 @@ def build_widget() -> Any:
 
         threading.Thread(target=mutate_door, args=(path, None, finish), daemon=True).start()
 
-    def hide(_button: Any, identifier: str) -> None:
-        if state.hide(identifier):
-            data["agree_messages"].pop(identifier, None)
+    def set_silence(_button: Any, identifier: str, silenced: bool) -> None:
+        if identifier in data["agree_busy"]:
+            return
+        data["agree_sequence"] += 1
+        sequence = data["agree_sequence"]
+        data["agree_busy"][identifier] = sequence
+        data["agree_messages"].pop(identifier, None)
         render_pending()
-        render_status()
+        action = "silence" if silenced else "unsilence"
+        path = f"{INTERACTABLES_DOOR}/{urllib.parse.quote(identifier, safe='')}/{action}"
 
-    def unhide(_button: Any, identifier: str) -> None:
-        state.unhide(identifier)
-        render_pending()
-        render_status()
+        def finish(receipt: Any, error: str | None) -> bool:
+            if data["agree_busy"].get(identifier) != sequence:
+                return False
+            data["agree_busy"].pop(identifier, None)
+            if error or not _receipt_ok(receipt or {}):
+                data["agree_messages"][identifier] = error or _receipt_error(receipt, f"{action.capitalize()} request refused.")
+            if data["alive"]:
+                render_pending()
+                if not error and _receipt_ok(receipt or {}):
+                    request_read("interactables", INTERACTABLES_DOOR, finish_interactables)
+            return False
+
+        threading.Thread(target=mutate_door, args=(path, None, finish), kwargs={"empty_body": True}, daemon=True).start()
 
     def update_now(_button: Any) -> None:
         if data["update_busy"] or not data["status_ready"]:
