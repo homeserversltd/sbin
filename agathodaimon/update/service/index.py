@@ -2,37 +2,12 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 import subprocess
 import sys
-from pathlib import Path
 from typing import Any
 
 SCHEMA = "caduceus.staff.update-service.v1"
-
-
-def _root() -> Path:
-    return Path(os.environ.get("CADUCEUS_ROOT", "/"))
-
-
-def _path(env: str, absolute: str) -> Path:
-    value = os.environ.get(env)
-    return Path(value) if value else _root() / absolute.lstrip("/")
-
-
-def _profile_paths() -> tuple[Path, ...]:
-    override = os.environ.get("CADUCEUS_PROFILE_PATH")
-    if override:
-        return (Path(override),)
-    return tuple(
-        _path("CADUCEUS_PROFILE_PATH", absolute)
-        for absolute in (
-            "/etc/caduceus/profile.yaml",
-            "/etc/caduceus/profile.yml",
-            "/etc/caduceus/profile.json",
-        )
-    )
+TIMER_UNIT = "harmonia.timer"
 
 
 ACTIONS = {"on", "off", "status"}
@@ -52,171 +27,6 @@ ACTIVE_STATES = {
     "deactivating": 3,
     "maintenance": 3,
 }
-
-
-def safe_timer_unit(value: Any) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and value.isascii()
-        and value[0].isalnum()
-        and value.endswith(".timer")
-        and ".." not in value
-        and all(char.isalnum() or char in "-_.@" for char in value)
-    )
-
-
-_YAML_KEY = re.compile(r"^([A-Za-z0-9_-]+):(.*)$")
-
-
-def _without_yaml_comment(line: str) -> str:
-    quote: str | None = None
-    index = 0
-    while index < len(line):
-        char = line[index]
-        if quote == "'":
-            if char == "'":
-                if index + 1 < len(line) and line[index + 1] == "'":
-                    index += 2
-                    continue
-                quote = None
-        elif quote == '"':
-            if char == "\\":
-                index += 2
-                continue
-            if char == '"':
-                quote = None
-        elif char in {"'", '"'}:
-            quote = char
-        elif char == "#" and (index == 0 or line[index - 1].isspace()):
-            return line[:index]
-        index += 1
-    if quote is not None:
-        raise ValueError("malformed YAML quote")
-    return line
-
-
-def _yaml_timer_scalar(value: str) -> str:
-    if not value:
-        raise ValueError("missing YAML timer")
-    if value[0] not in {"'", '"'}:
-        return value
-    quote = value[0]
-    if len(value) < 2 or value[-1] != quote:
-        raise ValueError("malformed YAML timer quote")
-    scalar = value[1:-1]
-    if quote == '"' and ("\\" in scalar or '"' in scalar):
-        raise ValueError("unsupported YAML timer escape")
-    if quote == "'" and "'" in scalar:
-        raise ValueError("unsupported YAML timer quote")
-    return scalar
-
-
-def _fallback_yaml_timer(text: str) -> str:
-    """Resolve only the simple services.update.timer block used on the house."""
-    stack: list[tuple[int, str | None]] = []
-    services_count = 0
-    update_count = 0
-    timer_values: list[str] = []
-
-    for raw_line in text.splitlines():
-        line = _without_yaml_comment(raw_line)
-        if not line.strip():
-            continue
-        prefix = line[: len(line) - len(line.lstrip(" " + chr(9)))]
-        if any(char == chr(9) for char in prefix):
-            raise ValueError("tab indentation in YAML")
-        indent = len(prefix)
-        body = line[indent:]
-        if body in {"---", "..."}:
-            raise ValueError("multiple YAML document markers")
-
-        while stack and stack[-1][0] >= indent:
-            stack.pop()
-        parent = tuple(key for _, key in stack)
-
-        if body == "-" or body.startswith("- "):
-            if parent == ("services",):
-                raise ValueError("services is not a YAML mapping")
-            stack.append((indent, None))
-            continue
-
-        match = _YAML_KEY.match(body)
-        if match is None:
-            if parent in {("services",), ("services", "update")} or not parent:
-                raise ValueError("malformed YAML mapping")
-            continue
-
-        key, remainder = match.groups()
-        if remainder and not remainder[0].isspace():
-            if (
-                (parent == () and key == "services")
-                or (parent == ("services",) and key == "update")
-                or (parent == ("services", "update") and key == "timer")
-                or not parent
-            ):
-                raise ValueError("malformed YAML mapping entry")
-            continue
-        value = remainder.strip()
-
-        if parent == () and key == "services":
-            services_count += 1
-            if services_count != 1 or indent != 0 or value:
-                raise ValueError("ambiguous or shapeless services mapping")
-        elif parent == ("services",) and key == "update":
-            update_count += 1
-            if update_count != 1 or indent != 2 or value:
-                raise ValueError("ambiguous or shapeless update mapping")
-        elif parent == ("services", "update") and key == "timer":
-            if indent != 4 or timer_values:
-                raise ValueError("ambiguous or shapeless timer declaration")
-            timer_values.append(_yaml_timer_scalar(value))
-
-        if not value:
-            stack.append((indent, key))
-
-    if services_count != 1 or update_count != 1 or len(timer_values) != 1:
-        raise ValueError("shapeless services.update.timer declaration")
-    return timer_values[0]
-
-
-def _yaml_profile(text: str) -> Any:
-    try:
-        import yaml
-    except ImportError:
-        timer = _fallback_yaml_timer(text)
-        return {"services": {"update": {"timer": timer}}}
-    try:
-        return yaml.safe_load(text)
-    except Exception as error:
-        raise ValueError("invalid Caduceus YAML profile") from error
-
-
-def _profile_timer(profile: Any) -> str:
-    services = profile.get("services") if isinstance(profile, dict) else None
-    update = services.get("update") if isinstance(services, dict) else None
-    timer = update.get("timer") if isinstance(update, dict) else None
-    if not isinstance(timer, str) or not safe_timer_unit(timer):
-        raise ValueError("update-service-timer-undeclared")
-    return timer
-
-
-def declared_timer() -> str:
-    for profile_path in _profile_paths():
-        try:
-            with profile_path.open("r", encoding="utf-8") as source:
-                text = source.read()
-        except OSError:
-            continue
-        except UnicodeError as error:
-            raise ValueError("update-service-timer-undeclared") from error
-
-        try:
-            profile = json.loads(text) if profile_path.suffix == ".json" else _yaml_profile(text)
-            return _profile_timer(profile)
-        except Exception as error:
-            raise ValueError("update-service-timer-undeclared") from error
-    raise ValueError("update-service-timer-undeclared")
 
 
 def _receipt(
@@ -313,10 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(action, str) or action not in ACTIONS:
         return _emit(_receipt(first_missing_signal="update-service-action-invalid"))
 
-    try:
-        timer = declared_timer()
-    except ValueError:
-        return _emit(_receipt(first_missing_signal="update-service-timer-undeclared"))
+    timer = TIMER_UNIT
 
     output: list[str] = []
     try:

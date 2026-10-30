@@ -1,7 +1,8 @@
 """Narrow appliance source-map splice actuator.
 
 Fulcrum alone composes a catalog and overlay.  This actuator accepts only the
-already-finished Harmonia-managed map, validates the bytes at its privileged
+already-finished Harmonia-managed map staged under Caduceus's state directory,
+validates the bytes at its privileged
 boundary, and replaces only the top-level ``sources`` value in the fixed device
 certificate.
 """
@@ -19,7 +20,7 @@ from urllib.parse import urlsplit
 
 SCHEMA = "homeserver.device-profile.v1"
 CERTIFICATE_PATH = "/etc/appliance/profile.json"
-SOURCE_MAP_PATH = "/etc/caduceus/source-map.json"
+SOURCE_MAP_PATH = "/var/lib/caduceus/source-map.json"
 COMPONENT = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 CREDENTIAL_MARKERS = ("password", "passwd", "secret", "token", "private-key", "private_key")
 SECRET_PREFIXES = ("ghp_", "github_pat_", "glpat-", "xox", "akia")
