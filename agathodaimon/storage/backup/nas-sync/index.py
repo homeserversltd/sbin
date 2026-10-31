@@ -82,16 +82,32 @@ def kernel_gate(a,b,runner):
  if r.returncode: raise Refusal("current-boot-kernel-log-unevaluable")
  boundaries=[]
  for facts in (a,b):
-  disks=sorted(v for v in facts["roots"] if re.fullmatch(r"[0-9]+:[0-9]+",v)); times=[]
+  disks=sorted(v for v in facts["roots"] if re.fullmatch(r"[0-9]+:[0-9]+",v)); paths=sorted(v for v in facts["roots"] if str(v).startswith("/dev/")); times={}
   for disk in disks:
    try:
     lines=(Path("/run/udev/data")/("b"+disk)).read_text(encoding="utf-8").splitlines()
     values=[int(line[2:]) for line in lines if line.startswith("I:") and line[2:].isdigit()]
     if len(values)!=1: raise ValueError("missing initialization time")
-    times.append(values[0])
-   except (OSError,UnicodeError,ValueError): times=[]; break
-  threshold=min(times) if disks and len(times)==len(disks) else None
-  boundaries.append((tokens(facts),threshold,{"roots":disks,"attachMonotonicUsec":threshold,"scope":"since-attach" if threshold is not None else "whole-boot-fallback"}))
+    times[disk]=values[0]
+   except (OSError,UnicodeError,ValueError): times[disk]=None
+  roots=[]; mapped=set()
+  if len(disks)==1:
+   roots=[(tokens(facts),times[disks[0]])]
+  elif disks and len(paths)==len(disks):
+   for path in paths:
+    probe=run([LSBLK,"-d","-n","-r","-P","-o","NAME,KNAME,PATH,MAJ:MIN","--",path],runner)
+    try:
+     lines=probe.stdout.splitlines()
+     if probe.returncode or len(lines)!=1: raise ValueError("root identity")
+     fields=dict(item.split("=",1) for item in shlex.split(lines[0]))
+     disk=fields["MAJ:MIN"]
+     if disk not in times or disk in mapped or fields["PATH"]!=path: raise ValueError("root identity")
+     mapped.add(disk); roots.append((tokens({"identities":{path,fields["NAME"],fields["KNAME"],disk}}),times[disk]))
+    except (KeyError,ValueError,TypeError): roots=[]; break
+  mapped_roots=len(roots)==len(disks) and bool(roots)
+  if not mapped_roots: roots=[(tokens(facts),None)]
+  fallback=min(times.values()) if times and all(v is not None for v in times.values()) else None
+  boundaries.append((tokens(facts),roots,fallback,{"roots":[{"device":d,"attachMonotonicUsec":times[d],"scope":"since-attach" if times[d] is not None else "whole-boot-fallback"} for d in disks],"rootIdentityScope":"per-root" if mapped_roots else "whole-boot-fallback","unmappedScope":"since-earliest-attach" if fallback is not None else "whole-boot-fallback"}))
  for line in r.stdout.splitlines():
   try:
    event=json.loads(line); message=event.get("MESSAGE",""); timestamp=event.get("__MONOTONIC_TIMESTAMP")
@@ -99,9 +115,11 @@ def kernel_gate(a,b,runner):
    when=int(timestamp) if timestamp is not None else None
   except (ValueError,TypeError,AttributeError): raise Refusal("current-boot-kernel-log-unevaluable")
   if KERNEL_ERROR.search(message):
-   for identities,threshold,_ in boundaries:
-    if names_device(message,identities) and (threshold is None or when is None or when>threshold): raise Refusal("current-boot-kernel-error-names-backing-drive")
- return [entry[2] for entry in boundaries]
+   for identities,roots,fallback,_ in boundaries:
+    matched=[limit for root_tokens,limit in roots if names_device(message,root_tokens)]
+    if not matched and names_device(message,identities): matched=[fallback]
+    if any(limit is None or when is None or when>limit for limit in matched): raise Refusal("current-boot-kernel-error-names-backing-drive")
+ return [entry[3] for entry in boundaries]
 def measure(root):
  if not root.is_dir(): raise Refusal("source-unreadable:"+str(root))
  count=total=0; stack=[root]

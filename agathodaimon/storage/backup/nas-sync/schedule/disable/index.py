@@ -40,11 +40,13 @@ def perform(*, request=None):
                     raise runtime.Refusal("schedule-update-command-failed:" + command[1], "schedule-disable", result.returncode)
             active = runtime._run([runtime.SYSTEMCTL, "show", "agathodaimon-nas-sync.timer", "--property=ActiveState", "--value"], step="schedule-disable", timeout=60)
             enabled = runtime._run([runtime.SYSTEMCTL, "is-enabled", "agathodaimon-nas-sync.timer"], step="schedule-disable", timeout=60)
-            if active.returncode != 0 or enabled.returncode not in {0, 1, 4}:
-                raise runtime.Refusal("systemctl-readback-failed", "schedule-disable")
+            if active.returncode != 0:
+                raise runtime.Refusal("systemctl-readback-failed:show", "schedule-disable")
+            if enabled.returncode not in {0, 1, 4}:
+                raise runtime.Refusal("systemctl-readback-failed:is-enabled", "schedule-disable")
             okay = (active.stdout.decode("utf-8").strip() in {"inactive", "failed"}
                     and enabled.stdout.decode("utf-8").strip() in {"disabled", "not-found", "masked", "static"}
-                    and not timer.exists())
+                    and not timer.exists() and not service.exists())
             state_after = {"enabled": False, "active": False, "nextFire": None, "planned": False} if okay else {}
             runtime._record(receipt, "schedule-disabled", okay, noop=False, timerPresent=timer.exists(), timerState=state_after)
             if not okay:
