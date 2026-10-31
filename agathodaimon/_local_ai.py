@@ -434,6 +434,43 @@ def card(local: dict) -> dict:
             "formula": FORMULA, "kv_estimate": KV_ESTIMATE, "mutationPerformed": False}
 
 
+def _worker_drive_mounted() -> bool:
+    # mountinfo field 5 is the mountpoint; escaped whitespace cannot match this path.
+    with open("/proc/self/mountinfo", encoding="utf-8") as source:
+        return any(len(fields := line.split()) > 4 and fields[4] == "/var/opt/hermes/workspace"
+                   for line in source)
+
+
+def _edition_card(local: dict) -> dict:
+    value = local.get("card")
+    value = value if isinstance(value, dict) else {}
+    vram = value.get("vram_gib")
+    tier = value.get("tier")
+    return {"vram_gib": vram if type(vram) is int else None,
+            "tier": tier if isinstance(tier, str) else None}
+
+
+def memory(local: dict) -> dict:
+    edition = local.get("edition")
+    card_info = _edition_card(local)
+    mounted = _worker_drive_mounted()
+    on = edition == "memory" and mounted
+    reason = (None if on else "not-chosen" if edition != "memory" else "drive_required")
+    return {"edition": edition, "worker_drive_mounted": mounted, "card": card_info,
+            "state": "on" if on else "off", "reason": reason}
+
+
+def edition_check(local: dict, edition: str) -> dict:
+    if edition == "none":
+        return {"ok": True, "signal": None}
+    if not _worker_drive_mounted():
+        return {"ok": False, "signal": "drive_required"}
+    vram = _edition_card(local)["vram_gib"]
+    if vram is not None and vram < 12:
+        return {"ok": False, "signal": "card-too-small"}
+    return {"ok": True, "signal": None}
+
+
 def apply(local: dict, name: str) -> dict:
     slot = _slot(local, name)
     operation = "stop" if slot["model"] is None else "restart"
@@ -543,11 +580,17 @@ def main(verb: str, args=None) -> int:
             _slot(local, name)
             attempted = action == "apply"
             reply = apply(local, name) if action == "apply" else run(local, name)
+        elif verb == "edition":
+            if len(arguments) != 2 or arguments[0] != "check" or arguments[1] not in {"memory", "none"}:
+                raise LocalAIError("local-ai-edition-arguments-invalid")
+            request = _optional_request()
+            reply = edition_check({} if arguments[1] == "none" else _config(), arguments[1])
         else:
             if arguments:
                 raise LocalAIError("local-ai-read-arguments-invalid")
             request = _optional_request()
-            reply = card(_config()) if verb == "card" else library(_config())
+            local = _config()
+            reply = card(local) if verb == "card" else memory(local) if verb == "memory" else library(local)
     except (LocalAIError, EnvelopeError, OSError, UnicodeError, ValueError, RecursionError, subprocess.TimeoutExpired) as error:
         signal = str(error) if isinstance(error, (LocalAIError, EnvelopeError)) else "local-ai-observation-failed:" + type(error).__name__
         reply = {"ok": False, "firstMissingSignal": signal, "mutationPerformed": attempted}
@@ -557,4 +600,4 @@ def main(verb: str, args=None) -> int:
                           "outcome": "ok" if reply["ok"] else "failed", "duration_ms": int((time.monotonic() - started) * 1000),
                           "signal": reply.get("firstMissingSignal", "none")}, separators=(",", ":")), file=sys.stderr)
     print(json.dumps(attach(reply, request) if request is not None else reply, separators=(",", ":")))
-    return 0 if reply["ok"] else 1
+    return 0 if reply.get("ok", True) else 1

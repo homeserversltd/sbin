@@ -1,0 +1,18 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "actions": ["check"],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "local-ai",
+    "features": {
+      "local-ai": {
+        "band": true,
+        "verbs": [["local-ai", "edition"]],
+        "routes": ["/api/v1/local-ai/edition"]
+      }
+    }
+  }
+}

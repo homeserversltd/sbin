@@ -1,0 +1,18 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "actions": ["memory"],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "local-ai",
+    "features": {
+      "local-ai": {
+        "band": true,
+        "verbs": [["local-ai", "memory"]],
+        "routes": ["/api/v1/local-ai/memory"]
+      }
+    }
+  }
+}
