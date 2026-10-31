@@ -65,14 +65,44 @@ def forgejo_paths(ini_path, work):
         data = get("__top__", "APP_DATA_PATH", get("server", "APP_DATA_PATH", str(work / "data")))
         def resolve(value):
             value = value.replace("%(APP_DATA_PATH)s", data).replace("%(app_data_path)s", data)
+            if '%(' in value:
+                refuse('forgejo-config', 'path-variable-unsupported')
             path = Path(value)
             return path if path.is_absolute() else work / path
         data_path = resolve(data)
-        root = resolve(get("repository", "ROOT", str(work / "repositories")))
-        storage_type = get("attachment", "STORAGE_TYPE", get("storage", "STORAGE_TYPE", "local")).lower()
-        if storage_type not in ("", "local"):
-            refuse("forgejo-config", "attachment-storage-not-local")
-        attachments = resolve(get("attachment", "PATH", get("storage", "PATH", str(data_path / "attachments"))))
+        def expand_storage(value):
+            expanded = value.replace("%(APP_DATA_PATH)s", str(data_path)).replace("%(app_data_path)s", str(data_path))
+            if '%(' in expanded:
+                refuse('forgejo-config', 'path-variable-unsupported')
+            return expanded
+        root = resolve(get("repository", "ROOT", str(data_path / "gitea-repositories")))
+        def storage_path(section, name):
+            kind = get(section, "STORAGE_TYPE", "") or get("storage." + name, "STORAGE_TYPE", "") or get("storage", "STORAGE_TYPE", "local")
+            target = "storage." + kind
+            if kind != "local" and get(target, "STORAGE_TYPE", "").lower() != "local":
+                refuse("forgejo-config", name + "-storage-not-local")
+            base = expand_storage(get(target, "PATH", "") if kind != "local" else get("storage", "PATH", ""))
+            specific = expand_storage(get(section, "PATH", "") or get("storage." + name, "PATH", ""))
+            if section == "lfs" and not specific:
+                specific = expand_storage(get("server", "LFS_CONTENT_PATH", ""))
+            if base:
+                base_path = Path(base)
+                if not base_path.is_absolute():
+                    base_path = data_path / base_path
+            else:
+                base_path = data_path
+            if specific:
+                candidate = Path(specific)
+                return candidate if candidate.is_absolute() else base_path / candidate
+            return base_path if kind != 'local' and base else base_path / name
+        attachments = storage_path("attachment", "attachments")
+        lfs = storage_path("lfs", "lfs")
+        archive = storage_path("repo-archive", "repo-archive")
+        issue_index = resolve(get("indexer", "ISSUE_INDEXER_PATH", str(data_path / "indexers/issues.bleve")))
+        repo_index = resolve(get("indexer", "REPO_INDEXER_PATH", str(data_path / "indexers/repos.bleve")))
+        uploads = resolve(get("repository.upload", "TEMP_PATH", str(data_path / "tmp/uploads")))
+        local_copy = resolve(get("repository.local", "LOCAL_COPY_PATH", "tmp/local-repo"))
+        caches = [archive, issue_index, repo_index, data_path / "tmp", uploads, local_copy]
         db_type = get("database", "DB_TYPE", "sqlite3").lower()
         db_name, db_user = get("database", "NAME"), get("database", "USER")
         host = get("database", "HOST", "127.0.0.1:5432")
@@ -80,10 +110,15 @@ def forgejo_paths(ini_path, work):
             refuse("forgejo-config", "postgres-configuration-unsupported")
         if host not in ("", "127.0.0.1:5432", "localhost:5432", "/var/run/postgresql"):
             refuse("forgejo-config", "postgres-host-not-local")
-        if any(not p.is_absolute() or "\n" in str(p) or "\r" in str(p) for p in (root, data_path, attachments)):
+        if any(not p.is_absolute() or "\n" in str(p) or "\r" in str(p) for p in (root, data_path, attachments, lfs, *caches)):
             refuse("forgejo-config", "path-invalid")
-        return {"root": root, "data": data_path, "attachments": attachments,
-                "custom": work / "custom", "ini": ini_path, "database": db_name, "user": db_user}
+        protected = (root, data_path, attachments, lfs, work / "custom", ini_path)
+        for cache in caches:
+            if any(p.resolve().is_relative_to(cache.resolve()) for p in protected):
+                refuse("forgejo-config", "cache-overlaps-backup-source")
+        return {"root": root, "data": data_path, "attachments": attachments, "lfs": lfs,
+                "caches": caches, "custom": work / "custom", "ini": ini_path,
+                "database": db_name, "user": db_user}
     except Refusal:
         raise
     except (OSError, UnicodeError, configparser.Error, ValueError):
@@ -95,14 +130,16 @@ def database_rows(database):
              "COALESCE((SELECT json_agg(json_build_array(u.lower_name,r.lower_name,r.id)) "
              "FROM repository r JOIN \"user\" u ON u.id=r.owner_id),'[]'::json) AS repos, "
              "COALESCE((SELECT json_agg(json_build_array(a.repo_id,a.uuid)) FROM attachment a "
-             "WHERE a.repo_id IS NOT NULL),'[]'::json) AS attachments) t")
+             "WHERE a.repo_id IS NOT NULL),'[]'::json) AS attachments, "
+             "COALESCE((SELECT json_agg(json_build_array(l.repository_id,l.oid)) "
+             "FROM lfs_meta_object l),'[]'::json) AS lfs) t")
     try:
         proc = subprocess.run(["/usr/sbin/runuser", "-u", "postgres", "--", "/usr/bin/psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-d", database, "-c", query],
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=12, check=False)
         if proc.returncode:
             refuse("database", "forgejo-inventory-unavailable")
         value = json.loads(proc.stdout)
-        if not isinstance(value, dict) or not isinstance(value.get("repos"), list) or not isinstance(value.get("attachments"), list):
+        if not isinstance(value, dict) or any(not isinstance(value.get(k), list) for k in ('repos', 'attachments', 'lfs')):
             refuse("database", "forgejo-inventory-invalid")
         return value
     except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -131,8 +168,16 @@ def inventory(paths, skips):
             refuse("database", "forgejo-attachment-invalid")
         if row[0] in ids:
             uuids.append(row[1])
+    skipped_oids, kept_oids = set(), set()
+    for item in data['lfs']:
+        if (not isinstance(item, list) or len(item) != 2 or type(item[0]) is not int or
+                not isinstance(item[1], str) or not re.fullmatch(r'[0-9a-f]{64}', item[1])):
+            refuse('database', 'forgejo-lfs-inventory-invalid')
+        (skipped_oids if item[0] in ids else kept_oids).add(item[1])
+    lfs_excluded = sorted(skipped_oids - kept_oids)
+    shared = len(skipped_oids & kept_oids)
     excluded.sort()
-    return included, excluded, uuids
+    return included, excluded, uuids, lfs_excluded, shared
 
 
 def restic_repo(row):
@@ -142,8 +187,8 @@ def restic_repo(row):
 def plan(bucket, config_path, ini_path, work):
     row, skips = read_config(bucket, config_path)
     paths = forgejo_paths(ini_path, work)
-    included, excluded, uuids = inventory(paths, skips)
-    return row, paths, included, excluded, uuids
+    included, excluded, uuids, lfs_excluded, shared = inventory(paths, skips)
+    return row, paths, included, excluded, uuids, lfs_excluded, shared
 
 
 def _escaped(path):
@@ -151,7 +196,7 @@ def _escaped(path):
     return re.sub(r"([\\*?\[\]])", r"\\\1", str(path))
 
 
-def exclusions(paths, skips, uuids):
+def exclusions(paths, skips, uuids, lfs_oids):
     # Preserve owner-wide exclusions even when an on-disk repository is not
     # represented in PostgreSQL; explicit repo entries likewise stand alone.
     result = []
@@ -162,6 +207,8 @@ def exclusions(paths, skips, uuids):
             target /= parts[1] + ".git"
         result.append(_escaped(target))
     result.extend(_escaped(paths["attachments"] / u[0] / u[1] / u) for u in uuids)
+    result.extend(_escaped(paths['lfs'] / oid[:2] / oid[2:4] / oid[4:]) for oid in lfs_oids)
+    result.extend(_escaped(path) for path in paths['caches'])
     return result
 
 
@@ -239,10 +286,14 @@ def backup(bucket):
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, interrupted)
     try:
-        lock_path = backblaze.config_path().parent / '.backblaze-config.lock'
+        lock_path = backblaze.config_lock_path()
         config_lock = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         fcntl.flock(config_lock, fcntl.LOCK_SH)
-        row, skips = read_config(bucket, CONFIG)
+        try:
+            row, skips = read_config(bucket, CONFIG)
+        finally:
+            os.close(config_lock)
+            config_lock = None
         paths = forgejo_paths(APP_INI, WORK)
         operation_lock = APP_INI.open('rb')
         fcntl.flock(operation_lock, fcntl.LOCK_EX)
@@ -258,12 +309,15 @@ def backup(bucket):
             dump = temporary / "forgejo.pg_dump"
             restart_required = True
             checked(["/usr/bin/systemctl", "stop", "forgejo.service"], "forgejo-stop", stdout=subprocess.DEVNULL)
-            included, excluded, uuids = inventory(paths, skips)
+            included, excluded, uuids, lfs_oids, _shared = inventory(paths, skips)
             exclude_file = temporary / "exclude"
-            exclude_file.write_text("".join(p + "\n" for p in exclusions(paths, skips, uuids)), encoding="utf-8")
+            exclude_file.write_text("".join(p + "\n" for p in exclusions(paths, skips, uuids, lfs_oids)), encoding="utf-8")
             with dump.open("wb") as stream:
                 checked(["/usr/sbin/runuser", "-u", "postgres", "--", "/usr/bin/pg_dump", "--format=custom", "--no-owner", "--dbname", paths["database"]], "pg-dump", stdout=stream)
-            sources = list(dict.fromkeys(str(p) for p in (dump, paths["data"], paths["attachments"], paths["custom"], paths["ini"], paths["root"])))
+            source_paths = [dump, paths["data"], paths["attachments"], paths["custom"], paths["ini"], paths["root"]]
+            if paths['lfs'].exists():
+                source_paths.append(paths['lfs'])
+            sources = list(dict.fromkeys(str(p) for p in source_paths))
             child = None
             try:
                 child = subprocess.Popen(["/usr/bin/restic", "backup", "--json", "--tag", "forgejo",
@@ -360,20 +414,36 @@ def main(argv=None):
         if "plan" in metadata and not isinstance(metadata["plan"], bool):
             refuse("shape", "plan-invalid")
         is_plan = metadata.get("plan") is True
-        if not is_plan and any(os.environ.get(k) for k in ("BACKBLAZE_SCRATCH_ROOT", "FORGEJO_BACKUP_CONFIG", "FORGEJO_BACKUP_APP_INI", "FORGEJO_BACKUP_WORK")):
+        if not is_plan and any(k in os.environ for k in ("BACKBLAZE_SCRATCH_ROOT", "FORGEJO_BACKUP_CONFIG", "FORGEJO_BACKUP_APP_INI", "FORGEJO_BACKUP_WORK")):
             refuse("launch", "scratch-overrides-plan-only")
+        # FORGEJO_BACKUP_* overrides are marker-guarded and for proof only.
+        overrides = {k:os.environ[k] for k in ('FORGEJO_BACKUP_CONFIG', 'FORGEJO_BACKUP_APP_INI', 'FORGEJO_BACKUP_WORK') if k in os.environ}
+        if is_plan and overrides:
+            root = backblaze.scratch_root()
+            if root is None or any(not value or not Path(value).resolve().is_relative_to(root) for value in overrides.values()):
+                refuse('shape', 'scratch-root-invalid')
         config = Path(os.environ.get("FORGEJO_BACKUP_CONFIG", str(CONFIG))) if is_plan else CONFIG
         ini = Path(os.environ.get("FORGEJO_BACKUP_APP_INI", str(APP_INI))) if is_plan else APP_INI
         work = Path(os.environ.get("FORGEJO_BACKUP_WORK", str(WORK))) if is_plan else WORK
         if is_plan:
-            row, paths, included, excluded, uuids = plan(bucket, config, ini, work)
+            row, paths, included, excluded, uuids, lfs_oids, shared = plan(bucket, config, ini, work)
+            found = 0
+            for u in uuids:
+                try:
+                    (paths['attachments'] / u[0] / u[1] / u).stat()
+                    found += 1
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    refuse('attachments', 'attachment-stat-unavailable')
             result = {"ok": True, "plan": {"included": included, "excluded": len(excluded),
                       "excludedNames": [owner + "/" + repo for owner, repo in excluded],
-                      "excludedAttachments": len(uuids), "repo": restic_repo(row)}}
+                      "excludedAttachments": len(uuids), "excludedAttachmentsPresent":found,
+                      "excludedLfs":len(lfs_oids), "sharedLfsKept":shared, "repo": restic_repo(row)}}
         else:
             read_config(bucket, CONFIG)
             result = launch(bucket)
-    except Refusal as error:
+    except (Refusal, backblaze.Refusal) as error:
         result = {"ok": False, "step": error.step, "reason": error.reason}
     finally:
         signal.alarm(0)

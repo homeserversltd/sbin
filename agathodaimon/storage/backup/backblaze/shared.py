@@ -16,6 +16,7 @@ import tempfile
 import time
 from typing import NoReturn
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
@@ -28,6 +29,7 @@ CONFIG = Path('/etc/appliance/config.json')
 SKELETON = Path('/root/key/skeleton.key')
 LOG = Path('/var/log/appliance/appliance.log')
 KEYMAN = '/vault/keyman/keyman'
+SEED_ATTEMPTED = False
 
 class Refusal(Exception):
     def __init__(self, step, reason):
@@ -38,6 +40,7 @@ def fail(step, reason) -> NoReturn:
     raise Refusal(step, reason)
 
 def scratch_root():
+    # BACKBLAZE_SCRATCH_ROOT is marker-guarded and for proof only.
     raw = os.environ.get('BACKBLAZE_SCRATCH_ROOT')
     if not raw:
         return None
@@ -49,6 +52,11 @@ def scratch_root():
 def config_path():
     root = scratch_root()
     return root / 'config.json' if root else CONFIG
+
+
+def config_lock_path():
+    root = scratch_root()
+    return root / '.backblaze-config.lock' if root else Path('/run/lock/backblaze-config.lock')
 
 def skeleton_path():
     root = scratch_root()
@@ -64,7 +72,7 @@ def restic_bin():
 
 def repository(row):
     root = scratch_root()
-    return str(root / 'restic-repo') if root else 'b2:' + row['bucket'] + ':' + row.get('prefix', '')
+    return str(root / 'restic-repos' / row['bucket']) if root else 'b2:' + row['bucket'] + ':' + row.get('prefix', '')
 
 def bucket_name(value):
     if not isinstance(value, str) or not NAME.fullmatch(value):
@@ -95,7 +103,7 @@ def valid_items(items):
         p = item['path']
         if not p.startswith('/') or '\x00' in p or '\n' in p or '\r' in p:
             fail('items', 'item-path-invalid')
-        out.append(dict(item))
+        out.append({'path':p})
     return out
 
 def load():
@@ -180,11 +188,15 @@ def store(data):
             os.fsync(f.fileno())
         os.replace(tmp, path)
         tmp = None
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        except OSError:
+            return False
+        return True
     except OSError:
         fail('config', 'config-write-failed')
     finally:
@@ -232,6 +244,7 @@ def credentials(bucket):
         fail('keyman', 'keyman-' + error.signal)
 
 def seed(bucket, key_id, application_key):
+    global SEED_ATTEMPTED
     values = [key_id.encode('utf-8'), application_key.encode('utf-8')]
     if any(not x or len(x) > 511 or any(c in x for c in (0,10,13,34)) for x in values):
         fail('keyman', 'credential-invalid')
@@ -239,6 +252,7 @@ def seed(bucket, key_id, application_key):
     service = bucket.replace('-', '_')
     try:
         with exchange_session(native=True):
+            SEED_ATTEMPTED = True
             proc = subprocess.run([KEYMAN, 'newkey', '--stdin', '--replace', service], input=bytes(material),
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=12, check=False)
         result = json.loads(proc.stdout)
@@ -246,8 +260,10 @@ def seed(bucket, key_id, application_key):
             fail('keyman', 'keyman-seed-refused')
     except KeymanExportError as error:
         fail('keyman', 'keyman-' + error.signal)
+    except subprocess.TimeoutExpired:
+        fail('keyman', 'keyman-seed-deadline-may-have-committed-retry-replace')
     except (OSError, ValueError, subprocess.SubprocessError):
-        fail('keyman', 'keyman-seed-refused')
+        fail('keyman', 'keyman-seed-unavailable')
     finally:
         material[:] = b'\0' * len(material)
     return service
@@ -261,14 +277,25 @@ def authorize(bucket, key_id, application_key):
         api = auth['apiUrl']
         token = auth['authorizationToken']
         account = auth['accountId']
-        if not isinstance(api, str) or not api.startswith('https://') or not isinstance(token, str) or not isinstance(account, str):
+        if (not isinstance(api, str) or urllib.parse.urlsplit(api).scheme != 'https' or
+                not urllib.parse.urlsplit(api).hostname or
+                not isinstance(token, str) or not token.strip() or token != token.strip() or
+                not isinstance(account, str) or not account.strip() or account != account.strip()):
             fail('verify', 'b2-authorization-invalid')
         request = urllib.request.Request(api.rstrip('/')+'/b2api/v2/b2_list_buckets',
              data=json.dumps({'accountId':account,'bucketName':bucket}).encode(),
              headers={'Authorization':token,'Content-Type':'application/json'}, method='POST')
         with urllib.request.urlopen(request, timeout=6) as response:
             listing = json.load(response)
-        return any(isinstance(x,dict) and x.get('bucketName') == bucket for x in listing.get('buckets', []))
+        if (not isinstance(listing, dict) or not isinstance(listing.get('buckets'), list) or
+                any(not isinstance(item, dict) or not isinstance(item.get('bucketName'), str)
+                    for item in listing['buckets'])):
+            fail('verify', 'b2-listing-invalid')
+        return any(item['bucketName'] == bucket for item in listing['buckets'])
+    except urllib.error.HTTPError as error:
+        if error.code in (401, 403):
+            return False
+        fail('verify', 'b2-check-unavailable')
     except Refusal:
         raise
     except (OSError, ValueError, KeyError, TypeError):
@@ -337,8 +364,14 @@ def ensure_repository(row, env, application_key, init_missing=True):
     deed('backblaze-restic-rekey', row['bucket'], 'ok', started)
 
 
-def snapshot_list(row, env):
-    response = invoke_restic(['--no-lock', 'snapshots', '--json'], env, timeout=8)
+def snapshot_list(row, env, application_key):
+    response = invoke_restic(['--no-lock', 'snapshots', '--json'], env, timeout=220)
+    if response.returncode and application_key:
+        error = response.stderr.decode('utf-8', 'replace').lower()
+        if 'wrong password' in error or 'no key found' in error:
+            legacy = env.copy()
+            legacy['RESTIC_PASSWORD'] = derivation(application_key, b'coronatio_backblaze_restic_v1')
+            response = invoke_restic(['--no-lock', 'snapshots', '--json'], legacy, timeout=220)
     if response.returncode:
         fail('snapshots', 'snapshots-unavailable')
     try:
@@ -373,44 +406,24 @@ def run_unit(bucket):
     return (prefix + '-run-' if prefix else 'backblaze-run-') + bucket + '.service'
 
 
-def holder_unit(bucket):
-    prefix = scratch_unit_prefix()
-    return (prefix + '-status-' if prefix else 'backblaze-status-') + bucket + '.service'
-
-
-def hold_result(bucket):
-    # An active reference keeps the completed transient service's Result in PID 1.
-    cmd = ['/usr/bin/systemd-run', '--quiet', '--unit=' + holder_unit(bucket),
-           '--remain-after-exit', '--property=After=' + run_unit(bucket), '--', '/usr/bin/true']
-    p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=5, check=False)
-    if p.returncode:
-        fail('run', 'status-reference-unavailable')
-
-
 def release_result(bucket):
-    p = subprocess.run(['/usr/bin/systemctl', 'show', holder_unit(bucket), '--property=LoadState', '--value'],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                       timeout=5, check=False, text=True)
-    if p.returncode:
-        fail('run', 'systemd-unavailable')
-    if p.stdout.strip() == 'not-found':
+    state = unit_status(bucket)
+    if state.get('LoadState') == 'not-found':
         return
-    p = subprocess.run(['/usr/bin/systemctl', 'stop', holder_unit(bucket)], stdin=subprocess.DEVNULL,
+    p = subprocess.run(['/usr/bin/systemctl', 'stop', run_unit(bucket)], stdin=subprocess.DEVNULL,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
     if p.returncode:
-        fail('run', 'status-reference-release-failed')
-    if unit_status(bucket).get('ActiveState') == 'failed':
-        reset = subprocess.run(['/usr/bin/systemctl', 'reset-failed', run_unit(bucket)],
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, timeout=5, check=False)
-        if reset.returncode:
-            fail('run', 'status-reference-release-failed')
+        fail('run', 'finished-unit-stop-failed')
+    reset = subprocess.run(['/usr/bin/systemctl', 'reset-failed', run_unit(bucket)],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=5, check=False)
+    if reset.returncode and unit_status(bucket).get('LoadState') != 'not-found':
+        fail('run', 'finished-unit-reset-failed')
     for _ in range(20):
         if unit_status(bucket).get('LoadState') == 'not-found':
             return
         time.sleep(.05)
-    fail('run', 'status-reference-release-failed')
+    fail('run', 'finished-unit-release-failed')
 
 
 def unit_status(bucket):
@@ -426,18 +439,20 @@ def unit_status(bucket):
     return fields
 
 
+def unit_running(state):
+    return state.get('SubState') in ('running', 'start', 'start-pre', 'start-post', 'reload', 'stop', 'stop-sigterm', 'stop-sigkill', 'stop-post', 'final-sigterm', 'final-sigkill') or state.get('ActiveState') in ('activating', 'deactivating', 'reloading')
+
+
 def launch(bucket):
     if os.geteuid() != 0:
         fail('run', 'root-required')
-    held = False
     try:
         status = unit_status(bucket)
-        if status.get('ActiveState') in ('active', 'activating', 'reloading', 'deactivating'):
+        if unit_running(status):
             fail('run', 'bucket-run-active')
         release_result(bucket)
-        held = True
-        hold_result(bucket)
-        cmd = ['/usr/bin/systemd-run', '--quiet', '--unit=' + run_unit(bucket), '--property=Type=exec']
+        cmd = ['/usr/bin/systemd-run', '--quiet', '--unit=' + run_unit(bucket),
+               '--property=Type=exec', '--property=RemainAfterExit=yes']
         root = scratch_root()
         if root:
             cmd.extend(['--setenv=BACKBLAZE_SCRATCH_ROOT=' + str(root), '--setenv=TMPDIR=' + str(root)])
@@ -446,15 +461,7 @@ def launch(bucket):
                                  stderr=subprocess.DEVNULL, timeout=8, check=False)
         if process.returncode:
             fail('run', 'bucket-launch-refused')
-    except (OSError, subprocess.SubprocessError, Refusal) as error:
-        if held:
-            try:
-                if unit_status(bucket).get('LoadState') == 'not-found':
-                    release_result(bucket)
-            except (OSError, subprocess.SubprocessError, Refusal):
-                fail('run', 'status-reference-cleanup-unavailable')
-        if isinstance(error, Refusal):
-            raise
+    except (OSError, subprocess.SubprocessError):
         fail('run', 'bucket-launch-unavailable')
     return {'ok':True, 'status':'accepted', 'unit':run_unit(bucket)}
 
@@ -504,7 +511,7 @@ def dispatch(verb, metadata):
         for row in rows(data):
             bucket = bucket_name(row.get('bucket'))
             state = unit_status(bucket)
-            running = state.get('ActiveState') in ('active','activating','reloading','deactivating')
+            running = unit_running(state)
             stamp = state.get('ExecMainExitTimestamp', '')
             finished = not running and state.get('LoadState') != 'not-found' and stamp.startswith('@')
             try:
@@ -520,17 +527,26 @@ def dispatch(verb, metadata):
     if verb == 'snapshots':
         requested = metadata.get('bucket')
         selected = rows(data) if requested is None else [row_for(data, bucket_name(requested))]
-        result = []
+        result, errors = [], []
         for row in selected:
-            bucket_name(row.get('bucket'))
+            bucket = row.get('bucket')
             key = None
             try:
+                bucket = bucket_name(bucket)
                 env, key = restic_environment(row)
-                result.extend(snapshot_list(row, env))
+                result.extend(snapshot_list(row, env, key))
+            except Refusal as error:
+                if error.step == 'request':
+                    raise
+                errors.append({'bucket':bucket if isinstance(bucket, str) and NAME.fullmatch(bucket) else None,
+                               'step':error.step, 'reason':error.reason})
+            except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+                errors.append({'bucket':bucket if isinstance(bucket, str) and NAME.fullmatch(bucket) else None,
+                               'step':'snapshots', 'reason':'snapshots-unavailable'})
             finally:
                 if key is not None:
                     key[:] = b'\0' * len(key)
-        return {'ok':True, 'snapshots':result}
+        return {'ok':True, 'snapshots':result, 'errors':errors}
     bucket = bucket_name(metadata.get('bucket'))
     if scratch_root() and verb in ('bucket-add', 'bucket-credentials', 'bucket-verify'):
         fail('scratch', 'scratch-live-authority-refused')
@@ -547,8 +563,8 @@ def dispatch(verb, metadata):
         try:
             username, key = credentials(bucket)
             connected = authorize(bucket, username.decode('utf-8'), key.decode('utf-8'))
-        except (Refusal, UnicodeError):
-            connected = False
+        except UnicodeError:
+            fail('keyman', 'keyman-credential-invalid')
         finally:
             if username is not None:
                 username[:] = b'\0' * len(username)
@@ -559,6 +575,7 @@ def dispatch(verb, metadata):
     outcome = 'failed'
     signal_name = 'unknown'
     should_log = True
+    mutation_result: dict[str, object] = {}
     before = json.dumps(data, sort_keys=True, separators=(',', ':'))
     try:
         if verb in ('bucket-credentials', 'bucket-remove', 'bucket-items', 'bucket-save') and 'expected' in metadata:
@@ -569,8 +586,7 @@ def dispatch(verb, metadata):
             if not unchanged:
                 fail('stale', 'bucket changed; refresh before saving')
         if verb in ('bucket-credentials', 'bucket-remove', 'bucket-items', 'bucket-save'):
-            active = unit_status(bucket).get('ActiveState')
-            if active in ('active', 'activating', 'reloading', 'deactivating'):
+            if unit_running(unit_status(bucket)):
                 fail('run', 'bucket-run-active')
         if verb in ('bucket-add', 'bucket-credentials'):
             key_id, application_key = metadata.get('keyId'), metadata.get('applicationKey')
@@ -583,19 +599,11 @@ def dispatch(verb, metadata):
                 fail('config', 'bucket-not-configured')
             if not authorize(bucket, key_id, application_key):
                 fail('verify', 'bucket-unreachable')
-            if verb == 'bucket-credentials':
-                old_key = None
-                try:
-                    old_env, old_key = restic_environment(existing[0])
-                    ensure_repository(existing[0], old_env, old_key, init_missing=False)
-                finally:
-                    if old_key is not None:
-                        old_key[:] = b'\0' * len(old_key)
             service = seed(bucket, key_id, application_key)
             if verb == 'bucket-add':
                 rows(data, True).append({'bucket':bucket, 'prefix':'', 'items':[],
                                          'managers':{'forgejo':{'localNas':False,'backblazeBackup':False,'skip':[]}}})
-            result = {'ok':True, 'keyman_service':service}
+            mutation_result = {'ok':True, 'keyman_service':service}
         else:
             row = row_for(data, bucket)
             if verb == 'bucket-remove':
@@ -628,33 +636,56 @@ def dispatch(verb, metadata):
                 existing_manager = current.get('forgejo', {})
                 if not isinstance(existing_manager, dict):
                     fail('config', 'forgejo-manager-invalid')
-                current['forgejo'] = {**existing_manager, **fg, 'skip':skip}
+                current['forgejo'] = {'localNas':fg['localNas'], 'backblazeBackup':fg['backblazeBackup'], 'skip':skip}
             else:
                 fail('shape', 'actuator-invalid')
-            result = {'ok':True}
+            if verb in ('bucket-items', 'bucket-save'):
+                for unknown in set(row) - {'bucket', 'prefix', 'items', 'managers'}:
+                    row.pop(unknown)
+                if 'managers' in row:
+                    managers = row['managers']
+                    if not isinstance(managers, dict):
+                        fail('config', 'forgejo-manager-invalid')
+                    forgejo = managers.get('forgejo', {})
+                    if not isinstance(forgejo, dict):
+                        fail('config', 'forgejo-manager-invalid')
+                    row['managers'] = {'forgejo':{k:v for k,v in forgejo.items()
+                                                  if k in ('localNas', 'backblazeBackup', 'skip')}}
+            mutation_result = {'ok':True}
         for item in rows(data):
             item.pop('encrypted', None)
         changed = json.dumps(data, sort_keys=True, separators=(',', ':')) != before
         if changed:
-            store(data)
+            if not store(data):
+                mutation_result['durability'] = 'unconfirmed'
         elif verb != 'bucket-credentials':
             should_log = False
         outcome, signal_name = 'ok', 'none'
-        return result
+        return mutation_result
     except Refusal as error:
         signal_name = error.reason
         raise
     finally:
         if should_log:
-            deed(ACTUATORS[verb], bucket, outcome, started, signal_name)
+            try:
+                deed(ACTUATORS[verb], bucket, outcome, started, signal_name)
+            except Refusal:
+                if outcome == 'ok':
+                    mutation_result['deed'] = 'unwritten'
 
 
 def main_for(verb):
+    global SEED_ATTEMPTED
+    SEED_ATTEMPTED = False
+    budgets = {'bucket-add':240, 'bucket-credentials':240, 'bucket-verify':240,
+               'bucket-remove':45, 'bucket-items':45, 'bucket-save':45, 'bucket-run':45,
+               'status':20, 'snapshots':480}
     def deadline(_sig, _frame):
-        fail('request', 'request-deadline-exceeded')
-    previous = signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(24)
+        fail('request', 'request-deadline-after-keyman-seed-attempt' if SEED_ATTEMPTED else 'request-deadline-exceeded')
+    previous = None
     try:
+        previous = signal.signal(signal.SIGALRM, deadline)
+        signal.alarm(budgets.get(verb, 20))
         raw = sys.stdin.buffer.read(16385)
         if len(raw) > 16384:
             fail('shape', 'request-too-large')
@@ -667,7 +698,7 @@ def main_for(verb):
         if verb in ('bucket-add', 'bucket-credentials', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run'):
             fd = None
             try:
-                lock_path = config_path().parent / '.backblaze-config.lock'
+                lock_path = config_lock_path()
                 fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 result = dispatch(verb, request.get('metadata'))
@@ -680,11 +711,15 @@ def main_for(verb):
             result = dispatch(verb, request.get('metadata'))
     except Refusal as error:
         result = {'ok':False, 'step':error.step, 'reason':error.reason}
-    except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
+    except Exception:
         result = {'ok':False, 'step':'request', 'reason':'request-unavailable'}
     finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous)
+        if previous is not None:
+            try:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, previous)
+            except Exception:
+                result = {'ok':False, 'step':'request', 'reason':'request-unavailable'}
     print(json.dumps(result, separators=(',', ':')))
     return 0 if result.get('ok') else 1
 
