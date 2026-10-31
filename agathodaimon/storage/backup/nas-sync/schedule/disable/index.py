@@ -1,12 +1,8 @@
 """Disable the current NAS sync timer without altering legacy schedules."""
 from __future__ import annotations
 
-import importlib.util
 import json
-import os
-import subprocess
 import time
-from pathlib import Path
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.nas import deed, runtime
 
@@ -34,23 +30,25 @@ def perform(*, request=None):
         if absent:
             runtime._record(receipt, "schedule-disabled", True, noop=True, timerPresent=False, active=False)
         else:
-            module_path = Path(__file__).resolve().parents[2] / "index.py"
-            spec = importlib.util.spec_from_file_location("nas_sync_existing", module_path)
-            if spec is None or spec.loader is None:
-                raise runtime.Refusal("agathodaimon-nas-schedule-unavailable", "schedule-disable")
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            mod.UNIT_DIR = runtime.runtime_path("/etc/systemd/system")
-            def runner(argv):
-                result = runtime._run(argv, step="schedule-disable", timeout=60)
-                return subprocess.CompletedProcess(argv, result.returncode, result.stdout.decode("utf-8"), result.stderr.decode("utf-8"))
             attempted = True
-            result = mod.schedule_update({"schedule": {"enabled": False}}, False, runner=runner, persist=False)
-            state_after = result.get("timerState", {})
-            okay = result.get("ok") is True and state_after.get("enabled") is False and state_after.get("active") is False and not timer.exists()
+            service = runtime.runtime_path("/etc/systemd/system/agathodaimon-nas-sync.service")
+            for command in ([runtime.SYSTEMCTL, "disable", "--now", "agathodaimon-nas-sync.timer"],
+                            ["/usr/bin/rm", "-f", str(service), str(timer)],
+                            [runtime.SYSTEMCTL, "daemon-reload"]):
+                result = runtime._run(command, step="schedule-disable", timeout=60)
+                if result.returncode:
+                    raise runtime.Refusal("schedule-update-command-failed:" + command[1], "schedule-disable", result.returncode)
+            active = runtime._run([runtime.SYSTEMCTL, "show", "agathodaimon-nas-sync.timer", "--property=ActiveState", "--value"], step="schedule-disable", timeout=60)
+            enabled = runtime._run([runtime.SYSTEMCTL, "is-enabled", "agathodaimon-nas-sync.timer"], step="schedule-disable", timeout=60)
+            if active.returncode != 0 or enabled.returncode not in {0, 1, 4}:
+                raise runtime.Refusal("systemctl-readback-failed", "schedule-disable")
+            okay = (active.stdout.decode("utf-8").strip() in {"inactive", "failed"}
+                    and enabled.stdout.decode("utf-8").strip() in {"disabled", "not-found", "masked", "static"}
+                    and not timer.exists())
+            state_after = {"enabled": False, "active": False, "nextFire": None, "planned": False} if okay else {}
             runtime._record(receipt, "schedule-disabled", okay, noop=False, timerPresent=timer.exists(), timerState=state_after)
             if not okay:
-                raise runtime.Refusal(result.get("firstMissingSignal", "agathodaimon-nas-schedule-disable-failed"), "schedule-disable")
+                raise runtime.Refusal("schedule-update-readback-mismatch", "schedule-disable")
         receipt.update(ok=True, firstMissingSignal="none", state="schedule-disabled")
     except runtime.Refusal as failure:
         runtime._attach_failure(receipt, failure)
