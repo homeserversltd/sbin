@@ -106,6 +106,19 @@ def kernel_gate(a,b,runner):
     except (KeyError,ValueError,TypeError): roots=[]; break
   mapped_roots=len(roots)==len(disks) and bool(roots)
   if not mapped_roots: roots=[(tokens(facts),None)]
+  if mapped_roots and len(disks)>1:
+   for alias in sorted(v for v in facts["identities"] if str(v).startswith("/dev/")):
+    if any(names_device(alias,root_tokens) for root_tokens,_ in roots): continue
+    probe=run([LSBLK,"-s","-n","-r","-P","-o","NAME,KNAME,PKNAME,PATH,MAJ:MIN","--",alias],runner)
+    try:
+     rows=[dict(item.split("=",1) for item in shlex.split(line)) for line in probe.stdout.splitlines()]
+     if probe.returncode or not rows or os.path.realpath(rows[0]["PATH"])!=os.path.realpath(alias): raise ValueError("alias identity")
+     backing={row["MAJ:MIN"] for row in rows if not row["PKNAME"]}
+     if not backing or not backing.issubset(times): raise ValueError("alias roots")
+     first=rows[0]; limits=[times[disk] for disk in backing]
+     threshold=min(limits) if all(limit is not None for limit in limits) else None
+     roots.append((tokens({"identities":{alias,first["PATH"],first["NAME"],first["KNAME"],first["MAJ:MIN"]}}),threshold))
+    except (KeyError,ValueError,TypeError): continue
   fallback=min(times.values()) if times and all(v is not None for v in times.values()) else None
   boundaries.append((tokens(facts),roots,fallback,{"roots":[{"device":d,"attachMonotonicUsec":times[d],"scope":"since-attach" if times[d] is not None else "whole-boot-fallback"} for d in disks],"rootIdentityScope":"per-root" if mapped_roots else "whole-boot-fallback","unmappedScope":"since-earliest-attach" if fallback is not None else "whole-boot-fallback"}))
  for line in r.stdout.splitlines():
@@ -197,7 +210,9 @@ def sync(baseline=None,accept_shrink=False,planned=False,runner=command,measure_
   facts.update(finalFileCount=final_files,finalTotalBytes=final_bytes)
   return finish(receipt(action,"ok",mutation=True,checks=checks,reason=None,exitCode=0,**facts))
  except Refusal as e:
-  if attempted: return finish(receipt(action,"failed",mutation=True,reason=str(e),checks=checks,**facts))
+  if attempted:
+   not_launched=str(e)=="required-tool-missing:"+RSYNC or str(e).startswith("command-unavailable:"+RSYNC+":")
+   return finish(receipt(action,"failed",mutation=not not_launched,reason=str(e),checks=checks,**facts))
   return refused(action,str(e),checks=checks,**facts)
  except Exception as e: return finish(receipt(action,"failed",mutation=attempted,reason="unexpected-sync-failure:"+bounded(e),checks=checks,exitCode=1,**facts))
  finally:
