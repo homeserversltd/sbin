@@ -39,9 +39,37 @@ steps:
         export GIT_CONFIG_COUNT=1
         export GIT_CONFIG_KEY_0=credential.https://git.home.arpa.helper
         export GIT_CONFIG_VALUE_0='!f() { if [ "$${1}" = get ]; then printf "username=x-token\npassword=%s\n" "$${FORGEJO_TOKEN}"; fi; }; f'
-        git clone --no-checkout --depth 1 https://git.home.arpa/HOMESERVERSLTD/wukong-staff.git wukong-staff
-        git -C wukong-staff fetch --depth 1 origin "$${WUKONG_STAFF_SHA}"
-        git -C wukong-staff checkout --detach "$${WUKONG_STAFF_SHA}"
+        deadline=$(($(date +%s) + $${WUKONG_BOOTSTRAP_BUDGET_SECONDS:-300}))
+        delay=$${WUKONG_BOOTSTRAP_WAIT_SECONDS:-5}
+        while :; do
+          remaining=$((deadline - $(date +%s)))
+          if output=$(timeout "$${remaining}" sh -c '
+            git clone --no-checkout --depth 1 https://git.home.arpa/HOMESERVERSLTD/wukong-staff.git wukong-staff &&
+            git -C wukong-staff fetch --depth 1 origin "$${WUKONG_STAFF_SHA}" &&
+            git -C wukong-staff checkout --detach "$${WUKONG_STAFF_SHA}"
+          ' 2>&1); then
+            break
+          else
+            status=$?
+          fi
+          remaining=$((deadline - $(date +%s)))
+          if [ "$${remaining}" -le 0 ]; then
+            printf '%s\n' "$${output}" >&2
+            exit "$${status}"
+          fi
+          rm -rf wukong-staff
+          wait=$${delay}
+          if [ "$${wait}" -gt "$${remaining}" ]; then wait=$${remaining}; fi
+          sleep "$${wait}"
+          remaining=$((deadline - $(date +%s)))
+          if [ "$${remaining}" -le 0 ]; then
+            printf '%s\n' "$${output}" >&2
+            exit "$${status}"
+          fi
+          delay=$((delay * 2))
+          if [ "$${delay}" -gt 30 ]; then delay=30; fi
+        done
+        test "$(git -C wukong-staff rev-parse HEAD)" = "$${WUKONG_STAFF_SHA}"
         WUKONG_MEMBER_ROOT=$${PWD} exec sh wukong-staff/ci/sbin/pipeline.sh
   - name: ci-outcome-sbin
     image: python:3.12-alpine
