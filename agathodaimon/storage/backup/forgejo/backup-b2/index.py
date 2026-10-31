@@ -1,2 +1,417 @@
-from agathodaimon.storage.backup.forgejo.credential.index import *
-from agathodaimon.storage.backup.forgejo.credential.index import main
+"""Back up Forgejo to the bucket's restic repository, excluding selected files."""
+from __future__ import annotations
+
+import base64
+from contextlib import nullcontext
+import configparser
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import NoReturn
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+# Direct execution by the transient service and dynamic staff loading share a root.
+sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
+from agathodaimon.lib.keyman_export.index import KeymanExportError, export_credential
+
+ACTUATOR = "backblaze-forgejo-b2-push"
+CONFIG = Path("/etc/appliance/config.json")
+APP_INI = Path("/opt/forgejo/custom/conf/app.ini")
+WORK = Path("/opt/forgejo")
+NAME = re.compile(r"[A-Za-z0-9_.-]+\Z")
+BUCKET = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
+UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
+UNIT_PREFIX = "forgejo-backup-b2-"
+
+
+class Refusal(Exception):
+    def __init__(self, step, reason):
+        self.step, self.reason = step, reason
+        super().__init__(reason)
+
+
+def refuse(step, reason) -> NoReturn:
+    raise Refusal(step, reason)
+
+
+def read_config(bucket, path):
+    try:
+        with path.open(encoding="utf-8") as stream:
+            rows = json.load(stream)["tabs"]["backblaze"]["config"]["buckets"]
+    except (OSError, ValueError, KeyError, TypeError):
+        refuse("config", "bucket-not-configured")
+    if not isinstance(rows, list):
+        refuse("config", "bucket-row-incomplete")
+    matches = [row for row in rows if isinstance(row, dict) and row.get("bucket") == bucket]
+    if not matches:
+        refuse("config", "bucket-not-configured")
+    if len(matches) != 1:
+        refuse("config", "bucket-row-incomplete")
+    row = matches[0]
+    prefix, encrypted, items = row.get("prefix"), row.get("encrypted"), row.get("items")
+    manager = row.get("managers", {}).get("forgejo") if isinstance(row.get("managers"), dict) else None
+    if (not isinstance(prefix, str) or "\x00" in prefix or not isinstance(encrypted, bool)
+            or not isinstance(items, list) or not all(isinstance(i, dict) and isinstance(i.get("path"), str) and i["path"].startswith("/") for i in items)
+            or not isinstance(manager, dict) or not isinstance(manager.get("backblazeBackup"), bool)
+            or not isinstance(manager.get("localNas"), bool)):
+        refuse("config", "bucket-row-incomplete")
+    if not manager["backblazeBackup"]:
+        refuse("config", "backblaze-backup-disabled")
+    skips = manager.get("skip", [])
+    if not isinstance(skips, list):
+        refuse("skip", "skip-entry-malformed")
+    normalized = set()
+    for entry in skips:
+        if not isinstance(entry, str):
+            refuse("skip", "skip-entry-malformed")
+        parts = entry.strip().split("/")
+        if len(parts) not in (1, 2) or any(not NAME.fullmatch(p) or p in (".", "..") for p in parts):
+            refuse("skip", "skip-entry-malformed")
+        normalized.add("/".join(parts).lower())
+    return row, normalized
+
+
+def forgejo_paths(ini_path, work):
+    try:
+        raw = ini_path.read_text(encoding="utf-8")
+        ini = configparser.ConfigParser(interpolation=None, strict=False)
+        ini.read_string("[__top__]\n" + raw)
+        def get(section, key, default=""):
+            return ini.get(section, key, raw=True, fallback=default).strip().strip('"')
+        data = get("__top__", "APP_DATA_PATH", get("server", "APP_DATA_PATH", str(work / "data")))
+        def resolve(value):
+            value = value.replace("%(APP_DATA_PATH)s", data).replace("%(app_data_path)s", data)
+            path = Path(value)
+            return path if path.is_absolute() else work / path
+        data_path = resolve(data)
+        root = resolve(get("repository", "ROOT", str(work / "repositories")))
+        storage_type = get("attachment", "STORAGE_TYPE", get("storage", "STORAGE_TYPE", "local")).lower()
+        if storage_type not in ("", "local"):
+            refuse("forgejo-config", "attachment-storage-not-local")
+        attachments = resolve(get("attachment", "PATH", get("storage", "PATH", str(data_path / "attachments"))))
+        db_type = get("database", "DB_TYPE", "sqlite3").lower()
+        db_name, db_user = get("database", "NAME"), get("database", "USER")
+        host = get("database", "HOST", "127.0.0.1:5432")
+        if db_type not in ("postgres", "postgresql") or not NAME.fullmatch(db_name) or not NAME.fullmatch(db_user):
+            refuse("forgejo-config", "postgres-configuration-unsupported")
+        if host not in ("", "127.0.0.1:5432", "localhost:5432", "/var/run/postgresql"):
+            refuse("forgejo-config", "postgres-host-not-local")
+        if any(not p.is_absolute() or "\n" in str(p) or "\r" in str(p) for p in (root, data_path, attachments)):
+            refuse("forgejo-config", "path-invalid")
+        return {"root": root, "data": data_path, "attachments": attachments,
+                "custom": work / "custom", "ini": ini_path, "database": db_name, "user": db_user}
+    except Refusal:
+        raise
+    except (OSError, UnicodeError, configparser.Error, ValueError):
+        refuse("forgejo-config", "app-ini-unavailable")
+
+
+def database_rows(database):
+    query = ("SELECT row_to_json(t) FROM (SELECT "
+             "COALESCE((SELECT json_agg(json_build_array(u.lower_name,r.lower_name,r.id)) "
+             "FROM repository r JOIN \"user\" u ON u.id=r.owner_id),'[]'::json) AS repos, "
+             "COALESCE((SELECT json_agg(json_build_array(a.repo_id,a.uuid)) FROM attachment a "
+             "WHERE a.repo_id IS NOT NULL),'[]'::json) AS attachments) t")
+    try:
+        proc = subprocess.run(["/usr/sbin/runuser", "-u", "postgres", "--", "/usr/bin/psql", "-X", "-q", "-A", "-t", "-v", "ON_ERROR_STOP=1", "-d", database, "-c", query],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=12, check=False)
+        if proc.returncode:
+            refuse("database", "forgejo-inventory-unavailable")
+        value = json.loads(proc.stdout)
+        if not isinstance(value, dict) or not isinstance(value.get("repos"), list) or not isinstance(value.get("attachments"), list):
+            refuse("database", "forgejo-inventory-invalid")
+        return value
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        refuse("database", "forgejo-inventory-unavailable")
+
+
+def inventory(paths, skips):
+    data = database_rows(paths["database"])
+    included, excluded, ids = 0, [], set()
+    for row in data["repos"]:
+        if not isinstance(row, list) or len(row) != 3:
+            refuse("database", "forgejo-inventory-invalid")
+        owner, repo, repo_id = row
+        if (not isinstance(owner, str) or not isinstance(repo, str) or not NAME.fullmatch(owner)
+                or not NAME.fullmatch(repo) or owner in (".", "..") or repo in (".", "..") or type(repo_id) is not int):
+            refuse("database", "forgejo-inventory-invalid")
+        owner, repo = owner.lower(), repo.lower()
+        if owner in skips or owner + "/" + repo in skips:
+            excluded.append((owner, repo))
+            ids.add(repo_id)
+        else:
+            included += 1
+    uuids = []
+    for row in data["attachments"]:
+        if not isinstance(row, list) or len(row) != 2 or type(row[0]) is not int or not isinstance(row[1], str) or not UUID.fullmatch(row[1]):
+            refuse("database", "forgejo-attachment-invalid")
+        if row[0] in ids:
+            uuids.append(row[1])
+    excluded.sort()
+    return included, excluded, uuids
+
+
+def restic_repo(row):
+    return "b2:" + row["bucket"] + ":" + row["prefix"]
+
+
+def restic_password(application_key):
+    digest = hashlib.pbkdf2_hmac("sha256", application_key, b"coronatio_backblaze_restic_v1", 100000, 32)
+    return base64.b64encode(digest).decode("ascii")
+
+
+def plan(bucket, config_path, ini_path, work):
+    row, skips = read_config(bucket, config_path)
+    paths = forgejo_paths(ini_path, work)
+    included, excluded, uuids = inventory(paths, skips)
+    return row, paths, included, excluded, uuids
+
+
+def _escaped(path):
+    # Restic's exclude file is a line-oriented Go filepath.Match glob.
+    return re.sub(r"([\\*?\[\]])", r"\\\1", str(path))
+
+
+def exclusions(paths, skips, uuids):
+    # Preserve owner-wide exclusions even when an on-disk repository is not
+    # represented in PostgreSQL; explicit repo entries likewise stand alone.
+    result = []
+    for entry in sorted(skips):
+        parts = entry.split("/")
+        target = paths["root"] / parts[0]
+        if len(parts) == 2:
+            target /= parts[1] + ".git"
+        result.append(_escaped(target))
+    result.extend(_escaped(paths["attachments"] / u[0] / u[1] / u) for u in uuids)
+    return result
+
+
+def run_short(args, timeout=5):
+    try:
+        return subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        refuse("launch", "systemd-unavailable")
+
+
+def launch(bucket):
+    if os.geteuid() != 0:
+        refuse("launch", "root-required")
+    try:
+        # A stable existing inode serializes the admission window without a state file.
+        with APP_INI.open("rb") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                refuse("launch", "backup-already-active")
+            current = run_short(["/usr/bin/systemctl", "list-units", "--all", "--plain", "--no-legend",
+                                 "--state=active,activating,reloading,deactivating", UNIT_PREFIX + "*.service"])
+            if current.returncode:
+                refuse("launch", "systemd-state-unavailable")
+            if current.stdout.strip():
+                refuse("launch", "backup-already-active")
+            unit = UNIT_PREFIX + str(int(time.time()))
+            command = ["/usr/bin/systemd-run", "--quiet", "--unit=" + unit, "--property=Type=exec",
+                       "--", sys.executable, str(Path(__file__).resolve()), "--worker", bucket]
+            launched = run_short(command, timeout=8)
+            if launched.returncode:
+                refuse("launch", "backup-launch-refused")
+            return {"ok": True, "status": "accepted", "unit": unit}
+    except OSError:
+        refuse("launch", "config-lock-unavailable")
+
+
+def checked(args, step, **kwargs):
+    try:
+        result = subprocess.run(args, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, **kwargs)
+    except OSError:
+        refuse(step, step + "-unavailable")
+    if result.returncode:
+        refuse(step, step + "-failed")
+    return result
+
+
+def log_deed(bucket, started, outcome, included, excluded, snapshot, failure):
+    record = {"who": "agathodaimon", "verb": ACTUATOR, "bucket": bucket, "outcome": outcome,
+              "duration_ms": int((time.monotonic() - started) * 1000), "included": included,
+              "excluded": excluded, "snapshot": snapshot, "signal": failure}
+    line = json.dumps(record, separators=(",", ":"), ensure_ascii=True)
+    if len(line.encode()) >= 1024:
+        line = json.dumps({"who": "agathodaimon", "verb": ACTUATOR, "outcome": "failed", "signal": "deed-too-large"}, separators=(",", ":"))
+    try:
+        with open("/var/log/appliance/appliance.log", "a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+        return True
+    except OSError:
+        print("forgejo-backup-deed-write-failed", file=sys.stderr)
+        return False
+
+
+def backup(bucket):
+    started = time.monotonic()
+    included, excluded, snapshot, failure, outcome = 0, [], "", "none", "failed"
+    restart_required = False
+    tmp_context = None
+    secrets = []
+    def interrupted(signum, _frame):
+        raise Refusal("signal", "interrupted-" + str(signum))
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, interrupted)
+    try:
+        row, skips = read_config(bucket, CONFIG)
+        paths = forgejo_paths(APP_INI, WORK)
+        try:
+            username, password = export_credential(bucket.replace("-", "_"))
+            secrets.extend((username, password))
+        except KeymanExportError as error:
+            refuse("keyman", "keyman-" + error.signal)
+        env = os.environ.copy()
+        env.update(RESTIC_REPOSITORY=restic_repo(row), RESTIC_PASSWORD=restic_password(password),
+                   B2_ACCOUNT_ID=username.decode("utf-8"), B2_ACCOUNT_KEY=password.decode("utf-8"))
+        tmp_context = tempfile.TemporaryDirectory(prefix="forgejo-backup-b2-")
+        with nullcontext(tmp_context.name) as tmp:
+            temporary = Path(tmp)
+            dump = temporary / "forgejo.pg_dump"
+            restart_required = True
+            checked(["/usr/bin/systemctl", "stop", "forgejo.service"], "forgejo-stop", stdout=subprocess.DEVNULL)
+            included, excluded, uuids = inventory(paths, skips)
+            exclude_file = temporary / "exclude"
+            exclude_file.write_text("".join(p + "\n" for p in exclusions(paths, skips, uuids)), encoding="utf-8")
+            with dump.open("wb") as stream:
+                checked(["/usr/sbin/runuser", "-u", "postgres", "--", "/usr/bin/pg_dump", "--format=custom", "--no-owner", "--dbname", paths["database"]], "pg-dump", stdout=stream)
+            try:
+                probe = subprocess.run(["/usr/bin/restic", "snapshots", "--json"], env=env,
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.PIPE, check=False)
+            except OSError:
+                refuse("restic", "restic-unavailable")
+            if probe.returncode:
+                message = probe.stderr.decode("utf-8", "replace").lower()
+                missing = ("config file does not exist" in message
+                           or "not initialized" in message
+                           or "repository does not exist" in message
+                           or "is there a repository" in message
+                           or ("unable to open config file" in message and "no such file" in message))
+                if not missing:
+                    refuse("restic", "restic-repository-unavailable")
+                checked(["/usr/bin/restic", "init"], "restic-init", env=env, stdout=subprocess.DEVNULL)
+            sources = list(dict.fromkeys(str(p) for p in (dump, paths["data"], paths["attachments"], paths["custom"], paths["ini"], paths["root"])))
+            child = None
+            try:
+                child = subprocess.Popen(["/usr/bin/restic", "backup", "--json", "--tag", "forgejo",
+                                          "--exclude-file", str(exclude_file), "--", *sources], env=env,
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                         text=True)
+                assert child.stdout is not None
+                for line in child.stdout:
+                    try:
+                        message = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(message, dict) and message.get("message_type") == "summary":
+                        value = message.get("snapshot_id")
+                        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8,64}", value):
+                            snapshot = value
+                if child.wait() != 0 or not snapshot:
+                    refuse("restic-backup", "restic-backup-failed")
+            except OSError:
+                refuse("restic-backup", "restic-unavailable")
+            finally:
+                if child is not None and child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+                if child is not None and child.stdout is not None:
+                    child.stdout.close()
+            outcome = "ok"
+    except Refusal as error:
+        failure = error.reason
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
+        failure = "backup-internal-failure"
+    finally:
+        # Once stopping was attempted, further ordinary termination signals must
+        # not interrupt the mandatory restart or the final deed.
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, signal.SIG_IGN)
+        if restart_required:
+            try:
+                restarted = subprocess.run(["/usr/bin/systemctl", "start", "forgejo.service"], stdin=subprocess.DEVNULL,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                if restarted.returncode:
+                    outcome, failure = "failed", "forgejo-start-failed"
+            except OSError:
+                outcome, failure = "failed", "forgejo-start-failed"
+        if tmp_context is not None:
+            try:
+                tmp_context.cleanup()
+            except OSError:
+                outcome, failure = "failed", "temporary-cleanup-failed"
+        for secret in secrets:
+            secret[:] = b"\0" * len(secret)
+        if not log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure):
+            outcome = "failed"
+    return 0 if outcome == "ok" else 1
+
+
+def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 2 and args[0] == "--worker" and BUCKET.fullmatch(args[1]):
+        return backup(args[1])
+    def deadline(_signum, _frame):
+        refuse("request", "request-deadline-exceeded")
+    previous_handler = signal.signal(signal.SIGALRM, deadline)
+    signal.alarm(24)
+    try:
+        try:
+            raw = sys.stdin.read(16385)
+        except (OSError, UnicodeError):
+            refuse("shape", "request-invalid")
+        if len(raw) > 16384:
+            refuse("shape", "request-too-large")
+        try:
+            request = json.loads(raw)
+        except (ValueError, UnicodeError):
+            refuse("shape", "request-invalid")
+        if not isinstance(request, dict) or request.get("actuator") != ACTUATOR or not isinstance(request.get("metadata"), dict):
+            refuse("shape", "actuator-envelope-invalid")
+        metadata = request["metadata"]
+        bucket = metadata.get("bucket")
+        if not isinstance(bucket, str) or not BUCKET.fullmatch(bucket):
+            refuse("shape", "bucket-invalid")
+        if "plan" in metadata and not isinstance(metadata["plan"], bool):
+            refuse("shape", "plan-invalid")
+        is_plan = metadata.get("plan") is True
+        if not is_plan and any(os.environ.get(k) for k in ("FORGEJO_BACKUP_CONFIG", "FORGEJO_BACKUP_APP_INI", "FORGEJO_BACKUP_WORK")):
+            refuse("launch", "scratch-overrides-plan-only")
+        config = Path(os.environ.get("FORGEJO_BACKUP_CONFIG", str(CONFIG))) if is_plan else CONFIG
+        ini = Path(os.environ.get("FORGEJO_BACKUP_APP_INI", str(APP_INI))) if is_plan else APP_INI
+        work = Path(os.environ.get("FORGEJO_BACKUP_WORK", str(WORK))) if is_plan else WORK
+        if is_plan:
+            row, paths, included, excluded, uuids = plan(bucket, config, ini, work)
+            result = {"ok": True, "plan": {"included": included, "excluded": len(excluded),
+                      "excludedNames": [owner + "/" + repo for owner, repo in excluded],
+                      "excludedAttachments": len(uuids), "repo": restic_repo(row)}}
+        else:
+            read_config(bucket, CONFIG)
+            result = launch(bucket)
+    except Refusal as error:
+        result = {"ok": False, "step": error.step, "reason": error.reason}
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
+    print(json.dumps(result, separators=(",", ":")))
+    return 0 if result["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -38,6 +38,7 @@
     "settings/datetime/household-time",
     "settings/samba",
     "settings/ssh",
+    "storage/backup/forgejo/backup-b2",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
     "storage/nas/attach",

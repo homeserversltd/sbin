@@ -2,18 +2,19 @@
   "children": [],
   "envelope": {
     "stdin": "json",
-    "keys": [
-      "schema",
-      "payload",
-      "op",
-      "operation"
-    ],
-    "actions": [
-      "get"
-    ]
+    "keys": ["actuator", "metadata"],
+    "actions": [],
+    "unknown_fields": "skipped"
   },
   "sclerite": {
-    "name": "all",
-    "features": {}
+    "name": "gateway",
+    "features": {
+      "gateway": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {"band": false, "verbs": [], "routes": []}
+      }
+    }
   }
 }
