@@ -25,7 +25,9 @@
     "face/volume",
     "face/workspace",
     "local-ai/card",
+    "local-ai/edition",
     "local-ai/library",
+    "local-ai/memory",
     "local-ai/slot",
     "network/cert/house-ca",
     "network/cert/refresh",
@@ -111,7 +113,15 @@
     ],
     [
       "local-ai",
+      "edition"
+    ],
+    [
+      "local-ai",
       "library"
+    ],
+    [
+      "local-ai",
+      "memory"
     ],
     [
       "local-ai",
@@ -233,7 +243,9 @@
     "/api/v1/interactables/:id/silence",
     "/api/v1/interactables/:id/unsilence",
     "/api/v1/local-ai/card",
+    "/api/v1/local-ai/edition",
     "/api/v1/local-ai/library",
+    "/api/v1/local-ai/memory",
     "/api/v1/local-ai/slot/:slot",
     "/api/v1/network/device",
     "/api/v1/network/device/wake",

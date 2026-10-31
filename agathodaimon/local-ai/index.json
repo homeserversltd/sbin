@@ -1,7 +1,9 @@
 {
   "children": [
     "card",
+    "edition",
     "library",
+    "memory",
     "slot"
   ]
 }
