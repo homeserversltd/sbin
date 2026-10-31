@@ -43,6 +43,7 @@
     "storage/nas/attach",
     "storage/nas/detach",
     "storage/nas/folders",
+    "storage/nas/seat",
     "storage/nas/setup",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
@@ -151,6 +152,10 @@
     [
       "nas",
       "folders"
+    ],
+    [
+      "nas",
+      "seat"
     ],
     [
       "nas",
@@ -398,6 +403,7 @@
       "storage/nas/attach",
       "storage/nas/detach",
       "storage/nas/folders",
+      "storage/nas/seat",
       "storage/nas/setup",
       "storage/vault/open",
       "storage/vault/policy",

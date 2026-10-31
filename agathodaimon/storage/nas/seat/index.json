@@ -1,0 +1,14 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [["nas", "seat"]],
+        "routes": [],
+        "administrative": {"band": true, "verbs": [], "routes": []}
+      }
+    }
+  }
+}

@@ -13,7 +13,7 @@ from agathodaimon.storage.nas import runtime
 def record(verb: str, target: str, receipt: dict, started: float, *, request=None) -> None:
     # These values are internal labels, never envelope fields or key material.
     if verb not in {"sync-hold", "sync-release", "sync-schedule-disable", "partlabel-assign",
-                    "nas-open", "nas-attach", "nas-detach", "nas-setup", "nas-folders"}:
+                    "nas-open", "nas-attach", "nas-detach", "nas-setup", "nas-folders", "nas-seat"}:
         raise ValueError("invalid NAS deed verb")
     if target not in {"nas-sync", "nas-partition", "nas-primary", "nas-backup", "nas-role"}:
         raise ValueError("invalid NAS deed target")
