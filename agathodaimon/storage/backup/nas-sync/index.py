@@ -7,6 +7,8 @@ SOURCE=Path("/mnt/nas"); DESTINATION=Path("/mnt/nas_backup"); MAX_INPUT=65536
 DENYLIST={"homeserver-boot-efi","homeserver-boot","homeserver-swap","homeserver-vault","homeserver-deploy","homeserver-root"}
 KERNEL_ERROR=re.compile(r"(?:\bXFS\b.*(?:error|corrupt|shutdown)|\bI/O error\b|\bdevice-mapper\b.*(?:error|fail)|\bblk_update_request\b|\bBuffer I/O error\b)",re.I)
 class Refusal(RuntimeError): pass
+class KernelRefusal(Refusal):
+ def __init__(self,reason,attach_scopes): super().__init__(reason); self.attach_scopes=attach_scopes
 
 def lock_file():
  root=os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
@@ -131,7 +133,8 @@ def kernel_gate(a,b,runner):
    for identities,roots,fallback,_ in boundaries:
     matched=[limit for root_tokens,limit in roots if names_device(message,root_tokens)]
     if not matched and names_device(message,identities): matched=[fallback]
-    if any(limit is None or when is None or when>limit for limit in matched): raise Refusal("current-boot-kernel-error-names-backing-drive")
+    if any(limit is None or when is None or when>limit for limit in matched):
+     raise KernelRefusal("current-boot-kernel-error-names-backing-drive",[entry[3] for entry in boundaries])
  return [entry[3] for entry in boundaries]
 def measure(root):
  if not root.is_dir(): raise Refusal("source-unreadable:"+str(root))
@@ -191,14 +194,14 @@ def sync(baseline=None,accept_shrink=False,planned=False,runner=command,measure_
   if old is None:
    facts.update(coldStart=True,notice="COLD START: no last-good state; current file count sets the deletion cap")
    if accept_shrink:
-    facts.update(humanOverride="--accept-shrink",overrideNotice="CRITICAL HUMAN OVERRIDE: --accept-shrink was supplied on cold start; no shrink baseline existed and every safety check remained enforced")
+    facts.update(shrinkOverride="metadata.acceptShrink",overrideNotice="CRITICAL OVERRIDE: metadata.acceptShrink was supplied on cold start; no shrink baseline existed and every safety check remained enforced")
     print(facts["overrideNotice"],file=sys.stderr,flush=True)
   else:
    reasons=shrink_reasons(files,bytes_,old)
    if reasons and not accept_shrink: raise Refusal("source-shrink-refused:"+",".join(reasons))
    checked(checks,"shrink-canary",exceeded=bool(reasons),bypassed=bool(reasons and accept_shrink))
    if accept_shrink:
-    facts.update(humanOverride="--accept-shrink",overrideNotice="CRITICAL HUMAN OVERRIDE: --accept-shrink bypassed only shrink; every other safety check remained enforced")
+    facts.update(shrinkOverride="metadata.acceptShrink",overrideNotice="CRITICAL OVERRIDE: metadata.acceptShrink was supplied; only the shrink gate may be bypassed, and every other safety check remained enforced")
     print(facts["overrideNotice"],file=sys.stderr,flush=True)
   reference=files if old is None else old["fileCount"]; cap=max(1000,(reference*20)//100); basis="cold-start-current-file-count" if old is None else "last-good-file-count"
   argv=[RSYNC,"-aH","--stats","--delete-delay","--exclude=lost+found","--max-delete="+str(cap),str(SOURCE)+"/",str(DESTINATION)+"/"]; facts.update(rsyncArgv=argv,maxDelete=cap,maxDeleteBasis=basis)
@@ -210,6 +213,7 @@ def sync(baseline=None,accept_shrink=False,planned=False,runner=command,measure_
   facts.update(finalFileCount=final_files,finalTotalBytes=final_bytes)
   return finish(receipt(action,"ok",mutation=True,checks=checks,reason=None,exitCode=0,**facts))
  except Refusal as e:
+  if isinstance(e,KernelRefusal): checks.append({"name":"current-boot-kernel-log-clean","ok":False,"attachScopes":e.attach_scopes})
   if attempted:
    not_launched=str(e)=="required-tool-missing:"+RSYNC or str(e).startswith("command-unavailable:"+RSYNC+":")
    return finish(receipt(action,"failed",mutation=not not_launched,reason=str(e),checks=checks,**facts))
