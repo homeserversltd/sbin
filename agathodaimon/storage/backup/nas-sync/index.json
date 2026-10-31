@@ -12,7 +12,14 @@
     "unknown_fields": "skipped"
   },
   "sclerite": {
-    "name": "all",
-    "features": {}
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "administrative": {
+          "band": true
+        }
+      }
+    }
   }
 }
