@@ -1,6 +1,7 @@
 {
   "children": [
     "backblaze-config",
+    "backblaze",
     "backblaze-recover",
     "nas-sync",
     "forgejo"

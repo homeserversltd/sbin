@@ -1,11 +1,9 @@
 """Back up Forgejo to the bucket's restic repository, excluding selected files."""
 from __future__ import annotations
 
-import base64
 from contextlib import nullcontext
 import configparser
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,7 +17,7 @@ import time
 
 # Direct execution by the transient service and dynamic staff loading share a root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
-from agathodaimon.lib.keyman_export.index import KeymanExportError, export_credential
+from agathodaimon.storage.backup.backblaze import shared as backblaze
 
 ACTUATOR = "backblaze-forgejo-b2-push"
 CONFIG = Path("/etc/appliance/config.json")
@@ -44,38 +42,17 @@ def refuse(step, reason) -> NoReturn:
 def read_config(bucket, path):
     try:
         with path.open(encoding="utf-8") as stream:
-            rows = json.load(stream)["tabs"]["backblaze"]["config"]["buckets"]
+            data = json.load(stream)
+        row = backblaze.row_for(data, bucket)
+        manager = backblaze.manager(row)
+        if not manager.get('backblazeBackup', False):
+            refuse('config', 'backblaze-backup-disabled')
+        normalized = {value.lower() for value in backblaze.normalize_skips(manager.get('skip', []))}
+        return row, normalized
+    except backblaze.Refusal as error:
+        refuse(error.step, error.reason)
     except (OSError, ValueError, KeyError, TypeError):
-        refuse("config", "bucket-not-configured")
-    if not isinstance(rows, list):
-        refuse("config", "bucket-row-incomplete")
-    matches = [row for row in rows if isinstance(row, dict) and row.get("bucket") == bucket]
-    if not matches:
-        refuse("config", "bucket-not-configured")
-    if len(matches) != 1:
-        refuse("config", "bucket-row-incomplete")
-    row = matches[0]
-    prefix, encrypted, items = row.get("prefix"), row.get("encrypted"), row.get("items")
-    manager = row.get("managers", {}).get("forgejo") if isinstance(row.get("managers"), dict) else None
-    if (not isinstance(prefix, str) or "\x00" in prefix or not isinstance(encrypted, bool)
-            or not isinstance(items, list) or not all(isinstance(i, dict) and isinstance(i.get("path"), str) and i["path"].startswith("/") for i in items)
-            or not isinstance(manager, dict) or not isinstance(manager.get("backblazeBackup"), bool)
-            or not isinstance(manager.get("localNas"), bool)):
-        refuse("config", "bucket-row-incomplete")
-    if not manager["backblazeBackup"]:
-        refuse("config", "backblaze-backup-disabled")
-    skips = manager.get("skip", [])
-    if not isinstance(skips, list):
-        refuse("skip", "skip-entry-malformed")
-    normalized = set()
-    for entry in skips:
-        if not isinstance(entry, str):
-            refuse("skip", "skip-entry-malformed")
-        parts = entry.strip().split("/")
-        if len(parts) not in (1, 2) or any(not NAME.fullmatch(p) or p in (".", "..") for p in parts):
-            refuse("skip", "skip-entry-malformed")
-        normalized.add("/".join(parts).lower())
-    return row, normalized
+        refuse('config', 'bucket-not-configured')
 
 
 def forgejo_paths(ini_path, work):
@@ -159,12 +136,7 @@ def inventory(paths, skips):
 
 
 def restic_repo(row):
-    return "b2:" + row["bucket"] + ":" + row["prefix"]
-
-
-def restic_password(application_key):
-    digest = hashlib.pbkdf2_hmac("sha256", application_key, b"coronatio_backblaze_restic_v1", 100000, 32)
-    return base64.b64encode(digest).decode("ascii")
+    return "b2:" + row["bucket"] + ":" + row.get("prefix", "")
 
 
 def plan(bucket, config_path, ini_path, work):
@@ -258,6 +230,8 @@ def backup(bucket):
     started = time.monotonic()
     included, excluded, snapshot, failure, outcome = 0, [], "", "none", "failed"
     restart_required = False
+    operation_lock = None
+    config_lock = None
     tmp_context = None
     secrets = []
     def interrupted(signum, _frame):
@@ -265,16 +239,19 @@ def backup(bucket):
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, interrupted)
     try:
+        lock_path = backblaze.config_path().parent / '.backblaze-config.lock'
+        config_lock = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        fcntl.flock(config_lock, fcntl.LOCK_SH)
         row, skips = read_config(bucket, CONFIG)
         paths = forgejo_paths(APP_INI, WORK)
+        operation_lock = APP_INI.open('rb')
+        fcntl.flock(operation_lock, fcntl.LOCK_EX)
         try:
-            username, password = export_credential(bucket.replace("-", "_"))
-            secrets.extend((username, password))
-        except KeymanExportError as error:
-            refuse("keyman", "keyman-" + error.signal)
-        env = os.environ.copy()
-        env.update(RESTIC_REPOSITORY=restic_repo(row), RESTIC_PASSWORD=restic_password(password),
-                   B2_ACCOUNT_ID=username.decode("utf-8"), B2_ACCOUNT_KEY=password.decode("utf-8"))
+            env, application_key = backblaze.restic_environment(row)
+            secrets.append(application_key)
+            backblaze.ensure_repository(row, env, application_key)
+        except backblaze.Refusal as error:
+            refuse(error.step, error.reason)
         tmp_context = tempfile.TemporaryDirectory(prefix="forgejo-backup-b2-")
         with nullcontext(tmp_context.name) as tmp:
             temporary = Path(tmp)
@@ -286,22 +263,6 @@ def backup(bucket):
             exclude_file.write_text("".join(p + "\n" for p in exclusions(paths, skips, uuids)), encoding="utf-8")
             with dump.open("wb") as stream:
                 checked(["/usr/sbin/runuser", "-u", "postgres", "--", "/usr/bin/pg_dump", "--format=custom", "--no-owner", "--dbname", paths["database"]], "pg-dump", stdout=stream)
-            try:
-                probe = subprocess.run(["/usr/bin/restic", "snapshots", "--json"], env=env,
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.PIPE, check=False)
-            except OSError:
-                refuse("restic", "restic-unavailable")
-            if probe.returncode:
-                message = probe.stderr.decode("utf-8", "replace").lower()
-                missing = ("config file does not exist" in message
-                           or "not initialized" in message
-                           or "repository does not exist" in message
-                           or "is there a repository" in message
-                           or ("unable to open config file" in message and "no such file" in message))
-                if not missing:
-                    refuse("restic", "restic-repository-unavailable")
-                checked(["/usr/bin/restic", "init"], "restic-init", env=env, stdout=subprocess.DEVNULL)
             sources = list(dict.fromkeys(str(p) for p in (dump, paths["data"], paths["attachments"], paths["custom"], paths["ini"], paths["root"])))
             child = None
             try:
@@ -358,6 +319,10 @@ def backup(bucket):
                 outcome, failure = "failed", "temporary-cleanup-failed"
         for secret in secrets:
             secret[:] = b"\0" * len(secret)
+        if operation_lock is not None:
+            operation_lock.close()
+        if config_lock is not None:
+            os.close(config_lock)
         if not log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure):
             outcome = "failed"
     return 0 if outcome == "ok" else 1
@@ -366,6 +331,8 @@ def backup(bucket):
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) == 2 and args[0] == "--worker" and BUCKET.fullmatch(args[1]):
+        if os.environ.get("BACKBLAZE_SCRATCH_ROOT"):
+            return 1
         return backup(args[1])
     def deadline(_signum, _frame):
         refuse("request", "request-deadline-exceeded")
@@ -382,6 +349,8 @@ def main(argv=None):
             request = json.loads(raw)
         except (ValueError, UnicodeError):
             refuse("shape", "request-invalid")
+        if isinstance(request, dict) and request.get('transition') == 'storage/backup/forgejo/backup-b2' and isinstance(request.get('payload'), dict) and 'actuator' not in request:
+            request = {'actuator': ACTUATOR, 'metadata': request['payload']}
         if not isinstance(request, dict) or request.get("actuator") != ACTUATOR or not isinstance(request.get("metadata"), dict):
             refuse("shape", "actuator-envelope-invalid")
         metadata = request["metadata"]
@@ -391,7 +360,7 @@ def main(argv=None):
         if "plan" in metadata and not isinstance(metadata["plan"], bool):
             refuse("shape", "plan-invalid")
         is_plan = metadata.get("plan") is True
-        if not is_plan and any(os.environ.get(k) for k in ("FORGEJO_BACKUP_CONFIG", "FORGEJO_BACKUP_APP_INI", "FORGEJO_BACKUP_WORK")):
+        if not is_plan and any(os.environ.get(k) for k in ("BACKBLAZE_SCRATCH_ROOT", "FORGEJO_BACKUP_CONFIG", "FORGEJO_BACKUP_APP_INI", "FORGEJO_BACKUP_WORK")):
             refuse("launch", "scratch-overrides-plan-only")
         config = Path(os.environ.get("FORGEJO_BACKUP_CONFIG", str(CONFIG))) if is_plan else CONFIG
         ini = Path(os.environ.get("FORGEJO_BACKUP_APP_INI", str(APP_INI))) if is_plan else APP_INI

@@ -1,0 +1,29 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": [
+      "actuator",
+      "metadata"
+    ],
+    "actions": [
+      "backblaze-snapshots"
+    ],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "gateway",
+    "features": {
+      "gateway": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "children": [
+    "bucket-add",
+    "bucket-credentials",
+    "bucket-verify",
+    "bucket-remove",
+    "bucket-items",
+    "bucket-save",
+    "bucket-run",
+    "status",
+    "snapshots"
+  ],
+  "envelope": {
+    "stdin": "json",
+    "keys": [
+      "actuator",
+      "metadata"
+    ],
+    "actions": [
+      "backblaze-bucket-add",
+      "backblaze-bucket-credentials",
+      "backblaze-bucket-verify",
+      "backblaze-bucket-remove",
+      "backblaze-bucket-items",
+      "backblaze-bucket-save",
+      "backblaze-bucket-run",
+      "backblaze-status",
+      "backblaze-snapshots"
+    ],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {}
+  }
+}
