@@ -909,8 +909,11 @@ def _seat_change(receipt: dict[str, Any], fd: int, mountpoint: str, fallback: st
         operation()
     except OSError as failure:
         if child is None or not isinstance(failure, FileExistsError):
+            receipt["_mutationAttempted"] = True
             receipt.update(failedPath=path, errno=failure.errno)
         raise
+    receipt["_mutationAttempted"] = True
+    receipt["mutationPerformed"] = True
     if path not in receipt["changedPaths"]:
         receipt["changedPaths"].append(path)
 
@@ -1049,12 +1052,14 @@ def _apply_permissions(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                             uid, gid, mode = _seat_final_permissions(info, _seat_path(fd, mountpoint, path), (uid, gid, mode))
                         expected_permissions.append((uid, gid, mode))
                         if (st.st_uid, st.st_gid) != (uid, gid):
-                            receipt["mutationPerformed"] = True
+                            if not receipt.get("_seatDetails"):
+                                receipt["mutationPerformed"] = True
                             _seat_change(receipt, fd, mountpoint, path,
                                          lambda: os.fchown(fd, uid, gid))
                         _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
                         if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
-                            receipt["mutationPerformed"] = True
+                            if not receipt.get("_seatDetails"):
+                                receipt["mutationPerformed"] = True
                             _seat_change(receipt, fd, mountpoint, path, lambda: os.fchmod(fd, mode))
                     observed_entries = [os.fstat(fd) for fd in targets]
                     current = os.fstat(current_fd)
@@ -1068,7 +1073,10 @@ def _apply_permissions(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                         raise Refusal("agathodaimon-nas-permission-readback-mismatch", "permissions-readback")
                 except Refusal:
                     raise
-                except OSError:
+                except OSError as failure:
+                    if receipt.get("_seatDetails"):
+                        receipt.setdefault("failedPath", path)
+                        receipt.setdefault("errno", failure.errno)
                     raise Refusal("agathodaimon-nas-permission-change-failed", "permissions-apply")
                 finally:
                     for fd in targets:
@@ -1236,13 +1244,15 @@ def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                 active_fd = current_fd
                 changed = (opened.st_uid, opened.st_gid) != (owner_entry.pw_uid, group_entry.gr_gid)
                 if changed:
-                    receipt["mutationPerformed"] = True
+                    if not receipt.get("_seatDetails"):
+                        receipt["mutationPerformed"] = True
                     _seat_change(receipt, active_fd, mountpoint, actual_path,
                                  lambda: os.fchown(active_fd, owner_entry.pw_uid, group_entry.gr_gid))
                 _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
                 if stat.S_IMODE(os.fstat(current_fd).st_mode) != mode:
                     changed = True
-                    receipt["mutationPerformed"] = True
+                    if not receipt.get("_seatDetails"):
+                        receipt["mutationPerformed"] = True
                     _seat_change(receipt, active_fd, mountpoint, actual_path,
                                  lambda: os.fchmod(active_fd, mode))
                 _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
@@ -1272,6 +1282,8 @@ def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                             reason="directory-change-or-readback-failed", **expected,
                             **_portal_layout_actual(current_fd, actual_path if current_fd is not None else None))
                 if receipt.get("_seatDetails") and isinstance(failure, OSError):
+                    receipt.setdefault("failedPath", actual_path)
+                    receipt.setdefault("errno", failure.errno)
                     raise Refusal("agathodaimon-nas-permission-change-failed",
                                   "portal-layout-row-refused", receipt=receipt) from None
                 raise Refusal("agathodaimon-nas-portal-layout-row-failed",

@@ -56,7 +56,8 @@ def dispatch(request: Any) -> dict[str, Any]:
     except Exception:
         receipt.update(ok=False, firstMissingSignal="agathodaimon-nas-seat-aborted", failedStep="seat")
     receipt.pop("_seatDetails", None)
-    if receipt["mutationPerformed"]:
+    attempted = receipt.pop("_mutationAttempted", False)
+    if receipt["mutationPerformed"] or attempted:
         deed.finish("nas-seat", "nas-" + role, receipt, started, request=request.intent_id)
     return attach_envelope(receipt, request)
 
