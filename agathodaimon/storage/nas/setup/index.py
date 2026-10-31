@@ -883,6 +883,59 @@ def _permission_mount_guard(root_fd: int, mountpoint: str, mapper_identity: str,
         raise Refusal("agathodaimon-nas-mount-readback-mismatch", "permissions-boundary")
 
 
+def _seat_path(fd: int, mountpoint: str, fallback: str, child: str | None = None) -> str:
+    """Translate an open descriptor to the role path for seat's transient receipt."""
+    try:
+        physical = os.readlink(f"/proc/self/fd/{fd}")
+        root = str(runtime_path(mountpoint))
+        if child is not None:
+            physical = os.path.join(physical, child)
+        if physical == root:
+            return mountpoint
+        if physical.startswith(root + "/"):
+            return mountpoint + physical[len(root):]
+    except (OSError, Refusal):
+        pass
+    return fallback
+
+
+def _seat_change(receipt: dict[str, Any], fd: int, mountpoint: str, fallback: str,
+                 operation: Callable[[], None], child: str | None = None) -> None:
+    if not receipt.get("_seatDetails"):
+        operation()
+        return
+    path = _seat_path(fd, mountpoint, fallback, child)
+    try:
+        operation()
+    except OSError as failure:
+        if child is None or not isinstance(failure, FileExistsError):
+            receipt.update(failedPath=path, errno=failure.errno)
+        raise
+    if path not in receipt["changedPaths"]:
+        receipt["changedPaths"].append(path)
+
+
+def _seat_final_permissions(info: dict[str, Any], path: str, default: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Use the last setup writer for each path, avoiding repeat permission churn."""
+    target = default
+    for application in info["config"]["applications"]:
+        for root in application["paths"]:
+            if path == root or (application["recursive"] and path.startswith(root.rstrip("/") + "/")):
+                mode = application["mode"] | stat.S_IWGRP if path == root else application["mode"]
+                target = (application["uid"], application["gid"], mode)
+    mountpoint = info["mountpoint"]
+    role = info.get("role")
+    rows = PORTAL_FOLDER_LAYOUT.get(role, ()) if isinstance(role, str) else ()
+    for relative, owner, group, mode in rows:
+        portal = posixpath.join(mountpoint, relative) if relative else mountpoint
+        if path == portal:
+            try:
+                target = (pwd.getpwnam(owner).pw_uid, grp.getgrnam(group).gr_gid, mode)
+            except KeyError:
+                pass  # Portal seating decides whether the absent identity is a skip or refusal.
+    return target
+
+
 def _open_or_create_child(parent_fd: int, component: str, root_dev: int, root_fd: int,
                           mountpoint: str, mapper_identity: str, receipt: dict[str, Any]) -> int:
     if component in {"", ".", ".."} or "/" in component:
@@ -892,11 +945,14 @@ def _open_or_create_child(parent_fd: int, component: str, root_dev: int, root_fd
     if os.fstat(parent_fd).st_dev != root_dev:
         raise Refusal("agathodaimon-nas-path-escape", "permissions-preflight")
     try:
-        os.mkdir(component, 0o755, dir_fd=parent_fd)
+        _seat_change(receipt, parent_fd, mountpoint, mountpoint,
+                     lambda: os.mkdir(component, 0o755, dir_fd=parent_fd), component)
         receipt["mutationPerformed"] = True
     except FileExistsError:
         pass
     except OSError:
+        if receipt.get("_seatDetails"):
+            raise Refusal("agathodaimon-nas-permission-change-failed", "permissions-create") from None
         raise Refusal("agathodaimon-nas-directory-create-failed", "permissions-create")
     try:
         child_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
@@ -980,26 +1036,31 @@ def _apply_permissions(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                         os.close(current_fd)
                         current_fd = child_fd
                     targets = _collect_fd_tree(current_fd, root_dev) if app["recursive"] else [os.dup(current_fd)]
+                    expected_permissions: list[tuple[int, int, int]] = []
                     for fd in targets:
                         st = os.fstat(fd)
                         if st.st_dev != root_dev:
                             raise Refusal("agathodaimon-nas-path-escape", "permissions-apply")
                         _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
-                        if (st.st_uid, st.st_gid) != (app["uid"], app["gid"]):
-                            receipt["mutationPerformed"] = True
-                            os.fchown(fd, app["uid"], app["gid"])
-                        _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
                         current_stat = os.fstat(current_fd)
                         mode = app["mode"] | stat.S_IWGRP if (st.st_dev, st.st_ino) == (current_stat.st_dev, current_stat.st_ino) else app["mode"]
+                        uid, gid = app["uid"], app["gid"]
+                        if receipt.get("_seatDetails"):
+                            uid, gid, mode = _seat_final_permissions(info, _seat_path(fd, mountpoint, path), (uid, gid, mode))
+                        expected_permissions.append((uid, gid, mode))
+                        if (st.st_uid, st.st_gid) != (uid, gid):
+                            receipt["mutationPerformed"] = True
+                            _seat_change(receipt, fd, mountpoint, path,
+                                         lambda: os.fchown(fd, uid, gid))
+                        _permission_mount_guard(root_fd, mountpoint, expected_mapper, root_identity)
                         if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
                             receipt["mutationPerformed"] = True
-                            os.fchmod(fd, mode)
+                            _seat_change(receipt, fd, mountpoint, path, lambda: os.fchmod(fd, mode))
                     observed_entries = [os.fstat(fd) for fd in targets]
                     current = os.fstat(current_fd)
                     all_permissions = all(
-                        entry.st_dev == root_dev and entry.st_uid == app["uid"] and entry.st_gid == app["gid"]
-                        and stat.S_IMODE(entry.st_mode) == (app["mode"] | stat.S_IWGRP if (entry.st_dev, entry.st_ino) == (current.st_dev, current.st_ino) else app["mode"])
-                        for entry in observed_entries)
+                        entry.st_dev == root_dev and (entry.st_uid, entry.st_gid, stat.S_IMODE(entry.st_mode)) == expected
+                        for entry, expected in zip(observed_entries, expected_permissions))
                     _record(receipt, "permissions-readback", all_permissions, application=app["application"],
                             path=path, uid=current.st_uid, gid=current.st_gid, mode=stat.S_IMODE(current.st_mode),
                             recursive=app["recursive"], entries=len(targets), allEntriesMatched=all_permissions)
@@ -1172,15 +1233,18 @@ def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                 opened = os.fstat(current_fd)
                 if opened.st_dev != root_dev:
                     raise Refusal("agathodaimon-nas-path-escape", "portal-layout-row-refused")
+                active_fd = current_fd
                 changed = (opened.st_uid, opened.st_gid) != (owner_entry.pw_uid, group_entry.gr_gid)
                 if changed:
                     receipt["mutationPerformed"] = True
-                    os.fchown(current_fd, owner_entry.pw_uid, group_entry.gr_gid)
+                    _seat_change(receipt, active_fd, mountpoint, actual_path,
+                                 lambda: os.fchown(active_fd, owner_entry.pw_uid, group_entry.gr_gid))
                 _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
                 if stat.S_IMODE(os.fstat(current_fd).st_mode) != mode:
                     changed = True
                     receipt["mutationPerformed"] = True
-                    os.fchmod(current_fd, mode)
+                    _seat_change(receipt, active_fd, mountpoint, actual_path,
+                                 lambda: os.fchmod(active_fd, mode))
                 _permission_mount_guard(root_fd, mountpoint, mapper_identity, root_identity)
                 observed = _portal_layout_actual(current_fd, actual_path)
                 if (observed["actualDevice"] != root_dev
@@ -1202,11 +1266,14 @@ def _seed_portal_layout(receipt: dict[str, Any], info: dict[str, Any]) -> None:
                     row_recorded = True
                 raise Refusal(failure.signal_name, "portal-layout-row-refused",
                               failure.return_code, receipt) from None
-            except Exception:
+            except Exception as failure:
                 if not row_recorded:
                     _record(receipt, "portal-layout-row-refused", False,
                             reason="directory-change-or-readback-failed", **expected,
                             **_portal_layout_actual(current_fd, actual_path if current_fd is not None else None))
+                if receipt.get("_seatDetails") and isinstance(failure, OSError):
+                    raise Refusal("agathodaimon-nas-permission-change-failed",
+                                  "portal-layout-row-refused", receipt=receipt) from None
                 raise Refusal("agathodaimon-nas-portal-layout-row-failed",
                               "portal-layout-row-refused", receipt=receipt) from None
             finally:
