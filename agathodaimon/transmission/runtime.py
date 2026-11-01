@@ -2033,6 +2033,7 @@ def status_read(provider: str, provider_names: list[str],
         "forwardPort": None,
         "peerPort": None,
         "rpcPort": None,
+        "freshUntil": None,
         "firstMissingSignal": "none",
         "steps": [],
     }
@@ -2099,6 +2100,14 @@ def status_read(provider: str, provider_names: list[str],
             and peer_readback_is_fresh(state, result["rpcPort"])
         )
         result["conditions"]["peerPort"] = peer_ok
+        if state is not None:
+            deadlines = []
+            if forward_ok:
+                deadlines.append(_timestamp_seconds(state["boundAt"]) + state["keepaliveInterval"])
+            if peer_ok:
+                deadlines.append(_timestamp_seconds(state["peerPortReadbackAt"]) + state["keepaliveInterval"])
+            now = time.time()
+            result["freshUntil"] = min((deadline for deadline in deadlines if deadline > now), default=None)
         _stamp(result, "peerPort", {
             "peerPort": result["peerPort"], "forwardPort": result["forwardPort"],
             "configuredRpcPort": result["rpcPort"],
