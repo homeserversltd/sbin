@@ -2020,6 +2020,16 @@ def _status_unit_read(unit: str) -> tuple[bool, bool]:
         raise
 
 
+def _freshness_deadline(timestamp: str, interval: int) -> float | int:
+    bound = _timestamp_seconds(timestamp)
+    try:
+        return bound + interval
+    except OverflowError:
+        # Enormous valid intervals cannot be represented as a float.  Keep a
+        # finite JSON integer, conservatively waking before an even larger edge.
+        return min(int(bound) + interval, 10 ** 4000)
+
+
 def status_read(provider: str, provider_names: list[str],
                 options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
@@ -2081,7 +2091,7 @@ def status_read(provider: str, provider_names: list[str],
                 result["forwardPort"] = forward_port
         result["conditions"]["forward"] = forward_ok
         if forward_ok:
-            result["freshUntil"] = _timestamp_seconds(state["boundAt"]) + state["keepaliveInterval"]
+            result["freshUntil"] = _freshness_deadline(state["boundAt"], state["keepaliveInterval"])
         _stamp(result, "forward", {"holdState": hold_state, "statePresent": state is not None}, False,
                "read-only", {"fresh": forward_ok, "forwardPort": result["forwardPort"]})
 
@@ -2103,7 +2113,7 @@ def status_read(provider: str, provider_names: list[str],
         )
         result["conditions"]["peerPort"] = peer_ok
         if peer_ok:
-            peer_deadline = _timestamp_seconds(state["peerPortReadbackAt"]) + state["keepaliveInterval"]
+            peer_deadline = _freshness_deadline(state["peerPortReadbackAt"], state["keepaliveInterval"])
             result["freshUntil"] = min(result["freshUntil"], peer_deadline)
         _stamp(result, "peerPort", {
             "peerPort": result["peerPort"], "forwardPort": result["forwardPort"],
