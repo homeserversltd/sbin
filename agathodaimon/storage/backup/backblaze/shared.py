@@ -22,7 +22,7 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session, export_credential
 
-NAME = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
+NAME = re.compile(r"[A-Za-z0-9-]{6,63}\Z")
 SKIP = re.compile(r"[A-Za-z0-9_.-]+\Z")
 ACTUATORS = {name: 'backblaze-' + name for name in ('bucket-add', 'bucket-credentials', 'bucket-verify', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run', 'status', 'snapshots')}
 CONFIG = Path('/etc/appliance/config.json')
@@ -74,8 +74,11 @@ def repository(row):
     root = scratch_root()
     return str(root / 'restic-repos' / row['bucket']) if root else 'b2:' + row['bucket'] + ':' + row.get('prefix', '')
 
-def bucket_name(value):
-    if not isinstance(value, str) or not NAME.fullmatch(value):
+def valid_bucket(value):
+    return isinstance(value, str) and bool(NAME.fullmatch(value)) and not value.lower().startswith('b2-')
+
+def bucket_name(value) -> str:
+    if not isinstance(value, str) or not valid_bucket(value):
         fail('shape', 'bucket-invalid')
     return value
 
@@ -538,10 +541,10 @@ def dispatch(verb, metadata):
             except Refusal as error:
                 if error.step == 'request':
                     raise
-                errors.append({'bucket':bucket if isinstance(bucket, str) and NAME.fullmatch(bucket) else None,
+                errors.append({'bucket':bucket if valid_bucket(bucket) else None,
                                'step':error.step, 'reason':error.reason})
             except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
-                errors.append({'bucket':bucket if isinstance(bucket, str) and NAME.fullmatch(bucket) else None,
+                errors.append({'bucket':bucket if valid_bucket(bucket) else None,
                                'step':'snapshots', 'reason':'snapshots-unavailable'})
             finally:
                 if key is not None:
@@ -666,7 +669,7 @@ def dispatch(verb, metadata):
         signal_name = error.reason
         raise
     finally:
-        if should_log:
+        if should_log and outcome == 'ok':
             try:
                 deed(ACTUATORS[verb], bucket, outcome, started, signal_name)
             except Refusal:
@@ -683,6 +686,8 @@ def main_for(verb):
     def deadline(_sig, _frame):
         fail('request', 'request-deadline-after-keyman-seed-attempt' if SEED_ATTEMPTED else 'request-deadline-exceeded')
     previous = None
+    started = time.monotonic()
+    request = None
     try:
         previous = signal.signal(signal.SIGALRM, deadline)
         signal.alarm(budgets.get(verb, 20))
@@ -720,6 +725,13 @@ def main_for(verb):
                 signal.signal(signal.SIGALRM, previous)
             except Exception:
                 result = {'ok':False, 'step':'request', 'reason':'request-unavailable'}
+    if not result.get('ok') and verb in ('bucket-add', 'bucket-credentials', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run'):
+        metadata = request.get('metadata') if isinstance(request, dict) else None
+        value = metadata.get('bucket') if isinstance(metadata, dict) else None
+        try:
+            deed(ACTUATORS[verb], value if valid_bucket(value) else 'invalid', 'failed', started, result['reason'])
+        except Exception:
+            result['deed'] = 'unwritten'
     print(json.dumps(result, separators=(',', ':')))
     return 0 if result.get('ok') else 1
 
