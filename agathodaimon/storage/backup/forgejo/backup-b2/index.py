@@ -24,7 +24,6 @@ CONFIG = Path("/etc/appliance/config.json")
 APP_INI = Path("/opt/forgejo/custom/conf/app.ini")
 WORK = Path("/opt/forgejo")
 NAME = re.compile(r"[A-Za-z0-9_.-]+\Z")
-BUCKET = re.compile(r"[a-z][a-z0-9-]{0,62}\Z")
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
 UNIT_PREFIX = "forgejo-backup-b2-"
 
@@ -384,7 +383,7 @@ def backup(bucket):
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) == 2 and args[0] == "--worker" and BUCKET.fullmatch(args[1]):
+    if len(args) == 2 and args[0] == "--worker" and backblaze.valid_bucket(args[1]):
         if os.environ.get("BACKBLAZE_SCRATCH_ROOT"):
             return 1
         return backup(args[1])
@@ -409,7 +408,7 @@ def main(argv=None):
             refuse("shape", "actuator-envelope-invalid")
         metadata = request["metadata"]
         bucket = metadata.get("bucket")
-        if not isinstance(bucket, str) or not BUCKET.fullmatch(bucket):
+        if not backblaze.valid_bucket(bucket):
             refuse("shape", "bucket-invalid")
         if "plan" in metadata and not isinstance(metadata["plan"], bool):
             refuse("shape", "plan-invalid")

@@ -82,6 +82,11 @@ def bucket_name(value) -> str:
         fail('shape', 'bucket-invalid')
     return value
 
+def keyman_service(bucket):
+    name = bucket_name(bucket).lower().replace('-', '_')
+    return 'b' + name if name[0].isdigit() else name
+
+
 def normalize_skips(value):
     if not isinstance(value, list):
         fail('skip', 'skip-entry-malformed')
@@ -242,7 +247,7 @@ def skeleton_password():
 
 def credentials(bucket):
     try:
-        return export_credential(bucket.replace('-', '_'))
+        return export_credential(keyman_service(bucket))
     except KeymanExportError as error:
         fail('keyman', 'keyman-' + error.signal)
 
@@ -252,7 +257,7 @@ def seed(bucket, key_id, application_key):
     if any(not x or len(x) > 511 or any(c in x for c in (0,10,13,34)) for x in values):
         fail('keyman', 'credential-invalid')
     material = bytearray(b'username="' + values[0] + b'"\npassword="' + values[1] + b'"\n')
-    service = bucket.replace('-', '_')
+    service = keyman_service(bucket)
     try:
         with exchange_session(native=True):
             SEED_ATTEMPTED = True
@@ -600,6 +605,12 @@ def dispatch(verb, metadata):
                 fail('config', 'bucket-already-exists')
             if verb == 'bucket-credentials' and len(existing) != 1:
                 fail('config', 'bucket-not-configured')
+            service = keyman_service(bucket)
+            if any(isinstance(other := row.get('bucket'), str) and other != bucket and
+                   (other.replace('-', '_') == service or
+                    (valid_bucket(other) and keyman_service(other) == service))
+                   for row in rows(data)):
+                fail('config', 'keyman-service-collision')
             if not authorize(bucket, key_id, application_key, mutating=True):
                 fail('verify', 'bucket-not-visible-to-key')
             service = seed(bucket, key_id, application_key)
