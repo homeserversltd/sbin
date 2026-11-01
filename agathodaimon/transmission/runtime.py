@@ -2025,9 +2025,13 @@ def _freshness_deadline(timestamp: str, interval: int) -> float | int:
     try:
         return bound + interval
     except OverflowError:
-        # Enormous valid intervals cannot be represented as a float.  Keep a
-        # finite JSON integer, conservatively waking before an even larger edge.
-        return min(int(bound) + interval, 10 ** 4000)
+        # For an astronomical interval, preserve whole Unix seconds as an
+        # integer; a fractional second rounds down rather than delaying a wake.
+        deadline = int(bound) + interval
+        digit_limit = sys.get_int_max_str_digits()
+        if digit_limit and deadline >= 10 ** digit_limit:
+            sys.set_int_max_str_digits(digit_limit + 1)
+        return deadline
 
 
 def status_read(provider: str, provider_names: list[str],
