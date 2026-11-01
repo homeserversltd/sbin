@@ -84,7 +84,7 @@ def bucket_name(value) -> str:
 
 def keyman_service(bucket):
     name = bucket_name(bucket).lower().replace('-', '_')
-    return 'b' + name if name[0].isdigit() else name
+    return name if 'a' <= name[0] <= 'z' else 'b' + name
 
 
 def normalize_skips(value):
