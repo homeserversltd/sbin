@@ -268,7 +268,7 @@ def seed(bucket, key_id, application_key):
         material[:] = b'\0' * len(material)
     return service
 
-def authorize(bucket, key_id, application_key):
+def authorize(bucket, key_id, application_key, *, mutating=False):
     try:
         basic = base64.b64encode((key_id + ':' + application_key).encode()).decode('ascii')
         request = urllib.request.Request('https://api.backblazeb2.com/b2api/v2/b2_authorize_account', headers={'Authorization':'Basic '+basic})
@@ -293,7 +293,7 @@ def authorize(bucket, key_id, application_key):
             fail('verify', 'b2-listing-invalid')
         return any(item['bucketName'] == bucket for item in listing['buckets'])
     except urllib.error.HTTPError as error:
-        if error.code in (401, 403):
+        if error.code in (401, 403) and not mutating:
             return False
         fail('verify', 'b2-check-unavailable')
     except Refusal:
@@ -597,8 +597,8 @@ def dispatch(verb, metadata):
                 fail('config', 'bucket-already-exists')
             if verb == 'bucket-credentials' and len(existing) != 1:
                 fail('config', 'bucket-not-configured')
-            if not authorize(bucket, key_id, application_key):
-                fail('verify', 'bucket-unreachable')
+            if not authorize(bucket, key_id, application_key, mutating=True):
+                fail('verify', 'bucket-not-visible-to-key')
             service = seed(bucket, key_id, application_key)
             if verb == 'bucket-add':
                 rows(data, True).append({'bucket':bucket, 'prefix':'', 'items':[],
