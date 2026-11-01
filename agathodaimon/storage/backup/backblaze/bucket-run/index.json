@@ -7,7 +7,8 @@
       "metadata"
     ],
     "actions": [
-      "backblaze-bucket-run"
+      "backblaze-bucket-run",
+      "bucket-run"
     ],
     "unknown_fields": "skipped"
   },

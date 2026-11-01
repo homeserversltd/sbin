@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import base64
+import errno
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import select
 import signal
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -342,7 +346,7 @@ def invoke_restic(args, env, timeout=None, capture=True):
         fail('restic', 'restic-unavailable')
 
 
-def ensure_repository(row, env, application_key, init_missing=True):
+def _ensure_repository(row, env, application_key, init_missing=True):
     probe = invoke_restic(['--no-lock', 'snapshots', '--json'], env)
     if probe.returncode == 0:
         return
@@ -370,6 +374,17 @@ def ensure_repository(row, env, application_key, init_missing=True):
         if invoke_restic(['key', 'add', '--new-password-file', str(path)], legacy, capture=False).returncode:
             fail('rekey', 'restic-rekey-failed')
     deed('backblaze-restic-rekey', row['bucket'], 'ok', started)
+
+
+def ensure_repository(row, env, application_key, init_missing=True):
+    _ensure_repository(row, env, application_key, init_missing)
+    started = time.monotonic()
+    result = invoke_restic(['unlock', '--verbose'], env)
+    if result.returncode:
+        fail('restic-unlock', 'restic-unlock-failed')
+    # Restic reports removals only when at least one stale lock was removed.
+    if re.search(rb'\bsuccessfully removed [1-9][0-9]* locks?\b', result.stdout, re.I):
+        deed('backblaze-restic-unlock', row['bucket'], 'ok', started)
 
 
 def snapshot_list(row, env, application_key):
@@ -437,7 +452,8 @@ def release_result(bucket):
 def unit_status(bucket):
     try:
         p = subprocess.run(['/usr/bin/systemctl', '--timestamp=unix', 'show', run_unit(bucket), '--property=LoadState',
-                            '--property=ActiveState', '--property=SubState', '--property=Result', '--property=ExecMainExitTimestamp'],
+                            '--property=ActiveState', '--property=SubState', '--property=Result', '--property=ExecMainExitTimestamp',
+                            '--property=ExecMainCode', '--property=ExecMainStatus', '--property=MainPID'],
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False, text=True)
     except (OSError, subprocess.SubprocessError):
         fail('status', 'systemd-unavailable')
@@ -451,9 +467,12 @@ def unit_running(state):
     return state.get('SubState') in ('running', 'start', 'start-pre', 'start-post', 'reload', 'stop', 'stop-sigterm', 'stop-sigkill', 'stop-post', 'final-sigterm', 'final-sigkill') or state.get('ActiveState') in ('activating', 'deactivating', 'reloading')
 
 
-def launch(bucket):
+def launch(bucket, scheduled=False):
     if os.geteuid() != 0:
         fail('run', 'root-required')
+    listener = None
+    connection = None
+    pidfd = None
     try:
         status = unit_status(bucket)
         if unit_running(status):
@@ -464,19 +483,89 @@ def launch(bucket):
         root = scratch_root()
         if root:
             cmd.extend(['--setenv=BACKBLAZE_SCRATCH_ROOT=' + str(root), '--setenv=TMPDIR=' + str(root)])
-        cmd += ['--', sys.executable, str(Path(__file__).resolve()), '--worker', bucket]
+        cmd += ['--', sys.executable, str(Path(__file__).resolve())]
+        if scheduled:
+            address = 'backblaze-run-' + os.urandom(16).hex()
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind('\0' + address)
+            listener.listen(1)
+            listener.settimeout(8)
+            cmd += ['--worker-scheduled', bucket, address]
+        else:
+            cmd += ['--worker', bucket]
         process = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                  stderr=subprocess.DEVNULL, timeout=8, check=False)
         if process.returncode:
             fail('run', 'bucket-launch-refused')
+        if scheduled:
+            connection, _ = listener.accept()
+            connection.settimeout(8)
+            peer_pid, peer_uid, _ = struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if peer_uid != 0 or str(peer_pid) != unit_status(bucket).get('MainPID'):
+                fail('run', 'bucket-launch-peer-invalid')
+            pidfd = os.pidfd_open(peer_pid)
+            if connection.recv(1) != b'R':
+                fail('run', 'bucket-launch-refused')
+            connection.sendall(b'G')
+            connection.settimeout(None)
+            result = connection, pidfd
+            connection, pidfd = None, None
+            return result
     except (OSError, subprocess.SubprocessError):
         fail('run', 'bucket-launch-unavailable')
+    finally:
+        if listener is not None:
+            listener.close()
+        if connection is not None:
+            connection.close()
+        if pidfd is not None:
+            os.close(pidfd)
     return {'ok':True, 'status':'accepted', 'unit':run_unit(bucket)}
 
 
-def run_files(bucket):
+def wait_for_run(handshake, bucket):
+    connection, pidfd = handshake
+    try:
+        with connection.makefile('rb') as stream:
+            line = stream.readline(1024)
+        select.select([pidfd], [], [])
+        state = unit_status(bucket)
+        if state.get('ExecMainCode') in ('2', '3'):
+            number = int(state.get('ExecMainStatus', '0'))
+            if 0 < number < signal.NSIG:
+                return {'ok':False, 'step':'run', 'reason':'worker-signal-' + str(number)}, False
+        value = json.loads(line)
+        if not isinstance(value, dict) or type(value.get('ok')) is not bool:
+            raise ValueError('invalid outcome')
+        if value['ok']:
+            if state.get('ExecMainCode') == '1' and state.get('ExecMainStatus') == '0':
+                return {'ok':True}, True
+            raise ValueError('worker-exit-unconfirmed')
+        step, reason = value.get('step'), value.get('reason')
+        if (isinstance(step, str) and isinstance(reason, str)
+                and re.fullmatch(r'[a-z0-9-]{1,96}', step) and re.fullmatch(r'[a-z0-9-]{1,128}', reason)):
+            return {'ok':False, 'step':step, 'reason':reason}, step != 'deed'
+    except (ValueError, OSError, subprocess.SubprocessError, Refusal):
+        try:
+            state = unit_status(bucket)
+        except Refusal:
+            state = {}
+    finally:
+        connection.close()
+        os.close(pidfd)
+    if state.get('ExecMainCode') in ('2', '3'):
+        try:
+            number = int(state.get('ExecMainStatus', '0'))
+            if 0 < number < signal.NSIG:
+                return {'ok':False, 'step':'run', 'reason':'worker-signal-' + str(number)}, False
+        except ValueError:
+            pass
+    return {'ok':False, 'step':'run', 'reason':'worker-outcome-unavailable'}, False
+
+
+def run_files(bucket, result_socket=None):
     started = time.monotonic()
-    outcome, error, key = 'failed', 'unknown', None
+    outcome, error, step, key = 'failed', 'unknown', 'run', None
     try:
         row = row_for(load(), bucket)
         paths = [x['path'] for x in valid_items(row.get('items', []))]
@@ -497,7 +586,7 @@ def run_files(bucket):
                 fail('forgejo', 'forgejo-backup-failed')
         outcome, error = 'ok', 'none'
     except Refusal as exc:
-        error = exc.reason
+        step, error = exc.step, exc.reason
     except (OSError, ValueError, UnicodeError):
         error = 'run-internal-failure'
     finally:
@@ -506,11 +595,17 @@ def run_files(bucket):
         try:
             deed('backblaze-bucket-run', bucket, outcome, started, error)
         except Refusal:
-            outcome = 'failed'
+            outcome, step, error = 'failed', 'deed', 'deed-write-failed'
+    if result_socket is not None:
+        result = {'ok':True} if outcome == 'ok' else {'ok':False, 'step':step, 'reason':error}
+        try:
+            result_socket.sendall((json.dumps(result, separators=(',', ':')) + '\n').encode('utf-8'))
+        except OSError:
+            pass
     return 0 if outcome == 'ok' else 1
 
 
-def dispatch(verb, metadata):
+def dispatch(verb, metadata, scheduled=False):
     if verb not in ACTUATORS or not isinstance(metadata, dict):
         fail('shape', 'metadata-invalid')
     data = load()
@@ -564,7 +659,7 @@ def dispatch(verb, metadata):
         row = row_for(data, bucket)
         valid_items(row.get('items', []))
         manager(row)
-        return launch(bucket)
+        return launch(bucket, scheduled=scheduled)
     if verb == 'bucket-verify':
         row_for(data, bucket)
         username = key = None
@@ -699,6 +794,8 @@ def main_for(verb):
     previous = None
     started = time.monotonic()
     request = None
+    worker_reported = False
+    run_lease = None
     try:
         previous = signal.signal(signal.SIGALRM, deadline)
         signal.alarm(budgets.get(verb, 20))
@@ -709,20 +806,37 @@ def main_for(verb):
             request = json.loads(raw)
         except (ValueError, UnicodeError):
             fail('shape', 'request-invalid')
-        if not isinstance(request, dict) or request.get('actuator') != ACTUATORS[verb]:
+        scheduled = (isinstance(request, dict) and verb == 'bucket-run'
+                     and request.get('actuator') == 'bucket-run'
+                     and request.get('transition') == 'storage/backup/backblaze/bucket-run')
+        if not isinstance(request, dict) or (not scheduled and request.get('actuator') != ACTUATORS[verb]):
             fail('shape', 'actuator-envelope-invalid')
+        if scheduled:
+            signal.alarm(0)
+        if verb == 'bucket-run' and isinstance(request.get('metadata'), dict):
+            bucket = bucket_name(request['metadata'].get('bucket'))
+            run_lease = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            name = hashlib.sha256(run_unit(bucket).encode('utf-8')).hexdigest()
+            try:
+                run_lease.bind('\0backblaze-run-lease-' + name)
+            except OSError as error:
+                if error.errno == errno.EADDRINUSE:
+                    fail('run', 'bucket-run-active')
+                raise
         if verb in ('bucket-add', 'bucket-credentials', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run'):
             fd = None
             try:
                 lock_path = config_lock_path()
                 fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                result = dispatch(verb, request.get('metadata'))
+                result = dispatch(verb, request.get('metadata'), scheduled=scheduled)
             except BlockingIOError:
                 fail('config', 'config-update-active')
             finally:
                 if fd is not None:
                     os.close(fd)
+            if scheduled:
+                result, worker_reported = wait_for_run(result, bucket_name(request['metadata'].get('bucket')))
         else:
             result = dispatch(verb, request.get('metadata'))
     except Refusal as error:
@@ -730,13 +844,15 @@ def main_for(verb):
     except Exception:
         result = {'ok':False, 'step':'request', 'reason':'request-unavailable'}
     finally:
+        if run_lease is not None:
+            run_lease.close()
         if previous is not None:
             try:
                 signal.alarm(0)
                 signal.signal(signal.SIGALRM, previous)
             except Exception:
                 result = {'ok':False, 'step':'request', 'reason':'request-unavailable'}
-    if not result.get('ok') and verb in ('bucket-add', 'bucket-credentials', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run'):
+    if not result.get('ok') and not worker_reported and verb in ('bucket-add', 'bucket-credentials', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run'):
         metadata = request.get('metadata') if isinstance(request, dict) else None
         value = metadata.get('bucket') if isinstance(metadata, dict) else None
         try:
@@ -750,4 +866,11 @@ def main_for(verb):
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--worker':
         raise SystemExit(run_files(bucket_name(sys.argv[2])))
+    if len(sys.argv) == 4 and sys.argv[1] == '--worker-scheduled':
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.connect('\0' + sys.argv[3])
+            connection.sendall(b'R')
+            if connection.recv(1) != b'G':
+                raise SystemExit(1)
+            raise SystemExit(run_files(bucket_name(sys.argv[2]), result_socket=connection))
     raise SystemExit(1)
