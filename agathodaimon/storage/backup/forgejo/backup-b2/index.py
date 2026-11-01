@@ -1,7 +1,7 @@
 """Back up Forgejo to the bucket's restic repository, excluding selected files."""
 from __future__ import annotations
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import configparser
 import fcntl
 import json
@@ -26,6 +26,7 @@ WORK = Path("/opt/forgejo")
 NAME = re.compile(r"[A-Za-z0-9_.-]+\Z")
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z")
 UNIT_PREFIX = "forgejo-backup-b2-"
+DEADLINE_SECONDS = 3600
 
 
 class Refusal(Exception):
@@ -256,6 +257,93 @@ def checked(args, step, **kwargs):
     return result
 
 
+@contextmanager
+def backup_child(args, **kwargs):
+    # Do not deliver an interruption between fork and recording its group.
+    signals = {signal.SIGALRM, signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+    child = None
+    try:
+        child = subprocess.Popen(args, start_new_session=True,
+                                 preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, previous),
+                                 **kwargs)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        yield child
+    finally:
+        signal.pthread_sigmask(signal.SIG_BLOCK, signals)
+        if child is not None:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
+            if child.stdout is not None:
+                child.stdout.close()
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def prepare_repository(row, env, application_key):
+    # Repository preparation may launch restic too: supervise its whole group.
+    watched = {signal.SIGALRM, signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+    reader, writer = os.pipe()
+    pid = None
+    try:
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(reader)
+                os.setpgid(0, 0)
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+                try:
+                    backblaze.ensure_repository(row, env, application_key)
+                    result = ["ok"]
+                except backblaze.Refusal as error:
+                    result = ["refused", error.step, error.reason]
+                os.write(writer, json.dumps(result).encode("utf-8"))
+            finally:
+                os._exit(0)
+        os.close(writer)
+        writer = None
+        try:
+            os.setpgid(pid, pid)
+        except (PermissionError, ProcessLookupError):
+            pass  # The child established its group or already exited.
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        data = os.read(reader, 4096)
+        _, status = os.waitpid(pid, 0)
+        if not os.WIFEXITED(status) or os.WEXITSTATUS(status) != 0 or not data:
+            refuse("restic", "restic-repository-unavailable")
+        result = json.loads(data)
+        if result != ["ok"]:
+            if isinstance(result, list) and len(result) == 3 and result[0] == "refused":
+                refuse(result[1], result[2])
+            refuse("restic", "restic-repository-unavailable")
+    finally:
+        signal.pthread_sigmask(signal.SIG_BLOCK, watched)
+        if writer is not None:
+            os.close(writer)
+        os.close(reader)
+        if pid:
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
 def log_deed(bucket, started, outcome, included, excluded, snapshot, failure):
     record = {"who": "agathodaimon", "verb": ACTUATOR, "bucket": bucket, "outcome": outcome,
               "duration_ms": int((time.monotonic() - started) * 1000), "included": included,
@@ -280,11 +368,20 @@ def backup(bucket):
     config_lock = None
     tmp_context = None
     secrets = []
+    deed_ok = True
+    try:
+        deadline_seconds = min(DEADLINE_SECONDS, max(1, int(os.environ.get("FORGEJO_BACKUP_DEADLINE_SECONDS", DEADLINE_SECONDS))))
+    except ValueError:
+        deadline_seconds = DEADLINE_SECONDS
     def interrupted(signum, _frame):
         raise Refusal("signal", "interrupted-" + str(signum))
+    def deadline(_signum, _frame):
+        raise Refusal("deadline", "forgejo-backup-deadline")
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(sig, interrupted)
+    signal.signal(signal.SIGALRM, deadline)
     try:
+        signal.alarm(deadline_seconds)
         lock_path = backblaze.config_lock_path()
         config_lock = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         fcntl.flock(config_lock, fcntl.LOCK_SH)
@@ -299,7 +396,7 @@ def backup(bucket):
         try:
             env, application_key = backblaze.restic_environment(row)
             secrets.append(application_key)
-            backblaze.ensure_repository(row, env, application_key)
+            prepare_repository(row, env, application_key)
         except backblaze.Refusal as error:
             refuse(error.step, error.reason)
         tmp_context = tempfile.TemporaryDirectory(prefix="forgejo-backup-b2-")
@@ -312,41 +409,32 @@ def backup(bucket):
             exclude_file = temporary / "exclude"
             exclude_file.write_text("".join(p + "\n" for p in exclusions(paths, skips, uuids, lfs_oids)), encoding="utf-8")
             with dump.open("wb") as stream:
-                checked(["/usr/sbin/runuser", "-u", "postgres", "--", "/usr/bin/pg_dump", "--format=custom", "--no-owner", "--dbname", paths["database"]], "pg-dump", stdout=stream)
+                with backup_child(["/usr/sbin/runuser", "-u", "postgres", "--", "/usr/bin/pg_dump", "--format=custom", "--no-owner", "--dbname", paths["database"]], stdin=subprocess.DEVNULL, stdout=stream, stderr=subprocess.DEVNULL) as child:
+                    if child.wait() != 0:
+                        refuse("pg-dump", "pg-dump-failed")
             source_paths = [dump, paths["data"], paths["attachments"], paths["custom"], paths["ini"], paths["root"]]
             if paths['lfs'].exists():
                 source_paths.append(paths['lfs'])
             sources = list(dict.fromkeys(str(p) for p in source_paths))
-            child = None
             try:
-                child = subprocess.Popen(["/usr/bin/restic", "backup", "--json", "--tag", "forgejo",
+                with backup_child(["/usr/bin/restic", "--no-cache", "backup", "--json", "--tag", "forgejo",
                                           "--exclude-file", str(exclude_file), "--", *sources], env=env,
                                          stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                         text=True)
-                assert child.stdout is not None
-                for line in child.stdout:
-                    try:
-                        message = json.loads(line)
-                    except ValueError:
-                        continue
-                    if isinstance(message, dict) and message.get("message_type") == "summary":
-                        value = message.get("snapshot_id")
-                        if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8,64}", value):
-                            snapshot = value
-                if child.wait() != 0 or not snapshot:
-                    refuse("restic-backup", "restic-backup-failed")
+                                         text=True) as child:
+                    assert child.stdout is not None
+                    for line in child.stdout:
+                        try:
+                            message = json.loads(line)
+                        except ValueError:
+                            continue
+                        if isinstance(message, dict) and message.get("message_type") == "summary":
+                            value = message.get("snapshot_id")
+                            if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8,64}", value):
+                                snapshot = value
+                    if child.wait() != 0 or not snapshot:
+                        refuse("restic-backup", "restic-backup-failed")
             except OSError:
                 refuse("restic-backup", "restic-unavailable")
-            finally:
-                if child is not None and child.poll() is None:
-                    child.terminate()
-                    try:
-                        child.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        child.wait()
-                if child is not None and child.stdout is not None:
-                    child.stdout.close()
             outcome = "ok"
     except Refusal as error:
         failure = error.reason
@@ -355,8 +443,13 @@ def backup(bucket):
     finally:
         # Once stopping was attempted, further ordinary termination signals must
         # not interrupt the mandatory restart or the final deed.
-        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.alarm(0)
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGALRM):
             signal.signal(sig, signal.SIG_IGN)
+        deed_written = False
+        if failure == "forgejo-backup-deadline":
+            deed_written = True
+            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure)
         if restart_required:
             try:
                 restarted = subprocess.run(["/usr/bin/systemctl", "start", "forgejo.service"], stdin=subprocess.DEVNULL,
@@ -376,8 +469,11 @@ def backup(bucket):
             operation_lock.close()
         if config_lock is not None:
             os.close(config_lock)
-        if not log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure):
+        if not deed_written:
+            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure)
+        if not deed_ok:
             outcome = "failed"
+    print(json.dumps({"ok": outcome == "ok", "signal": failure, "deadline_seconds": deadline_seconds, "deed_ok": deed_ok}, separators=(",", ":")))
     return 0 if outcome == "ok" else 1
 
 
