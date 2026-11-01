@@ -2080,6 +2080,8 @@ def status_read(provider: str, provider_names: list[str],
             if isinstance(forward_port, int) and not isinstance(forward_port, bool) and 1 <= forward_port <= 65535:
                 result["forwardPort"] = forward_port
         result["conditions"]["forward"] = forward_ok
+        if forward_ok:
+            result["freshUntil"] = _timestamp_seconds(state["boundAt"]) + state["keepaliveInterval"]
         _stamp(result, "forward", {"holdState": hold_state, "statePresent": state is not None}, False,
                "read-only", {"fresh": forward_ok, "forwardPort": result["forwardPort"]})
 
@@ -2100,14 +2102,9 @@ def status_read(provider: str, provider_names: list[str],
             and peer_readback_is_fresh(state, result["rpcPort"])
         )
         result["conditions"]["peerPort"] = peer_ok
-        if state is not None:
-            deadlines = []
-            if forward_ok:
-                deadlines.append(_timestamp_seconds(state["boundAt"]) + state["keepaliveInterval"])
-            if peer_ok:
-                deadlines.append(_timestamp_seconds(state["peerPortReadbackAt"]) + state["keepaliveInterval"])
-            now = time.time()
-            result["freshUntil"] = min((deadline for deadline in deadlines if deadline > now), default=None)
+        if peer_ok:
+            peer_deadline = _timestamp_seconds(state["peerPortReadbackAt"]) + state["keepaliveInterval"]
+            result["freshUntil"] = min(result["freshUntil"], peer_deadline)
         _stamp(result, "peerPort", {
             "peerPort": result["peerPort"], "forwardPort": result["forwardPort"],
             "configuredRpcPort": result["rpcPort"],
@@ -2121,14 +2118,15 @@ def status_read(provider: str, provider_names: list[str],
              if conditions[name] is not True),
             "none",
         )
-        return result
     except TransmissionError as failure:
         result["ok"] = False
         result["firstMissingSignal"] = failure.signal_name
         result["failedStep"] = failure.step
         if failure.detail:
             result.update(failure.detail)
-        return result
+    if result["freshUntil"] is not None:
+        result["freshUntil"] = max(result["freshUntil"], time.time())
+    return result
 
 
 def failure_receipt(schema: str, failure: Exception, provider: str | None = None) -> dict[str, Any]:
