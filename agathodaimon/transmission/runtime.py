@@ -2026,11 +2026,12 @@ def _freshness_deadline(timestamp: str, interval: int) -> float | int:
         return bound + interval
     except OverflowError:
         # For an astronomical interval, preserve whole Unix seconds as an
-        # integer; a fractional second rounds down rather than delaying a wake.
-        deadline = int(bound) + interval
+        # integer; round down rather than delay a wake.  Keep the value within
+        # the interpreter's existing JSON integer-serialization limit.
+        deadline = bound.__floor__() + interval
         digit_limit = sys.get_int_max_str_digits()
-        if digit_limit and deadline >= 10 ** digit_limit:
-            sys.set_int_max_str_digits(digit_limit + 1)
+        if digit_limit:
+            deadline = min(deadline, 10 ** digit_limit - 1)
         return deadline
 
 
