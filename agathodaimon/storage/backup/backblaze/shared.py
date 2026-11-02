@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import errno
 import fcntl
 import hashlib
@@ -220,11 +221,14 @@ def store(data):
             except FileNotFoundError:
                 pass
 
-def deed(verb, bucket, outcome, started, error='none'):
+def deed(verb, bucket, outcome, started, error='none', byte_counts=None):
     record = {'who':'agathodaimon', 'verb':verb, 'target':bucket, 'outcome':outcome,
-              'duration_ms':int((time.monotonic()-started)*1000), 'signal':error}
+              'duration_ms':int((time.monotonic()-started)*1000), 'signal':error,
+              'at':datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+    if byte_counts:
+        record.update(byte_counts)
     line = json.dumps(record, separators=(',', ':'), ensure_ascii=True)
-    if len(line.encode()) >= 1024:
+    if len(line.encode()) + 1 >= 1024:
         fail('deed', 'deed-too-large')
     try:
         with log_path().open('a', encoding='utf-8') as f:
@@ -342,6 +346,51 @@ def invoke_restic(args, env, timeout=None, capture=True):
                               stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
                               stderr=subprocess.PIPE if capture else subprocess.DEVNULL,
                               timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        fail('restic', 'restic-unavailable')
+
+
+def summary_counts(message):
+    result = {}
+    if isinstance(message, dict):
+        for source, target in (('data_added', 'added_bytes'), ('total_bytes_processed', 'total_bytes')):
+            value = message.get(source)
+            if type(value) is int and value >= 0:
+                result[target] = value
+    return result
+
+
+def add_counts(total, part):
+    for key in ('added_bytes', 'total_bytes'):
+        if type(part.get(key)) is int and part[key] >= 0:
+            total[key] = total.get(key, 0) + part[key]
+
+
+def backup_files(paths, env, counts):
+    try:
+        with subprocess.Popen([restic_bin(), '--no-cache', 'backup', '--json', '--tag', 'files', '--', *paths],
+                              env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL) as child:
+            assert child.stdout is not None
+            oversized = False
+            while True:
+                line = child.stdout.readline(65536)
+                if not line:
+                    break
+                if oversized:
+                    oversized = not line.endswith(b'\n')
+                    continue
+                if not line.endswith(b'\n') and len(line) == 65536:
+                    oversized = True
+                    continue
+                try:
+                    message = json.loads(line)
+                except (ValueError, UnicodeError):
+                    continue
+                if isinstance(message, dict) and message.get('message_type') == 'summary':
+                    add_counts(counts, summary_counts(message))
+            if child.wait():
+                fail('files', 'files-backup-failed')
     except (OSError, subprocess.SubprocessError):
         fail('restic', 'restic-unavailable')
 
@@ -566,6 +615,7 @@ def wait_for_run(handshake, bucket):
 def run_files(bucket, result_socket=None):
     started = time.monotonic()
     outcome, error, step, key = 'failed', 'unknown', 'run', None
+    counts = {}
     try:
         row = row_for(load(), bucket)
         paths = [x['path'] for x in valid_items(row.get('items', []))]
@@ -573,16 +623,26 @@ def run_files(bucket, result_socket=None):
         env, key = restic_environment(row)
         ensure_repository(row, env, key)
         if paths:
-            if invoke_restic(['backup', '--tag', 'files', '--', *paths], env, capture=False).returncode:
-                fail('files', 'files-backup-failed')
+            backup_files(paths, env, counts)
         if forgejo.get('backblazeBackup', False):
             if scratch_root():
                 fail('forgejo', 'scratch-live-forgejo-refused')
             child = Path(__file__).resolve().parents[1] / 'forgejo/backup-b2/index.py'
-            result = subprocess.run([sys.executable, str(child), '--worker', bucket],
-                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, check=False)
-            if result.returncode:
+            with subprocess.Popen([sys.executable, str(child), '--worker', bucket],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL) as process:
+                assert process.stdout is not None
+                line = process.stdout.readline(65536)
+                while process.stdout.read(65536):
+                    pass
+                code = process.wait()
+            try:
+                result = json.loads(line)
+                if isinstance(result, dict):
+                    add_counts(counts, result)
+            except (ValueError, UnicodeError):
+                pass
+            if code:
                 fail('forgejo', 'forgejo-backup-failed')
         outcome, error = 'ok', 'none'
     except Refusal as exc:
@@ -593,7 +653,7 @@ def run_files(bucket, result_socket=None):
         if key is not None:
             key[:] = b'\0' * len(key)
         try:
-            deed('backblaze-bucket-run', bucket, outcome, started, error)
+            deed('backblaze-bucket-run', bucket, outcome, started, error, counts)
         except Refusal:
             outcome, step, error = 'failed', 'deed', 'deed-write-failed'
     if result_socket is not None:

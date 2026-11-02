@@ -4,7 +4,8 @@
     "backblaze",
     "backblaze-recover",
     "nas-sync",
-    "forgejo"
+    "forgejo",
+    "ledger"
   ],
   "sclerite": {
     "name": "all",

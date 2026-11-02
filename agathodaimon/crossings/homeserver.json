@@ -38,6 +38,10 @@
     "settings/datetime/household-time",
     "settings/samba",
     "settings/ssh",
+    "storage/backup/ledger",
+    "storage/nas/drives",
+    "storage/nas/list",
+    "storage/backup/forgejo/skip-check",
     "storage/backup/backblaze/bucket-add",
     "storage/backup/backblaze/bucket-credentials",
     "storage/backup/backblaze/bucket-verify",
@@ -92,6 +96,10 @@
     "appliance/service/status"
   ],
   "verbs": [
+    ["backup", "ledger"],
+    ["nas", "drives"],
+    ["nas", "list"],
+    ["forgejo", "skip-check"],
     [
       "cert",
       "house-ca"
@@ -362,6 +370,10 @@
     ]
   ],
   "routes": [
+    "/api/v1/storage/backup/ledger",
+    "/api/v1/storage/nas/drives",
+    "/api/v1/storage/nas/list",
+    "/api/v1/storage/backup/forgejo/skip-check",
     "/api/v1/access/pin/change",
     "/api/v1/access/pin/mode",
     "/api/v1/access/pin/reset-default",
@@ -469,6 +481,8 @@
   ],
   "administrative": {
     "bands": [
+      "storage/nas/list",
+      "storage/backup/forgejo/skip-check",
       "appliance/service",
       "appliance/sudo-passwordless",
       "exousia/change",
@@ -519,6 +533,8 @@
       "appliance/service/status"
     ],
     "verbs": [
+      ["nas", "list"],
+      ["forgejo", "skip-check"],
       [
         "exousia",
         "change"
@@ -625,6 +641,8 @@
       ]
     ],
     "routes": [
+      "POST /api/v1/storage/nas/list",
+      "POST /api/v1/storage/backup/forgejo/skip-check",
       "/api/v1/access/pin/change",
       "/api/v1/access/pin/mode",
       "/api/v1/access/pin/reset-default",

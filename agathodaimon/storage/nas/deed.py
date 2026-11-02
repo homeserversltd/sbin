@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import os
 import re
 import time
@@ -24,6 +25,7 @@ def record(verb: str, target: str, receipt: dict, started: float, *, request=Non
     if not isinstance(step, str) or not re.fullmatch(r"[A-Za-z0-9._+-]{1,128}", step):
         step = None
     fields = {"who": "agathodaimon", "verb": verb, "target": target,
+                       "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                        "outcome": "ok" if receipt.get("ok") is True else "failed",
                        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
                        "id": uuid.uuid4().hex, "signal": signal,

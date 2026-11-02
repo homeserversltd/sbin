@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": ["actuator", "metadata"],
+    "actions": ["caduceus.backup.ledger.v1"],
+    "unknown_fields": "skipped"
+  },
+  "sclerite": {
+    "name": "gateway",
+    "features": {
+      "gateway": {
+        "band": true,
+        "verbs": [["backup", "ledger"]],
+        "routes": ["/api/v1/storage/backup/ledger"],
+        "administrative": {"band": false, "verbs": [], "routes": []}
+      }
+    }
+  }
+}

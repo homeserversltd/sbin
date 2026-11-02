@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager, nullcontext
+from datetime import datetime, timezone
 import configparser
 import fcntl
 import json
@@ -344,13 +345,15 @@ def prepare_repository(row, env, application_key):
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
-def log_deed(bucket, started, outcome, included, excluded, snapshot, failure):
+def log_deed(bucket, started, outcome, included, excluded, snapshot, failure, byte_counts):
     record = {"who": "agathodaimon", "verb": ACTUATOR, "bucket": bucket, "outcome": outcome,
               "duration_ms": int((time.monotonic() - started) * 1000), "included": included,
-              "excluded": excluded, "snapshot": snapshot, "signal": failure}
+              "excluded": excluded, "snapshot": snapshot, "signal": failure,
+              "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **byte_counts}
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=True)
-    if len(line.encode()) >= 1024:
-        line = json.dumps({"who": "agathodaimon", "verb": ACTUATOR, "outcome": "failed", "signal": "deed-too-large"}, separators=(",", ":"))
+    if len(line.encode()) + 1 >= 1024:
+        print("forgejo-backup-deed-too-large", file=sys.stderr)
+        return False
     try:
         with open("/var/log/appliance/appliance.log", "a", encoding="utf-8") as stream:
             stream.write(line + "\n")
@@ -363,6 +366,7 @@ def log_deed(bucket, started, outcome, included, excluded, snapshot, failure):
 def backup(bucket):
     started = time.monotonic()
     included, excluded, snapshot, failure, outcome = 0, [], "", "none", "failed"
+    byte_counts = {}
     restart_required = False
     operation_lock = None
     config_lock = None
@@ -428,6 +432,7 @@ def backup(bucket):
                         except ValueError:
                             continue
                         if isinstance(message, dict) and message.get("message_type") == "summary":
+                            backblaze.add_counts(byte_counts, backblaze.summary_counts(message))
                             value = message.get("snapshot_id")
                             if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8,64}", value):
                                 snapshot = value
@@ -449,7 +454,7 @@ def backup(bucket):
         deed_written = False
         if failure == "forgejo-backup-deadline":
             deed_written = True
-            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure)
+            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts)
         if restart_required:
             try:
                 restarted = subprocess.run(["/usr/bin/systemctl", "start", "forgejo.service"], stdin=subprocess.DEVNULL,
@@ -470,10 +475,10 @@ def backup(bucket):
         if config_lock is not None:
             os.close(config_lock)
         if not deed_written:
-            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure)
+            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts)
         if not deed_ok:
             outcome = "failed"
-    print(json.dumps({"ok": outcome == "ok", "signal": failure, "deadline_seconds": deadline_seconds, "deed_ok": deed_ok}, separators=(",", ":")))
+    print(json.dumps({"ok": outcome == "ok", "signal": failure, "deadline_seconds": deadline_seconds, "deed_ok": deed_ok, **byte_counts}, separators=(",", ":")))
     return 0 if outcome == "ok" else 1
 
 
