@@ -137,10 +137,11 @@ def _hand_options(words: list[str]) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin"}:
             raise ValueError("invalid or forbidden long option")
         if not equal:
-            i += 1
-            if i >= len(words):
-                raise ValueError("long option requires a value")
-            value = words[i]
+            if i + 1 >= len(words) or words[i + 1].startswith("--"):
+                value = "true"
+            else:
+                i += 1
+                value = words[i]
         try:
             typed = json.loads(value, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid JSON constant")))
             if isinstance(typed, str):
@@ -351,7 +352,7 @@ def _walk_chord(path: Path, envelope: dict) -> int:
     return 0 if ok else 1
 
 
-def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None) -> int:
+def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None, argv: list[str] | None = None) -> int:
     if path.is_dir():
         return _walk_chord(path, envelope)
     with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
@@ -363,6 +364,13 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
     original_stdin = sys.stdin
     try:
         sys.stdin = _EnvelopeStdin(raw_envelope if raw_envelope is not None else json.dumps(envelope))
+        if argv is not None:
+            try:
+                return int(fn(list(argv)) or 0)
+            except TypeError as exc:
+                if "positional argument" not in str(exc) and "positional arguments" not in str(exc):
+                    raise
+                return int(fn() or 0)
         payload = envelope.get("payload")
         args = payload.get("args") if isinstance(payload, dict) else None
         if isinstance(args, list) and all(isinstance(arg, str) for arg in args):
@@ -1077,7 +1085,7 @@ def main(argv=None):
         if not admitted:
             return 1
         target = path if chord else path / "index.py"
-        return _load_trace.run_cli(envelope, _trace_operation(cli_target, []), lambda: _invoke_envelope(target, envelope))
+        return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), lambda: _invoke_envelope(target, envelope, argv=remainder or None))
     trace_present, _ = _load_trace.extract_load_context(envelope)
     mod = None
     fn = None
