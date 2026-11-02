@@ -2,7 +2,9 @@
   "children": [
     "pia",
     "namespace",
-    "hold"
+    "hold",
+    "resolve",
+    "rollback-stop"
   ],
   "providers": [
     "pia"

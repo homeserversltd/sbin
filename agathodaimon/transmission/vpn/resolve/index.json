@@ -1,0 +1,7 @@
+{
+  "children": [],
+  "sclerite": {"name": "transmission", "features": {"transmission": {
+    "band": true, "verbs": [["vpn", "resolve"]], "routes": [],
+    "administrative": {"band": true, "verbs": [["vpn", "resolve"]], "routes": []}
+  }}}
+}
