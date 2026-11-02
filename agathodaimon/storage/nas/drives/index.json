@@ -1,0 +1,1 @@
+{"children":[],"sclerite":{"name":"nas","features":{"nas":{"band":true,"verbs":[["nas","drives"]],"routes":["/api/v1/storage/nas/drives"],"administrative":{"band":false,"verbs":[],"routes":[]}}}}}

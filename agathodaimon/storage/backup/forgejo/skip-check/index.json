@@ -1,0 +1,1 @@
+{"children":[],"sclerite":{"name":"all","features":{"all":{"band":true,"verbs":[["forgejo","skip-check"]],"routes":["/api/v1/storage/backup/forgejo/skip-check"],"administrative":{"band":false,"verbs":[],"routes":[]}}}}}
