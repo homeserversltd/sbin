@@ -595,9 +595,7 @@
     "/api/v1/xenia/remove",
     "/api/v1/xenia/status",
     "/api/v1/xenia/status/:id",
-    "/api/v1/xenia/validate",
-    "/api/v1/appliance/service/:service/reload",
-    "/api/v1/service/:service/reload"
+    "/api/v1/xenia/validate"
   ],
   "administrative": {
     "bands": [
@@ -781,9 +779,7 @@
       "/api/v1/settings/ssh/config",
       "/api/v1/settings/ssh/service/disable",
       "/api/v1/settings/ssh/service/enable",
-      "/api/v1/storage/vault/auto-decrypt",
-      "/api/v1/appliance/service/:service/reload",
-      "/api/v1/service/:service/reload"
+      "/api/v1/storage/vault/auto-decrypt"
     ]
   }
 }

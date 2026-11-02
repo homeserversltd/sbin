@@ -26,17 +26,11 @@
       "gateway": {
         "band": false,
         "verbs": [],
-        "routes": [
-          "/api/v1/appliance/service/:service/reload",
-          "/api/v1/service/:service/reload"
-        ],
+        "routes": [],
         "administrative": {
           "band": false,
           "verbs": [],
-          "routes": [
-            "/api/v1/appliance/service/:service/reload",
-            "/api/v1/service/:service/reload"
-          ]
+          "routes": []
         }
       }
     }

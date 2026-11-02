@@ -461,9 +461,7 @@
     "/api/v1/storage/nas/role/observe",
     "/api/v1/storage/nas/key/probe",
     "/api/v1/storage/disk/partlabel/assign",
-    "/api/v1/storage/nas/role/swap",
-    "/api/v1/appliance/service/:service/reload",
-    "/api/v1/service/:service/reload"
+    "/api/v1/storage/nas/role/swap"
   ],
   "administrative": {
     "bands": [
@@ -679,9 +677,7 @@
       "/api/v1/storage/backup/nas-sync/schedule/disable",
       "/api/v1/storage/nas/key/probe",
       "/api/v1/storage/disk/partlabel/assign",
-      "/api/v1/storage/nas/role/swap",
-      "/api/v1/appliance/service/:service/reload",
-      "/api/v1/service/:service/reload"
+      "/api/v1/storage/nas/role/swap"
     ]
   }
 }
