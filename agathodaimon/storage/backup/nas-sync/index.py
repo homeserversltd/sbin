@@ -1,6 +1,7 @@
 from __future__ import annotations
-import errno,fcntl,json,os,re,shlex,stat,subprocess,sys
+import errno,fcntl,json,os,re,shlex,stat,subprocess,sys,time
 from pathlib import Path
+from agathodaimon.storage.nas import deed
 
 SCHEMA="caduceus.nas.sync.v1"; RSYNC="/usr/bin/rsync"; FINDMNT="/usr/bin/findmnt"; LSBLK="/usr/bin/lsblk"; BLKID="/usr/sbin/blkid"; JOURNALCTL="/usr/bin/journalctl"
 SOURCE=Path("/mnt/nas"); DESTINATION=Path("/mnt/nas_backup"); MAX_INPUT=65536
@@ -243,12 +244,28 @@ def read_envelope():
  try: return json.loads(raw.decode())
  except Exception as e: raise Refusal("agathodaimon-nas-request-invalid") from e
 def main(argv=None):
- args=list(sys.argv[1:] if argv is None else argv); request=None
+ args=list(sys.argv[1:] if argv is None else argv); request=None; started=time.monotonic()
  try:
   if args: raise Refusal("agathodaimon-nas-cli-arguments-invalid")
   request=read_envelope(); v=dispatch(request)
  except Refusal as e: v=refused("sync",str(e))
  except Exception as e: v=finish(receipt("sync","failed",reason="agathodaimon-nas-unexpected:"+bounded(e)))
+ body=request.get("payload") if isinstance(request,dict) else None
+ metadata=request.get("metadata") if isinstance(request,dict) else None
+ if metadata is None and isinstance(body,dict): metadata=body.get("metadata")
+ if isinstance(metadata,dict) and metadata.get("action")=="sync" and metadata.get("dryRun") is not True:
+  reason=v.get("firstMissingSignal")
+  signal=reason.split(":",1)[0] if isinstance(reason,str) else "nas-operation-failed"
+  safe_receipt={"ok":v.get("ok") is True,"outcome":v.get("outcome"),"firstMissingSignal":signal}
+  stats=v.get("rsyncStats")
+  raw=stats.get("Total transferred file size") if isinstance(stats,dict) else None
+  match=re.fullmatch(r"([0-9][0-9,]*) bytes",raw) if isinstance(raw,str) else None
+  transferred=int(match.group(1).replace(",","")) if match else None
+  try: deed.record("nas-sync-mirror","nas-sync",safe_receipt,started,transferred_bytes=transferred)
+  except Exception:
+   v["deedLogSignal"]="agathodaimon-nas-deed-log-unavailable"
+   if v.get("ok") is True:
+    v["ok"]=False; v["outcome"]="failed"; v["firstMissingSignal"]=v["deedLogSignal"]
  if isinstance(request,dict): v["envelope"]=request
  print(json.dumps(v,sort_keys=True)); return 0 if v["outcome"]=="ok" else int(v.get("exitCode",1)) or 1
 if __name__=="__main__": raise SystemExit(main())

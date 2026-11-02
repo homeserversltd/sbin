@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from datetime import datetime, timezone
 
 from agathodaimon.storage.backup.backblaze import shared
 
@@ -15,12 +16,33 @@ BUDGET = 8 * 1024 * 1024
 def project(value):
     if not isinstance(value, dict):
         return None
+    attrs = value.get('attributes_redacted')
+    if (value.get('organ') == 'pid2' and value.get('kind') == 'schedule-fire'
+            and isinstance(attrs, dict) and attrs.get('signal') == 'pid2-fire-interrupted-by-boot'):
+        schedule = attrs.get('target')
+        # Hyalos projects target to 48 characters; that length may hide a suffix.
+        if isinstance(schedule, str) and schedule.startswith('backblaze-') and len(schedule) >= 48:
+            return None
+        stamp = value.get('timestamp')
+        try:
+            parsed = datetime.fromisoformat(stamp.replace('Z', '+00:00')) if isinstance(stamp, str) else None
+            at = parsed.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ') if parsed and parsed.tzinfo else None
+        except ValueError:
+            at = None
+        value = {'verb': 'pid2-fire-interrupted-by-boot', 'target': schedule,
+                 'outcome': 'interrupted', 'duration_ms': attrs.get('duration_ms'),
+                 'signal': attrs.get('signal'), 'at': at}
     verb = value.get('verb')
     target = value.get('target')
     if not isinstance(verb, str) or not re.fullmatch(r'[a-z0-9-]{1,128}', verb):
         return None
     if verb == 'pid2-fire-interrupted-by-boot':
-        job, target = 'drives', 'nas-sync'
+        if target == 'nas-sync':
+            job = 'drives'
+        elif isinstance(target, str) and target.startswith('backblaze-') and shared.valid_bucket(target[10:]):
+            job, target = 'offsite', target[10:]
+        else:
+            return None
     elif verb.startswith('backblaze-'):
         job = 'offsite'
         target = value.get('bucket') if verb == 'backblaze-forgejo-b2-push' else target

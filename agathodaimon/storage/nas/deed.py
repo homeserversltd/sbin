@@ -11,9 +11,9 @@ import uuid
 from agathodaimon.storage.nas import runtime
 
 
-def record(verb: str, target: str, receipt: dict, started: float, *, request=None) -> None:
+def record(verb: str, target: str, receipt: dict, started: float, *, request=None, transferred_bytes=None) -> None:
     # These values are internal labels, never envelope fields or key material.
-    if verb not in {"sync-hold", "sync-release", "sync-schedule-disable", "partlabel-assign",
+    if verb not in {"nas-sync-mirror", "sync-hold", "sync-release", "sync-schedule-disable", "partlabel-assign",
                     "nas-open", "nas-attach", "nas-detach", "nas-setup", "nas-folders", "nas-seat"}:
         raise ValueError("invalid NAS deed verb")
     if target not in {"nas-sync", "nas-partition", "nas-primary", "nas-backup", "nas-role"}:
@@ -30,6 +30,10 @@ def record(verb: str, target: str, receipt: dict, started: float, *, request=Non
                        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
                        "id": uuid.uuid4().hex, "signal": signal,
                        "first_missing_field": step}
+    if verb == "nas-sync-mirror" and receipt.get("outcome") in {"ok", "failed", "refused"}:
+        fields["outcome"] = receipt["outcome"]
+    if verb == "nas-sync-mirror" and type(transferred_bytes) is int and transferred_bytes >= 0:
+        fields["transferred_bytes"] = transferred_bytes
     if isinstance(request, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request):
         fields["request"] = request
     line = json.dumps(fields, separators=(",", ":")).encode("utf-8") + b"\n"
