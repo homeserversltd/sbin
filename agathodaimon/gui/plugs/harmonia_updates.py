@@ -361,6 +361,34 @@ def build_widget() -> Any:
             getattr(card, f"set_margin_{edge}")(12)
         return card
 
+    def append_interactable_file(card: Any, item: dict[str, Any]) -> None:
+        title = Gtk.Label(label=_text(item.get("target_path")) or "File path unavailable", xalign=0, wrap=True, selectable=True)
+        title.add_css_class("title-4")
+        card.append(title)
+        section = item.get("slice")
+        sentence = section.get("sentence") if isinstance(section, dict) else None
+        if isinstance(sentence, str) and sentence:
+            card.append(Gtk.Label(label=sentence, xalign=0, wrap=True, selectable=True))
+        diff = item.get("diff")
+        if not isinstance(diff, str) or not diff:
+            append_message(card, "Diff unavailable")
+            return
+        scroller = Gtk.ScrolledWindow(hexpand=True)
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_max_content_height(240)
+        scroller.set_propagate_natural_height(True)
+        lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        for line in diff.splitlines():
+            label = Gtk.Label(label=line, xalign=0, selectable=True)
+            label.add_css_class("monospace")
+            if line.startswith("-"):
+                label.add_css_class("error")
+            elif line.startswith("+"):
+                label.add_css_class("success")
+            lines.append(label)
+        scroller.set_child(lines)
+        card.append(scroller)
+
     def post_to_ui(callback: Callable[..., bool], *args: Any) -> None:
         try:
             GLib.idle_add(callback, *args)
@@ -580,15 +608,7 @@ def build_widget() -> Any:
         for item in visible_items:
             identifier = item["id"]
             card = make_card()
-            title = item["name"] or _humanize(identifier)
-            title_label = Gtk.Label(label=title, xalign=0, wrap=True)
-            title_label.add_css_class("title-4")
-            card.append(title_label)
-            summary = item["summary"]
-            if summary:
-                summary_label = Gtk.Label(label=summary, xalign=0, wrap=True)
-                summary_label.add_css_class("dim-label")
-                card.append(summary_label)
+            append_interactable_file(card, item)
             message = data["agree_messages"].get(identifier, "")
             if message:
                 message_label = Gtk.Label(label=message, xalign=0, wrap=True)
@@ -619,15 +639,7 @@ def build_widget() -> Any:
         for item in items:
             identifier = item["id"]
             card = make_card()
-            title = item.get("name") or _humanize(identifier)
-            title_label = Gtk.Label(label=title, xalign=0, wrap=True)
-            title_label.add_css_class("title-4")
-            card.append(title_label)
-            summary = item.get("summary", "")
-            if summary:
-                summary_label = Gtk.Label(label=summary, xalign=0, wrap=True)
-                summary_label.add_css_class("dim-label")
-                card.append(summary_label)
+            append_interactable_file(card, item)
             message = data["agree_messages"].get(identifier, "")
             if message:
                 append_message(card, message, error=True)
@@ -798,11 +810,7 @@ def build_widget() -> Any:
             if identifier in seen:
                 continue
             seen.add(identifier)
-            raw_name = item.get("name")
-            raw_summary = item.get("description")
-            name = raw_name if isinstance(raw_name, str) else ""
-            summary = raw_summary if isinstance(raw_summary, str) else ""
-            result.append({"id": identifier, "name": name, "summary": summary, "silenced": item.get("silenced") is True})
+            result.append({**item, "id": identifier, "silenced": item.get("silenced") is True})
         return result
 
     def finish_interactables(receipt: Any, error: str | None, generation: int) -> bool:
