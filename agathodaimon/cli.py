@@ -320,6 +320,7 @@ def _walk_chord(path: Path, envelope: dict) -> int:
                 completed[sid] = row
                 continue
             refusal = None
+            stage_target = None
             try:
                 arguments = _resolve_arguments(stage.get("arguments", {}), envelope, completed)
                 row["arguments"] = arguments
@@ -330,9 +331,12 @@ def _walk_chord(path: Path, envelope: dict) -> int:
                                              "stage": {"stage_id": sid, "arguments": arguments}}
                 stdout = StringIO()
                 before = time.monotonic()
+                stage_target = _slash_target(band)
+                if stage_target is None:
+                    raise _ChordError("chord-stage-invocation-failed")
                 with contextlib.redirect_stdout(stdout):
                     try:
-                        code = _invoke_envelope(_slash_target(band), stage_envelope)
+                        code = _invoke_envelope(stage_target, stage_envelope)
                     except SystemExit as exc:
                         code = exc.code if isinstance(exc.code, int) else 1
                 elapsed = time.monotonic() - before
@@ -350,24 +354,15 @@ def _walk_chord(path: Path, envelope: dict) -> int:
                     refusal = "chord-stage-receipt-schema-mismatch"
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
                     refusal = receipt.get("firstMissingSignal") or "chord-stage-refused"
-                if receipt is not None:
-                    steps = receipt.get("steps")
-                    steps = steps if isinstance(steps, list) else []
-                    mutation_steps = {"caduceus.nas-sync.hold.v1": {"holder-start"},
-                                      "caduceus.nas-sync.release.v1": {"holder-stop"},
-                                      "caduceus.disk.partlabel.assign.v1": {"partlabel-write"},
-                                      "caduceus.nas.attach.v1": {"mount-start", "cryptsetup-open"},
-                                      "caduceus.nas.detach.v1": {"mount-stop", "opener-stop", "service-stop"}}
-                    schema = receipt.get("schema")
-                    names = mutation_steps.get(schema, set()) if isinstance(schema, str) else set()
-                    if (any(receipt.get(key) is True for key in ("mutation_performed", "mutationPerformed", "changed"))
-                            or any(isinstance(step, dict) and step.get("step") in names and step.get("ok") is True for step in steps)):
-                        changed = True
+                if receipt is not None and any(receipt.get(key) is True for key in ("mutation_performed", "mutationPerformed", "changed")):
+                    changed = True
             except _ChordError as exc:
                 refusal = str(exc)
             except Exception:
                 refusal = "chord-stage-invocation-failed"
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
+            if row["outcome"] == "stage-completed" and stage_target is not None and _index(stage_target.parent).get("mutation_allowed", True) is not False:
+                changed = True
             if refusal and (is_final or stage.get("required", True)) and failed is None:
                 failed, signal = sid, refusal
             if refusal and not is_final and stage.get("required", True):
