@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
@@ -347,8 +348,20 @@ def _install_page_keyboard(window: Any, Gtk: Any, Gdk: Any, Adw: Any,
     window.add_controller(bubble_controller)
 
 
+def vault_required() -> bool:
+    """Trust only the gate's explicit decision; unreadable means open."""
+    from agathodaimon.gui.plugs._common import _direct_request
+
+    try:
+        gate = _direct_request("/api/v1/access/gate", timeout=3)
+    except RuntimeError:
+        return False
+    vault = gate.get("vault")
+    return gate.get("ok") is True and isinstance(vault, dict) and vault.get("unlock_required") is True
+
+
 def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
-    Adw, Gio, _GLib, Gtk = _gtk()
+    Adw, Gio, GLib, Gtk = _gtk()
     from gi.repository import Gdk
 
     class SettingsApplication(Adw.Application):
@@ -390,17 +403,92 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 self.window.present()
                 return
             Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+            self.window = Adw.ApplicationWindow(application=self)
+            self.window.set_title(_app_title())
+            self.window.set_default_size(1040, 720)
+            self.install_shell_css()
+            self.install_optional_css()
+            self.window.present()
+            self.read_gate()
+
+        def read_gate(self, warning: str = "") -> None:
+            def read() -> None:
+                required = vault_required()
+                GLib.idle_add(self.show_stage, required, warning)
+            threading.Thread(target=read, daemon=True).start()
+
+        def show_stage(self, required: bool, warning: str) -> bool:
+            if not required:
+                self.show_settings(warning)
+                return False
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            box.set_halign(Gtk.Align.CENTER)
+            box.set_valign(Gtk.Align.CENTER)
+            entry = Gtk.PasswordEntry()
+            entry.set_placeholder_text("Vault password")
+            entry.set_show_peek_icon(False)
+            button = Gtk.Button(label="Unlock")
+            status = Gtk.Label(label=warning, wrap=True)
+            box.append(entry)
+            box.append(button)
+            box.append(status)
+            self.window.set_content(box)
+            entry.grab_focus()
+
+            def finish(receipt: dict[str, Any] | None, error: str) -> bool:
+                if receipt is not None and receipt.get("success") is True:
+                    message = receipt.get("warning")
+                    self.read_gate(message if isinstance(message, str) else "")
+                else:
+                    message = (receipt.get("message") or receipt.get("firstMissingSignal")
+                               or receipt.get("first_missing_signal")) if receipt is not None else error
+                    status.set_text(message if isinstance(message, str) and message else "Unlock refused")
+                    entry.set_sensitive(True)
+                    button.set_sensitive(True)
+                    entry.grab_focus()
+                return False
+
+            def submit(_widget: Any) -> None:
+                if not button.get_sensitive():
+                    return
+                password = entry.get_text()
+                entry.set_text("")
+                entry.set_sensitive(False)
+                button.set_sensitive(False)
+                status.set_text("Waiting for Caduceus…")
+
+                def unlock(secret: str) -> None:
+                    from agathodaimon.gui.plugs._common import _direct_request
+                    try:
+                        receipt = _direct_request("/api/v1/storage/vault/unlock", "POST",
+                                                  {"password": secret}, timeout=300)
+                        GLib.idle_add(finish, receipt, "")
+                    except RuntimeError as error:
+                        GLib.idle_add(finish, None, str(error))
+                threading.Thread(target=unlock, args=(password,), daemon=True).start()
+
+            entry.connect("activate", submit)
+            button.connect("clicked", submit)
+            return False
+
+        def set_settings_content(self, child: Any, warning: str) -> None:
+            if warning:
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                box.append(Gtk.Label(label=warning, wrap=True))
+                child.set_vexpand(True)
+                box.append(child)
+                child = box
+            self.window.set_content(child)
+
+        def show_settings(self, warning: str = "") -> None:
             if self.standalone is not None:
                 plug = self.registry[self.standalone]
                 page, _scroller = _ensure_page_scroller(Gtk, plug.build_widget())
-                self.window = Adw.ApplicationWindow(application=self)
                 self.window.set_title(plug.title)
                 self.window.set_default_size(720, 640)
-                self.window.set_content(page)
+                self.set_settings_content(page, warning)
                 content = {"root": page}
                 _install_page_keyboard(self.window, Gtk, Gdk, Adw, lambda: content["root"])
-                self.install_optional_css()
-                self.window.present()
                 return
 
             split = Adw.NavigationSplitView()
@@ -475,12 +563,9 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 sidebar_bar.pack_end(indicator)
 
             listing.connect("row-activated", activate_row)
-            self.window = Adw.ApplicationWindow(application=self)
             self.window.set_title(app_title)
             self.window.set_default_size(1040, 720)
-            self.window.set_content(split)
-            self.install_shell_css()
-            self.install_optional_css()
+            self.set_settings_content(split, warning)
             _install_page_keyboard(
                 self.window, Gtk, Gdk, Adw, lambda: active["content"], listing,
                 lambda: active["row"],

@@ -12,7 +12,18 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-CADUCEUS_URL = os.environ.get("CADUCEUS_URL", "http://127.0.0.1:8787").rstrip("/")
+def _caduceus_url() -> str:
+    configured = os.environ.get("CADUCEUS_URL")
+    if configured:
+        return configured.rstrip("/")
+    try:
+        from agathodaimon._load_trace import _caduceus_base_url
+        return _caduceus_base_url()
+    except (OSError, ValueError, KeyError, TypeError):
+        return "http://127.0.0.1:3014"
+
+
+CADUCEUS_URL = _caduceus_url()
 
 
 def _read(path: str) -> str:
@@ -114,6 +125,28 @@ def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = No
         raise RuntimeError('Caduceus returned an unreadable receipt') from error
     if not isinstance(value, dict):
         raise RuntimeError('Caduceus returned an invalid receipt')
+    return value
+
+
+def _direct_request(path: str, method: str = "GET", payload: dict[str, Any] | None = None,
+                    timeout: int = 30) -> dict[str, Any]:
+    """Call a native Caduceus door without a staff envelope."""
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data is not None else {}
+    request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=headers, method=method)
+    try:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                raw = response.read(256 * 1024)
+        except urllib.error.HTTPError as error:
+            if method == "GET":
+                raise RuntimeError("Caduceus read refused") from error
+            raw = error.read(256 * 1024)
+        value = json.loads(raw)
+    except (OSError, urllib.error.URLError, ValueError, UnicodeDecodeError) as error:
+        raise RuntimeError("Caduceus is unavailable or returned an unreadable response") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("Caduceus returned an invalid response")
     return value
 
 
