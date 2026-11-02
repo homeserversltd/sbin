@@ -61,6 +61,13 @@ def _help(path: Path) -> None:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
+            callee = node.func.id if isinstance(node.func, ast.Name) else (
+                node.func.attr if isinstance(node.func, ast.Attribute) else None
+            )
+            if callee == "read_fields":
+                for argument in node.args:
+                    if isinstance(argument, ast.Constant) and isinstance(argument.value, str) and argument.value not in fields:
+                        fields.append(argument.value)
             for keyword in node.keywords:
                 if keyword.arg != "known_fields":
                     continue
@@ -101,9 +108,19 @@ def _slash_target(raw_path: str) -> Path | None:
     return path if "serve" in _index(path) else None
 
 
+def _shelf_version() -> str:
+    for candidate in (ROOT.parent / "VERSION", ROOT / "VERSION"):
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            continue
+    return "unknown"
+
+
 def _fresh_envelope(band: str) -> dict:
     stamp = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-    version = (ROOT.parent / "VERSION").read_text(encoding="utf-8").strip()
+    version = _shelf_version()
     return {"schema": "caduceus.staff.v1", "intent_id": "agathodaimon-" + band.replace("/", "-") + "-" + stamp,
             "transition": band, "origin_of_intent": "near", "version": version, "timestamp": stamp, "payload": {}}
 
@@ -951,7 +968,7 @@ def main(argv=None):
     if not args or args == ["--help"]:
         print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT)},indent=2)); return 0
     if args == ["--version"]:
-        print((ROOT.parent / "VERSION").read_text(encoding="utf-8").strip()); return 0
+        print(_shelf_version()); return 0
     original=args[:]
     pin_required = _pin_required()
     publication = None
