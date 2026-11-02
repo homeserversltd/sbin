@@ -16,11 +16,10 @@
           "/api/v1/storage/vault/unlock"
         ],
         "administrative": {
-          "band": true,
+          "band": false,
           "verbs": [],
           "routes": [
-            "/api/v1/storage/vault/auto-decrypt",
-            "/api/v1/storage/vault/unlock"
+            "/api/v1/storage/vault/auto-decrypt"
           ]
         }
       }

@@ -732,6 +732,7 @@
       "/api/v1/access/pin/mode",
       "/api/v1/access/pin/reset-default",
       "/api/v1/access/sudo/mode",
+      "PUT /api/v1/network/notes",
       "/api/v1/appliance/service/:service/disable",
       "/api/v1/appliance/service/:service/enable",
       "/api/v1/appliance/service/:service/restart",
