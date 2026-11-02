@@ -1,4 +1,4 @@
-"""Stop the native unit only when nativeActiveBefore identifies it as inactive."""
+"""Rollback using unit/start's own witness, never an earlier snapshot."""
 from agathodaimon.transmission import runtime as rt
 
 SCHEMA = "caduceus.transmission.vpn.rollback-stop.v1"
@@ -11,14 +11,16 @@ def main(argv=None):
     try:
         request = rt.read_request(known_fields=("nativeActiveBefore", "nativeStartAttempted"))
         before = request.payload.get("nativeActiveBefore")
-        attempted = request.payload.get("nativeStartAttempted", True)
+        attempted = request.payload.get("nativeStartAttempted")
         result = rt.receipt(SCHEMA)
         result.update(nativeUnit=rt.NATIVE_UNIT, nativeActiveBefore=before, mutationPerformed=False)
+        if isinstance(before, bool):
+            raise rt.TransmissionError("transmission-native-before-unavailable", "rollback-stop")
         if attempted is not True:
             result.update(ok=True, firstMissingSignal="none", reason="native-start-not-attempted")
-        elif before is True or before in ("active", "reloading", "activating", "deactivating"):
+        elif before in ("active", "reloading", "activating", "deactivating"):
             result.update(ok=True, firstMissingSignal="none", reason="native-unit-already-active-or-transitioning")
-        elif before is False or before in ("inactive", "failed"):
+        elif before in ("inactive", "failed"):
             mutation_attempted = True
             stopped = rt.run([rt.SYSTEMCTL, "stop", rt.NATIVE_UNIT], timeout=180, step="rollback-native-stop")
             result["mutationPerformed"] = True
