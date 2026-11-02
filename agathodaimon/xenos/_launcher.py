@@ -829,11 +829,25 @@ def census_xenos(xenos_id: str) -> dict[str, object]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    if os.geteuid() != 0:
-        _emit({"ok": False, "firstMissingSignal": "xenos-run-root-required"})
-        return 1
     args = list(sys.argv[1:] if argv is None else argv)
     legacy_verb_form = len(args) >= 3 and args[1] in {"band", "exec"}
+    if os.geteuid() != 0:
+        if args and args[0] in {"install", "uninstall"} and not legacy_verb_form:
+            _emit({"schema": "appliance.xenia.install.v1", "verb": args[0], "id": args[1] if len(args) > 1 and args[1] != "--dry-run" else "", "ok": False, "road": "release", "source_sha": None, "sha256": None, "unit": None, "active": None, "health": None, "signal": "xenos-run-root-required", "changed": False})
+        else:
+            _emit({"ok": False, "firstMissingSignal": "xenos-run-root-required"})
+        return 1
+    if args and args[0] in {"install", "uninstall"} and not legacy_verb_form:
+        import _install
+        dry = "--dry-run" in args[1:]
+        rest = [arg for arg in args[1:] if arg != "--dry-run"]
+        if len(rest) != 1 or len(args) != 2 + int(dry):
+            _emit({"schema": _install.SCHEMA, "verb": args[0], "id": "", "ok": False, "road": "release", "source_sha": None, "sha256": None, "unit": None, "active": None, "health": None, "signal": "xenos-arguments-invalid", "changed": False})
+            return 1
+        _install.launcher.REGISTER_PATH = Path(_install.setting("XENIA_REGISTER", str(REGISTER_PATH)))
+        receipt, status = _install.run(args[0], rest[0], dry)
+        _emit(receipt)
+        return status
     if args and args[0] in {"seat", "census"} and not legacy_verb_form:
         verb = args[0]
         if len(args) != 2:

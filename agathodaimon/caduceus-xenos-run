@@ -1,7 +1,12 @@
 #!/bin/sh
 set -eu
+launcher_dir=$(/usr/bin/dirname "$(/usr/bin/readlink -f "$0")")
 if [ "$(/usr/bin/id -u)" -ne 0 ]; then
+    case "${1-}:${2-}" in
+        install:band|install:exec|uninstall:band|uninstall:exec) ;;
+        install:*|uninstall:*) exec /usr/bin/python3 -B "$launcher_dir/xenos/_launcher.py" "$@" ;;
+    esac
     printf '%s\n' '{"ok":false,"firstMissingSignal":"xenos-run-root-required"}'
     exit 1
 fi
-exec /usr/bin/python3 /usr/local/sbin/agathodaimon/xenos/_launcher.py "$@"
+exec /usr/bin/python3 -B "$launcher_dir/xenos/_launcher.py" "$@"
