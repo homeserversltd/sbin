@@ -34,6 +34,6 @@
   ],
   "rescue": [
     {"stage_id": "hold-failure-readback", "snake": "unit/status", "on_refusal_of": ["native-start"], "depends_on": ["resolve"], "arguments": {"unit": {"$ref": "stages.resolve.receipt.holdUnit"}, "scope": "system"}, "receipt": "agathodaimon.unit.status.v1", "required": false},
-    {"stage_id": "rollback-stop", "snake": "transmission/vpn/rollback-stop", "on_refusal_of": ["native-start", "onness"], "depends_on": ["native-preflight"], "arguments": {"nativeActiveBefore": {"$ref": "stages.native-start.receipt.observed.active_state"}, "nativeStartAttempted": {"$ref": "stages.native-start.receipt.mutation_performed"}}, "receipt": "caduceus.transmission.vpn.rollback-stop.v1"}
+    {"stage_id": "rollback-stop", "snake": "transmission/vpn/rollback-stop", "on_refusal_of": ["native-start", "hold-readback", "onness"], "depends_on": ["native-preflight"], "arguments": {"nativeActiveBefore": {"$ref": "stages.native-start.receipt.observed.active_state"}, "nativeStartAttempted": {"$ref": "stages.native-start.receipt.mutation_performed"}}, "receipt": "caduceus.transmission.vpn.rollback-stop.v1"}
   ]
 }
