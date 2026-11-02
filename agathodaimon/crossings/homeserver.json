@@ -67,6 +67,9 @@
     "transmission/keys",
     "transmission/status",
     "transmission/up",
+    "transmission/vpn/resolve",
+    "transmission/onness",
+    "transmission/vpn/rollback-stop",
     "thyrsus/admit",
     "thyrsus/forge",
     "thyrsus/forge-token",
@@ -252,6 +255,9 @@
       "transmission",
       "up"
     ],
+    ["vpn", "resolve"],
+    ["transmission", "onness"],
+    ["vpn", "rollback-stop"],
     [
       "update",
       "service"
@@ -514,6 +520,9 @@
       "transmission/down",
       "transmission/keys",
       "transmission/up",
+      "transmission/vpn/resolve",
+      "transmission/onness",
+      "transmission/vpn/rollback-stop",
       "thyrsus/propose",
       "thyrsus/admit",
       "thyrsus/forge-token",
@@ -535,6 +544,9 @@
     "verbs": [
       ["nas", "list"],
       ["forgejo", "skip-check"],
+      ["vpn", "resolve"],
+      ["transmission", "onness"],
+      ["vpn", "rollback-stop"],
       [
         "exousia",
         "change"

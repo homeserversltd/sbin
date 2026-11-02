@@ -90,7 +90,7 @@ def _help(path: Path) -> None:
                                   "meaning": doc if re.search(r"\b" + re.escape(name) + r"\b", doc, re.IGNORECASE) else None}
                                  for name in fields]}
     if kind == "chord":
-        result["stages"] = [stage.get("stage_id") for stage in declaration.get("serve", []) + declaration.get("finally", [])]
+        result["stages"] = [stage.get("stage_id") for stage in declaration.get("serve", []) + declaration.get("rescue", []) + declaration.get("finally", [])]
     print(json.dumps(result))
 
 def _slash_target(raw_path: str) -> Path | None:
@@ -204,12 +204,13 @@ def _references(value):
 
 def _validate_chord(declaration: dict):
     serve = declaration.get("serve")
+    rescue = declaration.get("rescue", [])
     final = declaration.get("finally", [])
-    if not isinstance(serve, list) or not isinstance(final, list):
+    if not all(isinstance(stages, list) for stages in (serve, rescue, final)):
         raise _ChordError("chord-stage-invalid")
     seen = set()
     serve_ids = set()
-    for is_final, stages in ((False, serve), (True, final)):
+    for phase, stages in (("serve", serve), ("rescue", rescue), ("finally", final)):
         for stage in stages:
             if not isinstance(stage, dict):
                 raise _ChordError("chord-stage-invalid")
@@ -225,8 +226,12 @@ def _validate_chord(declaration: dict):
             if expected_receipt is not None and (not isinstance(expected_receipt, str) or not expected_receipt):
                 raise _ChordError("chord-stage-invalid")
             deps = stage.get("depends_on", [])
-            if not isinstance(deps, list) or any(not isinstance(dep, str) or dep not in (serve_ids if is_final else seen) for dep in deps):
+            if not isinstance(deps, list) or any(not isinstance(dep, str) or dep not in (serve_ids if phase == "finally" else seen) for dep in deps):
                 raise _ChordError("chord-stage-invalid")
+            if phase == "rescue":
+                targets = stage.get("on_refusal_of")
+                if not isinstance(targets, list) or not targets or any(not isinstance(target, str) or target not in serve_ids for target in targets):
+                    raise _ChordError("chord-stage-invalid")
             deadline = stage.get("deadline_seconds")
             if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not 1 <= deadline <= 600):
                 raise _ChordError("chord-stage-deadline-invalid")
@@ -238,9 +243,9 @@ def _validate_chord(declaration: dict):
                     continue
                 raise _ChordError("chord-ref-unresolved")
             seen.add(sid)
-            if not is_final:
+            if phase == "serve":
                 serve_ids.add(sid)
-    return serve, final
+    return serve, rescue, final
 
 
 def _resolve_arguments(value, request, completed):
@@ -304,19 +309,20 @@ def _walk_chord(path: Path, envelope: dict) -> int:
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
         return 1
     try:
-        serve, final = _validate_chord(_index(path))
+        serve, rescue, final = _validate_chord(_index(path))
     except (OSError, ValueError, _ChordError) as exc:
         reason = str(exc) if isinstance(exc, _ChordError) else "chord-stage-invalid"
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": reason}))
         return 1
     blocked = False
-    for is_final, stages in ((False, serve), (True, final)):
+    for phase, stages in (("serve", serve), ("rescue", rescue), ("finally", final)):
         for stage in stages:
             sid, band = stage["stage_id"], stage["snake"]
             row = {"stage_id": sid, "transition": band, "outcome": "stage-skipped", "arguments": {}, "receipt": None}
             rows.append(row)
-            if (not is_final and blocked) or any(completed.get(dep, {}).get("outcome") != "stage-completed" for dep in stage.get("depends_on", [])):
+            rescue_untriggered = phase == "rescue" and not any(completed.get(dep, {}).get("outcome") == "stage-refused" for dep in stage["on_refusal_of"])
+            if (phase == "serve" and blocked) or rescue_untriggered or any(completed.get(dep, {}).get("outcome") != "stage-completed" for dep in stage.get("depends_on", [])):
                 completed[sid] = row
                 continue
             refusal = None
@@ -363,15 +369,15 @@ def _walk_chord(path: Path, envelope: dict) -> int:
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
             if row["outcome"] == "stage-completed" and stage_target is not None and _index(stage_target.parent).get("mutation_allowed", True) is not False:
                 changed = True
-            if refusal and (is_final or stage.get("required", True)) and failed is None:
+            if refusal and (phase == "finally" or stage.get("required", True)) and failed is None:
                 failed, signal = sid, refusal
-            if refusal and not is_final and stage.get("required", True):
+            if refusal and phase == "serve" and stage.get("required", True):
                 blocked = True
             completed[sid] = row
     ok = (failed is None and
           all(not stage.get("required", True) or row["outcome"] == "stage-completed"
               for stage, row in zip(serve, rows[:len(serve)])) and
-          all(row["outcome"] == "stage-completed" for row in rows[len(serve):]))
+          all(row["outcome"] == "stage-completed" for row in rows[len(serve) + len(rescue):]))
     if changed:
         try:
             _chord_deed(routine_id, envelope, rows, ok, failed, signal, started)
