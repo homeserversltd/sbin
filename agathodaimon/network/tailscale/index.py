@@ -5,6 +5,7 @@ import copy
 import datetime
 import fcntl
 import importlib.util
+import ipaddress
 import json
 import os
 import re
@@ -29,6 +30,7 @@ NOUN = "tailscale"
 VERBS = ["status", "up", "down", "authkey", "tailnet"]
 SCHEMA = "caduceus.staff.v1"
 TAILSCALE = "/usr/bin/tailscale"
+KEA_CONFIG = Path("/etc/kea/kea-dhcp4.conf")
 NGINX = "/usr/sbin/nginx"
 SYSTEMCTL = "/usr/bin/systemctl"
 MAX_BYTES = 32 * 1024 * 1024
@@ -301,6 +303,69 @@ def _declared_tailnet(config: Mapping[str, Any]) -> str:
     raise Refused("tailscale-declared-tailnet-origin-missing")
 
 
+def _home_routes() -> tuple[list[str], str]:
+    try:
+        text = KEA_CONFIG.read_text(encoding="utf-8")
+        # Kea accepts shell, C++ and C-style comments outside JSON strings.
+        text = re.sub(r'"(?:\\.|[^"\\])*"|//[^\n]*|\#[^\n]*|/\*[\s\S]*?\*/',
+                      lambda match: match.group(0) if match.group(0).startswith('"') else ' ', text)
+        config = json.loads(text)
+        entries = config["Dhcp4"]["subnet4"]
+        if not isinstance(entries, list):
+            raise ValueError("invalid subnet4")
+        networks = set()
+        for entry in entries:
+            try:
+                network = ipaddress.ip_network(entry["subnet"], strict=False)
+                if network.version == 4:
+                    networks.add(str(network))
+            except (KeyError, TypeError, ValueError):
+                continue
+        routes = sorted(networks)
+        return routes, "none" if routes else "tailscale-home-route-unknown"
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError, RecursionError):
+        return [], "tailscale-home-route-unknown"
+
+
+def _preferences() -> tuple[dict[str, Any] | None, str]:
+    result = _run([TAILSCALE, "debug", "prefs"], 8)
+    if result is None or result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+        return None, "tailscale-prefs-unreadable"
+    try:
+        prefs = json.loads(result.stdout)
+        routes = prefs.get("AdvertiseRoutes")
+        hostname = prefs.get("Hostname")
+        if not isinstance(prefs, dict) or (routes is not None and (not isinstance(routes, list) or any(not isinstance(x, str) for x in routes))) or not isinstance(hostname, str):
+            raise ValueError("invalid preferences")
+        return {"advertiseRoutes": sorted(set(routes or [])), "hostname": hostname}, "none"
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        return None, "tailscale-prefs-invalid"
+
+
+def _prepare_home(action: str, before: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    routes, route_signal = _home_routes()
+    prefs, signal_name = _preferences()
+    if prefs is None:
+        return None, _receipt(action, False, signal_name, observed=before, attempt="read-preferences")
+    desired = {"advertiseRoutes": routes, "hostname": "home"}
+    needs_change = prefs != desired
+    observed = dict(before, preferences=prefs, homeRouteSignal=route_signal)
+    if needs_change:
+        result = _run([TAILSCALE, "set", "--advertise-routes=" + ",".join(routes), "--hostname=home"], 15)
+        if result is None or result.returncode != 0:
+            return None, _receipt(action, False, "tailscale-home-preferences-set-failed", observed=observed,
+                                  could_change=["tailscaled home preferences"],
+                                  attempt={"command": "tailscale set", "returnCode": result.returncode if result else None},
+                                  final={"requestedPreferences": desired, "homeRouteSignal": route_signal},
+                                  mutation=result is not None, changed=None)
+        final_prefs, signal_name = _preferences()
+        if final_prefs is None or final_prefs != desired:
+            return None, _receipt(action, False, signal_name if final_prefs is None else "tailscale-home-preferences-mismatch",
+                                  observed=observed, attempt="set-home-preferences", final={"preferences": final_prefs},
+                                  mutation=True, changed=None if final_prefs is None else final_prefs != prefs)
+    return {"observed": observed, "desired": desired, "routeSignal": route_signal, "changed": needs_change}, None
+
+
 def _status_receipt() -> dict[str, Any]:
     value, signal_name = _status()
     if value is None:
@@ -316,6 +381,9 @@ def _status_receipt() -> dict[str, Any]:
         declared_signal = error.signal
     value["declaredTailnet"] = declared
     value["declaredTailnetSignal"] = declared_signal
+    prefs, prefs_signal = _preferences()
+    value["preferences"] = prefs
+    value["preferencesSignal"] = prefs_signal
     return _receipt("status", True, observed={"backendState": value["backendState"], "liveTailnet": value.get("tailnet"), "declaredTailnet": declared},
                     attempt="read-live-and-declared-tailnet", final=value)
 
@@ -324,27 +392,42 @@ def _up_receipt() -> dict[str, Any]:
     before, signal_name = _status()
     if before is None:
         return _receipt("up", False, signal_name, observed={"status": "unreadable"}, attempt="read-preflight")
+    home, failure = _prepare_home("up", before)
+    if failure is not None:
+        return failure
+    assert home is not None
     if before["connected"]:
-        final = dict(before)
+        final = dict(before, preferences=home["desired"], homeRouteSignal=home["routeSignal"])
         final["loginUrl"] = None
-        return _receipt("up", True, observed=before, attempt="already-connected-nochange", final=final, changed=False)
-    result = _run([TAILSCALE, "up", "--timeout=12s"], 15)
+        return _receipt("up", True, observed=home["observed"], attempt="connected-home-preferences", final=final,
+                        mutation=home["changed"], changed=home["changed"])
+    up_flags = ["--advertise-routes=" + ",".join(home["desired"]["advertiseRoutes"]), "--hostname=home"]
+    result = _run([TAILSCALE, "up", "--timeout=12s", *up_flags], 15)
     output = "" if result is None else result.stdout + "\n" + result.stderr
     match = LOGIN_URL.search(output)
     output_url = match.group(0) if match else None
     after, signal_name = _status()
     if after is None:
-        return _receipt("up", False, signal_name, observed=before, could_change=["tailscaled login state"],
-                        attempt={"command": "tailscale up --timeout=12s", "returnCode": result.returncode if result else None}, mutation=result is not None)
+        return _receipt("up", False, signal_name, observed=home["observed"], could_change=["tailscaled login state", "tailscaled home preferences"],
+                        attempt={"command": "tailscale up --timeout=12s", "preferenceFlags": up_flags, "returnCode": result.returncode if result else None},
+                        final={"lastVerifiedPreferencesBeforeUp": home["desired"], "homeRouteSignal": home["routeSignal"]},
+                        mutation=home["changed"] or result is not None, changed=True if home["changed"] else None)
+    prefs, prefs_signal = _preferences()
+    if prefs is None or prefs != home["desired"]:
+        return _receipt("up", False, prefs_signal if prefs is None else "tailscale-home-preferences-mismatch",
+                        observed=home["observed"], attempt={"command": "tailscale up --timeout=12s", "preferenceFlags": up_flags,
+                        "returnCode": result.returncode if result else None},
+                        final=dict(after, preferences=prefs, homeRouteSignal=home["routeSignal"]),
+                        mutation=home["changed"] or result is not None, changed=None)
     login_url = after.get("loginUrl") or output_url
-    final = dict(after)
+    final = dict(after, preferences=prefs, homeRouteSignal=home["routeSignal"])
     final["loginUrl"] = None if after["connected"] else login_url
     pending = result is not None and after["status"] == "needs-login" and bool(login_url)
     ok = (result is not None and result.returncode == 0 and after["connected"]) or pending
-    changed = before["status"] != after["status"] or before["loginUrl"] != final["loginUrl"] or (result is not None and result.returncode == 0)
-    return _receipt("up", ok, "none" if ok else "tailscale-up-not-connected", observed=before,
+    changed = home["changed"] or before["status"] != after["status"] or before["loginUrl"] != final["loginUrl"] or (result is not None and result.returncode == 0)
+    return _receipt("up", ok, "none" if ok else "tailscale-up-not-connected", observed=home["observed"],
                     could_change=["tailscaled login state"],
-                    attempt={"command": "tailscale up --timeout=12s", "returnCode": result.returncode if result else None},
+                    attempt={"command": "tailscale up --timeout=12s", "preferenceFlags": up_flags, "returnCode": result.returncode if result else None},
                     final=final, mutation=changed, changed=changed)
 
 
@@ -372,18 +455,33 @@ def _authkey_receipt(key: str | None) -> dict[str, Any]:
     before, signal_name = _status(4)
     if before is None:
         return _receipt("authkey", False, signal_name, observed={"status": "unreadable"}, attempt="read-preflight")
-    result = _run([TAILSCALE, "up", "--auth-key=file:/dev/stdin", "--timeout=18s"], 20, stdin=key + "\n")
+    home, failure = _prepare_home("authkey", before)
+    if failure is not None:
+        return failure
+    assert home is not None
+    up_flags = ["--advertise-routes=" + ",".join(home["desired"]["advertiseRoutes"]), "--hostname=home"]
+    result = _run([TAILSCALE, "up", "--auth-key=file:/dev/stdin", "--timeout=18s", *up_flags], 20, stdin=key + "\n")
     key = None
     after, signal_name = _status(4)
     if after is None:
-        return _receipt("authkey", False, signal_name, observed=before, could_change=["tailscaled login state"],
-                        attempt={"command": "tailscale up --auth-key=file:/dev/stdin --timeout=18s", "returnCode": result.returncode if result else None}, mutation=result is not None)
+        return _receipt("authkey", False, signal_name, observed=home["observed"], could_change=["tailscaled login state", "tailscaled home preferences"],
+                        attempt={"command": "tailscale up --auth-key=file:/dev/stdin --timeout=18s", "preferenceFlags": up_flags, "returnCode": result.returncode if result else None},
+                        final={"lastVerifiedPreferencesBeforeUp": home["desired"], "homeRouteSignal": home["routeSignal"]},
+                        mutation=home["changed"] or result is not None, changed=True if home["changed"] else None)
+    prefs, prefs_signal = _preferences()
+    if prefs is None or prefs != home["desired"]:
+        return _receipt("authkey", False, prefs_signal if prefs is None else "tailscale-home-preferences-mismatch",
+                        observed=home["observed"], attempt={"command": "tailscale up --auth-key=file:/dev/stdin --timeout=18s",
+                        "preferenceFlags": up_flags, "returnCode": result.returncode if result else None},
+                        final=dict(after, preferences=prefs, homeRouteSignal=home["routeSignal"]),
+                        mutation=home["changed"] or result is not None, changed=None)
     ok = result is not None and result.returncode == 0 and after["connected"] is True
-    changed = before["status"] != after["status"] or (result is not None and result.returncode == 0)
-    return _receipt("authkey", ok, "none" if ok else "tailscale-authkey-authentication-failed", observed=before,
+    changed = home["changed"] or before["status"] != after["status"] or (result is not None and result.returncode == 0)
+    final = dict(after, preferences=prefs, homeRouteSignal=home["routeSignal"])
+    return _receipt("authkey", ok, "none" if ok else "tailscale-authkey-authentication-failed", observed=home["observed"],
                     could_change=["tailscaled login state"],
-                    attempt={"command": "tailscale up --auth-key=file:/dev/stdin --timeout=18s", "returnCode": result.returncode if result else None},
-                    final=after, mutation=changed, changed=changed)
+                    attempt={"command": "tailscale up --auth-key=file:/dev/stdin --timeout=18s", "preferenceFlags": up_flags, "returnCode": result.returncode if result else None},
+                    final=final, mutation=changed, changed=changed)
 
 
 def _request() -> Request:
