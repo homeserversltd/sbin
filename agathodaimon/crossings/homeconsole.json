@@ -221,16 +221,15 @@
     "/api/v1/access/pin/mode",
     "/api/v1/access/pin/reset-default",
     "/api/v1/access/sudo/mode",
-    "/api/v1/network/notes",
     "/api/v1/attendance/change-pin",
-    "/api/v1/config/patch",
-    "/api/v1/config/set",
-    "/api/v1/exousia/change-pin",
     "/api/v1/cert/bundle/download",
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
+    "/api/v1/config/patch",
+    "/api/v1/config/set",
     "/api/v1/console/restart",
+    "/api/v1/exousia/change-pin",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/games/provider-keys",
@@ -254,6 +253,7 @@
     "/api/v1/network/dns/status",
     "/api/v1/network/firewall/children",
     "/api/v1/network/firewall/children/:mac/whitelist",
+    "/api/v1/network/notes",
     "/api/v1/network/status",
     "/api/v1/settings/appearance",
     "/api/v1/settings/child-device",
@@ -279,13 +279,15 @@
   ],
   "administrative": {
     "bands": [
-      "network/child-device",
-      "network/dns",
-      "settings/ssh",
       "appliance/service",
       "appliance/sudo-passwordless",
+      "exousia/change",
+      "exousia/reset-default",
+      "network/child-device",
+      "network/dns",
       "settings/datetime",
       "settings/input",
+      "settings/ssh",
       "storage/vault/policy",
       "appliance/service/start",
       "appliance/service/stop",
@@ -296,18 +298,6 @@
       "appliance/service/status"
     ],
     "verbs": [
-      [
-        "settings",
-        "energy"
-      ],
-      [
-        "settings",
-        "keyboard"
-      ],
-      [
-        "settings",
-        "region"
-      ],
       [
         "exousia",
         "change"
@@ -334,7 +324,19 @@
       ],
       [
         "settings",
+        "energy"
+      ],
+      [
+        "settings",
+        "keyboard"
+      ],
+      [
+        "settings",
         "notifications"
+      ],
+      [
+        "settings",
+        "region"
       ],
       [
         "settings",
@@ -374,7 +376,6 @@
       "/api/v1/access/pin/mode",
       "/api/v1/access/pin/reset-default",
       "/api/v1/access/sudo/mode",
-      "PUT /api/v1/network/notes",
       "/api/v1/attendance/change-pin",
       "/api/v1/config/patch",
       "/api/v1/config/set",
@@ -389,7 +390,8 @@
       "/api/v1/settings/input",
       "/api/v1/settings/notifications",
       "/api/v1/settings/sound",
-      "/api/v1/storage/vault/auto-decrypt"
+      "/api/v1/storage/vault/auto-decrypt",
+      "PUT /api/v1/network/notes"
     ]
   }
 }

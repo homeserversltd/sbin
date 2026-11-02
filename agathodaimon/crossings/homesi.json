@@ -354,15 +354,14 @@
     "/api/v1/access/pin/mode",
     "/api/v1/access/pin/reset-default",
     "/api/v1/access/sudo/mode",
-    "/api/v1/network/notes",
     "/api/v1/attendance/change-pin",
-    "/api/v1/config/patch",
-    "/api/v1/config/set",
-    "/api/v1/exousia/change-pin",
     "/api/v1/cert/bundle/download",
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
+    "/api/v1/config/patch",
+    "/api/v1/config/set",
+    "/api/v1/exousia/change-pin",
     "/api/v1/face/app",
     "/api/v1/face/badge",
     "/api/v1/face/bar",
@@ -399,6 +398,7 @@
     "/api/v1/network/dns/status",
     "/api/v1/network/firewall/children",
     "/api/v1/network/firewall/children/:mac/whitelist",
+    "/api/v1/network/notes",
     "/api/v1/network/status",
     "/api/v1/settings/child-device",
     "/api/v1/settings/appearance",
@@ -428,14 +428,16 @@
   ],
   "administrative": {
     "bands": [
-      "network/child-device",
-      "network/dns",
-      "settings/ssh",
       "appliance/service",
       "appliance/sudo-passwordless",
+      "exousia/change",
+      "exousia/reset-default",
       "local-ai/slot",
+      "network/child-device",
+      "network/dns",
       "settings/datetime",
       "settings/input",
+      "settings/ssh",
       "storage/vault/policy",
       "thyrsus/propose",
       "thyrsus/admit",
@@ -449,18 +451,6 @@
       "appliance/service/status"
     ],
     "verbs": [
-      [
-        "settings",
-        "energy"
-      ],
-      [
-        "settings",
-        "keyboard"
-      ],
-      [
-        "settings",
-        "region"
-      ],
       [
         "exousia",
         "change"
@@ -491,7 +481,19 @@
       ],
       [
         "settings",
+        "energy"
+      ],
+      [
+        "settings",
+        "keyboard"
+      ],
+      [
+        "settings",
         "notifications"
+      ],
+      [
+        "settings",
+        "region"
       ],
       [
         "settings",
@@ -543,7 +545,6 @@
       "/api/v1/access/pin/mode",
       "/api/v1/access/pin/reset-default",
       "/api/v1/access/sudo/mode",
-      "PUT /api/v1/network/notes",
       "/api/v1/attendance/change-pin",
       "/api/v1/config/patch",
       "/api/v1/config/set",
@@ -562,7 +563,8 @@
       "PUT /api/v1/local-ai/slot/:slot",
       "/api/v1/thyrsus/propose",
       "/api/v1/thyrsus/admit",
-      "/api/v1/thyrsus/forge-token"
+      "/api/v1/thyrsus/forge-token",
+      "PUT /api/v1/network/notes"
     ]
   }
 }
