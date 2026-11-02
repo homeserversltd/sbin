@@ -1,0 +1,44 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "gateway",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [
+          [
+            "service",
+            "reload"
+          ]
+        ],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [
+            [
+              "service",
+              "reload"
+            ]
+          ],
+          "routes": []
+        }
+      },
+      "gateway": {
+        "band": false,
+        "verbs": [],
+        "routes": [
+          "/api/v1/appliance/service/:service/reload",
+          "/api/v1/service/:service/reload"
+        ],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": [
+            "/api/v1/appliance/service/:service/reload",
+            "/api/v1/service/:service/reload"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -45,7 +45,14 @@
     "storage/vault/open",
     "storage/vault/policy",
     "update/service",
-    "update/sources-reseed"
+    "update/sources-reseed",
+    "appliance/service/start",
+    "appliance/service/stop",
+    "appliance/service/restart",
+    "appliance/service/reload",
+    "appliance/service/enable",
+    "appliance/service/disable",
+    "appliance/service/status"
   ],
   "verbs": [
     [
@@ -179,6 +186,34 @@
     [
       "vault",
       "open"
+    ],
+    [
+      "service",
+      "start"
+    ],
+    [
+      "service",
+      "stop"
+    ],
+    [
+      "service",
+      "restart"
+    ],
+    [
+      "service",
+      "reload"
+    ],
+    [
+      "service",
+      "enable"
+    ],
+    [
+      "service",
+      "disable"
+    ],
+    [
+      "service",
+      "status"
     ]
   ],
   "routes": [
@@ -241,7 +276,14 @@
       "settings/datetime",
       "settings/input",
       "storage/vault/open",
-      "storage/vault/policy"
+      "storage/vault/policy",
+      "appliance/service/start",
+      "appliance/service/stop",
+      "appliance/service/restart",
+      "appliance/service/reload",
+      "appliance/service/enable",
+      "appliance/service/disable",
+      "appliance/service/status"
     ],
     "verbs": [
       [
@@ -275,6 +317,34 @@
       [
         "settings",
         "sound"
+      ],
+      [
+        "service",
+        "start"
+      ],
+      [
+        "service",
+        "stop"
+      ],
+      [
+        "service",
+        "restart"
+      ],
+      [
+        "service",
+        "reload"
+      ],
+      [
+        "service",
+        "enable"
+      ],
+      [
+        "service",
+        "disable"
+      ],
+      [
+        "service",
+        "status"
       ]
     ],
     "routes": [

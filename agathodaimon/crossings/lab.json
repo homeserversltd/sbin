@@ -90,7 +90,14 @@
     "update/profile-retire",
     "update/service",
     "update/sources-reseed",
-    "xenos/run"
+    "xenos/run",
+    "appliance/service/start",
+    "appliance/service/stop",
+    "appliance/service/restart",
+    "appliance/service/reload",
+    "appliance/service/enable",
+    "appliance/service/disable",
+    "appliance/service/status"
   ],
   "verbs": [
     [
@@ -384,6 +391,34 @@
     [
       "xenos",
       "run"
+    ],
+    [
+      "service",
+      "start"
+    ],
+    [
+      "service",
+      "stop"
+    ],
+    [
+      "service",
+      "restart"
+    ],
+    [
+      "service",
+      "reload"
+    ],
+    [
+      "service",
+      "enable"
+    ],
+    [
+      "service",
+      "disable"
+    ],
+    [
+      "service",
+      "status"
     ]
   ],
   "routes": [
@@ -560,7 +595,9 @@
     "/api/v1/xenia/remove",
     "/api/v1/xenia/status",
     "/api/v1/xenia/status/:id",
-    "/api/v1/xenia/validate"
+    "/api/v1/xenia/validate",
+    "/api/v1/appliance/service/:service/reload",
+    "/api/v1/service/:service/reload"
   ],
   "administrative": {
     "bands": [
@@ -589,7 +626,14 @@
       "storage/backup/backblaze/bucket-items",
       "storage/backup/backblaze/bucket-save",
       "storage/backup/backblaze/bucket-run",
-      "storage/vault/policy"
+      "storage/vault/policy",
+      "appliance/service/start",
+      "appliance/service/stop",
+      "appliance/service/restart",
+      "appliance/service/reload",
+      "appliance/service/enable",
+      "appliance/service/disable",
+      "appliance/service/status"
     ],
     "verbs": [
       [
@@ -655,6 +699,34 @@
       [
         "vault",
         "policy"
+      ],
+      [
+        "service",
+        "start"
+      ],
+      [
+        "service",
+        "stop"
+      ],
+      [
+        "service",
+        "restart"
+      ],
+      [
+        "service",
+        "reload"
+      ],
+      [
+        "service",
+        "enable"
+      ],
+      [
+        "service",
+        "disable"
+      ],
+      [
+        "service",
+        "status"
       ]
     ],
     "routes": [
@@ -709,7 +781,9 @@
       "/api/v1/settings/ssh/config",
       "/api/v1/settings/ssh/service/disable",
       "/api/v1/settings/ssh/service/enable",
-      "/api/v1/storage/vault/auto-decrypt"
+      "/api/v1/storage/vault/auto-decrypt",
+      "/api/v1/appliance/service/:service/reload",
+      "/api/v1/service/:service/reload"
     ]
   }
 }

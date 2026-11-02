@@ -64,7 +64,20 @@
     "thyrsus/propose",
     "thyrsus/admit",
     "thyrsus/forge-token",
-    "thyrsus/forge"
+    "thyrsus/forge",
+    "unit/start",
+    "unit/stop",
+    "unit/restart",
+    "unit/enable",
+    "unit/disable",
+    "unit/status",
+    "appliance/service/start",
+    "appliance/service/stop",
+    "appliance/service/restart",
+    "appliance/service/reload",
+    "appliance/service/enable",
+    "appliance/service/disable",
+    "appliance/service/status"
   ],
   "verbs": [
     [
@@ -95,18 +108,54 @@
       "notify",
       "post"
     ],
-    ["face", "app"],
-    ["face", "badge"],
-    ["face", "bar"],
-    ["face", "dictate"],
-    ["face", "fetch"],
-    ["face", "focus"],
-    ["face", "launch"],
-    ["face", "launcher-cache"],
-    ["face", "meter"],
-    ["face", "screenshot"],
-    ["face", "volume"],
-    ["face", "workspace"],
+    [
+      "face",
+      "app"
+    ],
+    [
+      "face",
+      "badge"
+    ],
+    [
+      "face",
+      "bar"
+    ],
+    [
+      "face",
+      "dictate"
+    ],
+    [
+      "face",
+      "fetch"
+    ],
+    [
+      "face",
+      "focus"
+    ],
+    [
+      "face",
+      "launch"
+    ],
+    [
+      "face",
+      "launcher-cache"
+    ],
+    [
+      "face",
+      "meter"
+    ],
+    [
+      "face",
+      "screenshot"
+    ],
+    [
+      "face",
+      "volume"
+    ],
+    [
+      "face",
+      "workspace"
+    ],
     [
       "local-ai",
       "card"
@@ -155,16 +204,46 @@
       "network",
       "wake-on-lan"
     ],
-    ["settings", "appearance"],
-    ["settings", "datetime"],
-    ["settings", "default-apps"],
-    ["settings", "display"],
-    ["settings", "energy"],
-    ["settings", "keyboard"],
-    ["settings", "region"],
-    ["settings", "input"],
-    ["settings", "notifications"],
-    ["settings", "sound"],
+    [
+      "settings",
+      "appearance"
+    ],
+    [
+      "settings",
+      "datetime"
+    ],
+    [
+      "settings",
+      "default-apps"
+    ],
+    [
+      "settings",
+      "display"
+    ],
+    [
+      "settings",
+      "energy"
+    ],
+    [
+      "settings",
+      "keyboard"
+    ],
+    [
+      "settings",
+      "region"
+    ],
+    [
+      "settings",
+      "input"
+    ],
+    [
+      "settings",
+      "notifications"
+    ],
+    [
+      "settings",
+      "sound"
+    ],
     [
       "settings",
       "samba"
@@ -216,6 +295,58 @@
     [
       "thyrsus",
       "forge"
+    ],
+    [
+      "unit",
+      "start"
+    ],
+    [
+      "unit",
+      "stop"
+    ],
+    [
+      "unit",
+      "restart"
+    ],
+    [
+      "unit",
+      "enable"
+    ],
+    [
+      "unit",
+      "disable"
+    ],
+    [
+      "unit",
+      "status"
+    ],
+    [
+      "service",
+      "start"
+    ],
+    [
+      "service",
+      "stop"
+    ],
+    [
+      "service",
+      "restart"
+    ],
+    [
+      "service",
+      "reload"
+    ],
+    [
+      "service",
+      "enable"
+    ],
+    [
+      "service",
+      "disable"
+    ],
+    [
+      "service",
+      "status"
     ]
   ],
   "routes": [
@@ -298,7 +429,14 @@
       "storage/vault/policy",
       "thyrsus/propose",
       "thyrsus/admit",
-      "thyrsus/forge-token"
+      "thyrsus/forge-token",
+      "appliance/service/start",
+      "appliance/service/stop",
+      "appliance/service/restart",
+      "appliance/service/reload",
+      "appliance/service/enable",
+      "appliance/service/disable",
+      "appliance/service/status"
     ],
     "verbs": [
       [
@@ -313,12 +451,30 @@
         "local-ai",
         "slot"
       ],
-      ["settings", "appearance"],
-      ["settings", "datetime"],
-      ["settings", "default-apps"],
-      ["settings", "display"],
-      ["settings", "notifications"],
-      ["settings", "sound"],
+      [
+        "settings",
+        "appearance"
+      ],
+      [
+        "settings",
+        "datetime"
+      ],
+      [
+        "settings",
+        "default-apps"
+      ],
+      [
+        "settings",
+        "display"
+      ],
+      [
+        "settings",
+        "notifications"
+      ],
+      [
+        "settings",
+        "sound"
+      ],
       [
         "thyrsus",
         "propose"
@@ -330,6 +486,34 @@
       [
         "thyrsus",
         "forge-token"
+      ],
+      [
+        "service",
+        "start"
+      ],
+      [
+        "service",
+        "stop"
+      ],
+      [
+        "service",
+        "restart"
+      ],
+      [
+        "service",
+        "reload"
+      ],
+      [
+        "service",
+        "enable"
+      ],
+      [
+        "service",
+        "disable"
+      ],
+      [
+        "service",
+        "status"
       ]
     ],
     "routes": [

@@ -1,0 +1,23 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "pid2-unit",
+    "features": {
+      "pid2-unit": {
+        "band": true,
+        "verbs": [
+          [
+            "unit",
+            "disable"
+          ]
+        ],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

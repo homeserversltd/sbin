@@ -1,6 +1,12 @@
 {
   "children": [
-    "control"
+    "control",
+    "start",
+    "stop",
+    "restart",
+    "enable",
+    "disable",
+    "status"
   ],
   "sclerite": {
     "name": "all",

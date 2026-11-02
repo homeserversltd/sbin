@@ -77,7 +77,20 @@
     "storage/nas/key/probe",
     "storage/disk/partlabel/assign",
     "storage/nas/role/swap",
-    "unit/control"
+    "unit/control",
+    "unit/start",
+    "unit/stop",
+    "unit/restart",
+    "unit/enable",
+    "unit/disable",
+    "unit/status",
+    "appliance/service/start",
+    "appliance/service/stop",
+    "appliance/service/restart",
+    "appliance/service/reload",
+    "appliance/service/enable",
+    "appliance/service/disable",
+    "appliance/service/status"
   ],
   "verbs": [
     [
@@ -299,6 +312,58 @@
     [
       "unit",
       "control"
+    ],
+    [
+      "unit",
+      "start"
+    ],
+    [
+      "unit",
+      "stop"
+    ],
+    [
+      "unit",
+      "restart"
+    ],
+    [
+      "unit",
+      "enable"
+    ],
+    [
+      "unit",
+      "disable"
+    ],
+    [
+      "unit",
+      "status"
+    ],
+    [
+      "service",
+      "start"
+    ],
+    [
+      "service",
+      "stop"
+    ],
+    [
+      "service",
+      "restart"
+    ],
+    [
+      "service",
+      "reload"
+    ],
+    [
+      "service",
+      "enable"
+    ],
+    [
+      "service",
+      "disable"
+    ],
+    [
+      "service",
+      "status"
     ]
   ],
   "routes": [
@@ -396,7 +461,9 @@
     "/api/v1/storage/nas/role/observe",
     "/api/v1/storage/nas/key/probe",
     "/api/v1/storage/disk/partlabel/assign",
-    "/api/v1/storage/nas/role/swap"
+    "/api/v1/storage/nas/role/swap",
+    "/api/v1/appliance/service/:service/reload",
+    "/api/v1/service/:service/reload"
   ],
   "administrative": {
     "bands": [
@@ -437,7 +504,14 @@
       "storage/backup/nas-sync/schedule/disable",
       "storage/nas/key/probe",
       "storage/disk/partlabel/assign",
-      "storage/nas/role/swap"
+      "storage/nas/role/swap",
+      "appliance/service/start",
+      "appliance/service/stop",
+      "appliance/service/restart",
+      "appliance/service/reload",
+      "appliance/service/enable",
+      "appliance/service/disable",
+      "appliance/service/status"
     ],
     "verbs": [
       [
@@ -515,6 +589,34 @@
       [
         "role",
         "swap"
+      ],
+      [
+        "service",
+        "start"
+      ],
+      [
+        "service",
+        "stop"
+      ],
+      [
+        "service",
+        "restart"
+      ],
+      [
+        "service",
+        "reload"
+      ],
+      [
+        "service",
+        "enable"
+      ],
+      [
+        "service",
+        "disable"
+      ],
+      [
+        "service",
+        "status"
       ]
     ],
     "routes": [
@@ -577,7 +679,9 @@
       "/api/v1/storage/backup/nas-sync/schedule/disable",
       "/api/v1/storage/nas/key/probe",
       "/api/v1/storage/disk/partlabel/assign",
-      "/api/v1/storage/nas/role/swap"
+      "/api/v1/storage/nas/role/swap",
+      "/api/v1/appliance/service/:service/reload",
+      "/api/v1/service/:service/reload"
     ]
   }
 }
