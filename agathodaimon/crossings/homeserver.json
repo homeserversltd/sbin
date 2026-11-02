@@ -474,6 +474,8 @@
   ],
   "administrative": {
     "bands": [
+      "network/child-device",
+      "settings/ssh",
       "appliance/service",
       "appliance/sudo-passwordless",
       "keyman/admin-password",

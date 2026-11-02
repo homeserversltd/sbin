@@ -428,6 +428,9 @@
   ],
   "administrative": {
     "bands": [
+      "network/child-device",
+      "network/dns",
+      "settings/ssh",
       "appliance/service",
       "appliance/sudo-passwordless",
       "local-ai/slot",
@@ -446,6 +449,18 @@
       "appliance/service/status"
     ],
     "verbs": [
+      [
+        "settings",
+        "energy"
+      ],
+      [
+        "settings",
+        "keyboard"
+      ],
+      [
+        "settings",
+        "region"
+      ],
       [
         "exousia",
         "change"
