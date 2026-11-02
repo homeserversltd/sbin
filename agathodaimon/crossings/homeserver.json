@@ -77,7 +77,6 @@
     "storage/nas/key/probe",
     "storage/disk/partlabel/assign",
     "storage/nas/role/swap",
-    "unit/control",
     "unit/start",
     "unit/stop",
     "unit/restart",
@@ -308,10 +307,6 @@
     [
       "role",
       "swap"
-    ],
-    [
-      "unit",
-      "control"
     ],
     [
       "unit",

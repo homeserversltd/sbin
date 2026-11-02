@@ -115,6 +115,31 @@ def _shelf_version() -> str:
                 return candidate.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeError):
             continue
+    # The content seat is read-only. The override permits isolated observations.
+    git_dir = Path(os.environ.get("AGATHODAIMON_CONTENT_SEAT", "/opt/sbin/source")) / ".git"
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+        if head.startswith("ref: "):
+            ref = head[5:]
+            if not ref.startswith("refs/") or any(part in {"", ".", ".."} for part in ref.split("/")):
+                return "unknown"
+            try:
+                head = (git_dir / ref).read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                head = ""
+                try:
+                    with (git_dir / "packed-refs").open(encoding="utf-8") as packed:
+                        for line in packed:
+                            fields = line.split()
+                            if len(fields) == 2 and fields[1] == ref:
+                                head = fields[0]
+                                break
+                except (OSError, UnicodeError):
+                    pass
+        if re.fullmatch(r"[0-9a-fA-F]{40}", head):
+            return "sha-" + head.lower()
+    except (OSError, UnicodeError, ValueError):
+        pass
     return "unknown"
 
 
