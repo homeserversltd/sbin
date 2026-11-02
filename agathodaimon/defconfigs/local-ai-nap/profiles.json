@@ -5,5 +5,6 @@
     "homesi": "hermes"
   },
   "python": ".hermes/hermes-agent/venv/bin/python",
-  "config": ".hermes/mem0.json"
+  "config": ".hermes/mem0.json",
+  "similarity_floor": 0.90
 }

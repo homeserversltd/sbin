@@ -1,6 +1,7 @@
 """Run one memory-maintenance pass as the account that owns the store."""
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -15,7 +16,13 @@ from agathodaimon import _envelope
 HERE = Path(__file__).resolve().parent
 
 
-def dispatch(request=None):
+def dispatch(request=None, *, dry_run=False, user_id=None):
+    if request is not None:
+        requested_dry = request.payload.get("dry_run", False)
+        if not isinstance(requested_dry, bool):
+            return {"ok": False, "firstMissingSignal": "nap-arguments-invalid"}
+        dry_run = dry_run or requested_dry
+        user_id = request.payload.get("user_id", user_id)
     started = time.monotonic()
     log_fd = None
     value = {"ok": False, "firstMissingSignal": "nap-account-pass-unavailable", "judged": 0, "folded": 0, "stale": 0, "gist": 0}
@@ -29,7 +36,9 @@ def dispatch(request=None):
         config = home / settings["config"]
         if not python.is_file() or not config.is_file():
             raise ValueError("account-runtime-unavailable")
-        command = [str(python), str(HERE / "pass.py"), str(config)]
+        if not isinstance(dry_run, bool) or (user_id is not None and (not isinstance(user_id, str) or not user_id.strip())):
+            raise ValueError("nap-arguments-invalid")
+        command = [str(python), str(HERE / "pass.py"), str(config), str(settings["similarity_floor"]), user_id or "", "dry" if dry_run else "write"]
         if os.geteuid() != identity.pw_uid:
             if os.geteuid() != 0:
                 raise ValueError("account-switch-requires-root")
@@ -45,7 +54,7 @@ def dispatch(request=None):
         pass
     if log_fd is not None:
         try:
-            if value.get("ok") is not True or any(value.get(k, 0) for k in ("judged", "folded", "stale", "gist")):
+            if not dry_run and (value.get("ok") is not True or any(value.get(k, 0) for k in ("judged", "folded", "stale", "gist"))):
                 deed = {"who": "agathodaimon", "verb": "nap", "target": "memory", "outcome": "ok" if value.get("ok") else "failed", "duration_ms": int((time.monotonic() - started) * 1000), "signal": value.get("firstMissingSignal", "none")}
                 line = (json.dumps(deed, separators=(",", ":")) + "\n").encode()
                 if len(line) >= 1024 or os.write(log_fd, line) != len(line):
@@ -59,9 +68,10 @@ def dispatch(request=None):
 
 
 def main(args=None):
-    if args:
-        print(json.dumps({"ok": False, "firstMissingSignal": "nap-arguments-invalid"}))
-        return 2
+    parser = argparse.ArgumentParser(prog="local-ai nap")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--user-id")
+    options = parser.parse_args(args or [])
     request = None
     if not sys.stdin.isatty():
         raw = sys.stdin.read()
@@ -69,12 +79,12 @@ def main(args=None):
             original = sys.stdin
             try:
                 sys.stdin = io.StringIO(raw)
-                request = _envelope.read()
+                request = _envelope.read(known_fields=("dry_run", "user_id"))
             except (ValueError, OSError):
                 print(json.dumps({"ok": False, "firstMissingSignal": "nap-envelope-invalid"}))
                 return 2
             finally:
                 sys.stdin = original
-    value = dispatch(request)
+    value = dispatch(request, dry_run=options.dry_run, user_id=options.user_id)
     print(json.dumps(value, separators=(",", ":")))
     return 0 if value.get("ok") else 1
