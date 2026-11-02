@@ -12,9 +12,9 @@ UNIT = re.compile(r"[A-Za-z0-9_:][A-Za-z0-9_.:-]*(?:@[A-Za-z0-9_:][A-Za-z0-9_.:-
 PROPERTIES = {"LoadState": "load_state", "ActiveState": "active_state", "SubState": "sub_state", "UnitFileState": "unit_file_state"}
 
 
-def _run(argv):
+def _run(argv, timeout=30):
     try:
-        result = subprocess.run(argv, text=True, capture_output=True, check=False, timeout=30)
+        result = subprocess.run(argv, text=True, capture_output=True, check=False, timeout=timeout)
         return result.returncode, result.stdout
     except (OSError, subprocess.SubprocessError):
         return None, ""
@@ -30,11 +30,15 @@ def _show(prefix, unit):
     return code, values
 
 
-def control(action, unit, scope):
+def control(action, unit, scope, deadline_seconds=30):
     receipt = {"schema": SCHEMA, "ok": False, "action": action, "unit": unit, "scope": scope,
                "command": None, "returncode": None,
+               "observed": {name: None for name in PROPERTIES.values()},
                "readback": {name: None for name in PROPERTIES.values()},
                "mutation_performed": False, "first_missing_signal": None}
+    if isinstance(deadline_seconds, bool) or not isinstance(deadline_seconds, (int, float)) or not 1 <= deadline_seconds <= 600:
+        receipt["first_missing_signal"] = "invalid-deadline"
+        return receipt
     if not isinstance(action, str) or action not in ACTIONS:
         receipt["first_missing_signal"] = "invalid-action"
         return receipt
@@ -46,6 +50,7 @@ def control(action, unit, scope):
         return receipt
     prefix = ["systemctl"] + (["--user", "-M", f"{OWNER}@.host"] if scope == "owner" else [])
     code, initial = _show(prefix, unit)
+    receipt["observed"] = dict(initial)
     receipt["readback"] = initial
     if initial["load_state"] == "not-found":
         receipt["first_missing_signal"] = "unit-not-found"
@@ -56,11 +61,23 @@ def control(action, unit, scope):
     if initial["load_state"] != "loaded":
         receipt["first_missing_signal"] = "unit-not-loaded"
         return receipt
+    if action in ("start", "stop") and initial["active_state"] is None:
+        receipt["first_missing_signal"] = "unit-active-state-read-failed"
+        return receipt
+    if action in ("enable", "disable") and initial["unit_file_state"] is None:
+        receipt["first_missing_signal"] = "unit-file-state-read-failed"
+        return receipt
     command_code = 0
     if action != "status":
         receipt["command"] = [*prefix, action, unit]
-        receipt["mutation_performed"] = True
-        command_code, _ = _run(receipt["command"])
+        receipt["mutation_performed"] = (
+            (action == "start" and initial["active_state"] in ("inactive", "failed"))
+            or (action == "stop" and initial["active_state"] in ("active", "reloading", "activating"))
+            or action == "restart"
+            or (action == "enable" and initial["unit_file_state"] != "enabled")
+            or (action == "disable" and initial["unit_file_state"] != "disabled")
+        )
+        command_code, _ = _run(receipt["command"], timeout=deadline_seconds)
         receipt["returncode"] = command_code
     read_code, readback = _show(prefix, unit)
     receipt["readback"] = readback
