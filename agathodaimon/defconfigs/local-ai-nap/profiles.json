@@ -1,0 +1,9 @@
+{
+  "accounts": {
+    "hermes": "owner",
+    "specula": "owner",
+    "homesi": "hermes"
+  },
+  "python": ".hermes/hermes-agent/venv/bin/python",
+  "config": ".hermes/mem0.json"
+}

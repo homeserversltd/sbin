@@ -28,6 +28,7 @@
     "local-ai/edition",
     "local-ai/library",
     "local-ai/memory",
+    "local-ai/nap",
     "local-ai/slot",
     "network/cert/house-ca",
     "network/cert/refresh",
@@ -170,6 +171,10 @@
     [
       "local-ai",
       "memory"
+    ],
+    [
+      "local-ai",
+      "nap"
     ],
     [
       "local-ai",
@@ -379,6 +384,7 @@
     "/api/v1/local-ai/edition",
     "/api/v1/local-ai/library",
     "/api/v1/local-ai/memory",
+    "/api/v1/local-ai/nap",
     "/api/v1/local-ai/slot/:slot",
     "/api/v1/network/device",
     "/api/v1/network/device/wake",

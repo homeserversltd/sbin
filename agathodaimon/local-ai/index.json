@@ -4,6 +4,7 @@
     "edition",
     "library",
     "memory",
+    "nap",
     "slot"
   ]
 }

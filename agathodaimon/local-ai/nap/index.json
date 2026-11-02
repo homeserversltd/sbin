@@ -1,0 +1,13 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "local-ai",
+    "features": {
+      "local-ai": {
+        "band": true,
+        "verbs": [["local-ai", "nap"]],
+        "routes": ["/api/v1/local-ai/nap"]
+      }
+    }
+  }
+}
