@@ -1,0 +1,387 @@
+#!/usr/bin/python3
+import fcntl
+import hashlib
+import json
+import os
+import select
+import signal
+import subprocess
+import time
+
+SWAYMSG = "/usr/bin/swaymsg"
+WAYVNC = "/usr/bin/wayvnc"
+WAYVNCCTL = "/usr/bin/wayvncctl"
+WAYVNC_CONFIG = os.environ.get("SCREEN_SUPERVISOR_WAYVNC_CONFIG", "/home/hermes/.config/wayvnc/config")
+FOLLOWER = os.environ.get("SCREEN_SUPERVISOR_FOLLOWER", "wayvnc")
+VIRTUAL_OUTPUT = "HEADLESS-1"
+SUPERVISE_WAYVNC = False
+POLL_SECONDS = 1.0
+COMPOSITOR_IPC_FAILURE_GRACE_SECONDS = 15.0
+wayvnc_process = None
+vnc_output = None
+sunshine_output = None
+last_error = None
+managed_disabled_outputs = set()
+selected_physical_output = None
+last_compositor_success = 0.0
+
+
+def report_error(message):
+    global last_error
+    if message != last_error:
+        print("monitor-first screen: " + message, flush=True)
+        last_error = message
+
+
+def quoted(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+def sway(command):
+    return subprocess.run(
+        [SWAYMSG, command], check=True, capture_output=True, text=True, timeout=5
+    )
+
+
+def get_outputs():
+    result = subprocess.run(
+        [SWAYMSG, "-t", "get_outputs", "-r"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    value = json.loads(result.stdout)
+    if not isinstance(value, list):
+        raise RuntimeError("sway-output-list-invalid")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def get_workspaces():
+    result = subprocess.run(
+        [SWAYMSG, "-t", "get_workspaces", "-r"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    value = json.loads(result.stdout)
+    if not isinstance(value, list):
+        raise RuntimeError("sway-workspace-list-invalid")
+    return [item for item in value if isinstance(item, dict)]
+
+
+def active_names(outputs):
+    return {
+        item.get("name")
+        for item in outputs
+        if item.get("active") is True and isinstance(item.get("name"), str)
+    }
+
+
+def ensure_wayvnc():
+    global wayvnc_process, vnc_output
+    if not SUPERVISE_WAYVNC:
+        return
+    if wayvnc_process is not None and wayvnc_process.poll() is not None:
+        code = wayvnc_process.returncode
+        wayvnc_process = None
+        vnc_output = None
+        report_error("wayvnc exited; restarting it (status " + str(code) + ")")
+    if wayvnc_process is None:
+        wayvnc_process = subprocess.Popen(
+            [WAYVNC, "--config", WAYVNC_CONFIG], stdin=subprocess.DEVNULL
+        )
+        report_error("wayvnc started under supervisor")
+
+
+def select_vnc_output(target):
+    global vnc_output, last_error
+    if vnc_output == target:
+        return True
+    if SUPERVISE_WAYVNC and (wayvnc_process is None or wayvnc_process.poll() is not None):
+        return False
+    try:
+        subprocess.run(
+            [WAYVNCCTL, "output-set", target],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        report_error("wayvncctl output-set " + target + " pending: " + type(exc).__name__)
+        return False
+    vnc_output = target
+    last_error = None
+    return True
+
+
+def move_every_workspace_and_focus(target):
+    workspaces = get_workspaces()
+    names = []
+    for workspace in workspaces:
+        name = workspace.get("name")
+        if not isinstance(name, str):
+            raise RuntimeError("sway-workspace-name-missing")
+        names.append(name)
+        if workspace.get("output") != target:
+            sway("workspace " + quoted(name))
+            sway("move workspace to output " + quoted(target))
+    by_name = {
+        workspace.get("name"): workspace
+        for workspace in get_workspaces()
+        if isinstance(workspace.get("name"), str)
+    }
+    if any(by_name.get(name, {}).get("output") != target for name in names):
+        report_error("workspace migration readback pending for " + target)
+        return False
+    if target not in active_names(get_outputs()):
+        report_error("selected output is no longer active: " + target)
+        return False
+    focused = any(
+        workspace.get("focused") is True and workspace.get("output") == target
+        for workspace in by_name.values()
+    )
+    if not focused:
+        sway("focus output " + quoted(target))
+    final_workspaces = get_workspaces()
+    final_by_name = {
+        workspace.get("name"): workspace
+        for workspace in final_workspaces
+        if isinstance(workspace.get("name"), str)
+    }
+    if any(final_by_name.get(name, {}).get("output") != target for name in names):
+        report_error("workspace migration readback pending for " + target)
+        return False
+    if final_workspaces and not any(
+        workspace.get("focused") is True and workspace.get("output") == target
+        for workspace in final_workspaces
+    ):
+        report_error("focus readback pending for " + target)
+        return False
+    return True
+
+
+def physical_outputs(outputs):
+    return sorted(
+        (
+            item
+            for item in outputs
+            if item.get("active") is True
+            and isinstance(item.get("name"), str)
+            and item.get("name") != VIRTUAL_OUTPUT
+        ),
+        key=lambda item: item["name"],
+    )
+
+
+def reconcile():
+    global managed_disabled_outputs, selected_physical_output, sunshine_output
+    outputs = get_outputs()
+    physical = physical_outputs(outputs)
+    physical_names = {item["name"] for item in physical}
+    if selected_physical_output not in physical_names:
+        selected_physical_output = None
+    if not physical:
+        recoverable = sorted(
+            item["name"]
+            for item in outputs
+            if item.get("name") in managed_disabled_outputs
+            and item.get("active") is not True
+            and item.get("name") != VIRTUAL_OUTPUT
+        )
+        for candidate in recoverable:
+            try:
+                sway("output " + quoted(candidate) + " enable")
+                outputs = get_outputs()
+                physical = physical_outputs(outputs)
+                if physical:
+                    break
+            except (OSError, subprocess.SubprocessError) as exc:
+                report_error("managed physical output re-enable pending: " + type(exc).__name__)
+    if physical:
+        physical_names = {item["name"] for item in physical}
+        if selected_physical_output not in physical_names:
+            selected_physical_output = physical[0]["name"]
+        target = selected_physical_output
+    else:
+        selected_physical_output = None
+        target = VIRTUAL_OUTPUT
+    if FOLLOWER == "wayvnc":
+        try:
+            ensure_wayvnc()
+            select_vnc_output(target)
+        except (OSError, subprocess.SubprocessError) as exc:
+            report_error("WayVNC attempt pending: " + type(exc).__name__)
+    if not physical and VIRTUAL_OUTPUT not in active_names(outputs):
+        sway("output " + quoted(VIRTUAL_OUTPUT) + " enable")
+        outputs = get_outputs()
+        if VIRTUAL_OUTPUT not in active_names(outputs):
+            report_error("fallback output did not become active")
+            return
+    if physical:
+        # Keep the selected output active throughout; retiring the others first
+        # avoids Sway creating replacement workspaces on an output being drained.
+        active = active_names(get_outputs())
+        if target not in active:
+            report_error("selected output is no longer active: " + target)
+            return
+        for output in sorted(active - {target}):
+            if target not in active_names(get_outputs()):
+                report_error("selected output disappeared during transition: " + target)
+                return
+            if output in active_names(get_outputs()):
+                sway("output " + quoted(output) + " disable")
+                managed_disabled_outputs.add(output)
+    if not move_every_workspace_and_focus(target):
+        return
+    if FOLLOWER == "sunshine" and sunshine_output != target:
+        try:
+            subprocess.run(
+                ["systemctl", "--user", "restart", "sunshine@screen.service"],
+                check=True, capture_output=True, text=True, timeout=15,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            report_error("Sunshine restart pending: " + type(exc).__name__)
+            return
+        sunshine_output = target
+
+
+def start_subscription():
+    return subprocess.Popen(
+        [SWAYMSG, "-m", "-t", "subscribe", '["output"]'],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+
+
+def compositor_responding():
+    global last_compositor_success
+    try:
+        subprocess.run(
+            [SWAYMSG, "-t", "get_version", "-r"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    last_compositor_success = time.monotonic()
+    return True
+
+
+def stop_subscription(subscriber):
+    if subscriber is None:
+        return
+    if subscriber.poll() is None:
+        subscriber.terminate()
+        try:
+            subscriber.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            subscriber.kill()
+            subscriber.wait(timeout=2)
+    if subscriber.stdout is not None:
+        subscriber.stdout.close()
+
+
+def stop_wayvnc():
+    global wayvnc_process, vnc_output
+    if wayvnc_process is None:
+        return
+    if wayvnc_process.poll() is None:
+        wayvnc_process.terminate()
+        try:
+            wayvnc_process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            wayvnc_process.kill()
+            wayvnc_process.wait(timeout=2)
+    wayvnc_process = None
+    vnc_output = None
+
+
+def stop_on_signal(_signum, _frame):
+    raise SystemExit(0)
+
+
+def main():
+    global last_compositor_success
+    if FOLLOWER not in ("wayvnc", "sunshine", "none"):
+        raise RuntimeError("screen-supervisor-follower-invalid")
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime_dir:
+        raise RuntimeError("XDG_RUNTIME_DIR-missing")
+    sway_socket = os.environ.get("SWAYSOCK")
+    if not sway_socket:
+        raise RuntimeError("SWAYSOCK-missing")
+    session_key = hashlib.sha256(os.fsencode(sway_socket)).hexdigest()
+    lock_fd = os.open(
+        os.path.join(
+            runtime_dir,
+            "sway-seat-screen-supervisor-" + session_key + ".lock",
+        ),
+        os.O_CREAT | os.O_RDWR,
+        0o600,
+    )
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock_fd)
+        return
+    signal.signal(signal.SIGTERM, stop_on_signal)
+    signal.signal(signal.SIGINT, stop_on_signal)
+    subscriber = None
+    last_compositor_success = time.monotonic()
+    compositor_seen_response = False
+    try:
+        while True:
+            if compositor_seen_response and not os.path.exists(sway_socket):
+                report_error("previously responsive Sway socket disappeared; stopping session helper")
+                break
+            if not compositor_responding():
+                if compositor_seen_response and not os.path.exists(sway_socket):
+                    report_error("previously responsive Sway socket disappeared; stopping session helper")
+                    break
+                if time.monotonic() - last_compositor_success >= COMPOSITOR_IPC_FAILURE_GRACE_SECONDS:
+                    report_error("Sway compositor IPC stayed unavailable; stopping session helper")
+                    break
+                stop_subscription(subscriber)
+                subscriber = None
+                time.sleep(POLL_SECONDS)
+                continue
+            compositor_seen_response = True
+            if subscriber is not None and subscriber.poll() is not None:
+                stop_subscription(subscriber)
+                subscriber = None
+            if subscriber is None:
+                try:
+                    subscriber = start_subscription()
+                except OSError as exc:
+                    subscriber = None
+                    report_error("Sway output subscription pending: " + type(exc).__name__)
+            try:
+                reconcile()
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                report_error("reconcile pending: " + type(exc).__name__)
+            if subscriber is not None and subscriber.stdout is not None:
+                readable, _, _ = select.select(
+                    [subscriber.stdout], [], [], POLL_SECONDS
+                )
+                if readable:
+                    if not subscriber.stdout.readline():
+                        stop_subscription(subscriber)
+                        subscriber = None
+                        time.sleep(POLL_SECONDS)
+            else:
+                time.sleep(POLL_SECONDS)
+    finally:
+        stop_subscription(subscriber)
+        stop_wayvnc()
+        os.close(lock_fd)
+
+
+if __name__ == "__main__":
+    main()

@@ -9,6 +9,8 @@ waits months, until the owner says so.
 
 old file (repo)                         now done by
 --------------------------------------  -------------------------------------------------
+owner-group.py (harmonia-monad)         sbin agathodaimon/owner-group (old copy retained)
+sway-seat-screen-supervisor (harmonia-monad) sbin agathodaimon/screen-supervisor (old copy retained)
 mountvault.sh (sbin)                    sbin storage/vault/open
 websiteMountVault.sh (sbin)             sbin storage/vault/open
 setupNAS.sh (sbin)                      sbin storage/nas/setup, Caduceus

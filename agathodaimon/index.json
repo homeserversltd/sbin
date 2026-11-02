@@ -22,6 +22,8 @@
     "games",
     "console",
     "unit",
-    "xenos"
+    "xenos",
+    "owner-group",
+    "screen-supervisor"
   ]
 }
