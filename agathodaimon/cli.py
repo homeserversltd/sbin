@@ -297,17 +297,18 @@ def _walk_chord(path: Path, envelope: dict) -> int:
     failed = None
     signal = "none"
     changed = False
-    from agathodaimon._envelope import _pin_bearing_exousia
+    from agathodaimon._envelope import _pin_bearing_exousia, _redact_pin_carriers
+    request = json.dumps(_redact_pin_carriers(envelope), separators=(",", ":"))
     if _pin_bearing_exousia(envelope):
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
-                          "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
+                          "request": request, "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
         return 1
     try:
         serve, final = _validate_chord(_index(path))
     except (OSError, ValueError, _ChordError) as exc:
         reason = str(exc) if isinstance(exc, _ChordError) else "chord-stage-invalid"
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
-                          "stages": [], "failedStage": None, "firstMissingSignal": reason}))
+                          "request": request, "stages": [], "failedStage": None, "firstMissingSignal": reason}))
         return 1
     blocked = False
     for is_final, stages in ((False, serve), (True, final)):
@@ -349,8 +350,19 @@ def _walk_chord(path: Path, envelope: dict) -> int:
                     refusal = "chord-stage-receipt-schema-mismatch"
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
                     refusal = receipt.get("firstMissingSignal") or "chord-stage-refused"
-                if receipt is not None and any(receipt.get(key) is True for key in ("mutation_performed", "mutationPerformed", "changed")):
-                    changed = True
+                if receipt is not None:
+                    steps = receipt.get("steps")
+                    steps = steps if isinstance(steps, list) else []
+                    mutation_steps = {"caduceus.nas-sync.hold.v1": {"holder-start"},
+                                      "caduceus.nas-sync.release.v1": {"holder-stop"},
+                                      "caduceus.disk.partlabel.assign.v1": {"partlabel-write"},
+                                      "caduceus.nas.attach.v1": {"mount-start", "cryptsetup-open"},
+                                      "caduceus.nas.detach.v1": {"mount-stop", "opener-stop", "service-stop"}}
+                    schema = receipt.get("schema")
+                    names = mutation_steps.get(schema, set()) if isinstance(schema, str) else set()
+                    if (any(receipt.get(key) is True for key in ("mutation_performed", "mutationPerformed", "changed"))
+                            or any(isinstance(step, dict) and step.get("step") in names and step.get("ok") is True for step in steps)):
+                        changed = True
             except _ChordError as exc:
                 refusal = str(exc)
             except Exception:
@@ -372,8 +384,12 @@ def _walk_chord(path: Path, envelope: dict) -> int:
             ok = False
             if failed is None:
                 signal = "chord-deed-log-unavailable"
+    for row in rows:
+        if isinstance(row["receipt"], dict):
+            row["receipt"] = {key: value for key, value in row["receipt"].items()
+                              if key not in {"raw_envelope", "envelope"}}
     print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": ok, "routine_id": routine_id,
-                      "stages": rows, "failedStage": failed, "firstMissingSignal": signal, "changed": changed}, separators=(",", ":")))
+                      "request": request, "stages": rows, "failedStage": failed, "firstMissingSignal": signal, "changed": changed}, separators=(",", ":")))
     return 0 if ok else 1
 
 
