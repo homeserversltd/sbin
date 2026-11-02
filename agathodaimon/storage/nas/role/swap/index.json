@@ -1,0 +1,33 @@
+{
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [["role", "swap"]],
+        "routes": ["/api/v1/storage/nas/role/swap"],
+        "administrative": {"band": true, "verbs": [["role", "swap"]], "routes": ["/api/v1/storage/nas/role/swap"]}
+      }
+    }
+  },
+  "serve": [
+    {"stage_id": "hold", "snake": "storage/backup/nas-sync/hold"},
+    {"stage_id": "observe-primary", "snake": "storage/nas/role/observe", "arguments": {"role": "primary"}},
+    {"stage_id": "observe-backup", "snake": "storage/nas/role/observe", "arguments": {"role": "backup"}},
+    {"stage_id": "probe-primary-disk-backup-key", "snake": "storage/nas/key/probe", "arguments": {"key_role": "backup", "partition": {"$ref": "stages.observe-primary.receipt.partition"}}},
+    {"stage_id": "probe-backup-disk-primary-key", "snake": "storage/nas/key/probe", "arguments": {"key_role": "primary", "partition": {"$ref": "stages.observe-backup.receipt.partition"}}},
+    {"stage_id": "detach-backup", "snake": "storage/nas/detach", "arguments": {"role": "backup"}, "receipt": "caduceus.nas.detach.v1", "deadline_seconds": 180},
+    {"stage_id": "detach-primary", "snake": "storage/nas/detach", "arguments": {"role": "primary"}, "receipt": "caduceus.nas.detach.v1", "deadline_seconds": 180},
+    {"stage_id": "label-primary-to-tmp", "snake": "storage/disk/partlabel/assign", "arguments": {"current_label": "homeserver-primary-nas", "label": "homeserver-nas-swap-tmp"}},
+    {"stage_id": "label-backup-to-primary", "snake": "storage/disk/partlabel/assign", "arguments": {"current_label": "homeserver-backup-nas", "label": "homeserver-primary-nas"}},
+    {"stage_id": "label-tmp-to-backup", "snake": "storage/disk/partlabel/assign", "arguments": {"current_label": "homeserver-nas-swap-tmp", "label": "homeserver-backup-nas"}},
+    {"stage_id": "attach-primary", "snake": "storage/nas/attach", "arguments": {"role": "primary"}, "receipt": "caduceus.nas.attach.v1", "deadline_seconds": 180},
+    {"stage_id": "attach-backup", "snake": "storage/nas/attach", "arguments": {"role": "backup"}, "receipt": "caduceus.nas.attach.v1", "deadline_seconds": 180},
+    {"stage_id": "observe-after-primary", "snake": "storage/nas/role/observe", "arguments": {"role": "primary"}},
+    {"stage_id": "observe-after-backup", "snake": "storage/nas/role/observe", "arguments": {"role": "backup"}}
+  ],
+  "finally": [
+    {"stage_id": "release", "snake": "storage/backup/nas-sync/release", "depends_on": ["hold"], "arguments": {"hold_id": {"$ref": "stages.hold.receipt.holdId"}}}
+  ]
+}

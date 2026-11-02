@@ -1,6 +1,6 @@
 # Agathodaimon
 
-Thin CLI grammar: `agathodaimon <noun> <verb> [args...]`.
+The hand form is `cli.py <noun…> <verb> [--field value …] [< envelope]`; long options supply payload fields. Use `--help` at every level and `--version` for the shelf version. A chord is a leaf whose `index.json` carries `serve`.
 
 ## Staff convergence verbs
 

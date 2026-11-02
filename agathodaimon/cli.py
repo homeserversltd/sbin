@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import ast
+import copy
 import importlib.util
 import getpass
+import contextlib
+from datetime import datetime, timezone
+import time
 import json
 import os
 import re
@@ -45,7 +50,41 @@ def _load(path: Path):
     module = importlib.util.module_from_spec(spec); module.__package__ = "agathodaimon"; sys.modules[safe] = module; spec.loader.exec_module(module); return module
 
 def _help(path: Path) -> None:
-    print(json.dumps({"schema":"agathodaimon.cli.help.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False}))
+    declaration = _index(path)
+    source = path / "index.py"
+    kind = "chord" if "serve" in declaration and not source.is_file() else "stop"
+    doc = ""
+    fields = []
+    if source.is_file():
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        doc = (ast.get_docstring(tree) or "").split("\n\n", 1)[0]
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "known_fields":
+                    continue
+                try:
+                    names = ast.literal_eval(keyword.value)
+                except (ValueError, TypeError, SyntaxError):
+                    continue
+                if isinstance(names, (tuple, list)):
+                    for name in names:
+                        if isinstance(name, str) and name not in fields:
+                            fields.append(name)
+        if any(isinstance(node, (ast.Assign, ast.AnnAssign)) and
+               any(isinstance(target, ast.Name) and target.id == "ACTIONS" for target in
+                   (node.targets if isinstance(node, ast.Assign) else [node.target]))
+               for node in tree.body):
+            kind = "fused"
+    result = {"schema": "agathodaimon.cli.help.v1", "path": path.relative_to(ROOT).as_posix(),
+              "kind": kind, "description": doc, "ok": True, "mutationPerformed": False,
+              "payload_fields": [{"name": name,
+                                  "meaning": doc if re.search(r"\b" + re.escape(name) + r"\b", doc, re.IGNORECASE) else None}
+                                 for name in fields]}
+    if kind == "chord":
+        result["stages"] = [stage.get("stage_id") for stage in declaration.get("serve", []) + declaration.get("finally", [])]
+    print(json.dumps(result))
 
 def _slash_target(raw_path: str) -> Path | None:
     parts = tuple(part for part in raw_path.split("/") if part)
@@ -57,9 +96,247 @@ def _slash_target(raw_path: str) -> Path | None:
             return None
         path /= part
     target = path / "index.py"
-    return target if target.is_file() else None
+    if target.is_file():
+        return target
+    return path if "serve" in _index(path) else None
+
+
+def _fresh_envelope(band: str) -> dict:
+    stamp = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    version = (ROOT.parent / "VERSION").read_text(encoding="utf-8").strip()
+    return {"schema": "caduceus.staff.v1", "intent_id": "agathodaimon-" + band.replace("/", "-") + "-" + stamp,
+            "transition": band, "origin_of_intent": "near", "version": version, "timestamp": stamp, "payload": {}}
+
+
+def _hand_options(words: list[str]) -> dict:
+    result = {}
+    repeated = set()
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if not word.startswith("--") or len(word) == 2:
+            raise ValueError("expected a long option")
+        name, equal, value = word[2:].partition("=")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin"}:
+            raise ValueError("invalid or forbidden long option")
+        if not equal:
+            i += 1
+            if i >= len(words):
+                raise ValueError("long option requires a value")
+            value = words[i]
+        try:
+            typed = json.loads(value, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("invalid JSON constant")))
+            if isinstance(typed, str):
+                typed = value
+        except (ValueError, json.JSONDecodeError):
+            typed = value
+        if name in result:
+            if name not in repeated:
+                result[name] = [result[name]]
+                repeated.add(name)
+            result[name].append(typed)
+        else:
+            result[name] = typed
+        i += 1
+    return result
+
+
+class _ChordError(ValueError):
+    pass
+
+
+def _references(value):
+    if isinstance(value, dict):
+        if "$ref" in value:
+            if len(value) != 1 or not isinstance(value["$ref"], str):
+                raise _ChordError("chord-ref-unresolved")
+            yield value["$ref"]
+        else:
+            for child in value.values():
+                yield from _references(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _references(child)
+
+
+def _validate_chord(declaration: dict):
+    serve = declaration.get("serve")
+    final = declaration.get("finally", [])
+    if not isinstance(serve, list) or not isinstance(final, list):
+        raise _ChordError("chord-stage-invalid")
+    seen = set()
+    serve_ids = set()
+    for is_final, stages in ((False, serve), (True, final)):
+        for stage in stages:
+            if not isinstance(stage, dict):
+                raise _ChordError("chord-stage-invalid")
+            if "rust" in stage or "native" in stage:
+                raise _ChordError("chord-stage-not-snake")
+            sid, snake = stage.get("stage_id"), stage.get("snake")
+            target = _slash_target(snake) if isinstance(snake, str) and snake else None
+            if not isinstance(sid, str) or not sid or sid in seen or target is None or not target.is_file():
+                raise _ChordError("chord-stage-invalid")
+            if not isinstance(stage.get("arguments", {}), dict) or not isinstance(stage.get("required", True), bool):
+                raise _ChordError("chord-stage-invalid")
+            expected_receipt = stage.get("receipt")
+            if expected_receipt is not None and (not isinstance(expected_receipt, str) or not expected_receipt):
+                raise _ChordError("chord-stage-invalid")
+            deps = stage.get("depends_on", [])
+            if not isinstance(deps, list) or any(not isinstance(dep, str) or dep not in (serve_ids if is_final else seen) for dep in deps):
+                raise _ChordError("chord-stage-invalid")
+            deadline = stage.get("deadline_seconds")
+            if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not 1 <= deadline <= 600):
+                raise _ChordError("chord-stage-deadline-invalid")
+            for ref in _references(stage.get("arguments", {})):
+                parts = ref.split(".")
+                if len(parts) >= 3 and parts[:2] == ["request", "payload"] and all(parts[2:]):
+                    continue
+                if len(parts) >= 4 and parts[0] == "stages" and parts[2] == "receipt" and parts[1] in seen and all(parts[3:]):
+                    continue
+                raise _ChordError("chord-ref-unresolved")
+            seen.add(sid)
+            if not is_final:
+                serve_ids.add(sid)
+    return serve, final
+
+
+def _resolve_arguments(value, request, completed):
+    if isinstance(value, dict):
+        if "$ref" in value:
+            parts = value["$ref"].split(".")
+            if parts[0] == "request":
+                current = {"request": request}
+            else:
+                current = {"stages": completed}
+            for part in parts:
+                if not isinstance(current, dict) or part not in current:
+                    raise _ChordError("chord-ref-unresolved")
+                current = current[part]
+            if current is None:
+                raise _ChordError("chord-ref-unresolved")
+            return copy.deepcopy(current)
+        return {key: _resolve_arguments(child, request, completed) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_resolve_arguments(child, request, completed) for child in value]
+    return value
+
+
+def _chord_deed(routine_id, envelope, rows, ok, failed, signal, started):
+    def token(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,128}", value) else "invalid"
+    fields = {"who": "agathodaimon", "verb": "chord", "target": token(routine_id),
+              "routine_id": token(routine_id), "outcome": "ok" if ok else "failed",
+              "duration_ms": int((time.monotonic() - started) * 1000),
+              "stages": [[token(row["stage_id"]), row["outcome"]] for row in rows],
+              "failedStage": token(failed) if failed else None, "firstMissingSignal": token(signal)}
+    request_id = envelope.get("intent_id")
+    if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request_id):
+        fields["request_id"] = request_id
+    line = json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode() + b"\n"
+    if len(line) >= 1024:
+        raise OSError("chord-deed-too-large")
+    from agathodaimon.storage.nas import runtime
+    target = runtime.runtime_path("/var/log/appliance/appliance.log")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+    try:
+        if os.write(fd, line) != len(line):
+            raise OSError("chord-deed-write-failed")
+    finally:
+        os.close(fd)
+
+
+def _walk_chord(path: Path, envelope: dict) -> int:
+    started = time.monotonic()
+    routine_id = path.relative_to(ROOT).as_posix()
+    rows = []
+    completed = {}
+    failed = None
+    signal = "none"
+    changed = False
+    from agathodaimon._envelope import _pin_bearing_exousia
+    if _pin_bearing_exousia(envelope):
+        print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
+                          "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
+        return 1
+    try:
+        serve, final = _validate_chord(_index(path))
+    except (OSError, ValueError, _ChordError) as exc:
+        reason = str(exc) if isinstance(exc, _ChordError) else "chord-stage-invalid"
+        print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
+                          "stages": [], "failedStage": None, "firstMissingSignal": reason}))
+        return 1
+    blocked = False
+    for is_final, stages in ((False, serve), (True, final)):
+        for stage in stages:
+            sid, band = stage["stage_id"], stage["snake"]
+            row = {"stage_id": sid, "transition": band, "outcome": "stage-skipped", "arguments": {}, "receipt": None}
+            rows.append(row)
+            if (not is_final and blocked) or any(completed.get(dep, {}).get("outcome") != "stage-completed" for dep in stage.get("depends_on", [])):
+                completed[sid] = row
+                continue
+            refusal = None
+            try:
+                arguments = _resolve_arguments(stage.get("arguments", {}), envelope, completed)
+                row["arguments"] = arguments
+                stage_envelope = copy.deepcopy(envelope)
+                payload = stage_envelope.get("payload")
+                stage_envelope["payload"] = {**(payload if isinstance(payload, dict) else {}), **arguments}
+                stage_envelope["routine"] = {"request": copy.deepcopy(envelope), "routine_id": routine_id,
+                                             "stage": {"stage_id": sid, "arguments": arguments}}
+                stdout = StringIO()
+                before = time.monotonic()
+                with contextlib.redirect_stdout(stdout):
+                    try:
+                        code = _invoke_envelope(_slash_target(band), stage_envelope)
+                    except SystemExit as exc:
+                        code = exc.code if isinstance(exc.code, int) else 1
+                elapsed = time.monotonic() - before
+                try:
+                    receipt = json.loads(stdout.getvalue())
+                    if not isinstance(receipt, dict):
+                        raise ValueError("not an object")
+                    row["receipt"] = receipt
+                except (ValueError, json.JSONDecodeError):
+                    receipt = None
+                    refusal = "chord-stage-receipt-invalid"
+                if stage.get("deadline_seconds") is not None and elapsed > stage["deadline_seconds"]:
+                    refusal = "chord-stage-deadline-exceeded"
+                if refusal is None and isinstance(receipt, dict) and stage.get("receipt") is not None and receipt.get("schema") != stage["receipt"]:
+                    refusal = "chord-stage-receipt-schema-mismatch"
+                if refusal is None and (code != 0 or receipt.get("ok") is False):
+                    refusal = receipt.get("firstMissingSignal") or "chord-stage-refused"
+                if receipt is not None and any(receipt.get(key) is True for key in ("mutation_performed", "mutationPerformed", "changed")):
+                    changed = True
+            except _ChordError as exc:
+                refusal = str(exc)
+            except Exception:
+                refusal = "chord-stage-invocation-failed"
+            row["outcome"] = "stage-refused" if refusal else "stage-completed"
+            if refusal and (is_final or stage.get("required", True)) and failed is None:
+                failed, signal = sid, refusal
+            if refusal and not is_final and stage.get("required", True):
+                blocked = True
+            completed[sid] = row
+    ok = (failed is None and
+          all(not stage.get("required", True) or row["outcome"] == "stage-completed"
+              for stage, row in zip(serve, rows[:len(serve)])) and
+          all(row["outcome"] == "stage-completed" for row in rows[len(serve):]))
+    if changed:
+        try:
+            _chord_deed(routine_id, envelope, rows, ok, failed, signal, started)
+        except (OSError, ValueError):
+            ok = False
+            if failed is None:
+                signal = "chord-deed-log-unavailable"
+    print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": ok, "routine_id": routine_id,
+                      "stages": rows, "failedStage": failed, "firstMissingSignal": signal, "changed": changed}, separators=(",", ":")))
+    return 0 if ok else 1
+
 
 def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None) -> int:
+    if path.is_dir():
+        return _walk_chord(path, envelope)
     with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
         mod = _load(path)
     fn = getattr(mod, "main", None)
@@ -673,6 +950,8 @@ def main(argv=None):
         return _refuse_administrative("agathodaimon-administrative-pin-required")
     if not args or args == ["--help"]:
         print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT)},indent=2)); return 0
+    if args == ["--version"]:
+        print((ROOT.parent / "VERSION").read_text(encoding="utf-8").strip()); return 0
     original=args[:]
     pin_required = _pin_required()
     publication = None
@@ -744,17 +1023,44 @@ def main(argv=None):
     except (ValueError,OSError,json.JSONDecodeError):
         print(f"unknown noun: {args[0]}",file=sys.stderr); return 2
     children=_children(path); has_index=(path/"index.py").is_file()
+    chord = not has_index and "serve" in _index(path)
     if children and remainder and remainder[0] != "--help":
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
-    if (remainder==["--help"] and (children or not has_index)) or (not remainder and children):
+    if (remainder==["--help"] and (children or (not has_index and not chord))) or (not remainder and children):
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
-    if not has_index:
+    if not has_index and not chord:
         if not remainder:
             print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
-    if "--help" in remainder: _help(path); return 0
+    if remainder == ["--help"]: _help(path); return 0
     envelope, pin_present, pin = _capture_piped_envelope()
     cli_target = path.relative_to(ROOT).as_posix()
+    hand_form = not remainder or remainder[0].startswith("--") or chord
+    if hand_form:
+        if envelope is None:
+            raw = sys.stdin.getvalue() if isinstance(sys.stdin, _EnvelopeStdin) else ""
+            if raw.strip():
+                print("invalid envelope JSON", file=sys.stderr); return 2
+            envelope = _fresh_envelope(cli_target)
+        try:
+            options = _hand_options(remainder)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr); return 2
+        from agathodaimon._envelope import _pin_bearing_exousia
+        if _pin_bearing_exousia({"payload": options}):
+            return _refuse_administrative("agathodaimon-administrative-pin-stdin-required")
+        payload = envelope.get("payload")
+        if payload is not None and not isinstance(payload, dict):
+            print("envelope payload must be an object", file=sys.stderr); return 2
+        envelope["payload"] = {**(payload or {}), **options}
+        if chord and pin_required and not caduceus_root and publication is None:
+            return _refuse_administrative("agathodaimon-crossings-unavailable")
+        admitted = _administrative_pin_admits(cli_target, [], envelope, pin_required, caduceus_root, pin_present, pin, publication)
+        pin = None
+        if not admitted:
+            return 1
+        target = path if chord else path / "index.py"
+        return _load_trace.run_cli(envelope, _trace_operation(cli_target, []), lambda: _invoke_envelope(target, envelope))
     trace_present, _ = _load_trace.extract_load_context(envelope)
     mod = None
     fn = None
