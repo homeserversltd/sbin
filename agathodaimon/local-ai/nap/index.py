@@ -38,7 +38,10 @@ def dispatch(request=None, *, dry_run=False, user_id=None):
             raise ValueError("account-runtime-unavailable")
         if not isinstance(dry_run, bool) or (user_id is not None and (not isinstance(user_id, str) or not user_id.strip())):
             raise ValueError("nap-arguments-invalid")
-        command = [str(python), str(HERE / "pass.py"), str(config), str(settings["similarity_floor"]), user_id or "", "dry" if dry_run else "write"]
+        gist_every = settings.get("gist_every", 0)
+        if type(gist_every) is not int or gist_every < 0:
+            raise ValueError("nap-arguments-invalid")
+        command = [str(python), str(HERE / "pass.py"), str(config), str(settings["similarity_floor"]), user_id or "", "dry" if dry_run else "write", str(gist_every)]
         if os.geteuid() != identity.pw_uid:
             if os.geteuid() != 0:
                 raise ValueError("account-switch-requires-root")

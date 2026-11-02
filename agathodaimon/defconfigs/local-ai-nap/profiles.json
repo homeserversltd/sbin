@@ -6,5 +6,6 @@
   },
   "python": ".hermes/hermes-agent/venv/bin/python",
   "config": ".hermes/mem0.json",
-  "similarity_floor": 0.90
+  "similarity_floor": 0.90,
+  "gist_every": 0
 }

@@ -124,7 +124,7 @@ def add_rows(db, ceiling, after=0, reverse=False):
         cursor = rows[-1][0]
 
 
-def gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists):
+def gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists, gist_every):
     checkpoint = 0
     for _, ident in add_rows(db, ceiling, reverse=True):
         item = get_owned(memory, ident, user)
@@ -149,7 +149,7 @@ def gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists):
         if meta.get("kind") == "gist" or (not dry_run and meta.get("nap_judged") is not True):
             continue
         batch.append(item)
-        if len(batch) == 20:
+        if len(batch) == gist_every:
             data = [{"id": row["id"], "text": row["memory"]} for row in batch]
             text = None
             for attempt in range(3):
@@ -176,7 +176,7 @@ def gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists):
             batch = []
 
 
-def run(path, counts, floor, override, dry_run, marks, gists):
+def run(path, counts, floor, override, dry_run, marks, gists, gist_every):
     config = read_config(path)
     user = (override or config["user_id"]).strip()
     if not user:
@@ -300,8 +300,8 @@ def run(path, counts, floor, override, dry_run, marks, gists):
             memory.update(ident, metadata={"nap_judged": True})
         item["metadata"] = {**metadata(item), "nap_judged": True}
         counts["judged"] += 1
-    if counts["unresolved"] == 0:
-        gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists)
+    if gist_every > 0 and counts["unresolved"] == 0:
+        gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists, gist_every)
     db.close()
 
 
@@ -310,7 +310,10 @@ def main():
     marks = []
     gists = []
     try:
-        if len(sys.argv) != 5 or sys.argv[4] not in ("dry", "write"):
+        if len(sys.argv) != 6 or sys.argv[4] not in ("dry", "write"):
+            raise ValueError("arguments-invalid")
+        gist_every = int(sys.argv[5])
+        if gist_every < 0:
             raise ValueError("arguments-invalid")
         floor = float(sys.argv[2])
         if not math.isfinite(floor) or not 0 <= floor <= 1:
@@ -322,7 +325,7 @@ def main():
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
                 raise ValueError("pass-already-running") from error
-            run(sys.argv[1], counts, floor, sys.argv[3], sys.argv[4] == "dry", marks, gists)
+            run(sys.argv[1], counts, floor, sys.argv[3], sys.argv[4] == "dry", marks, gists, gist_every)
         ok = counts["unresolved"] == 0
         result = {"ok": ok, "dry_run": sys.argv[4] == "dry", "marks": marks, **counts}
         if sys.argv[4] == "dry":
@@ -336,7 +339,7 @@ def main():
             "arguments-invalid", "configuration-invalid", "configuration-unsupported", "owner-write-refused", "collection-absent", "user-scope-unavailable", "model-not-local", "store-not-local", "history-unavailable", "history-schema-unsupported", "native-config-unavailable", "pass-already-running", "model-response-invalid", "decisions-invalid", "gist-response-invalid", "gist-source-invalid"
         } else "nap-pass-failed"
         result = {"ok": False, "firstMissingSignal": signal, "errorType": type(error).__name__, "marks": marks, **counts}
-        if len(sys.argv) == 5 and sys.argv[4] == "dry":
+        if len(sys.argv) == 6 and sys.argv[4] == "dry":
             result["gists"] = gists
         print(json.dumps(result, separators=(",", ":")))
         return 1
