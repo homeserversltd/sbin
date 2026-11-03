@@ -1204,7 +1204,10 @@ def main(argv=None):
     if children and has_index and not remainder and (not isinstance(sys.stdin, _EnvelopeStdin) or not sys.stdin.getvalue()):
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
     cli_target = path.relative_to(ROOT).as_posix()
-    hand_form = not remainder or remainder[0].startswith("--") or chord
+    # Bare legacy objects belong to the module; schema-bearing envelopes,
+    # long options, empty stdin, and chords retain the hand form.
+    hand_form = (chord or (bool(remainder) and remainder[0].startswith("--"))
+                 or (not remainder and (envelope is None or "schema" in envelope)))
     if hand_form:
         if envelope is None:
             raw = sys.stdin.getvalue() if isinstance(sys.stdin, _EnvelopeStdin) else ""
