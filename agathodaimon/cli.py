@@ -167,7 +167,7 @@ def _hand_options(words: list[str]) -> dict:
         if not word.startswith("--") or len(word) == 2:
             raise ValueError("expected a long option")
         name, equal, value = word[2:].partition("=")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin"}:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin", "key", "password", "passphrase", "token", "secret"}:
             raise ValueError("invalid or forbidden long option")
         if not equal:
             if name == "dry-run" or i + 1 >= len(words) or words[i + 1].startswith("--"):
@@ -888,6 +888,22 @@ def _administrative_target(target: str, publication) -> bool:
     )
 
 
+def _declares_administrative_band(target: str) -> bool:
+    try:
+        declaration = _index(ROOT / target)
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return False
+    sclerite = declaration.get("sclerite") if isinstance(declaration, dict) else None
+    features = sclerite.get("features") if isinstance(sclerite, dict) else None
+    if not isinstance(features, dict):
+        return False
+    for feature in features.values():
+        administrative = feature.get("administrative") if isinstance(feature, dict) else None
+        if isinstance(administrative, dict) and administrative.get("band") is True:
+            return True
+    return False
+
+
 def _administrative_candidate(target: str | None) -> bool:
     if target is None:
         return False
@@ -910,6 +926,7 @@ def _administrative_candidate(target: str | None) -> bool:
         or any(target.startswith(candidate + "/") for candidate in candidates)
         or target.startswith("settings/")
         or target in {"exousia/change", "exousia/reset-default"}
+        or _declares_administrative_band(target)
     )
 
 
