@@ -7,7 +7,9 @@
       "nmcli": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": [
+          "/api/v1/network/device/wifi/forget"
+        ],
         "administrative": {
           "band": false,
           "verbs": [],
