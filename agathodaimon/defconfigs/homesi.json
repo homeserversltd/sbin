@@ -7,6 +7,7 @@
     "sway",
     "pactl",
     "gtk4",
+    "nmcli",
     "local-ai",
     "pid2-unit"
   ],
