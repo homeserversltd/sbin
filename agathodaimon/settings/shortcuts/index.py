@@ -271,15 +271,21 @@ def main(argv=None):
     request = None
     try:
         if not args:
-            request = read(known_fields=('from', 'to', 'args'))
-            if isinstance(request.payload.get('args'), list):
-                args = request.payload['args']
-            elif request.verb in {'read', 'get', 'state'} or (request.verb in {'shortcuts', 'settings'} and not request.payload):
+            request = read(known_fields=('from', 'to', 'args', 'payload'))
+            body = request.payload
+            # The GTK face posts its own staff envelope; the door carries that
+            # whole body as payload, so the change sits one level deeper.
+            inner = body.get('payload')
+            if 'from' not in body and isinstance(inner, dict) and 'from' in inner:
+                body = {key: inner[key] for key in ('from', 'to') if key in inner}
+            if isinstance(body.get('args'), list):
+                args = body['args']
+            elif request.verb in {'read', 'get', 'state'} or (request.verb in {'shortcuts', 'settings'} and not body):
                 args = ['get', '--json']
             else:
-                if 'from' not in request.payload or 'to' not in request.payload:
+                if 'from' not in body or 'to' not in body:
                     raise ValueError('invalid:request')
-                result = set_shortcut(request.payload['from'], request.payload['to'])
+                result = set_shortcut(body['from'], body['to'])
                 print(json.dumps(attach(result, request), sort_keys=True))
                 return 0
         if args == ['get', '--json']:

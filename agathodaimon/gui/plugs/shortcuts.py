@@ -279,7 +279,9 @@ def build_widget():
                             return True
                         if key_name in {"Tab", "ISO_Left_Tab"}:
                             return False
-                        if dialog.get_focus() is not capture_entry:
+                        # GTK4 Entry hands focus to its inner GtkText child.
+                        focus = dialog.get_focus()
+                        if focus is None or not (focus is capture_entry or focus.is_ancestor(capture_entry)):
                             return False
                         if key_name in unsupported_names:
                             unsupported_keys.add(key_name)
