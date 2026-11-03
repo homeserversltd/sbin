@@ -273,7 +273,7 @@ def build_widget() -> Any:
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk
+    from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
     ModuleSquareCard = _module_card_class(Gtk)
     interactable_gate = _InteractableGate()
@@ -309,13 +309,18 @@ def build_widget() -> Any:
         "update_message": "",
         "update_message_is_error": None,
         "refresh_source": None,
+        "max_id": None,
     }
 
     stack = Gtk.Stack(hexpand=True, vexpand=True)
     updates_page = Adw.PreferencesPage(title="Updates", icon_name=PLUG["icon"])
     history_page = Adw.PreferencesPage(title="History", icon_name=PLUG["icon"])
+    max_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, hexpand=True, vexpand=True)
+    for edge in ("top", "bottom", "start", "end"):
+        getattr(max_page, f"set_margin_{edge}")(12)
     stack.add_named(updates_page, "updates")
     stack.add_named(history_page, "history")
+    stack.add_named(max_page, "diff")
     stack.set_visible_child_name("updates")
 
     status_group = Adw.PreferencesGroup(title="Update status")
@@ -424,32 +429,94 @@ def build_widget() -> Any:
             getattr(card, f"set_margin_{edge}")(12)
         return card
 
-    def append_interactable_file(card: Any, item: dict[str, Any]) -> None:
+    def diff_rows(diff: str) -> list[tuple[str, str, str]]:
+        rows = []
+        in_hunk = False
+        for line in diff.splitlines():
+            if not in_hunk and line.startswith(("--- ", "+++ ")):
+                continue
+            match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+            if match:
+                in_hunk = True
+                start = int(match.group(1))
+                count = int(match.group(2)) if match.group(2) is not None else 1
+                caption = f"Lines {start}–{start + count - 1}" if count else f"Lines {start} (no lines)"
+                rows.append(("", caption, "caption"))
+            elif line.startswith(("-", "+", " ")):
+                sign = line[0] if line[0] != " " else ""
+                rows.append((sign, line[1:], "error" if sign == "-" else "success" if sign == "+" else "dim-label"))
+            else:
+                rows.append(("", line, "dim-label"))
+        return rows
+
+    def append_interactable_file(card: Any, item: dict[str, Any], *, maximum: bool = False) -> None:
         title = Gtk.Label(label=_text(item.get("target_path")), xalign=0, wrap=True, selectable=True)
         title.add_css_class("title-4")
         card.append(title)
+        diff = item.get("diff")
+        rows = diff_rows(diff) if isinstance(diff, str) and diff else []
+        if isinstance(diff, str) and diff:
+            removed = sum(sign == "-" for sign, _, _ in rows)
+            added = sum(sign == "+" for sign, _, _ in rows)
+            counts = Gtk.Label(label=f"−{removed} +{added}", xalign=0)
+            counts.add_css_class("dim-label")
+            card.append(counts)
         section = item.get("slice")
         sentence = section.get("sentence") if isinstance(section, dict) else None
         if isinstance(sentence, str) and sentence:
             card.append(Gtk.Label(label=sentence, xalign=0, wrap=True, selectable=True))
-        diff = item.get("diff")
         if not isinstance(diff, str) or not diff:
             append_message(card, "Diff unavailable")
             return
-        scroller = Gtk.ScrolledWindow(hexpand=True)
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
-        scroller.set_propagate_natural_height(True)
+        scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=maximum)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        for line in diff.splitlines():
-            label = Gtk.Label(label=line, xalign=0, selectable=True)
+        for sign, text, style in rows:
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            mark = Gtk.Label(label=sign, xalign=0, valign=Gtk.Align.START, width_chars=1)
+            mark.add_css_class("monospace")
+            mark.add_css_class(style)
+            row.append(mark)
+            label = Gtk.Label(label=text, xalign=0, selectable=True, wrap=True, hexpand=True)
+            label.set_focusable(False)
+            label.set_width_chars(1)
+            label.set_wrap_mode(Pango.WrapMode.WORD_CHAR)
             label.add_css_class("monospace")
-            if line.startswith("-") and not line.startswith("---"):
-                label.add_css_class("error")
-            elif line.startswith("+") and not line.startswith("+++"):
-                label.add_css_class("success")
-            lines.append(label)
+            label.add_css_class(style)
+            row.append(label)
+            lines.append(row)
         scroller.set_child(lines)
+        if not maximum and rows:
+            metrics = lines.get_pango_context().get_metrics(None, None)
+            line_height = (metrics.get_ascent() + metrics.get_descent() + Pango.SCALE - 1) // Pango.SCALE
+            height = min(17, len(rows) + 2) * line_height
+            scroller.set_min_content_height(height)
+            scroller.set_max_content_height(height)
+            scroller.set_propagate_natural_height(True)
         card.append(scroller)
+
+    def append_actions(box: Any, item: dict[str, Any], *, maximize: bool = False) -> None:
+        identifier = item["id"]
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        if item["silenced"]:
+            button = Gtk.Button(label="Unsilence", valign=Gtk.Align.CENTER)
+            button.set_sensitive(identifier not in data["agree_busy"])
+            button.connect("clicked", set_silence, identifier, False)
+            actions.append(button)
+        else:
+            button = Gtk.Button(label="Yes", valign=Gtk.Align.CENTER)
+            button.set_sensitive(identifier not in data["agree_busy"])
+            button.connect("clicked", agree, identifier)
+            actions.append(button)
+            button = Gtk.Button(label="Silence", valign=Gtk.Align.CENTER)
+            button.set_sensitive(identifier not in data["agree_busy"])
+            button.connect("clicked", set_silence, identifier, True)
+            actions.append(button)
+        if maximize:
+            button = Gtk.Button(label="Maximize", valign=Gtk.Align.CENTER)
+            button.connect("clicked", show_diff, identifier)
+            actions.append(button)
+        box.append(actions)
 
     def post_to_ui(callback: Callable[..., bool], *args: Any) -> None:
         try:
@@ -719,19 +786,11 @@ def build_widget() -> Any:
                 message_label.add_css_class("error" if "refus" in message.lower() else "dim-label")
                 card.append(message_label)
 
-            actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            agree_button = Gtk.Button(label="Yes", valign=Gtk.Align.CENTER)
-            agree_button.set_sensitive(identifier not in data["agree_busy"])
-            agree_button.connect("clicked", agree, identifier)
-            silence_button = Gtk.Button(label="Silence", valign=Gtk.Align.CENTER)
-            silence_button.set_sensitive(identifier not in data["agree_busy"])
-            silence_button.connect("clicked", set_silence, identifier, True)
-            actions.append(agree_button)
-
-            actions.append(silence_button)
-            card.append(actions)
+            append_actions(card, item, maximize=True)
             pending_box.append(card)
         render_silenced()
+        if data["max_id"] is not None:
+            render_max()
 
     def render_silenced() -> None:
         clear(silenced_box)
@@ -744,11 +803,29 @@ def build_widget() -> Any:
             message = data["agree_messages"].get(identifier, "")
             if message:
                 append_message(card, message, error=True)
-            restore = Gtk.Button(label="Unsilence", valign=Gtk.Align.CENTER)
-            restore.set_sensitive(identifier not in data["agree_busy"])
-            restore.connect("clicked", set_silence, identifier, False)
-            card.append(restore)
+            append_actions(card, item, maximize=True)
             silenced_box.append(card)
+
+    def render_max() -> None:
+        identifier = data["max_id"]
+        item = next((item for item in data["interactables"] if item["id"] == identifier), None)
+        if item is None:
+            show_updates(None)
+            return
+        clear(max_page)
+        back = Gtk.Button(label="Back to Updates", halign=Gtk.Align.START)
+        back.connect("clicked", show_updates)
+        max_page.append(back)
+        append_interactable_file(max_page, item, maximum=True)
+        message = data["agree_messages"].get(identifier, "")
+        if message:
+            append_message(max_page, message, error=True)
+        append_actions(max_page, item)
+
+    def show_diff(_button: Any, identifier: str) -> None:
+        data["max_id"] = identifier
+        render_max()
+        stack.set_visible_child_name("diff")
 
     def render_history() -> None:
         clear(history_box)
@@ -1149,7 +1226,19 @@ def build_widget() -> Any:
         stack.set_visible_child_name("history")
 
     def show_updates(_row: Any) -> None:
+        data["max_id"] = None
         stack.set_visible_child_name("updates")
+
+    def on_key(_controller: Any, keyval: int, _keycode: int, _state: Any) -> bool:
+        if keyval == Gdk.KEY_Escape and stack.get_visible_child_name() == "diff":
+            show_updates(None)
+            return True
+        return False
+
+    key_controller = Gtk.EventControllerKey.new()
+    key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    key_controller.connect("key-pressed", on_key)
+    stack.add_controller(key_controller)
 
     def on_unmap(_widget: Any) -> None:
         if not data["alive"]:
