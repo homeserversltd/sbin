@@ -17,7 +17,7 @@
       "firewall": {
         "administrative": {
           "band": true,
-          "routes": [],
+          "routes": ["POST /api/v1/network/firewall/children"],
           "verbs": []
         },
         "band": true,

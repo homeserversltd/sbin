@@ -17,7 +17,7 @@
       "kea": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": ["/api/v1/network/device/claim"],
         "administrative": {
           "band": false,
           "verbs": [],

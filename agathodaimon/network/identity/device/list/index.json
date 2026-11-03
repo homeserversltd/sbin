@@ -7,7 +7,7 @@
       "all": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": ["/api/v1/network/device", "/api/v1/network/status"],
         "administrative": {
           "band": false,
           "verbs": [],

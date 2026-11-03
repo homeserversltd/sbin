@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import ipaddress
-import json
 import re
 import socket
 import subprocess
@@ -10,11 +9,6 @@ from typing import Any
 
 _MAC = re.compile(r"^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$|^[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}$")
 _PING_RTT = re.compile(r"(?:time|rtt)=([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
-
-
-def _json(value: dict[str, Any]) -> int:
-    print(json.dumps(value, separators=(",", ":")))
-    return 0 if value.get("ok") is True else 1
 
 
 def _ipv4(value: Any, label: str) -> str:

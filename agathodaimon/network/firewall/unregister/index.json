@@ -17,11 +17,11 @@
       "firewall": {
         "administrative": {
           "band": true,
-          "routes": [],
+          "routes": ["DELETE /api/v1/network/firewall/children/{mac}"],
           "verbs": []
         },
         "band": true,
-        "routes": [],
+        "routes": ["/api/v1/network/firewall/children/:mac"],
         "verbs": []
       }
     }

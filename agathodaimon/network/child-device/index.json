@@ -7,40 +7,18 @@
     "unregister",
     "whitelist"
   ],
-  "envelope": {
-    "stdin": "json",
-    "keys": [
-      "actuator",
-      "metadata"
-    ],
-    "actions": [
-      "observed",
-      "list",
-      "apply",
-      "register",
-      "unregister",
-      "whitelist get",
-      "whitelist set"
-    ]
-  },
   "sclerite": {
     "name": "all",
     "features": {
       "all": {
-        "band": true,
-        "verbs": [
-          [
-            "network",
-            "child-device"
-          ]
-        ],
+        "band": false,
+        "verbs": [],
         "routes": [
           "/api/v1/network/device/wake",
-          "/api/v1/network/status",
           "/api/v1/settings/child-device"
         ],
         "administrative": {
-          "band": true,
+          "band": false,
           "verbs": [],
           "routes": []
         }

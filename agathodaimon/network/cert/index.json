@@ -5,6 +5,17 @@
   ],
   "sclerite": {
     "name": "all",
-    "features": {}
+    "features": {
+      "all": {
+        "band": false,
+        "verbs": [],
+        "routes": ["/api/v1/cert/trust-fetch"],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
   }
 }

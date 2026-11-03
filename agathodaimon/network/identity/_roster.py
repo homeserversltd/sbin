@@ -66,13 +66,3 @@ def _device_projection_body() -> tuple[list[dict[str, Any]], list[dict[str, str]
                 "mismatches": ["dns-record-without-reservation"],
             }
     return [records[key] for key in sorted(records)], sorted(service_names, key=lambda item: (item["name"], item["address"], item["provenance"]))
-
-
-def device_list() -> list[dict[str, Any]]:
-    """Fuse declared DHCP, observed leases, and all Unbound local-data identity."""
-    return _device_projection()[0]
-
-
-def service_names() -> list[dict[str, str]]:
-    """Return orphan A records on coordinator infrastructure addresses as DNS names."""
-    return _device_projection()[1]

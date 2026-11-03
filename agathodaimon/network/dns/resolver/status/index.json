@@ -7,7 +7,9 @@
       "all": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": [
+          "/api/v1/network/dns/resolver/status"
+        ],
         "administrative": {
           "band": false,
           "verbs": [],

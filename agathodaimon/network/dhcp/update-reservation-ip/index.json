@@ -21,7 +21,7 @@
         "administrative": {
           "band": true,
           "verbs": [],
-          "routes": []
+          "routes": ["PUT /api/v1/network/dhcp/reservations/{reservation_id}"]
         }
       }
     }

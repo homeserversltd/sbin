@@ -14,15 +14,7 @@ Every `index.py` owner declares one
 known `sclerite.name` beside its `features` contribution map in `index.json`;
 empty maps remain unpublished owners. A declaration maps feature names to that
 owner's `band`, alias `verbs`, `routes`, and optional `administrative`
-contributions. Keep read-only observation routes in `all`. The four network
-bands (`dhcp`, `dns`, `firewall`, `identity`) contribute their observation band
-and existing `network/<name>` verb under `all` in every profile. The DNS `all`
-band is administrative; gated mutation routes and
-method-qualified administrative claims stay with `kea` (DHCP), `unbound` (DNS),
-or `firewall`. Identity's `/api/v1/network/device/claim` is gated by `kea`;
-its `/api/v1/network/device` observer route remains in `all`. Preserve any gated
-duplicate band/verb needed for per-claim administrative validation; crossing
-unions are idempotent. `lib` is internal and cannot contribute crossing bands
+contributions. Keep read-only observation routes in `all`. The network bands `dns` and `firewall` contribute their observation band and existing `network/<name>` verb under `all` in every profile; `dhcp` and `identity` are noun nodes with no band or verb, their act stops carry the bands and routes. The `dhcp` noun keeps two route-only claims, `/api/v1/network/dhcp/reservations` under `all` and `/api/v1/network/dhcp/reservations/:reservation_id` under `kea` (two acts share that path, so the noun owns it). The DNS `all` band is administrative; gated mutation routes and method-qualified administrative claims stay with their act's stop under `kea` (DHCP), `unbound` (DNS), or `firewall`. Identity's `/api/v1/network/device/claim` is claimed by its `claim` stop under `kea`; its `/api/v1/network/device` observer route and `/api/v1/network/status` belong to the `device/list` stop under `all`. Preserve any gated duplicate band/verb needed for per-claim administrative validation; crossing unions are idempotent. `lib` is internal and cannot contribute crossing bands
 or routes. All twelve `face/...` leaves (`app`, `badge`, `bar`, `dictate`,
 `fetch`, `focus`, `launch`, `launcher-cache`, `meter`, `screenshot`, `volume`,
 and `workspace`) have feature and sclerite name `gtk4`; their crossing

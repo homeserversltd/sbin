@@ -73,20 +73,10 @@ ACTUATORS: dict[str, Actuator] = {
 
 
 READ_ACTUATORS: dict[str, Actuator] = {
-    "network.dhcp.status": Actuator("network.dhcp.status", "network", "caduceus.staff.network.dhcp.v1", "agathodaimon/cli.py", "network dhcp", ("status",), "Kea service and configuration readback."),
-    "network.dhcp.boundary": Actuator("network.dhcp.boundary", "network", "caduceus.staff.network.dhcp.v1", "agathodaimon/cli.py", "network dhcp", ("boundary",), "Loaded Kea reservation boundary."),
-    "network.dns.read": Actuator("network.dns.read", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("read",), "Owned Unbound record readback."),
-    "network.dns.status": Actuator("network.dns.status", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("status",), "Unbound owned include status."),
-    "network.identity.device_list": Actuator("network.identity.device_list", "network", "caduceus.staff.network.identity.v1", "agathodaimon/cli.py", "network identity", ("device-list",), "MAC-keyed declared, observed, and DNS roster."),
 }
 
 
 WRITE_ACTUATORS: dict[str, Actuator] = {
-    "network.dns.device_name.create": Actuator("network.dns.device_name.create", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("device-name", "create"), "Owned paired Unbound A and PTR projection."),
-    "network.dns.device_name.remove": Actuator("network.dns.device_name.remove", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("device-name", "remove"), "Owned paired Unbound A and PTR removal."),
-    "network.dns.alias.create": Actuator("network.dns.alias.create", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("alias", "create"), "Owned DNS-only CNAME projection."),
-    "network.dns.alias.remove": Actuator("network.dns.alias.remove", "network", "caduceus.network.dns.v1", "agathodaimon/cli.py", "network dns", ("alias", "remove"), "Owned DNS-only CNAME removal."),
-    "network.identity.claim": Actuator("network.identity.claim", "network", "caduceus.staff.network.identity.v1", "agathodaimon/cli.py", "network identity", ("claim",), "Lock-held DHCP and DNS identity claim."),
 }
 
 

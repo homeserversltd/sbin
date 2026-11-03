@@ -1,72 +1,7 @@
 {
-  "dry-run": true,
-  "face": "index.py",
   "children": [
     "ensure-root", "status", "rotate-ca", "issue-leaf", "sign-csr",
     "bundle-export", "bundle-read", "trust-install", "apply-nginx",
     "constituent-lock", "state-commit", "portal-admit"
-  ],
-  "verbs": [
-    {
-      "name": "trust-install",
-      "arguments": [
-        {
-          "name": "bundle",
-          "required": true
-        }
-      ],
-      "flags": [
-        {
-          "name": "--platform",
-          "type": "string",
-          "default": "linux",
-          "choices": [
-            "android",
-            "chromeos",
-            "linux",
-            "macos",
-            "windows"
-          ]
-        },
-        {
-          "name": "--dry-run",
-          "type": "boolean",
-          "default": false
-        },
-        {
-          "name": "--fingerprint",
-          "type": "string",
-          "required": false
-        },
-        {
-          "name": "--renew-ring",
-          "type": "boolean",
-          "default": false
-        }
-      ]
-    }
-  ],
-  "sclerite": {
-    "name": "all",
-    "features": {
-      "all": {
-        "band": true,
-        "verbs": [
-          [
-            "cert",
-            "house-ca"
-          ]
-        ],
-        "routes": [
-          "/api/v1/cert/trust-fetch",
-          "/api/v1/cert/trust-install"
-        ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
-      }
-    }
-  }
+  ]
 }

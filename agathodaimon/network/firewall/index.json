@@ -3,45 +3,22 @@
   "sclerite": {
     "features": {
       "all": {
-        "administrative": {
-          "band": false,
-          "routes": [],
-          "verbs": []
-        },
-        "band": true,
+        "administrative": {"band": false, "routes": [], "verbs": []},
+        "band": false,
         "routes": [
           "/api/v1/network/firewall/children",
           "/api/v1/network/firewall/children/:mac/whitelist"
         ],
-        "verbs": [
-          [
-            "network",
-            "firewall"
-          ]
-        ]
+        "verbs": []
       },
       "firewall": {
-        "administrative": {
-          "band": false,
-          "routes": [
-            "DELETE /api/v1/network/firewall/children/{mac}",
-            "POST /api/v1/network/firewall/children",
-            "PUT /api/v1/network/firewall/children/{mac}/whitelist"
-          ],
-          "verbs": []
-        },
-        "band": true,
+        "administrative": {"band": false, "routes": [], "verbs": []},
+        "band": false,
         "routes": [
           "/api/v1/network/firewall/children",
-          "/api/v1/network/firewall/children/:mac",
           "/api/v1/network/firewall/children/:mac/whitelist"
         ],
-        "verbs": [
-          [
-            "network",
-            "firewall"
-          ]
-        ]
+        "verbs": []
       }
     },
     "name": "firewall"

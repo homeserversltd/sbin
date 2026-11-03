@@ -17,11 +17,15 @@
       "unbound": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": [
+          "/api/v1/network/dns/device-name/remove"
+        ],
         "administrative": {
           "band": true,
           "verbs": [],
-          "routes": []
+          "routes": [
+            "POST /api/v1/network/dns/device-name/remove"
+          ]
         }
       }
     }

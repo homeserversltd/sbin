@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from agathodaimon._envelope import EnvelopeError, attach, read_fields
+from agathodaimon._envelope import EnvelopeError
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
 SCHEMA = "caduceus.network.firewall.v1"
@@ -1321,28 +1321,3 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
             extra["pinned"] = {"ip": pinned_ip, "created": created}
         return _receipt(action if isinstance(action, str) else "invalid", False, created,
                         "Firewall request refused.", revision, signal, **extra)
-
-
-def main(argv: Sequence[str] | None = None, *, policy_path: Path = DEFAULT_POLICY,
-         nft_path: Path = DEFAULT_NFT,
-         runner: Callable[[list[str]], tuple[bool, str, str]] = _run,
-         dhcp_manager_factory: Any = DhcpManager) -> int:
-    del argv
-    try:
-        request = read_fields("action", "mac", "hostnames", "revision")
-    except EnvelopeError as exc:
-        value = _receipt("invalid", False, False, "Firewall envelope refused.", None, str(exc))
-        print(json.dumps(value, separators=(",", ":"), sort_keys=True))
-        return 1
-    if len(request.raw_envelope.encode("utf-8")) > MAX_INPUT_BYTES:
-        value = _receipt("invalid", False, False, "Firewall input refused.", None, "firewall-input-too-large")
-    else:
-        value = dispatch(request.payload, policy_path=policy_path, nft_path=nft_path,
-                         runner=runner, dhcp_manager_factory=dhcp_manager_factory)
-    value = attach(value, request)
-    print(json.dumps(value, separators=(",", ":"), sort_keys=True))
-    return 0 if value.get("ok") is True else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

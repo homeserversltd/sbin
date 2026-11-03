@@ -1,62 +1,10 @@
 {
-  "children": [
-    "status",
-    "config",
-    "validate",
-    "statistics",
-    "health",
-    "boundary",
-    "add-reservation",
-    "remove-reservation",
-    "update-reservation-ip",
-    "update-pool-boundary"
-  ],
+  "children": ["status", "config", "validate", "statistics", "health", "boundary", "add-reservation", "remove-reservation", "update-reservation-ip", "update-pool-boundary"],
   "sclerite": {
+    "name": "all",
     "features": {
-      "all": {
-        "administrative": {
-          "band": false,
-          "routes": [],
-          "verbs": []
-        },
-        "band": true,
-        "routes": [
-          "/api/v1/network/dhcp/reservations"
-        ],
-        "verbs": [
-          [
-            "network",
-            "dhcp"
-          ]
-        ]
-      },
-      "kea": {
-        "administrative": {
-          "band": false,
-          "routes": [
-            "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
-            "POST /api/v1/network/dhcp",
-            "POST /api/v1/network/dhcp/pool-boundary",
-            "POST /api/v1/network/dhcp/reservations",
-            "PUT /api/v1/network/dhcp/reservations/{reservation_id}"
-          ],
-          "verbs": []
-        },
-        "band": true,
-        "routes": [
-          "/api/v1/network/dhcp",
-          "/api/v1/network/dhcp/pool-boundary",
-          "/api/v1/network/dhcp/reservations",
-          "/api/v1/network/dhcp/reservations/:reservation_id"
-        ],
-        "verbs": [
-          [
-            "network",
-            "dhcp"
-          ]
-        ]
-      }
-    },
-    "name": "kea"
+      "all": {"band": false, "verbs": [], "routes": ["/api/v1/network/dhcp/reservations"], "administrative": {"band": false, "verbs": [], "routes": []}},
+      "kea": {"band": false, "verbs": [], "routes": ["/api/v1/network/dhcp/reservations/:reservation_id"], "administrative": {"band": false, "verbs": [], "routes": []}}
+    }
   }
 }

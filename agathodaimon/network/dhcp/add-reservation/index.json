@@ -17,11 +17,11 @@
       "kea": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": ["/api/v1/network/dhcp"],
         "administrative": {
           "band": true,
           "verbs": [],
-          "routes": []
+          "routes": ["POST /api/v1/network/dhcp", "POST /api/v1/network/dhcp/reservations"]
         }
       }
     }

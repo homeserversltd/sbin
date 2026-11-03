@@ -8,7 +8,7 @@
       "all": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": ["/api/v1/cert/trust-install"],
         "administrative": {
           "band": false,
           "verbs": [],
