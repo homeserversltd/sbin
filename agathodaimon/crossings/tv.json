@@ -100,6 +100,7 @@
     "settings/notifications",
     "settings/region",
     "settings/samba",
+    "settings/shortcuts",
     "settings/sound",
     "settings/ssh",
     "storage/backup/forgejo/credential",
@@ -286,6 +287,10 @@
     ],
     [
       "settings",
+      "shortcuts"
+    ],
+    [
+      "settings",
       "sound"
     ],
     [
@@ -361,6 +366,7 @@
     "/api/v1/settings/notifications",
     "/api/v1/settings/region",
     "/api/v1/settings/samba/status",
+    "/api/v1/settings/shortcuts",
     "/api/v1/settings/sound",
     "/api/v1/settings/ssh/status",
     "/api/v1/storage/vault/auto-decrypt",
@@ -470,6 +476,10 @@
       ],
       [
         "settings",
+        "shortcuts"
+      ],
+      [
+        "settings",
         "sound"
       ]
     ],
@@ -484,6 +494,7 @@
       "/api/v1/settings/keyboard",
       "/api/v1/settings/notifications",
       "/api/v1/settings/region",
+      "/api/v1/settings/shortcuts",
       "/api/v1/settings/sound",
       "/api/v1/storage/vault/auto-decrypt",
       "POST /api/v1/interactables/{id}/run",
