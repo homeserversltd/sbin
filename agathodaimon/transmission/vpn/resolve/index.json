@@ -1,4 +1,5 @@
 {
+  "hand": "envelope",
   "children": [],
   "mutation_allowed": false,
   "sclerite": {"name": "transmission", "features": {"transmission": {

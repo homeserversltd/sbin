@@ -1,4 +1,5 @@
 {
+  "hand": "envelope",
   "children": [
     "start",
     "stop",

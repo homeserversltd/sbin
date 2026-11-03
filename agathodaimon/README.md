@@ -2,6 +2,8 @@
 
 The hand form is `cli.py <noun…> <verb> [--field value …] [< envelope]`; long options supply payload fields. Use `--help` at every level and `--version` for the shelf version. A chord is a leaf whose `index.json` carries `serve`.
 
+A stop declares `"hand": "envelope"` in its own `index.json` to receive its request through the envelope with empty argv on every invocation path. A stop declares `"dry-run": true` to accept the GNU `--dry-run` field; undeclared targets refuse it, and legacy argv stops receive the bare flag when the field is true.
+
 ## Staff convergence verbs
 
 These receipt-bearing staff verbs expose observation with `--check` and

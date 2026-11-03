@@ -170,7 +170,7 @@ def _hand_options(words: list[str]) -> dict:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin"}:
             raise ValueError("invalid or forbidden long option")
         if not equal:
-            if i + 1 >= len(words) or words[i + 1].startswith("--"):
+            if name == "dry-run" or i + 1 >= len(words) or words[i + 1].startswith("--"):
                 value = "true"
             else:
                 i += 1
@@ -402,9 +402,80 @@ def _walk_chord(path: Path, envelope: dict) -> int:
     return 0 if ok else 1
 
 
+def _dry_run_admits(path: Path, envelope: dict | None, argv: list[str] | None = None) -> bool:
+    payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict) or "dry-run" not in payload:
+        args = payload.get("args") if isinstance(payload, dict) else None
+        candidates = (args if isinstance(args, list) else []) + (argv if isinstance(argv, list) else [])
+        if not any(
+            isinstance(arg, str) and (arg == "--dry-run" or arg.startswith("--dry-run="))
+            for arg in candidates
+        ):
+            return True
+        declaration = _index(path if path.is_dir() else path.parent)
+        if declaration.get("hand") != "envelope":
+            return True
+        signal = ("agathodaimon-dry-run-invalid" if declaration.get("dry-run") is True
+                  else "agathodaimon-dry-run-undeclared")
+        print(json.dumps({"schema": "agathodaimon.front-door.v1", "ok": False,
+                          "error": signal, "firstMissingSignal": signal,
+                          "mutationPerformed": False}, separators=(",", ":")))
+        return False
+    declaration = _index(path if path.is_dir() else path.parent)
+    if declaration.get("dry-run") is not True:
+        signal = "agathodaimon-dry-run-undeclared"
+    elif not isinstance(payload["dry-run"], bool):
+        signal = "agathodaimon-dry-run-invalid"
+    else:
+        return True
+    print(json.dumps({"schema": "agathodaimon.front-door.v1", "ok": False,
+                      "error": signal, "firstMissingSignal": signal,
+                      "mutationPerformed": False}, separators=(",", ":")))
+    return False
+
+
+def _dry_run_argv(envelope: dict | None, argv: list[str] | None) -> list[str] | None:
+    payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    if not isinstance(payload, dict) or "dry-run" not in payload:
+        return argv
+    if argv is None:
+        args = payload.get("args")
+        argv = list(args) if isinstance(args, list) and all(isinstance(arg, str) for arg in args) else []
+    else:
+        argv = list(argv)
+    argv = [arg for arg in argv if arg not in ("--dry-run=true", "--dry-run=false")]
+    if payload["dry-run"] and "--dry-run" not in argv:
+        argv.append("--dry-run")
+    return argv
+
+
 def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None, argv: list[str] | None = None) -> int:
+    if not _dry_run_admits(path, envelope, argv):
+        return 2
     if path.is_dir():
         return _walk_chord(path, envelope)
+    if _index(path.parent).get("hand") == "envelope":
+        original_stdin = sys.stdin
+        output = StringIO()
+        try:
+            sys.stdin = _EnvelopeStdin(raw_envelope if raw_envelope is not None else json.dumps(envelope))
+            with contextlib.redirect_stdout(output):
+                with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
+                    mod = _load(path)
+                fn = getattr(mod, "main", None)
+                if fn is None:
+                    raise ValueError("missing main")
+                code = int(fn([]) or 0)
+        except (Exception, SystemExit):
+            print(json.dumps({"schema": "agathodaimon.cli.envelope.v1", "ok": False,
+                              "error": "agathodaimon-envelope-invocation-failed",
+                              "firstMissingSignal": "agathodaimon-envelope-invocation-failed"}, separators=(",", ":")))
+            return 2
+        finally:
+            sys.stdin = original_stdin
+        print(output.getvalue(), end="")
+        return code
+    argv = _dry_run_argv(envelope, argv)
     with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
         mod = _load(path)
     fn = getattr(mod, "main", None)
@@ -1022,6 +1093,17 @@ def main(argv=None):
             return 1
         for name in ("SUDO_USER", "SUDO_UID", "SUDO_GID", "SUDO_COMMAND"):
             os.environ.pop(name, None)
+    # A JSON-argv request may carry a forbidden PIN and a dry-run field. Give
+    # the target's dry-run refusal precedence without exposing either value.
+    if len(args) == 2 and "/" in args[0] and args[1].lstrip().startswith("{"):
+        preflight_envelope = None
+        try:
+            preflight_envelope = json.loads(args[1])
+            preflight_target = _slash_target(args[0])
+        except (ValueError, OSError):
+            preflight_target = None
+        if preflight_target is not None and not _dry_run_admits(preflight_target, preflight_envelope):
+            return 2
     if _argv_envelope_has_pin(args):
         return _refuse_administrative("agathodaimon-administrative-pin-required")
     if not args or args == ["--help"]:
@@ -1052,6 +1134,8 @@ def main(argv=None):
             print(f"unknown path: {args[0]}", file=sys.stderr)
             return 2
         cli_target, remainder = _cli_target(args)
+        if not _dry_run_admits(target, envelope):
+            return 2
         admitted = _administrative_pin_admits(
             cli_target, remainder, envelope, pin_required, caduceus_root,
             pin_present, pin, publication,
@@ -1078,6 +1162,8 @@ def main(argv=None):
             print(f"unknown path: {args[0]}", file=sys.stderr)
             return 2
         cli_target, remainder = _cli_target(args)
+        if not _dry_run_admits(target, envelope):
+            return 2
         if not _administrative_pin_admits(
             cli_target, remainder, envelope, pin_required, caduceus_root,
             False, None, publication,
@@ -1129,14 +1215,25 @@ def main(argv=None):
         if payload is not None and not isinstance(payload, dict):
             print("envelope payload must be an object", file=sys.stderr); return 2
         envelope["payload"] = {**(payload or {}), **options}
+        target = path if chord else path / "index.py"
+        if not _dry_run_admits(target, envelope, remainder or None):
+            return 2
         if chord and pin_required and not caduceus_root and publication is None:
             return _refuse_administrative("agathodaimon-crossings-unavailable")
         admitted = _administrative_pin_admits(cli_target, [], envelope, pin_required, caduceus_root, pin_present, pin, publication)
         pin = None
         if not admitted:
             return 1
-        target = path if chord else path / "index.py"
         return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), lambda: _invoke_envelope(target, envelope, argv=remainder or None))
+    if not _dry_run_admits(path / "index.py", envelope, remainder):
+        return 2
+    if _index(path).get("hand") == "envelope":
+        if envelope is None:
+            envelope = _fresh_envelope(cli_target)
+        if not _administrative_pin_admits(cli_target, [], envelope, pin_required, caduceus_root, pin_present, pin, publication):
+            return 1
+        return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), lambda: _invoke_envelope(path / "index.py", envelope))
+    remainder = _dry_run_argv(envelope, remainder) or []
     trace_present, _ = _load_trace.extract_load_context(envelope)
     mod = None
     fn = None

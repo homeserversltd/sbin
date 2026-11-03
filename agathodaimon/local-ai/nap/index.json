@@ -1,4 +1,5 @@
 {
+  "dry-run": true,
   "children": [],
   "sclerite": {
     "name": "local-ai",

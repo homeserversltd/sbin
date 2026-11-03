@@ -1,4 +1,5 @@
 {
+  "hand": "envelope",
   "children": [],
   "sclerite": {"name": "transmission", "features": {"transmission": {
     "band": true, "verbs": [["vpn", "rollback-stop"]], "routes": [],
