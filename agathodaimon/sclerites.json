@@ -7,6 +7,7 @@
   "features": {
     "all": {},
     "settings": {},
+    "portals": {},
     "thyrsus": {},
     "kea": {
       "requires": [

@@ -3,6 +3,7 @@
   "profile": "homeserver",
   "features": [
     "thyrsus",
+    "portals",
     "kea",
     "unbound",
     "keyman",
