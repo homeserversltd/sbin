@@ -413,7 +413,7 @@ def _dry_run_admits(path: Path, envelope: dict | None, argv: list[str] | None = 
         ):
             return True
         declaration = _index(path if path.is_dir() else path.parent)
-        if declaration.get("hand") != "envelope":
+        if declaration.get("dry-run") is True and declaration.get("hand") != "envelope":
             return True
         signal = ("agathodaimon-dry-run-invalid" if declaration.get("dry-run") is True
                   else "agathodaimon-dry-run-undeclared")
