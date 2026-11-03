@@ -310,6 +310,7 @@ def build_widget() -> Any:
         "update_message_is_error": None,
         "refresh_source": None,
         "max_id": None,
+        "max_rendered": None,
     }
 
     stack = Gtk.Stack(hexpand=True, vexpand=True)
@@ -491,7 +492,7 @@ def build_widget() -> Any:
             line_height = (metrics.get_ascent() + metrics.get_descent() + Pango.SCALE - 1) // Pango.SCALE
             height = min(17, len(rows) + 2) * line_height
             scroller.set_min_content_height(height)
-            scroller.set_max_content_height(height)
+            scroller.set_max_content_height(17 * line_height)
             scroller.set_propagate_natural_height(True)
         card.append(scroller)
 
@@ -812,6 +813,10 @@ def build_widget() -> Any:
         if item is None:
             show_updates(None)
             return
+        snapshot = (item, identifier in data["agree_busy"], data["agree_messages"].get(identifier, ""))
+        if snapshot == data["max_rendered"]:
+            return
+        data["max_rendered"] = snapshot
         clear(max_page)
         back = Gtk.Button(label="Back to Updates", halign=Gtk.Align.START)
         back.connect("clicked", show_updates)
@@ -824,6 +829,7 @@ def build_widget() -> Any:
 
     def show_diff(_button: Any, identifier: str) -> None:
         data["max_id"] = identifier
+        data["max_rendered"] = None
         render_max()
         stack.set_visible_child_name("diff")
 
@@ -1227,6 +1233,7 @@ def build_widget() -> Any:
 
     def show_updates(_row: Any) -> None:
         data["max_id"] = None
+        data["max_rendered"] = None
         stack.set_visible_child_name("updates")
 
     def on_key(_controller: Any, keyval: int, _keycode: int, _state: Any) -> bool:
