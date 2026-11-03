@@ -1186,16 +1186,21 @@ def main(argv=None):
         print(f"unknown noun: {args[0]}",file=sys.stderr); return 2
     children=_children(path); has_index=(path/"index.py").is_file()
     chord = not has_index and "serve" in _index(path)
-    if children and remainder and remainder[0] != "--help":
+    if children and not has_index and remainder and remainder[0] != "--help":
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
-    if (remainder==["--help"] and (children or (not has_index and not chord))) or (not remainder and children):
-        print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
+    if (remainder==["--help"] and (children or (not has_index and not chord))) or (not remainder and children and not has_index):
+        print(json.dumps({"noun":original[0],"verbs":children},indent=2))
+        if has_index:
+            _help(path)
+        return 0
     if not has_index and not chord:
         if not remainder:
             print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
     if remainder == ["--help"]: _help(path); return 0
     envelope, pin_present, pin = _capture_piped_envelope()
+    if children and has_index and not remainder and (not isinstance(sys.stdin, _EnvelopeStdin) or not sys.stdin.getvalue()):
+        print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
     cli_target = path.relative_to(ROOT).as_posix()
     hand_form = not remainder or remainder[0].startswith("--") or chord
     if hand_form:
