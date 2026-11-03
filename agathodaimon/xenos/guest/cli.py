@@ -122,6 +122,10 @@ def main(argv=None):
     except (ValueError,OSError,json.JSONDecodeError):
         print(f"unknown noun: {args[0]}",file=sys.stderr); return 2
     children=_children(path); has_index=(path/"index.py").is_file()
+    if not has_index:
+        if remainder or (not sys.stdin.isatty() and sys.stdin.read()):
+            print("agathodaimon-noun-has-no-act", file=sys.stderr); return 2
+        print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
     if children and remainder and remainder[0] != "--help":
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
     if (remainder==["--help"] and (children or not has_index)) or (not remainder and children):
@@ -134,12 +138,6 @@ def main(argv=None):
     mod=_load(path/"index.py"); fn=getattr(mod,"main",None)
     if fn is None:
         print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False})); return 0
-    if original == ["cert", "house-ca"]:
-        try:
-            payload = json.load(sys.stdin)
-            remainder.extend(payload.get("args", []))
-        except (json.JSONDecodeError, AttributeError):
-            pass
     try: return int(fn(remainder) or 0)
     except TypeError as exc:
         if "positional argument" not in str(exc) and "positional arguments" not in str(exc): raise

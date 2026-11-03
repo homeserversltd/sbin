@@ -911,8 +911,6 @@ def _administrative_candidate(target: str | None) -> bool:
             "local-ai/slot",
             "appliance/service",
             "appliance/sudo-passwordless",
-            "network/child-device",
-            "network/dns",
             "portals/service-control",
             "storage/nas/attach",
             "storage/nas/detach",
@@ -1004,10 +1002,6 @@ def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | 
         return isinstance(payload, dict) and any(key not in {"flags", "rooms", "stamps"} for key in payload)
     if target == "storage/vault/policy":
         return operation != "read"
-    if target == "network/dns":
-        return operation not in {"read", "status"}
-    if target == "network/child-device":
-        return operation not in read_only and operation != "whitelist get"
     if target == "appliance/service":
         return operation not in {"read", "get", "show", "list", "observed", "status"}
     if target == "portals/service-control":
@@ -1094,13 +1088,6 @@ def _administrative_pin_admits(
 
 def _trace_operation(target: str | None, remainder: list[str]) -> str:
     """Name only declared static staff loci; never copy argv or payload values."""
-    command = remainder[0].lower() if remainder and isinstance(remainder[0], str) else ""
-    if target == "network/identity" and command == "device-list":
-        return "agathodaimon.network.identity.device_list"
-    if target == "network/dhcp" and command in {"status", "config", "validate", "statistics", "health", "boundary"}:
-        return f"agathodaimon.network.dhcp.{command}"
-    if target == "network/dns" and command in {"read", "status"}:
-        return f"agathodaimon.network.dns.{command}"
     return "agathodaimon.staff.cli.operation"
 
 
@@ -1220,6 +1207,10 @@ def main(argv=None):
         print(f"unknown noun: {args[0]}",file=sys.stderr); return 2
     children=_children(path); has_index=(path/"index.py").is_file()
     chord = not has_index and "serve" in _index(path)
+    if not has_index and not chord:
+        if remainder or (not sys.stdin.isatty() and sys.stdin.read()):
+            print("agathodaimon-noun-has-no-act", file=sys.stderr); return 2
+        print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
     if children and not has_index and remainder and remainder[0] != "--help":
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
     if (remainder==["--help"] and (children or (not has_index and not chord))) or (not remainder and children and not has_index):
@@ -1309,12 +1300,6 @@ def main(argv=None):
         if fn is None:
             print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False}))
             return 0
-        if original == ["cert", "house-ca"]:
-            try:
-                payload = json.load(sys.stdin)
-                remainder.extend(payload.get("args", []))
-            except (json.JSONDecodeError, AttributeError):
-                pass
         try:
             return int(fn(remainder) or 0)
         except TypeError as exc:
