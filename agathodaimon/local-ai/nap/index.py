@@ -16,6 +16,11 @@ from agathodaimon import _envelope
 HERE = Path(__file__).resolve().parent
 
 
+def resolve_paths(settings, profile, home):
+    python = home / settings.get("python_by_profile", {}).get(profile, settings["python"])
+    return python, home / settings["config"]
+
+
 def dispatch(request=None, *, dry_run=False, user_id=None):
     if request is not None:
         requested_dry = request.payload.get("dry_run", False)
@@ -32,8 +37,7 @@ def dispatch(request=None, *, dry_run=False, user_id=None):
         account = settings["accounts"][profile]
         identity = pwd.getpwnam(account)
         home = Path(identity.pw_dir)
-        python = home / settings["python"]
-        config = home / settings["config"]
+        python, config = resolve_paths(settings, profile, home)
         if not python.is_file() or not config.is_file():
             raise ValueError("account-runtime-unavailable")
         if not isinstance(dry_run, bool) or (user_id is not None and (not isinstance(user_id, str) or not user_id.strip())):
