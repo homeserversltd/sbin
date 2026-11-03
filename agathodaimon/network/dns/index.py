@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from agathodaimon.network.dns._manager import CommandRunner, DnsError, DnsManager, create_alias
 from agathodaimon.network.dns._resolver import ResolverControl, resolver_control
+from agathodaimon.network.dns import _mutate
 
 
 def _failure(action: str, reason: str) -> dict[str, Any]:
@@ -62,11 +63,9 @@ def staff_main(argv: Sequence[str] | None = None) -> int:
                     raise DnsError("resolver-metadata-invalid") from exc
             receipt = resolver_control(args.action, metadata)
         elif args.command == "device-name":
-            receipt = manager.create_device_name(args.hostname, args.ip) if args.action == "create" else manager.remove_device_name(args.hostname, args.ip)
-            receipt |= {"schema": "caduceus.network.dns.v1", "actuator": f"network.dns.device_name.{args.action}", "ok": True, "firstMissingSignal": "none"}
+            receipt = _mutate.device_name(manager, args.action, args.hostname, args.ip)
         elif args.command == "alias":
-            receipt = manager.create_alias(args.label, args.hostname) if args.action == "create" else manager.remove_alias(args.label, args.hostname)
-            receipt |= {"schema": "caduceus.network.dns.v1", "actuator": f"network.dns.alias.{args.action}", "ok": True, "firstMissingSignal": "none"}
+            receipt = _mutate.alias(manager, args.action, args.label, args.hostname)
         else:
             if args.method != "POST" or args.target != DnsManager.INTENT_TARGET:
                 raise DnsError("dns-intent-not-admitted")
@@ -74,7 +73,7 @@ def staff_main(argv: Sequence[str] | None = None) -> int:
                 metadata = json.loads(args.metadata_json)
             except json.JSONDecodeError as exc:
                 raise DnsError("dns-metadata-invalid") from exc
-            receipt = manager.apply(metadata)
+            receipt = _mutate.apply(manager, metadata)
     except DnsError as exc:
         receipt = _failure(args.command, str(exc))
     print(json.dumps(receipt, sort_keys=True))
