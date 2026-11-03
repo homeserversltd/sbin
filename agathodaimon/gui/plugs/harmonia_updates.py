@@ -437,8 +437,7 @@ def build_widget() -> Any:
             append_message(card, "Diff unavailable")
             return
         scroller = Gtk.ScrolledWindow(hexpand=True)
-        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
-        scroller.set_max_content_height(240)
+        scroller.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.NEVER)
         scroller.set_propagate_natural_height(True)
         lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         for line in diff.splitlines():
