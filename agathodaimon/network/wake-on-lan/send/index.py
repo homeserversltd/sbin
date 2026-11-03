@@ -1,5 +1,6 @@
 """Send a wake-on-LAN packet to mac using broadcast (default 255.255.255.255)."""
 import json
+import base64
 from importlib import import_module
 from agathodaimon import _envelope
 
@@ -10,12 +11,20 @@ def main(argv=None):
     try:
         request = _envelope.read_fields("mac", "broadcast")
     except _envelope.EnvelopeError:
-        receipt = {"ok": False, "error": "invalid-envelope"}
+        receipt = {"ok": False, "error": "invalid-envelope", "firstMissingSignal": "wake-envelope-invalid"}
     else:
         try:
             receipt = _wol.send(request.payload.get("mac"), request.payload.get("broadcast", "255.255.255.255"))
         except ValueError as exc:
             receipt = {"ok": False, "error": str(exc)}
+        error = receipt.get("error", "")
+        if receipt["ok"]:
+            receipt["firstMissingSignal"] = "none"
+        elif error in {"invalid MAC", "invalid broadcast"}:
+            receipt["firstMissingSignal"] = {"invalid MAC": "wake-mac-invalid", "invalid broadcast": "wake-broadcast-invalid"}[error]
+        else:
+            encoded = base64.b32encode(error.encode("utf-8", "surrogatepass")).decode("ascii").lower().rstrip("=")
+            receipt["firstMissingSignal"] = "wake-helper-x" + encoded
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.wake-on-lan.send.v1"
     print(json.dumps(receipt, separators=(",", ":")))
