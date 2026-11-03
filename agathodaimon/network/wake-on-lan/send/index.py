@@ -1,6 +1,6 @@
 """Send a wake-on-LAN packet to mac using broadcast (default 255.255.255.255)."""
 import json
-import base64
+
 from importlib import import_module
 from agathodaimon import _envelope
 
@@ -23,8 +23,7 @@ def main(argv=None):
         elif error in {"invalid MAC", "invalid broadcast"}:
             receipt["firstMissingSignal"] = {"invalid MAC": "wake-mac-invalid", "invalid broadcast": "wake-broadcast-invalid"}[error]
         else:
-            encoded = base64.b32encode(error.encode("utf-8", "surrogatepass")).decode("ascii").lower().rstrip("=")
-            receipt["firstMissingSignal"] = "wake-helper-x" + encoded
+            receipt["firstMissingSignal"] = "wake-send-failed"
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.wake-on-lan.send.v1"
     print(json.dumps(receipt, separators=(",", ":")))

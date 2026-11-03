@@ -1,6 +1,6 @@
 """Claim a DHCP reservation and DNS device name as one transaction."""
 import json
-import re
+
 from agathodaimon import _envelope
 from agathodaimon.network.dhcp.index import DhcpError
 from agathodaimon.network.dns.index import DnsError
@@ -29,8 +29,7 @@ def main(argv=None):
     elif boundary in {"invalid JSON", "JSON object required", "foreign envelope schema"} or boundary.startswith("missing envelope kernel keys:"):
         receipt["firstMissingSignal"] = "claim-envelope-invalid"
     else:
-        kind = boundary.split(":", 1)[0]
-        receipt["firstMissingSignal"] = re.sub(r"[^a-z0-9]+", "-", kind.lower()).strip("-")[:80].rstrip("-") or "claim-refused"
+        receipt["firstMissingSignal"] = "claim-failed"
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.identity.claim.v1"
