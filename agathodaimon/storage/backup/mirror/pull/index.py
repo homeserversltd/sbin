@@ -204,7 +204,8 @@ def pull(metadata):
             os.close(lock)
         if not result["planned"]:
             try:
-                deed.record("mirror-pull", "nas-sync", result, started)
+                deed_receipt = {**result, "firstMissingSignal": result["firstMissingSignal"].split(":", 1)[0]}
+                deed.record("mirror-pull", "nas-sync", deed_receipt, started)
             except Exception:
                 result.update(ok=False, converged=False, outcome="failed", firstMissingSignal="mirror-deed-unavailable")
     return result
