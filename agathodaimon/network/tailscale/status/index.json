@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "sclerite": {
+    "name": "tailscale",
+    "features": {
+      "tailscale": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  },
+  "mutation_allowed": false
+}

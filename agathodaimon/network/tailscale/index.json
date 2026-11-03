@@ -1,5 +1,11 @@
 {
-  "children": [],
+  "children": [
+    "status",
+    "up",
+    "down",
+    "authkey",
+    "tailnet"
+  ],
   "sclerite": {
     "name": "tailscale",
     "features": {
