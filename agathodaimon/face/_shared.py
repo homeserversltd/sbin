@@ -2517,8 +2517,15 @@ def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
     if not isinstance(feed, dict):
         raise FaceError("harmonia-feed-object-required")
     rows = feed.get("interactables", [])
-    pending = [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
-    pending_names = [_item_name(row, "unnamed update") for row in pending]
+    pending = [
+        row["target_path"].strip()
+        for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("target_path"), str)
+        and row["target_path"].strip()
+        and not row.get("silenced")
+        and not row.get("has_run")
+    ] if isinstance(rows, list) else []
     subscription = _load_optional_json(subscription_path)
     hotfix_ledger = subscription.get("hotfix_ledger", {}) if isinstance(subscription, dict) else {}
     if not isinstance(hotfix_ledger, dict):
@@ -2559,19 +2566,19 @@ def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
     ]
     if hotfixes:
         state = "bad"
-        tooltip = "Harmonia hotfix needs attention:\n" + "\n".join(f"• {name}" for name in hotfixes)
+        tooltip = "An update needs attention"
     elif failed_modules:
         state = "bad"
-        tooltip = "Harmonia module failed:\n" + "\n".join(f"• {name}" for name in failed_modules)
-    elif pending_names:
+        tooltip = "Last update failed"
+    elif pending:
         state = "medium"
-        tooltip = "Harmonia pending updates:\n" + "\n".join(f"• {name}" for name in pending_names)
+        tooltip = f"{len(pending)} updates waiting\n" + "\n".join(f"• {path}" for path in pending)
     else:
         state = "good"
-        tooltip = "Harmonia: no pending updates"
+        tooltip = "Up to date"
     return {
         "ok": True, "firstMissingSignal": "none", "text": "󰚰", "class": state,
-        "tooltip": tooltip, "pending_count": len(pending_names),
+        "tooltip": tooltip, "pending_count": len(pending),
         "hotfix_count": len(hotfixes), "failed_module_count": len(failed_modules),
     }
 
