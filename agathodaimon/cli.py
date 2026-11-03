@@ -889,8 +889,7 @@ def _administrative_target(target: str, publication) -> bool:
 def _administrative_candidate(target: str | None) -> bool:
     if target is None:
         return False
-    return (
-        target in {
+    candidates = {
             "local-ai/slot",
             "appliance/service",
             "appliance/sudo-passwordless",
@@ -904,6 +903,9 @@ def _administrative_candidate(target: str | None) -> bool:
             "storage/vault/policy",
             "transmission/keys",
         }
+    return (
+        target in candidates
+        or any(target.startswith(candidate + "/") for candidate in candidates)
         or target.startswith("settings/")
         or target in {"exousia/change", "exousia/reset-default"}
     )
