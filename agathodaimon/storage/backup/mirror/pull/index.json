@@ -1,0 +1,7 @@
+{
+  "envelope": {"stdin": "json", "keys": ["metadata"], "unknown_fields": "skipped"},
+  "sclerite": {
+    "name": "backup-drive",
+    "features": {"backup-drive": {"band": true, "administrative": {"band": true}}}
+  }
+}

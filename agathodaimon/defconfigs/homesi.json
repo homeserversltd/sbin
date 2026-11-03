@@ -9,7 +9,8 @@
     "gtk4",
     "nmcli",
     "local-ai",
-    "pid2-unit"
+    "pid2-unit",
+    "backup-drive"
   ],
   "choices": {}
 }

@@ -16,6 +16,7 @@
     "local-ai",
     "keyman",
     "nas",
+    "backup-drive",
     "luks",
     "xfs",
     "linker",

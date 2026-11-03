@@ -39,6 +39,7 @@
     "nmcli": {},
     "local-ai": {},
     "keyman": {},
+    "backup-drive": {},
     "nas": {
       "requires": [
         "keyman"

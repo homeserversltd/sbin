@@ -104,6 +104,7 @@
     "settings/sound",
     "settings/ssh",
     "storage/backup/forgejo/credential",
+    "storage/backup/mirror/pull",
     "storage/disk/test",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
@@ -415,6 +416,7 @@
       "settings/datetime",
       "settings/input",
       "settings/ssh",
+      "storage/backup/mirror/pull",
       "storage/vault/policy"
     ],
     "verbs": [

@@ -7,7 +7,8 @@
     "desktop",
     "games",
     "sddm",
-    "console-restart"
+    "console-restart",
+    "backup-drive"
   ],
   "choices": {}
 }

@@ -1,4 +1,4 @@
 {
-  "children": ["serve"],
-  "sclerite": {"name": "nas", "features": {}}
+  "children": ["serve", "pull"],
+  "sclerite": {"name": "all", "features": {}}
 }

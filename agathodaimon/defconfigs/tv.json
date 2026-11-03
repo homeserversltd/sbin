@@ -5,7 +5,8 @@
     "sway",
     "pactl",
     "desktop",
-    "gtk4"
+    "gtk4",
+    "backup-drive"
   ],
   "choices": {}
 }
