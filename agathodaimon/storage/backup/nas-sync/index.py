@@ -67,7 +67,7 @@ def device_facts(source,runner):
   if fields["TYPE"]=="disk": roots.update({kname,path,majmin})
   rows.append(fields)
  if not roots: raise Refusal("backing-device-root-unevaluable:"+source)
- partitions=[row["PARTLABEL"].strip() for row in rows if row["TYPE"]=="part" and row["PKNAME"]==rows[0]["KNAME"]]
+ partitions=[row["PARTLABEL"].strip() for row in rows if row["TYPE"]=="part" and (row is rows[0] or row["PKNAME"]==rows[0]["KNAME"])]
  return {"source":source,"resolved":resolved,"identities":ids,"roots":roots,"partitionLabels":partitions}
 def partlabel(facts,runner):
  labels=facts["partitionLabels"]
