@@ -1,0 +1,19 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "sclerite": {
+    "name": "nmcli",
+    "features": {
+      "nmcli": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}
