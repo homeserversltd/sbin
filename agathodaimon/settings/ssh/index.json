@@ -15,7 +15,7 @@
           "/api/v1/settings/ssh/status"
         ],
         "administrative": {
-          "band": false,
+          "band": true,
           "verbs": [],
           "routes": []
         }

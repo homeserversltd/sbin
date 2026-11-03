@@ -5,14 +5,19 @@
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
     "appliance/service",
+    "appliance/service/disable",
+    "appliance/service/enable",
+    "appliance/service/reload",
+    "appliance/service/restart",
+    "appliance/service/start",
+    "appliance/service/status",
+    "appliance/service/stop",
     "appliance/sudo-passwordless",
     "console/restart",
     "exousia/bind",
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
-    "notify/act",
-    "notify/post",
     "games/provider-keys",
     "games/sync",
     "network/cert/house-ca",
@@ -25,16 +30,18 @@
     "network/linker",
     "network/wake-on-lan",
     "network/wifi",
+    "notify/act",
+    "notify/post",
     "settings/appearance",
     "settings/datetime",
     "settings/datetime/household-time",
     "settings/default-apps",
     "settings/display",
     "settings/energy",
-    "settings/keyboard",
-    "settings/region",
     "settings/input",
+    "settings/keyboard",
     "settings/notifications",
+    "settings/region",
     "settings/samba",
     "settings/sound",
     "settings/ssh",
@@ -45,14 +52,7 @@
     "storage/vault/open",
     "storage/vault/policy",
     "update/service",
-    "update/sources-reseed",
-    "appliance/service/start",
-    "appliance/service/stop",
-    "appliance/service/restart",
-    "appliance/service/reload",
-    "appliance/service/enable",
-    "appliance/service/disable",
-    "appliance/service/status"
+    "update/sources-reseed"
   ],
   "verbs": [
     [
@@ -78,14 +78,6 @@
     [
       "exousia",
       "verify"
-    ],
-    [
-      "notify",
-      "act"
-    ],
-    [
-      "notify",
-      "post"
     ],
     [
       "network",
@@ -116,6 +108,42 @@
       "wake-on-lan"
     ],
     [
+      "notify",
+      "act"
+    ],
+    [
+      "notify",
+      "post"
+    ],
+    [
+      "service",
+      "disable"
+    ],
+    [
+      "service",
+      "enable"
+    ],
+    [
+      "service",
+      "reload"
+    ],
+    [
+      "service",
+      "restart"
+    ],
+    [
+      "service",
+      "start"
+    ],
+    [
+      "service",
+      "status"
+    ],
+    [
+      "service",
+      "stop"
+    ],
+    [
       "settings",
       "appearance"
     ],
@@ -137,19 +165,19 @@
     ],
     [
       "settings",
-      "keyboard"
-    ],
-    [
-      "settings",
-      "region"
-    ],
-    [
-      "settings",
       "input"
     ],
     [
       "settings",
+      "keyboard"
+    ],
+    [
+      "settings",
       "notifications"
+    ],
+    [
+      "settings",
+      "region"
     ],
     [
       "settings",
@@ -186,50 +214,15 @@
     [
       "vault",
       "open"
-    ],
-    [
-      "service",
-      "start"
-    ],
-    [
-      "service",
-      "stop"
-    ],
-    [
-      "service",
-      "restart"
-    ],
-    [
-      "service",
-      "reload"
-    ],
-    [
-      "service",
-      "enable"
-    ],
-    [
-      "service",
-      "disable"
-    ],
-    [
-      "service",
-      "status"
     ]
   ],
   "routes": [
-    "/api/v1/access/pin/change",
-    "/api/v1/access/pin/mode",
-    "/api/v1/access/pin/reset-default",
     "/api/v1/access/sudo/mode",
-    "/api/v1/attendance/change-pin",
     "/api/v1/cert/bundle/download",
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
-    "/api/v1/config/patch",
-    "/api/v1/config/set",
     "/api/v1/console/restart",
-    "/api/v1/exousia/change-pin",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/games/provider-keys",
@@ -253,7 +246,6 @@
     "/api/v1/network/dns/status",
     "/api/v1/network/firewall/children",
     "/api/v1/network/firewall/children/:mac/whitelist",
-    "/api/v1/network/notes",
     "/api/v1/network/status",
     "/api/v1/settings/appearance",
     "/api/v1/settings/child-device",
@@ -261,10 +253,10 @@
     "/api/v1/settings/default-apps",
     "/api/v1/settings/display",
     "/api/v1/settings/energy",
-    "/api/v1/settings/keyboard",
-    "/api/v1/settings/region",
     "/api/v1/settings/input",
+    "/api/v1/settings/keyboard",
     "/api/v1/settings/notifications",
+    "/api/v1/settings/region",
     "/api/v1/settings/samba/status",
     "/api/v1/settings/sound",
     "/api/v1/settings/ssh/status",
@@ -280,6 +272,13 @@
   "administrative": {
     "bands": [
       "appliance/service",
+      "appliance/service/disable",
+      "appliance/service/enable",
+      "appliance/service/reload",
+      "appliance/service/restart",
+      "appliance/service/start",
+      "appliance/service/status",
+      "appliance/service/stop",
       "appliance/sudo-passwordless",
       "exousia/change",
       "exousia/reset-default",
@@ -288,14 +287,7 @@
       "settings/datetime",
       "settings/input",
       "settings/ssh",
-      "storage/vault/policy",
-      "appliance/service/start",
-      "appliance/service/stop",
-      "appliance/service/restart",
-      "appliance/service/reload",
-      "appliance/service/enable",
-      "appliance/service/disable",
-      "appliance/service/status"
+      "storage/vault/policy"
     ],
     "verbs": [
       [
@@ -305,6 +297,34 @@
       [
         "exousia",
         "reset-default"
+      ],
+      [
+        "service",
+        "disable"
+      ],
+      [
+        "service",
+        "enable"
+      ],
+      [
+        "service",
+        "reload"
+      ],
+      [
+        "service",
+        "restart"
+      ],
+      [
+        "service",
+        "start"
+      ],
+      [
+        "service",
+        "status"
+      ],
+      [
+        "service",
+        "stop"
       ],
       [
         "settings",
@@ -341,57 +361,21 @@
       [
         "settings",
         "sound"
-      ],
-      [
-        "service",
-        "start"
-      ],
-      [
-        "service",
-        "stop"
-      ],
-      [
-        "service",
-        "restart"
-      ],
-      [
-        "service",
-        "reload"
-      ],
-      [
-        "service",
-        "enable"
-      ],
-      [
-        "service",
-        "disable"
-      ],
-      [
-        "service",
-        "status"
       ]
     ],
     "routes": [
-      "/api/v1/access/pin/change",
-      "/api/v1/access/pin/mode",
-      "/api/v1/access/pin/reset-default",
       "/api/v1/access/sudo/mode",
-      "/api/v1/attendance/change-pin",
-      "/api/v1/config/patch",
-      "/api/v1/config/set",
-      "/api/v1/exousia/change-pin",
       "/api/v1/settings/appearance",
       "/api/v1/settings/datetime",
       "/api/v1/settings/default-apps",
       "/api/v1/settings/display",
       "/api/v1/settings/energy",
-      "/api/v1/settings/keyboard",
-      "/api/v1/settings/region",
       "/api/v1/settings/input",
+      "/api/v1/settings/keyboard",
       "/api/v1/settings/notifications",
+      "/api/v1/settings/region",
       "/api/v1/settings/sound",
-      "/api/v1/storage/vault/auto-decrypt",
-      "PUT /api/v1/network/notes"
+      "/api/v1/storage/vault/auto-decrypt"
     ]
   }
 }

@@ -5,13 +5,18 @@
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
     "appliance/service",
+    "appliance/service/disable",
+    "appliance/service/enable",
+    "appliance/service/reload",
+    "appliance/service/restart",
+    "appliance/service/start",
+    "appliance/service/status",
+    "appliance/service/stop",
     "appliance/sudo-passwordless",
     "exousia/bind",
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
-    "notify/act",
-    "notify/post",
     "games/provider-keys",
     "games/sync",
     "keyman/admin-password",
@@ -35,74 +40,71 @@
     "network/linker",
     "network/tailscale",
     "network/wake-on-lan",
+    "notify/act",
+    "notify/post",
+    "settings/datetime",
     "settings/datetime/household-time",
+    "settings/region",
     "settings/samba",
     "settings/ssh",
-    "storage/backup/ledger",
-    "storage/nas/drives",
-    "storage/nas/list",
-    "storage/backup/forgejo/skip-check",
     "storage/backup/backblaze/bucket-add",
     "storage/backup/backblaze/bucket-credentials",
-    "storage/backup/backblaze/bucket-verify",
-    "storage/backup/backblaze/bucket-remove",
     "storage/backup/backblaze/bucket-items",
-    "storage/backup/backblaze/bucket-save",
+    "storage/backup/backblaze/bucket-remove",
     "storage/backup/backblaze/bucket-run",
-    "storage/backup/backblaze/status",
+    "storage/backup/backblaze/bucket-save",
+    "storage/backup/backblaze/bucket-verify",
     "storage/backup/backblaze/snapshots",
+    "storage/backup/backblaze/status",
     "storage/backup/forgejo/backup-b2",
     "storage/backup/forgejo/credential",
+    "storage/backup/forgejo/skip-check",
+    "storage/backup/ledger",
+    "storage/backup/nas-sync",
+    "storage/backup/nas-sync/hold",
+    "storage/backup/nas-sync/release",
+    "storage/backup/nas-sync/schedule/disable",
+    "storage/disk/partlabel/assign",
     "storage/disk/test",
     "storage/nas/attach",
     "storage/nas/detach",
+    "storage/nas/drives",
     "storage/nas/folders",
+    "storage/nas/key/probe",
+    "storage/nas/list",
+    "storage/nas/role/observe",
+    "storage/nas/role/swap",
     "storage/nas/seat",
     "storage/nas/setup",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
     "storage/vault/open",
     "storage/vault/policy",
-    "transmission/down",
-    "transmission/keys",
-    "transmission/status",
-    "transmission/up",
-    "transmission/vpn/resolve",
-    "transmission/onness",
-    "transmission/vpn/rollback-stop",
     "thyrsus/admit",
     "thyrsus/forge",
     "thyrsus/forge-token",
     "thyrsus/propose",
-    "update/service",
-    "update/sources-reseed",
-    "storage/backup/nas-sync",
-    "storage/backup/nas-sync/hold",
-    "storage/backup/nas-sync/release",
-    "storage/backup/nas-sync/schedule/disable",
-    "storage/nas/role/observe",
-    "storage/nas/key/probe",
-    "storage/disk/partlabel/assign",
-    "storage/nas/role/swap",
-    "unit/start",
-    "unit/stop",
-    "unit/restart",
-    "unit/enable",
+    "transmission/down",
+    "transmission/keys",
+    "transmission/onness",
+    "transmission/status",
+    "transmission/up",
+    "transmission/vpn/resolve",
+    "transmission/vpn/rollback-stop",
     "unit/disable",
+    "unit/enable",
+    "unit/restart",
+    "unit/start",
     "unit/status",
-    "appliance/service/start",
-    "appliance/service/stop",
-    "appliance/service/restart",
-    "appliance/service/reload",
-    "appliance/service/enable",
-    "appliance/service/disable",
-    "appliance/service/status"
+    "unit/stop",
+    "update/service",
+    "update/sources-reseed"
   ],
   "verbs": [
-    ["backup", "ledger"],
-    ["nas", "drives"],
-    ["nas", "list"],
-    ["forgejo", "skip-check"],
+    [
+      "backup",
+      "ledger"
+    ],
     [
       "cert",
       "house-ca"
@@ -124,12 +126,12 @@
       "verify"
     ],
     [
-      "notify",
-      "act"
+      "forgejo",
+      "skip-check"
     ],
     [
-      "notify",
-      "post"
+      "key",
+      "probe"
     ],
     [
       "keyman",
@@ -185,7 +187,15 @@
     ],
     [
       "nas",
+      "drives"
+    ],
+    [
+      "nas",
       "folders"
+    ],
+    [
+      "nas",
+      "list"
     ],
     [
       "nas",
@@ -194,6 +204,14 @@
     [
       "nas",
       "setup"
+    ],
+    [
+      "nas-sync",
+      "hold"
+    ],
+    [
+      "nas-sync",
+      "release"
     ],
     [
       "network",
@@ -228,12 +246,88 @@
       "wake-on-lan"
     ],
     [
+      "notify",
+      "act"
+    ],
+    [
+      "notify",
+      "post"
+    ],
+    [
+      "partlabel",
+      "assign"
+    ],
+    [
+      "role",
+      "observe"
+    ],
+    [
+      "role",
+      "swap"
+    ],
+    [
+      "schedule",
+      "disable"
+    ],
+    [
+      "service",
+      "disable"
+    ],
+    [
+      "service",
+      "enable"
+    ],
+    [
+      "service",
+      "reload"
+    ],
+    [
+      "service",
+      "restart"
+    ],
+    [
+      "service",
+      "start"
+    ],
+    [
+      "service",
+      "status"
+    ],
+    [
+      "service",
+      "stop"
+    ],
+    [
+      "settings",
+      "datetime"
+    ],
+    [
+      "settings",
+      "region"
+    ],
+    [
       "settings",
       "samba"
     ],
     [
       "settings",
       "ssh"
+    ],
+    [
+      "thyrsus",
+      "admit"
+    ],
+    [
+      "thyrsus",
+      "forge"
+    ],
+    [
+      "thyrsus",
+      "forge-token"
+    ],
+    [
+      "thyrsus",
+      "propose"
     ],
     [
       "time",
@@ -249,15 +343,40 @@
     ],
     [
       "transmission",
+      "onness"
+    ],
+    [
+      "transmission",
       "status"
     ],
     [
       "transmission",
       "up"
     ],
-    ["vpn", "resolve"],
-    ["transmission", "onness"],
-    ["vpn", "rollback-stop"],
+    [
+      "unit",
+      "disable"
+    ],
+    [
+      "unit",
+      "enable"
+    ],
+    [
+      "unit",
+      "restart"
+    ],
+    [
+      "unit",
+      "start"
+    ],
+    [
+      "unit",
+      "status"
+    ],
+    [
+      "unit",
+      "stop"
+    ],
     [
       "update",
       "service"
@@ -279,110 +398,15 @@
       "open"
     ],
     [
-      "thyrsus",
-      "propose"
+      "vpn",
+      "resolve"
     ],
     [
-      "thyrsus",
-      "admit"
-    ],
-    [
-      "thyrsus",
-      "forge-token"
-    ],
-    [
-      "thyrsus",
-      "forge"
-    ],
-    [
-      "nas-sync",
-      "hold"
-    ],
-    [
-      "nas-sync",
-      "release"
-    ],
-    [
-      "schedule",
-      "disable"
-    ],
-    [
-      "role",
-      "observe"
-    ],
-    [
-      "key",
-      "probe"
-    ],
-    [
-      "partlabel",
-      "assign"
-    ],
-    [
-      "role",
-      "swap"
-    ],
-    [
-      "unit",
-      "start"
-    ],
-    [
-      "unit",
-      "stop"
-    ],
-    [
-      "unit",
-      "restart"
-    ],
-    [
-      "unit",
-      "enable"
-    ],
-    [
-      "unit",
-      "disable"
-    ],
-    [
-      "unit",
-      "status"
-    ],
-    [
-      "service",
-      "start"
-    ],
-    [
-      "service",
-      "stop"
-    ],
-    [
-      "service",
-      "restart"
-    ],
-    [
-      "service",
-      "reload"
-    ],
-    [
-      "service",
-      "enable"
-    ],
-    [
-      "service",
-      "disable"
-    ],
-    [
-      "service",
-      "status"
+      "vpn",
+      "rollback-stop"
     ]
   ],
   "routes": [
-    "/api/v1/storage/backup/ledger",
-    "/api/v1/storage/nas/drives",
-    "/api/v1/storage/nas/list",
-    "/api/v1/storage/backup/forgejo/skip-check",
-    "/api/v1/access/pin/change",
-    "/api/v1/access/pin/mode",
-    "/api/v1/access/pin/reset-default",
     "/api/v1/access/sudo/mode",
     "/api/v1/appliance/service/:service/disable",
     "/api/v1/appliance/service/:service/enable",
@@ -391,14 +415,10 @@
     "/api/v1/appliance/service/:service/status",
     "/api/v1/appliance/service/:service/stop",
     "/api/v1/appliance/stats/admin",
-    "/api/v1/attendance/change-pin",
     "/api/v1/cert/bundle/download",
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
-    "/api/v1/config/patch",
-    "/api/v1/config/set",
-    "/api/v1/exousia/change-pin",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/games/provider-keys",
@@ -419,7 +439,6 @@
     "/api/v1/linker/hardlink-scan",
     "/api/v1/linker/mkdir",
     "/api/v1/linker/rename",
-    "/api/v1/network/cors/allowed-origins/add",
     "/api/v1/network/device",
     "/api/v1/network/device/claim",
     "/api/v1/network/device/wake",
@@ -441,7 +460,6 @@
     "/api/v1/network/firewall/children",
     "/api/v1/network/firewall/children/:mac",
     "/api/v1/network/firewall/children/:mac/whitelist",
-    "/api/v1/network/notes",
     "/api/v1/network/status",
     "/api/v1/network/tailscale/authkey",
     "/api/v1/network/tailscale/down",
@@ -454,18 +472,31 @@
     "/api/v1/service/:service/status",
     "/api/v1/service/:service/stop",
     "/api/v1/settings/child-device",
+    "/api/v1/settings/datetime",
+    "/api/v1/settings/region",
     "/api/v1/settings/samba/status",
     "/api/v1/settings/ssh/status",
+    "/api/v1/storage/backup/forgejo/skip-check",
+    "/api/v1/storage/backup/ledger",
+    "/api/v1/storage/backup/nas-sync/hold",
+    "/api/v1/storage/backup/nas-sync/release",
+    "/api/v1/storage/backup/nas-sync/schedule/disable",
+    "/api/v1/storage/disk/partlabel/assign",
     "/api/v1/storage/nas/attach",
     "/api/v1/storage/nas/detach",
+    "/api/v1/storage/nas/drives",
+    "/api/v1/storage/nas/key/probe",
+    "/api/v1/storage/nas/list",
+    "/api/v1/storage/nas/role/observe",
+    "/api/v1/storage/nas/role/swap",
     "/api/v1/storage/nas/setup",
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
-    "/api/v1/thyrsus/propose",
     "/api/v1/thyrsus/admit",
-    "/api/v1/thyrsus/forge-token",
     "/api/v1/thyrsus/forge",
+    "/api/v1/thyrsus/forge-token",
+    "/api/v1/thyrsus/propose",
     "/api/v1/transmission/down",
     "/api/v1/transmission/keys",
     "/api/v1/transmission/keys/replace",
@@ -476,20 +507,18 @@
     "/api/v1/update/now",
     "/api/v1/update/service/status",
     "/api/v1/update/service/toggle",
-    "/api/v1/upload/force-permissions",
-    "/api/v1/storage/backup/nas-sync/hold",
-    "/api/v1/storage/backup/nas-sync/release",
-    "/api/v1/storage/backup/nas-sync/schedule/disable",
-    "/api/v1/storage/nas/role/observe",
-    "/api/v1/storage/nas/key/probe",
-    "/api/v1/storage/disk/partlabel/assign",
-    "/api/v1/storage/nas/role/swap"
+    "/api/v1/upload/force-permissions"
   ],
   "administrative": {
     "bands": [
-      "storage/nas/list",
-      "storage/backup/forgejo/skip-check",
       "appliance/service",
+      "appliance/service/disable",
+      "appliance/service/enable",
+      "appliance/service/reload",
+      "appliance/service/restart",
+      "appliance/service/start",
+      "appliance/service/status",
+      "appliance/service/stop",
       "appliance/sudo-passwordless",
       "exousia/change",
       "exousia/reset-default",
@@ -503,50 +532,41 @@
       "linker/rename",
       "network/child-device",
       "network/dns",
+      "settings/datetime",
       "settings/ssh",
-      "storage/nas/attach",
-      "storage/nas/detach",
-      "storage/nas/folders",
-      "storage/nas/seat",
-      "storage/nas/setup",
       "storage/backup/backblaze/bucket-add",
       "storage/backup/backblaze/bucket-credentials",
-      "storage/backup/backblaze/bucket-verify",
-      "storage/backup/backblaze/bucket-remove",
       "storage/backup/backblaze/bucket-items",
-      "storage/backup/backblaze/bucket-save",
+      "storage/backup/backblaze/bucket-remove",
       "storage/backup/backblaze/bucket-run",
-      "storage/vault/policy",
-      "transmission/down",
-      "transmission/keys",
-      "transmission/up",
-      "transmission/vpn/resolve",
-      "transmission/onness",
-      "transmission/vpn/rollback-stop",
-      "thyrsus/propose",
-      "thyrsus/admit",
-      "thyrsus/forge-token",
+      "storage/backup/backblaze/bucket-save",
+      "storage/backup/backblaze/bucket-verify",
+      "storage/backup/forgejo/skip-check",
       "storage/backup/nas-sync",
       "storage/backup/nas-sync/hold",
       "storage/backup/nas-sync/release",
       "storage/backup/nas-sync/schedule/disable",
-      "storage/nas/key/probe",
       "storage/disk/partlabel/assign",
+      "storage/nas/attach",
+      "storage/nas/detach",
+      "storage/nas/folders",
+      "storage/nas/key/probe",
+      "storage/nas/list",
       "storage/nas/role/swap",
-      "appliance/service/start",
-      "appliance/service/stop",
-      "appliance/service/restart",
-      "appliance/service/reload",
-      "appliance/service/enable",
-      "appliance/service/disable",
-      "appliance/service/status"
+      "storage/nas/seat",
+      "storage/nas/setup",
+      "storage/vault/policy",
+      "thyrsus/admit",
+      "thyrsus/forge-token",
+      "thyrsus/propose",
+      "transmission/down",
+      "transmission/keys",
+      "transmission/onness",
+      "transmission/up",
+      "transmission/vpn/resolve",
+      "transmission/vpn/rollback-stop"
     ],
     "verbs": [
-      ["nas", "list"],
-      ["forgejo", "skip-check"],
-      ["vpn", "resolve"],
-      ["transmission", "onness"],
-      ["vpn", "rollback-stop"],
       [
         "exousia",
         "change"
@@ -554,6 +574,14 @@
       [
         "exousia",
         "reset-default"
+      ],
+      [
+        "forgejo",
+        "skip-check"
+      ],
+      [
+        "key",
+        "probe"
       ],
       [
         "keyman",
@@ -588,16 +616,8 @@
         "rename"
       ],
       [
-        "thyrsus",
-        "propose"
-      ],
-      [
-        "thyrsus",
-        "admit"
-      ],
-      [
-        "thyrsus",
-        "forge-token"
+        "nas",
+        "list"
       ],
       [
         "nas-sync",
@@ -608,14 +628,6 @@
         "release"
       ],
       [
-        "schedule",
-        "disable"
-      ],
-      [
-        "key",
-        "probe"
-      ],
-      [
         "partlabel",
         "assign"
       ],
@@ -624,24 +636,8 @@
         "swap"
       ],
       [
-        "service",
-        "start"
-      ],
-      [
-        "service",
-        "stop"
-      ],
-      [
-        "service",
-        "restart"
-      ],
-      [
-        "service",
-        "reload"
-      ],
-      [
-        "service",
-        "enable"
+        "schedule",
+        "disable"
       ],
       [
         "service",
@@ -649,15 +645,62 @@
       ],
       [
         "service",
+        "enable"
+      ],
+      [
+        "service",
+        "reload"
+      ],
+      [
+        "service",
+        "restart"
+      ],
+      [
+        "service",
+        "start"
+      ],
+      [
+        "service",
         "status"
+      ],
+      [
+        "service",
+        "stop"
+      ],
+      [
+        "settings",
+        "datetime"
+      ],
+      [
+        "settings",
+        "region"
+      ],
+      [
+        "thyrsus",
+        "admit"
+      ],
+      [
+        "thyrsus",
+        "forge-token"
+      ],
+      [
+        "thyrsus",
+        "propose"
+      ],
+      [
+        "transmission",
+        "onness"
+      ],
+      [
+        "vpn",
+        "resolve"
+      ],
+      [
+        "vpn",
+        "rollback-stop"
       ]
     ],
     "routes": [
-      "POST /api/v1/storage/nas/list",
-      "POST /api/v1/storage/backup/forgejo/skip-check",
-      "/api/v1/access/pin/change",
-      "/api/v1/access/pin/mode",
-      "/api/v1/access/pin/reset-default",
       "/api/v1/access/sudo/mode",
       "/api/v1/appliance/service/:service/disable",
       "/api/v1/appliance/service/:service/enable",
@@ -666,10 +709,6 @@
       "/api/v1/appliance/service/:service/status",
       "/api/v1/appliance/service/:service/stop",
       "/api/v1/appliance/stats/admin",
-      "/api/v1/attendance/change-pin",
-      "/api/v1/config/patch",
-      "/api/v1/config/set",
-      "/api/v1/exousia/change-pin",
       "/api/v1/keyman/admin-password",
       "/api/v1/keyman/create-key",
       "/api/v1/keyman/update-key",
@@ -677,7 +716,6 @@
       "/api/v1/linker/deploy",
       "/api/v1/linker/mkdir",
       "/api/v1/linker/rename",
-      "/api/v1/network/cors/allowed-origins/add",
       "/api/v1/network/tailscale/authkey",
       "/api/v1/network/tailscale/down",
       "/api/v1/network/tailscale/tailnet",
@@ -688,17 +726,25 @@
       "/api/v1/service/:service/start",
       "/api/v1/service/:service/status",
       "/api/v1/service/:service/stop",
+      "/api/v1/settings/datetime",
+      "/api/v1/settings/region",
+      "/api/v1/storage/backup/nas-sync/hold",
+      "/api/v1/storage/backup/nas-sync/release",
+      "/api/v1/storage/backup/nas-sync/schedule/disable",
+      "/api/v1/storage/disk/partlabel/assign",
       "/api/v1/storage/nas/attach",
       "/api/v1/storage/nas/detach",
+      "/api/v1/storage/nas/key/probe",
+      "/api/v1/storage/nas/role/swap",
       "/api/v1/storage/nas/setup",
       "/api/v1/storage/vault/auto-decrypt",
+      "/api/v1/thyrsus/admit",
+      "/api/v1/thyrsus/forge-token",
+      "/api/v1/thyrsus/propose",
       "/api/v1/transmission/down",
       "/api/v1/transmission/keys/replace",
       "/api/v1/transmission/keys/rotate",
       "/api/v1/transmission/up",
-      "/api/v1/thyrsus/propose",
-      "/api/v1/thyrsus/admit",
-      "/api/v1/thyrsus/forge-token",
       "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
       "DELETE /api/v1/network/firewall/children/{mac}",
       "POST /api/v1/network/dhcp",
@@ -713,16 +759,11 @@
       "POST /api/v1/network/dns/device-name/remove",
       "POST /api/v1/network/dns/upstream",
       "POST /api/v1/network/firewall/children",
+      "POST /api/v1/storage/backup/forgejo/skip-check",
+      "POST /api/v1/storage/nas/list",
       "POST /api/v1/transmission/vpn/settings",
       "PUT /api/v1/network/dhcp/reservations/{reservation_id}",
-      "PUT /api/v1/network/firewall/children/{mac}/whitelist",
-      "/api/v1/storage/backup/nas-sync/hold",
-      "/api/v1/storage/backup/nas-sync/release",
-      "/api/v1/storage/backup/nas-sync/schedule/disable",
-      "/api/v1/storage/nas/key/probe",
-      "/api/v1/storage/disk/partlabel/assign",
-      "/api/v1/storage/nas/role/swap",
-      "PUT /api/v1/network/notes"
+      "PUT /api/v1/network/firewall/children/{mac}/whitelist"
     ]
   }
 }

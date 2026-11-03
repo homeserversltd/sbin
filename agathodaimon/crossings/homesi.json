@@ -5,25 +5,18 @@
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
     "appliance/service",
+    "appliance/service/disable",
+    "appliance/service/enable",
+    "appliance/service/reload",
+    "appliance/service/restart",
+    "appliance/service/start",
+    "appliance/service/status",
+    "appliance/service/stop",
     "appliance/sudo-passwordless",
     "exousia/bind",
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
-    "notify/act",
-    "notify/post",
-    "face/app",
-    "face/badge",
-    "face/bar",
-    "face/dictate",
-    "face/fetch",
-    "face/focus",
-    "face/launch",
-    "face/launcher-cache",
-    "face/meter",
-    "face/screenshot",
-    "face/volume",
-    "face/workspace",
     "local-ai/card",
     "local-ai/edition",
     "local-ai/library",
@@ -40,18 +33,12 @@
     "network/linker",
     "network/wake-on-lan",
     "network/wifi",
-    "settings/appearance",
+    "notify/act",
+    "notify/post",
     "settings/datetime",
     "settings/datetime/household-time",
-    "settings/default-apps",
-    "settings/display",
-    "settings/energy",
-    "settings/keyboard",
     "settings/region",
-    "settings/input",
-    "settings/notifications",
     "settings/samba",
-    "settings/sound",
     "settings/ssh",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
@@ -59,25 +46,18 @@
     "storage/upload/ingress",
     "storage/vault/open",
     "storage/vault/policy",
-    "update/service",
-    "update/sources-reseed",
-    "thyrsus/propose",
     "thyrsus/admit",
-    "thyrsus/forge-token",
     "thyrsus/forge",
-    "unit/start",
-    "unit/stop",
-    "unit/restart",
-    "unit/enable",
+    "thyrsus/forge-token",
+    "thyrsus/propose",
     "unit/disable",
+    "unit/enable",
+    "unit/restart",
+    "unit/start",
     "unit/status",
-    "appliance/service/start",
-    "appliance/service/stop",
-    "appliance/service/restart",
-    "appliance/service/reload",
-    "appliance/service/enable",
-    "appliance/service/disable",
-    "appliance/service/status"
+    "unit/stop",
+    "update/service",
+    "update/sources-reseed"
   ],
   "verbs": [
     [
@@ -99,62 +79,6 @@
     [
       "exousia",
       "verify"
-    ],
-    [
-      "notify",
-      "act"
-    ],
-    [
-      "notify",
-      "post"
-    ],
-    [
-      "face",
-      "app"
-    ],
-    [
-      "face",
-      "badge"
-    ],
-    [
-      "face",
-      "bar"
-    ],
-    [
-      "face",
-      "dictate"
-    ],
-    [
-      "face",
-      "fetch"
-    ],
-    [
-      "face",
-      "focus"
-    ],
-    [
-      "face",
-      "launch"
-    ],
-    [
-      "face",
-      "launcher-cache"
-    ],
-    [
-      "face",
-      "meter"
-    ],
-    [
-      "face",
-      "screenshot"
-    ],
-    [
-      "face",
-      "volume"
-    ],
-    [
-      "face",
-      "workspace"
     ],
     [
       "local-ai",
@@ -209,8 +133,40 @@
       "wake-on-lan"
     ],
     [
-      "settings",
-      "appearance"
+      "notify",
+      "act"
+    ],
+    [
+      "notify",
+      "post"
+    ],
+    [
+      "service",
+      "disable"
+    ],
+    [
+      "service",
+      "enable"
+    ],
+    [
+      "service",
+      "reload"
+    ],
+    [
+      "service",
+      "restart"
+    ],
+    [
+      "service",
+      "start"
+    ],
+    [
+      "service",
+      "status"
+    ],
+    [
+      "service",
+      "stop"
     ],
     [
       "settings",
@@ -218,35 +174,7 @@
     ],
     [
       "settings",
-      "default-apps"
-    ],
-    [
-      "settings",
-      "display"
-    ],
-    [
-      "settings",
-      "energy"
-    ],
-    [
-      "settings",
-      "keyboard"
-    ],
-    [
-      "settings",
       "region"
-    ],
-    [
-      "settings",
-      "input"
-    ],
-    [
-      "settings",
-      "notifications"
-    ],
-    [
-      "settings",
-      "sound"
     ],
     [
       "settings",
@@ -257,8 +185,48 @@
       "ssh"
     ],
     [
+      "thyrsus",
+      "admit"
+    ],
+    [
+      "thyrsus",
+      "forge"
+    ],
+    [
+      "thyrsus",
+      "forge-token"
+    ],
+    [
+      "thyrsus",
+      "propose"
+    ],
+    [
       "time",
       "household-time"
+    ],
+    [
+      "unit",
+      "disable"
+    ],
+    [
+      "unit",
+      "enable"
+    ],
+    [
+      "unit",
+      "restart"
+    ],
+    [
+      "unit",
+      "start"
+    ],
+    [
+      "unit",
+      "status"
+    ],
+    [
+      "unit",
+      "stop"
     ],
     [
       "update",
@@ -279,101 +247,14 @@
     [
       "vault",
       "open"
-    ],
-    [
-      "thyrsus",
-      "propose"
-    ],
-    [
-      "thyrsus",
-      "admit"
-    ],
-    [
-      "thyrsus",
-      "forge-token"
-    ],
-    [
-      "thyrsus",
-      "forge"
-    ],
-    [
-      "unit",
-      "start"
-    ],
-    [
-      "unit",
-      "stop"
-    ],
-    [
-      "unit",
-      "restart"
-    ],
-    [
-      "unit",
-      "enable"
-    ],
-    [
-      "unit",
-      "disable"
-    ],
-    [
-      "unit",
-      "status"
-    ],
-    [
-      "service",
-      "start"
-    ],
-    [
-      "service",
-      "stop"
-    ],
-    [
-      "service",
-      "restart"
-    ],
-    [
-      "service",
-      "reload"
-    ],
-    [
-      "service",
-      "enable"
-    ],
-    [
-      "service",
-      "disable"
-    ],
-    [
-      "service",
-      "status"
     ]
   ],
   "routes": [
-    "/api/v1/access/pin/change",
-    "/api/v1/access/pin/mode",
-    "/api/v1/access/pin/reset-default",
     "/api/v1/access/sudo/mode",
-    "/api/v1/attendance/change-pin",
     "/api/v1/cert/bundle/download",
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
-    "/api/v1/config/patch",
-    "/api/v1/config/set",
-    "/api/v1/exousia/change-pin",
-    "/api/v1/face/app",
-    "/api/v1/face/badge",
-    "/api/v1/face/bar",
-    "/api/v1/face/dictate",
-    "/api/v1/face/fetch",
-    "/api/v1/face/focus",
-    "/api/v1/face/launch",
-    "/api/v1/face/launcher-cache",
-    "/api/v1/face/meter",
-    "/api/v1/face/screenshot",
-    "/api/v1/face/volume",
-    "/api/v1/face/workspace",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/interactables",
@@ -399,28 +280,19 @@
     "/api/v1/network/dns/status",
     "/api/v1/network/firewall/children",
     "/api/v1/network/firewall/children/:mac/whitelist",
-    "/api/v1/network/notes",
     "/api/v1/network/status",
     "/api/v1/settings/child-device",
-    "/api/v1/settings/appearance",
     "/api/v1/settings/datetime",
-    "/api/v1/settings/default-apps",
-    "/api/v1/settings/display",
-    "/api/v1/settings/energy",
-    "/api/v1/settings/keyboard",
     "/api/v1/settings/region",
-    "/api/v1/settings/input",
-    "/api/v1/settings/notifications",
-    "/api/v1/settings/sound",
     "/api/v1/settings/samba/status",
     "/api/v1/settings/ssh/status",
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
-    "/api/v1/thyrsus/propose",
     "/api/v1/thyrsus/admit",
-    "/api/v1/thyrsus/forge-token",
     "/api/v1/thyrsus/forge",
+    "/api/v1/thyrsus/forge-token",
+    "/api/v1/thyrsus/propose",
     "/api/v1/update/check",
     "/api/v1/update/now",
     "/api/v1/update/service/status",
@@ -430,6 +302,13 @@
   "administrative": {
     "bands": [
       "appliance/service",
+      "appliance/service/disable",
+      "appliance/service/enable",
+      "appliance/service/reload",
+      "appliance/service/restart",
+      "appliance/service/start",
+      "appliance/service/status",
+      "appliance/service/stop",
       "appliance/sudo-passwordless",
       "exousia/change",
       "exousia/reset-default",
@@ -437,19 +316,11 @@
       "network/child-device",
       "network/dns",
       "settings/datetime",
-      "settings/input",
       "settings/ssh",
       "storage/vault/policy",
-      "thyrsus/propose",
       "thyrsus/admit",
       "thyrsus/forge-token",
-      "appliance/service/start",
-      "appliance/service/stop",
-      "appliance/service/restart",
-      "appliance/service/reload",
-      "appliance/service/enable",
-      "appliance/service/disable",
-      "appliance/service/status"
+      "thyrsus/propose"
     ],
     "verbs": [
       [
@@ -465,8 +336,32 @@
         "slot"
       ],
       [
-        "settings",
-        "appearance"
+        "service",
+        "disable"
+      ],
+      [
+        "service",
+        "enable"
+      ],
+      [
+        "service",
+        "reload"
+      ],
+      [
+        "service",
+        "restart"
+      ],
+      [
+        "service",
+        "start"
+      ],
+      [
+        "service",
+        "status"
+      ],
+      [
+        "service",
+        "stop"
       ],
       [
         "settings",
@@ -474,35 +369,7 @@
       ],
       [
         "settings",
-        "default-apps"
-      ],
-      [
-        "settings",
-        "display"
-      ],
-      [
-        "settings",
-        "energy"
-      ],
-      [
-        "settings",
-        "keyboard"
-      ],
-      [
-        "settings",
-        "notifications"
-      ],
-      [
-        "settings",
         "region"
-      ],
-      [
-        "settings",
-        "sound"
-      ],
-      [
-        "thyrsus",
-        "propose"
       ],
       [
         "thyrsus",
@@ -513,59 +380,19 @@
         "forge-token"
       ],
       [
-        "service",
-        "start"
-      ],
-      [
-        "service",
-        "stop"
-      ],
-      [
-        "service",
-        "restart"
-      ],
-      [
-        "service",
-        "reload"
-      ],
-      [
-        "service",
-        "enable"
-      ],
-      [
-        "service",
-        "disable"
-      ],
-      [
-        "service",
-        "status"
+        "thyrsus",
+        "propose"
       ]
     ],
     "routes": [
-      "/api/v1/access/pin/change",
-      "/api/v1/access/pin/mode",
-      "/api/v1/access/pin/reset-default",
       "/api/v1/access/sudo/mode",
-      "/api/v1/attendance/change-pin",
-      "/api/v1/config/patch",
-      "/api/v1/config/set",
-      "/api/v1/exousia/change-pin",
-      "/api/v1/settings/appearance",
       "/api/v1/settings/datetime",
-      "/api/v1/settings/default-apps",
-      "/api/v1/settings/display",
-      "/api/v1/settings/energy",
-      "/api/v1/settings/keyboard",
       "/api/v1/settings/region",
-      "/api/v1/settings/input",
-      "/api/v1/settings/notifications",
-      "/api/v1/settings/sound",
       "/api/v1/storage/vault/auto-decrypt",
-      "PUT /api/v1/local-ai/slot/:slot",
-      "/api/v1/thyrsus/propose",
       "/api/v1/thyrsus/admit",
       "/api/v1/thyrsus/forge-token",
-      "PUT /api/v1/network/notes"
+      "/api/v1/thyrsus/propose",
+      "PUT /api/v1/local-ai/slot/:slot"
     ]
   }
 }

@@ -3,9 +3,9 @@
     "household-time"
   ],
   "sclerite": {
-    "name": "desktop",
+    "name": "settings",
     "features": {
-      "desktop": {
+      "settings": {
         "band": true,
         "verbs": [
           [

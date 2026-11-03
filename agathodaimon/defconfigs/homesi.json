@@ -2,6 +2,7 @@
   "schema": "agathodaimon.defconfig.v1",
   "profile": "homesi",
   "features": [
+    "thyrsus",
     "nmcli",
     "local-ai",
     "pid2-unit"

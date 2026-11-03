@@ -13,7 +13,7 @@
         ],
         "routes": [],
         "administrative": {
-          "band": false,
+          "band": true,
           "verbs": [
             [
               "exousia",

@@ -4,7 +4,7 @@
     "features": {
       "all": {
         "administrative": {
-          "band": false,
+          "band": true,
           "routes": [],
           "verbs": []
         },

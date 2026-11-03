@@ -5,8 +5,8 @@
     "name": "pid2-unit",
     "features": {
       "pid2-unit": {
-        "band": true,
-        "verbs": [["unit", "control"]],
+        "band": false,
+        "verbs": [],
         "routes": [],
         "administrative": {
           "band": false,

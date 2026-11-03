@@ -2,6 +2,7 @@
   "schema": "agathodaimon.defconfig.v1",
   "profile": "homeserver",
   "features": [
+    "thyrsus",
     "kea",
     "unbound",
     "keyman",

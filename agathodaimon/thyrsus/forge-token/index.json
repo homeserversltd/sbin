@@ -1,3 +1,4 @@
 {
-  "children": []
+  "children": [],
+  "sclerite": {"name": "thyrsus", "features": {"thyrsus": {"band": true, "verbs": [["thyrsus", "forge-token"]], "routes": ["/api/v1/thyrsus/forge-token"], "administrative": {"band": true, "verbs": [["thyrsus", "forge-token"]], "routes": ["/api/v1/thyrsus/forge-token"]}}}}
 }

@@ -33,7 +33,7 @@
           "/api/v1/settings/child-device"
         ],
         "administrative": {
-          "band": false,
+          "band": true,
           "verbs": [],
           "routes": []
         }

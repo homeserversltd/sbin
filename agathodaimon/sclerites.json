@@ -1,10 +1,13 @@
 {
   "schema": "agathodaimon.sclerites.v1",
   "always": [
-    "all"
+    "all",
+    "settings"
   ],
   "features": {
     "all": {},
+    "settings": {},
+    "thyrsus": {},
     "kea": {
       "requires": [
         "gateway"
