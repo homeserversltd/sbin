@@ -1138,6 +1138,19 @@ def main(argv=None):
         profile, profile_ok = _profile_for_crossing()
         publication = _crossing_publication(profile) if profile_ok else None
     if len(args) == 1 and "/" in args[0]:
+        stream_target = _slash_target(args[0])
+        if (stream_target is not None and stream_target.is_file()
+                and _index(stream_target.parent).get("envelope", {}).get("stdin") == "stream"):
+            cli_target, remainder = _cli_target(args)
+            if cli_target is None:
+                print("invalid stream path", file=sys.stderr)
+                return 2
+            if not _administrative_pin_admits(
+                cli_target, remainder, None, pin_required, caduceus_root,
+                False, None, publication,
+            ):
+                return 1
+            return int(_load(stream_target).main() or 0)
         raw_envelope = sys.stdin.read()
         try:
             envelope = json.loads(raw_envelope)

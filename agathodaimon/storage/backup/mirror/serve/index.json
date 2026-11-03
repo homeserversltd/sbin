@@ -1,0 +1,8 @@
+{
+  "children": [],
+  "envelope": {"stdin": "stream"},
+  "sclerite": {
+    "name": "nas",
+    "features": {"nas": {"band": true, "administrative": {"band": true}}}
+  }
+}

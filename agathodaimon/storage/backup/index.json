@@ -4,6 +4,7 @@
     "backblaze",
     "backblaze-recover",
     "nas-sync",
+    "mirror",
     "forgejo",
     "ledger"
   ],
