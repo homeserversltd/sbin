@@ -1,7 +1,11 @@
 {
   "dry-run": true,
   "face": "index.py",
-  "children": [],
+  "children": [
+    "ensure-root", "status", "rotate-ca", "issue-leaf", "sign-csr",
+    "bundle-export", "bundle-read", "trust-install", "apply-nginx",
+    "constituent-lock", "state-commit"
+  ],
   "verbs": [
     {
       "name": "trust-install",
