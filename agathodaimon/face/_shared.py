@@ -2519,7 +2519,7 @@ def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
                 check=True, capture_output=True, text=True,
             ).stdout
         feed = json.loads(feed_text)
-    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
+    except (OSError, UnicodeError, ValueError, RecursionError, subprocess.SubprocessError):
         raise FaceError("harmonia-feed-observation-failed")
     if not isinstance(feed, dict):
         raise FaceError("harmonia-feed-object-required")
