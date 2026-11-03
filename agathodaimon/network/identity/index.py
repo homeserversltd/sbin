@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 from typing import Sequence
 
-from agathodaimon.network.dhcp.index import DhcpError, DhcpManager, normalize_mac
-from agathodaimon.network.dns.index import DnsError, DnsManager
+from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager, normalize_mac
+from agathodaimon.network.dns._manager import DnsError, DnsManager
 from agathodaimon.lib.receipts import emit
 from agathodaimon.network.identity._claim import IdentityClaimCoordinator, IdentityError
 from agathodaimon.network.identity._roster import _device_projection, device_list, service_names

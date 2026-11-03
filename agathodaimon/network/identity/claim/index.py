@@ -2,8 +2,8 @@
 import json
 
 from agathodaimon import _envelope
-from agathodaimon.network.dhcp.index import DhcpError
-from agathodaimon.network.dns.index import DnsError
+from agathodaimon.network.dhcp._manager import DhcpError
+from agathodaimon.network.dns._manager import DnsError
 from agathodaimon.network.identity._claim import IdentityClaimCoordinator, IdentityError
 
 

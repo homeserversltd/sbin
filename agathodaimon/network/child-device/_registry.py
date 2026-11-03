@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from agathodaimon.network.dhcp.index import DhcpError, DhcpManager
+from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
 SCHEMA = "caduceus.child-device.v1"
 DEFAULT_STATE = Path("/var/lib/caduceus/child-devices.json")

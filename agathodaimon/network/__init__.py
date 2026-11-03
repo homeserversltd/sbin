@@ -1,4 +1,4 @@
 """Typed Caduceus network staff actuators."""
-from .dhcp.index import DhcpError, DhcpManager
-from .dns.index import DnsError, DnsManager
+from .dhcp._manager import DhcpError, DhcpManager
+from .dns._manager import DnsError, DnsManager
 __all__ = ["DhcpError", "DhcpManager", "DnsError", "DnsManager"]

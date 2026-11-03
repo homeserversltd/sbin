@@ -904,7 +904,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
 
 
 def constituent_lock(portal: str, lan_ip: str, aliases: Sequence[str] = (), *, dry_run: bool = False) -> dict[str, Any]:
-    from agathodaimon.network.dns.index import DnsManager, create_alias
+    from agathodaimon.network.dns._manager import DnsManager, create_alias
 
     ip = str(ipaddress.ip_address(lan_ip))
     names, ips = _split_sans([portal, *aliases])

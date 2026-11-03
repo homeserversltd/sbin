@@ -1,8 +1,8 @@
 """Read the fused identity roster."""
 import json
 from agathodaimon import _envelope
-from agathodaimon.network.dhcp.index import DhcpError
-from agathodaimon.network.dns.index import DnsError
+from agathodaimon.network.dhcp._manager import DhcpError
+from agathodaimon.network.dns._manager import DnsError
 from agathodaimon.network.identity._claim import IdentityError
 from agathodaimon.network.identity._roster import _device_projection
 

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from agathodaimon._envelope import EnvelopeError, attach, read_fields
-from agathodaimon.network.dhcp.index import DhcpError, DhcpManager
+from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
 SCHEMA = "caduceus.network.firewall.v1"
 DEFAULT_POLICY = Path("/etc/unbound/unbound.conf.d/agathodaimon-child-policy.conf")

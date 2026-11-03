@@ -17,7 +17,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from agathodaimon.network.dhcp.index import DhcpError, DhcpManager
+from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
 from importlib import import_module
 

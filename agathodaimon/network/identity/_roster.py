@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 from agathodaimon import _load_trace
-from agathodaimon.network.dhcp.index import DhcpManager
-from agathodaimon.network.dns.index import DnsManager
+from agathodaimon.network.dhcp._manager import DhcpManager
+from agathodaimon.network.dns._manager import DnsManager
 from agathodaimon.network.identity._claim import IdentityClaimCoordinator
 
 
