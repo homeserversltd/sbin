@@ -17,6 +17,18 @@
     "exousia/change",
     "exousia/reset-default",
     "exousia/verify",
+    "face/app",
+    "face/badge",
+    "face/bar",
+    "face/dictate",
+    "face/fetch",
+    "face/focus",
+    "face/launch",
+    "face/launcher-cache",
+    "face/meter",
+    "face/screenshot",
+    "face/volume",
+    "face/workspace",
     "local-ai/card",
     "local-ai/edition",
     "local-ai/library",
@@ -35,10 +47,18 @@
     "network/wifi",
     "notify/act",
     "notify/post",
+    "settings/appearance",
     "settings/datetime",
     "settings/datetime/household-time",
+    "settings/default-apps",
+    "settings/display",
+    "settings/energy",
+    "settings/input",
+    "settings/keyboard",
+    "settings/notifications",
     "settings/region",
     "settings/samba",
+    "settings/sound",
     "settings/ssh",
     "storage/backup/forgejo/credential",
     "storage/disk/test",
@@ -79,6 +99,54 @@
     [
       "exousia",
       "verify"
+    ],
+    [
+      "face",
+      "app"
+    ],
+    [
+      "face",
+      "badge"
+    ],
+    [
+      "face",
+      "bar"
+    ],
+    [
+      "face",
+      "dictate"
+    ],
+    [
+      "face",
+      "fetch"
+    ],
+    [
+      "face",
+      "focus"
+    ],
+    [
+      "face",
+      "launch"
+    ],
+    [
+      "face",
+      "launcher-cache"
+    ],
+    [
+      "face",
+      "meter"
+    ],
+    [
+      "face",
+      "screenshot"
+    ],
+    [
+      "face",
+      "volume"
+    ],
+    [
+      "face",
+      "workspace"
     ],
     [
       "local-ai",
@@ -170,7 +238,35 @@
     ],
     [
       "settings",
+      "appearance"
+    ],
+    [
+      "settings",
       "datetime"
+    ],
+    [
+      "settings",
+      "default-apps"
+    ],
+    [
+      "settings",
+      "display"
+    ],
+    [
+      "settings",
+      "energy"
+    ],
+    [
+      "settings",
+      "input"
+    ],
+    [
+      "settings",
+      "keyboard"
+    ],
+    [
+      "settings",
+      "notifications"
     ],
     [
       "settings",
@@ -179,6 +275,10 @@
     [
       "settings",
       "samba"
+    ],
+    [
+      "settings",
+      "sound"
     ],
     [
       "settings",
@@ -255,6 +355,18 @@
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
+    "/api/v1/face/app",
+    "/api/v1/face/badge",
+    "/api/v1/face/bar",
+    "/api/v1/face/dictate",
+    "/api/v1/face/fetch",
+    "/api/v1/face/focus",
+    "/api/v1/face/launch",
+    "/api/v1/face/launcher-cache",
+    "/api/v1/face/meter",
+    "/api/v1/face/screenshot",
+    "/api/v1/face/volume",
+    "/api/v1/face/workspace",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/interactables",
@@ -281,10 +393,18 @@
     "/api/v1/network/firewall/children",
     "/api/v1/network/firewall/children/:mac/whitelist",
     "/api/v1/network/status",
+    "/api/v1/settings/appearance",
     "/api/v1/settings/child-device",
     "/api/v1/settings/datetime",
+    "/api/v1/settings/default-apps",
+    "/api/v1/settings/display",
+    "/api/v1/settings/energy",
+    "/api/v1/settings/input",
+    "/api/v1/settings/keyboard",
+    "/api/v1/settings/notifications",
     "/api/v1/settings/region",
     "/api/v1/settings/samba/status",
+    "/api/v1/settings/sound",
     "/api/v1/settings/ssh/status",
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
@@ -316,6 +436,7 @@
       "network/child-device",
       "network/dns",
       "settings/datetime",
+      "settings/input",
       "settings/ssh",
       "storage/vault/policy",
       "thyrsus/admit",
@@ -365,11 +486,39 @@
       ],
       [
         "settings",
+        "appearance"
+      ],
+      [
+        "settings",
         "datetime"
       ],
       [
         "settings",
+        "default-apps"
+      ],
+      [
+        "settings",
+        "display"
+      ],
+      [
+        "settings",
+        "energy"
+      ],
+      [
+        "settings",
+        "keyboard"
+      ],
+      [
+        "settings",
+        "notifications"
+      ],
+      [
+        "settings",
         "region"
+      ],
+      [
+        "settings",
+        "sound"
       ],
       [
         "thyrsus",
@@ -386,8 +535,16 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
+      "/api/v1/settings/appearance",
       "/api/v1/settings/datetime",
+      "/api/v1/settings/default-apps",
+      "/api/v1/settings/display",
+      "/api/v1/settings/energy",
+      "/api/v1/settings/input",
+      "/api/v1/settings/keyboard",
+      "/api/v1/settings/notifications",
       "/api/v1/settings/region",
+      "/api/v1/settings/sound",
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/thyrsus/admit",
       "/api/v1/thyrsus/forge-token",

@@ -1,8 +1,8 @@
 # Agathodaimon carapace
 
-`python3 agathodaimon/carapace.py generate` derives the three sold
+`python3 agathodaimon/carapace.py generate` derives the four generated profile
 `appliance.crossings.v1` files from source declarations. It reads
-`agathodaimon/sclerites.json`, the three files under `agathodaimon/defconfigs/`,
+`agathodaimon/sclerites.json`, the four files under `agathodaimon/defconfigs/`,
 and each band owner's adjacent `index.json` `sclerite` declaration. It does not
 read the generated crossings as inputs. All profiles and output targets are
 prepared before writes; absent output files are created, while symlink and
@@ -16,29 +16,36 @@ empty maps remain unpublished owners. A declaration maps feature names to that
 owner's `band`, alias `verbs`, `routes`, and optional `administrative`
 contributions. Keep read-only observation routes in `all`. The four network
 bands (`dhcp`, `dns`, `firewall`, `identity`) contribute their observation band
-and existing `network/<name>` verb under `all` in every sold profile. Their
-`all` administrative claims remain empty; gated mutation routes and
+and existing `network/<name>` verb under `all` in every profile. The DNS `all`
+band is administrative; gated mutation routes and
 method-qualified administrative claims stay with `kea` (DHCP), `unbound` (DNS),
 or `firewall`. Identity's `/api/v1/network/device/claim` is gated by `kea`;
 its `/api/v1/network/device` observer route remains in `all`. Preserve any gated
 duplicate band/verb needed for per-claim administrative validation; crossing
 unions are idempotent. `lib` is internal and cannot contribute crossing bands
-or routes. All ten `face/...` leaves (`app`, `badge`, `bar`, `fetch`, `focus`,
-`launch`, `launcher-cache`, `meter`, `volume`, and `workspace`) have feature and
-sclerite name `gtk4`; their crossing ownership follows the Caduceus GTK4 leaf,
+or routes. All twelve `face/...` leaves (`app`, `badge`, `bar`, `dictate`,
+`fetch`, `focus`, `launch`, `launcher-cache`, `meter`, `screenshot`, `volume`,
+and `workspace`) have feature and sclerite name `gtk4`; their crossing
+ownership follows the Caduceus GTK4 leaf,
 not the old `sway`, `pactl`, or `desktop` selections.
 
 The defconfigs explicitly select these profile features; declared implications
 and prerequisites add derived features without adding profile-band lists:
 
-- `homeserver`: `kea`, `unbound`, `keyman`, `nas`, `linker`, `transmission`,
-  `tailscale`; gateway implications add `gateway`, `nft`, `firewall`, and
-  `identity`, while NAS derives its `luks` and `xfs` prerequisites.
+- `homeserver`: `thyrsus`, `kea`, `unbound`, `keyman`, `nas`, `pid2-unit`,
+  `linker`, `transmission`, `tailscale`; gateway implications add `gateway`,
+  `nft`, `firewall`, and `identity`, while NAS derives its `luks` and `xfs`
+  prerequisites.
+- `homesi`: `thyrsus`, `desktop`, `sway`, `pactl`, `gtk4`, `nmcli`,
+  `local-ai`, `pid2-unit`.
 - `homeconsole`: `sway`, `pactl`, `desktop`, `nmcli`, `games`, `sddm`,
   `console-restart`.
 - `tv`: `sway`, `pactl`, `desktop`, `nmcli`, `gtk4`.
 
-`all` is always on. `kea` and `unbound` each require the derived gateway
+`all` and `settings` are always on. `settings` owns the compositor-free
+`settings/datetime` and `settings/region` crossings; session-bound settings
+remain under `desktop`. `thyrsus` owns its four stops and is selected on
+HomeServer and HomeSI. `kea` and `unbound` each require the derived gateway
 capability; selecting both implies `gateway`. Gateway in turn implies `nft`,
 `firewall`, and `identity`. This preserves the existing HomeServer gateway
 mutation surface without making those mutations profile-table rules. `firewall`
@@ -59,7 +66,7 @@ for its ROM library and artwork. These are not physical package dependencies.
 
 `keyman/key-status` is owned by `keyman`, and `transmission/status` by
 `transmission`; neither status is globally selected under `all`. `face/badge`
-and `face/meter` are among the ten `gtk4`-owned face leaves, not common `all`
+and `face/meter` are among the twelve `gtk4`-owned face leaves, not common `all`
 observers. Those key/status bands are available only to profiles selecting
 their owning feature (HomeServer here). These observer declarations remain
 honest-not-found where dispatch has no implementation; the internal
