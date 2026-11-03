@@ -1,5 +1,16 @@
 {
-  "children": [],
+  "children": [
+    "status",
+    "config",
+    "validate",
+    "statistics",
+    "health",
+    "boundary",
+    "add-reservation",
+    "remove-reservation",
+    "update-reservation-ip",
+    "update-pool-boundary"
+  ],
   "sclerite": {
     "features": {
       "all": {

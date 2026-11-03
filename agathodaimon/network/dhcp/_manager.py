@@ -1,0 +1,480 @@
+from __future__ import annotations
+
+import argparse
+import ipaddress
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable, Sequence
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
+
+
+from agathodaimon import _load_trace
+
+
+class DhcpError(RuntimeError):
+    """A bounded, operator-readable DHCP actuator failure."""
+
+
+CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
+MAC = re.compile(r"^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$")
+KEA_EXECUTABLE_UNAVAILABLE = "kea-executable-unavailable"
+
+
+def resolve_kea_executable(name: str) -> str:
+    """Resolve a Kea binary without mutating PATH or trusting a bare argv."""
+    resolved = shutil.which(name)
+    if resolved:
+        return resolved
+    fallback = Path("/usr/sbin") / name
+    if fallback.is_file() and os.access(fallback, os.X_OK):
+        return str(fallback)
+    raise DhcpError(f"{KEA_EXECUTABLE_UNAVAILABLE}:{name}")
+
+
+def normalize_mac(value: str) -> str:
+    """Return the single MAC spelling used by every read projection."""
+    mac = value.strip().lower().replace("-", ":")
+    if not MAC.fullmatch(mac):
+        raise DhcpError(f"invalid MAC address: {value}")
+    return mac
+
+
+class DhcpManager:
+    """Read and mutate Kea DHCP state through the preserved atomic updater."""
+
+    CONFIG_PATH = Path("/etc/kea/kea-dhcp4.conf")
+    APPLIANCE_CONFIG_PATH = Path("/etc/appliance/config.json")
+    LEASES_PATH = "/api/v1/network/dhcp/leases"
+    UPDATE_SCRIPT = Path("/usr/local/sbin/agathodaimon/network/dhcp/update-kea-dhcp.sh")
+    SERVICE = "kea-dhcp4-server"
+
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        update_script: str | Path | None = None,
+        *,
+        command_runner: CommandRunner | None = None,
+        now: Callable[[], float] = time.time,
+    ) -> None:
+        self.config_path = Path(config_path or os.environ.get("CADUCEUS_DHCP_CONFIG", self.CONFIG_PATH))
+        self.appliance_config_path = Path(os.environ.get("CADUCEUS_APPLIANCE_CONFIG", self.APPLIANCE_CONFIG_PATH))
+        self.update_script = Path(update_script or os.environ.get("CADUCEUS_DHCP_UPDATE_SCRIPT", self.UPDATE_SCRIPT))
+        self._command_runner = command_runner or self._run
+        self._now = now
+
+    @staticmethod
+    def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+
+    def _command(self, command: Sequence[str], *, required: bool = True) -> subprocess.CompletedProcess[str]:
+        try:
+            result = self._command_runner(command)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise DhcpError(f"command failed: {' '.join(command)}: {exc}") from exc
+        if required and result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
+            raise DhcpError(f"command failed: {' '.join(command)}: {detail}")
+        return result
+
+    def get_service_status(self) -> dict[str, Any]:
+        active_result = self._command(["systemctl", "is-active", self.SERVICE], required=False)
+        details_result = self._command(["systemctl", "status", self.SERVICE, "--no-pager"], required=False)
+        active = active_result.returncode == 0 and active_result.stdout.strip() == "active"
+        return {
+            "active": active,
+            "status": "active" if active else "inactive",
+            "details": (details_result.stdout + details_result.stderr).strip(),
+        }
+
+    def status(self) -> dict[str, Any]:
+        """Read service and configuration validity without changing either."""
+        config_valid = self.validate_config()
+        service = self.get_service_status()
+        return {
+            "service": {"name": self.SERVICE, "active": service["active"], "status": service["status"]},
+            "config_valid": config_valid,
+            "details": service["details"],
+        }
+
+    def get_config(self) -> dict[str, Any]:
+        """Read and parse the DHCP configuration under one optional staff span."""
+        with _load_trace.span(
+            "agathodaimon.network.dhcp.configuration_read",
+            road="local-file",
+            source_state="kea-configuration",
+        ):
+            return self._read_config()
+
+    def _read_config(self) -> dict[str, Any]:
+        try:
+            raw = self.config_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise DhcpError(f"failed to read config {self.config_path}: {exc}") from exc
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            raise DhcpError("no JSON object found in DHCP config")
+        try:
+            value = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise DhcpError(f"invalid JSON in DHCP config: {exc}") from exc
+        if not self._validate_config_structure(value):
+            raise DhcpError("invalid DHCP configuration structure")
+        return value
+
+    @staticmethod
+    def _validate_config_structure(config: Any) -> bool:
+        return (
+            isinstance(config, dict)
+            and isinstance(config.get("Dhcp4"), dict)
+            and isinstance(config["Dhcp4"].get("subnet4"), list)
+        )
+
+    def update_config(self, config: dict[str, Any]) -> dict[str, Any]:
+        if not self._validate_config_structure(config):
+            raise DhcpError("invalid DHCP configuration structure")
+        if not self.update_script.is_file():
+            raise DhcpError(f"atomic update script is missing: {self.update_script}")
+        payload = json.dumps(config, indent=4) + "\n"
+        temporary: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
+                handle.write(payload)
+                temporary = handle.name
+            self._command([str(self.update_script), temporary])
+        finally:
+            if temporary:
+                Path(temporary).unlink(missing_ok=True)
+        return self.get_config()
+
+    def validate_config(self) -> bool:
+        executable = resolve_kea_executable("kea-dhcp4")
+        return self._command([executable, "-t", str(self.config_path)], required=False).returncode == 0
+
+    def _subnets(self, config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        value = (config or self.get_config())["Dhcp4"]["subnet4"]
+        return [item for item in value if isinstance(item, dict)]
+
+    def get_reservations(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "hw-address": str(item.get("hw-address", "")),
+                "ip-address": str(item.get("ip-address", "")),
+                "hostname": str(item.get("hostname", "")),
+            }
+            for subnet in self._subnets()
+            for item in subnet.get("reservations", [])
+            if isinstance(item, dict)
+        ]
+
+    def reservations(self) -> list[dict[str, str]]:
+        """Project declared reservations with normalized MACs and provenance."""
+        values: list[dict[str, str]] = []
+        for reservation in self.get_reservations():
+            try:
+                mac = normalize_mac(reservation["hw-address"])
+            except DhcpError:
+                continue
+            values.append({"mac": mac, "ip": reservation["ip-address"], "hostname": reservation["hostname"], "provenance": "declared"})
+        return sorted(values, key=lambda item: (item["mac"], item["ip"]))
+
+    @staticmethod
+    def _validate_mac_address(mac: str) -> bool:
+        return bool(re.fullmatch(r"(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}", mac or ""))
+
+    @staticmethod
+    def _validate_ip_address(ip: str) -> bool:
+        try:
+            return isinstance(ipaddress.ip_address(ip), ipaddress.IPv4Address)
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _ip_to_int(ip: str) -> int | None:
+        try:
+            return int(ipaddress.IPv4Address(ip))
+        except ValueError:
+            return None
+
+    def _get_pool_range(self) -> tuple[str | None, str | None]:
+        subnets = self._subnets()
+        pools = subnets[0].get("pools", []) if subnets else []
+        pool = pools[0].get("pool", "") if pools and isinstance(pools[0], dict) else ""
+        if " - " not in pool:
+            return None, None
+        start, end = (part.strip() for part in pool.split(" - ", 1))
+        return (start, end) if self._validate_ip_address(start) and self._validate_ip_address(end) else (None, None)
+
+    def _get_reserved_range(self) -> tuple[str, str]:
+        subnets = self._subnets()
+        if not subnets:
+            return "192.168.123.2", "192.168.123.49"
+        network = ipaddress.IPv4Network(str(subnets[0].get("subnet", "192.168.123.0/24")), strict=False)
+        boundary = self.get_current_boundary()
+        end = min(int(network.broadcast_address) - 1, int(network.network_address) + boundary + 1)
+        return str(network.network_address + 2), str(ipaddress.IPv4Address(end))
+
+    def _validate_ip_in_pool(self, ip: str) -> bool:
+        value = self._ip_to_int(ip)
+        start, end = self._get_pool_range()
+        return value is not None and start is not None and end is not None and int(ipaddress.IPv4Address(start)) <= value <= int(ipaddress.IPv4Address(end))
+
+    def _validate_ip_in_reserved_range(self, ip: str) -> bool:
+        value = self._ip_to_int(ip)
+        start, end = self._get_reserved_range()
+        return value is not None and int(ipaddress.IPv4Address(start)) <= value <= int(ipaddress.IPv4Address(end))
+
+    def _get_next_available_reserved_ip(self) -> str | None:
+        start, end = self._get_reserved_range()
+        used = {item["ip-address"] for item in self.get_reservations()}
+        for value in range(int(ipaddress.IPv4Address(start)), int(ipaddress.IPv4Address(end)) + 1):
+            candidate = str(ipaddress.IPv4Address(value))
+            if candidate not in used:
+                return candidate
+        return None
+
+    def add_reservation(self, hw_address: str, ip_address: str | None = None, hostname: str | None = None) -> dict[str, Any]:
+        if not self._validate_mac_address(hw_address):
+            raise DhcpError(f"invalid MAC address: {hw_address}")
+        config = self.get_config()
+        existing = self.get_reservations()
+        if any(item["hw-address"].lower() == hw_address.lower() for item in existing):
+            raise DhcpError("reservation with this MAC address already exists")
+        if ip_address is None or self._validate_ip_in_pool(ip_address):
+            ip_address = self._get_next_available_reserved_ip()
+        elif not self._validate_ip_address(ip_address) or not self._validate_ip_in_reserved_range(ip_address):
+            start, end = self._get_reserved_range()
+            raise DhcpError(f"IP address is outside the reserved range ({start} - {end})")
+        if ip_address is None:
+            raise DhcpError("no available IP address in reserved range")
+        if any(item["ip-address"] == ip_address for item in existing):
+            raise DhcpError("IP address is already assigned")
+        subnets = self._subnets(config)
+        if not subnets:
+            raise DhcpError("no subnet4 configuration found")
+        reservation: dict[str, Any] = {"hw-address": hw_address.lower().replace("-", ":"), "ip-address": ip_address}
+        if hostname:
+            reservation["hostname"] = hostname
+        subnets[0].setdefault("reservations", []).append(reservation)
+        self.update_config(config)
+        return reservation
+
+    def remove_reservation(self, identifier: str) -> bool:
+        config = self.get_config()
+        removed = False
+        for subnet in self._subnets(config):
+            before = subnet.get("reservations", [])
+            after = [item for item in before if str(item.get("hw-address", "")).lower() != identifier.lower() and item.get("ip-address") != identifier]
+            removed |= len(after) != len(before)
+            subnet["reservations"] = after
+        if removed:
+            self.update_config(config)
+        return removed
+
+    def update_reservation_ip(self, identifier: str, new_ip: str) -> dict[str, Any]:
+        if not self._validate_ip_in_reserved_range(new_ip):
+            start, end = self._get_reserved_range()
+            raise DhcpError(f"IP address is outside the reserved range ({start} - {end})")
+        config = self.get_config()
+        matches: dict[str, Any] | None = None
+        for subnet in self._subnets(config):
+            for item in subnet.get("reservations", []):
+                is_target = str(item.get("hw-address", "")).lower() == identifier.lower() or item.get("ip-address") == identifier
+                if not is_target and item.get("ip-address") == new_ip:
+                    raise DhcpError("IP address is already assigned")
+                if is_target:
+                    matches = item
+        if matches is None:
+            raise DhcpError("reservation not found")
+        matches["ip-address"] = new_ip
+        self.update_config(config)
+        return {"hw-address": matches.get("hw-address", ""), "ip-address": new_ip, "hostname": matches.get("hostname", "")}
+
+    def get_leases(self) -> list[dict[str, Any]]:
+        trace_active = _load_trace.context_active()
+        request: UrlRequest | None = None
+        try:
+            with _load_trace.span(
+                "agathodaimon.network.dhcp.leases.prepare",
+                road="staff-dispatch-preparation",
+                source_state="appliance-caduceus-bind",
+            ):
+                appliance = json.loads(self.appliance_config_path.read_text(encoding="utf-8"))
+                bind = appliance["caduceus"]["bind"]
+                if not isinstance(bind, str) or not bind.strip():
+                    raise ValueError("caduceus.bind must be a non-empty string")
+                bind = bind.strip()
+                if "://" not in bind:
+                    bind = "http://" + bind
+                from urllib.parse import urlsplit
+                parsed = urlsplit(bind)
+                if parsed.scheme not in {"http", "https"} or not parsed.hostname or not parsed.port:
+                    raise ValueError("caduceus.bind must identify an HTTP host and port")
+                host = parsed.hostname
+                if host in {"0.0.0.0", "::", "[::]"}:
+                    host = "127.0.0.1"
+                elif host != "localhost":
+                    try:
+                        address = ipaddress.ip_address(host)
+                    except ValueError as exc:
+                        raise ValueError("caduceus.bind must identify a local listener") from exc
+                    if not address.is_loopback:
+                        raise ValueError("caduceus.bind must identify a local listener")
+                url = f"{parsed.scheme}://127.0.0.1:{parsed.port}{self.LEASES_PATH}"
+                if trace_active:
+                    request = UrlRequest(url)
+            if request is not None:
+                try:
+                    for name, value in _load_trace.loopback_headers().items():
+                        request.add_header(name, value)
+                except (TypeError, ValueError, UnicodeError):
+                    request = UrlRequest(url)
+            with _load_trace.span(
+                "agathodaimon.network.dhcp.leases.loopback",
+                road="loopback-caduceus",
+                source_state="native-kea-lease-files",
+            ):
+                with urlopen(request if request is not None else url, timeout=10) as response:
+                    envelope = json.loads(response.read().decode("utf-8"))
+                _load_trace.merge_reply_context(envelope)
+        except (HTTPError, URLError, TimeoutError) as exc:
+            raise DhcpError(f"caduceus-leases-unavailable:{exc}") from exc
+        except (OSError, KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DhcpError(f"caduceus-leases-unavailable:{exc}") from exc
+        with _load_trace.span(
+            "agathodaimon.network.dhcp.leases.projection",
+            road="staff",
+            source_state="caduceus-native-lease-reply",
+        ):
+            if not isinstance(envelope, dict):
+                raise DhcpError("caduceus-leases-malformed:envelope-must-be-object")
+            payload = envelope.get("payload", envelope)
+            if not isinstance(payload, dict):
+                raise DhcpError("caduceus-leases-malformed:payload-must-be-object")
+            if envelope.get("ok") is False or payload.get("ok") is False:
+                signal = payload.get("firstMissingSignal", envelope.get("firstMissingSignal"))
+                raise DhcpError(f"caduceus-leases-unavailable:{signal or 'door-reported-failure'}")
+            if envelope.get("ok") is not True and payload.get("ok") is not True:
+                raise DhcpError("caduceus-leases-malformed:ok-signal-missing")
+            rows = payload.get("result")
+            if not isinstance(rows, list):
+                raise DhcpError("caduceus-leases-malformed:result-must-be-list")
+            leases: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise DhcpError("caduceus-leases-malformed:row-must-be-object")
+                mac = row.get("mac")
+                address = row.get("ip")
+                if not isinstance(mac, str) or not mac.strip():
+                    raise DhcpError("caduceus-leases-malformed:missing-mac")
+                if not isinstance(address, str) or not address.strip():
+                    raise DhcpError("caduceus-leases-malformed:missing-ip")
+                leases.append({
+                    "hw-address": mac.lower(),
+                    "ip-address": address,
+                    "hostname": str(row.get("hostname", "")),
+                    "last_activity": str(row.get("last_activity", "")),
+                    "provenance": str(row.get("provenance", "")),
+                })
+            return leases
+
+    def leases(self) -> list[dict[str, str]]:
+        """Project native Caduceus lease rows as observed state."""
+        values: list[dict[str, str]] = []
+        for lease in self.get_leases():
+            try:
+                mac = normalize_mac(lease["hw-address"])
+            except DhcpError:
+                continue
+            values.append({"mac": mac, "ip": lease["ip-address"], "hostname": lease["hostname"], "last_activity": lease["last_activity"], "provenance": lease["provenance"]})
+        return sorted(values, key=lambda item: item["mac"])
+
+    def boundary(self) -> list[dict[str, str]]:
+        """Discover reservation space from every loaded subnet and pool boundary."""
+        values: list[dict[str, str]] = []
+        for subnet in self._subnets():
+            try:
+                network = ipaddress.ip_network(str(subnet.get("subnet", "")), strict=False)
+            except ValueError:
+                continue
+            ranges: list[tuple[int, int]] = []
+            pools = subnet.get("pools", [])
+            for pool in pools if isinstance(pools, list) else []:
+                text = str(pool.get("pool", "")) if isinstance(pool, dict) else ""
+                if " - " not in text:
+                    continue
+                try:
+                    start, end = (ipaddress.ip_address(part.strip()) for part in text.split(" - ", 1))
+                except ValueError:
+                    continue
+                ranges.append((int(start), int(end)))
+            if ranges:
+                low, high = int(network.network_address) + 1, min(start for start, _ in ranges) - 1
+                if low <= high:
+                    values.append({"subnet": str(network), "start": str(ipaddress.ip_address(low)), "end": str(ipaddress.ip_address(high)), "discovery": "loaded-kea-pool-boundary"})
+        return values
+
+    def get_current_boundary(self) -> int:
+        start, _ = self._get_pool_range()
+        if start is None:
+            subnets = self._subnets()
+            return 249 if subnets and not subnets[0].get("pools") else 48
+        subnets = self._subnets()
+        network = ipaddress.IPv4Network(str(subnets[0].get("subnet", "192.168.123.0/24")), strict=False)
+        return max(0, min(249, int(ipaddress.IPv4Address(start)) - int(network.network_address) - 2))
+
+    def health(self) -> dict[str, Any]:
+        self.get_config()
+        service = self._command(["systemctl", "is-active", self.SERVICE], required=False)
+        if service.returncode != 0:
+            raise DhcpError("Kea DHCP service is not active")
+        return {"config_readable": True, "service_answering": True, "service": self.SERVICE}
+
+    def get_statistics(self) -> dict[str, Any]:
+        subnets = self._subnets()
+        homeserver_ip = "192.168.123.1"
+        if subnets:
+            for option in subnets[0].get("option-data", []):
+                if option.get("name") == "routers":
+                    homeserver_ip = option.get("data", homeserver_ip)
+        reservations, leases = self.get_reservations(), self.get_leases()
+        reserved_macs = {item["hw-address"].lower() for item in reservations}
+        active = [item for item in leases if item["hw-address"].lower() not in reserved_macs]
+        start, end = self._get_pool_range()
+        total = int(ipaddress.IPv4Address(end)) - int(ipaddress.IPv4Address(start)) + 1 if start and end else 0
+        host_macs = {item["hw-address"].lower() for item in reservations + leases}
+        return {"homeserver_ip": homeserver_ip, "reservations_count": len(reservations), "reservations_total": self.get_current_boundary(), "leases_count": len(active), "leases_total": total, "host_count": len(host_macs), "lease_ratio": len(active) / total if total else 0.0, "pool_boundary": self.boundary()}
+
+    def update_pool_boundary(self, max_reservations: int) -> bool:
+        if not 0 <= max_reservations <= 249:
+            raise DhcpError("max reservations must be between 0 and 249")
+        config = self.get_config()
+        reservations, leases = self.get_reservations(), self.get_leases()
+        if max_reservations < len(reservations):
+            raise DhcpError(f"cannot set max reservations below current count ({len(reservations)})")
+        if max_reservations > 249 - len([x for x in leases if x["hw-address"].lower() not in {r["hw-address"].lower() for r in reservations}]):
+            raise DhcpError("new boundary cannot accommodate active leases")
+        subnets = self._subnets(config)
+        if not subnets:
+            raise DhcpError("no subnet4 configuration found")
+        network = ipaddress.IPv4Network(str(subnets[0].get("subnet", "192.168.123.0/24")), strict=False)
+        end_reserved = int(network.network_address) + max_reservations + 1
+        for item in reservations:
+            if int(ipaddress.IPv4Address(item["ip-address"])) > end_reserved:
+                raise DhcpError(f"existing reservation {item['ip-address']} is outside new reserved range")
+        if max_reservations == 249:
+            subnets[0]["pools"] = []
+        else:
+            start = network.network_address + max_reservations + 2
+            end = network.broadcast_address - 5
+            subnets[0]["pools"] = [{"pool": f"{start} - {end}"}]
+        self.update_config(config)
+        return True
+
+
