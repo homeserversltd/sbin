@@ -362,7 +362,7 @@ def build_widget() -> Any:
         return card
 
     def append_interactable_file(card: Any, item: dict[str, Any]) -> None:
-        title = Gtk.Label(label=_text(item.get("target_path")) or "File path unavailable", xalign=0, wrap=True, selectable=True)
+        title = Gtk.Label(label=_text(item.get("target_path")), xalign=0, wrap=True, selectable=True)
         title.add_css_class("title-4")
         card.append(title)
         section = item.get("slice")
@@ -381,9 +381,9 @@ def build_widget() -> Any:
         for line in diff.splitlines():
             label = Gtk.Label(label=line, xalign=0, selectable=True)
             label.add_css_class("monospace")
-            if line.startswith("-"):
+            if line.startswith("-") and not line.startswith("---"):
                 label.add_css_class("error")
-            elif line.startswith("+"):
+            elif line.startswith("+") and not line.startswith("+++"):
                 label.add_css_class("success")
             lines.append(label)
         scroller.set_child(lines)
@@ -597,14 +597,14 @@ def build_widget() -> Any:
         if not data["interactables_ready"]:
             append_message(
                 pending_box,
-                data["interactables_error"] or "Pending updates unavailable.",
+                data["interactables_error"] or "Updates unavailable",
                 error=True,
             )
             render_silenced()
             return
         visible_items = [item for item in data["interactables"] if not item["silenced"]]
         if not visible_items:
-            append_message(pending_box, "No pending updates.")
+            append_message(pending_box, "Nothing waiting")
         for item in visible_items:
             identifier = item["id"]
             card = make_card()
@@ -616,17 +616,14 @@ def build_widget() -> Any:
                 card.append(message_label)
 
             actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            agree_button = Gtk.Button(label="Agree", valign=Gtk.Align.CENTER)
+            agree_button = Gtk.Button(label="Yes", valign=Gtk.Align.CENTER)
             agree_button.set_sensitive(identifier not in data["agree_busy"])
             agree_button.connect("clicked", agree, identifier)
-            disagree_button = Gtk.Button(label="Disagree", valign=Gtk.Align.CENTER)
-            disagree_button.set_sensitive(False)
-            disagree_button.set_tooltip_text("No admitted Disagree door.")
             silence_button = Gtk.Button(label="Silence", valign=Gtk.Align.CENTER)
             silence_button.set_sensitive(identifier not in data["agree_busy"])
             silence_button.connect("clicked", set_silence, identifier, True)
             actions.append(agree_button)
-            actions.append(disagree_button)
+
             actions.append(silence_button)
             card.append(actions)
             pending_box.append(card)
@@ -804,6 +801,8 @@ def build_widget() -> Any:
         for item in values:
             if not isinstance(item, dict):
                 return None
+            if not _text(item.get("target_path")):
+                continue
             identifier = _text(item.get("id"))
             if not identifier:
                 return None
@@ -819,11 +818,11 @@ def build_widget() -> Any:
         data["interactables_ready"] = False
         data["interactables_error"] = ""
         if error:
-            data["interactables_error"] = error
+            data["interactables_error"] = "Updates unavailable"
         else:
             values = _normalise_interactables(receipt)
             if values is None:
-                data["interactables_error"] = _receipt_error(receipt, "Interactable list unavailable.")
+                data["interactables_error"] = "Updates unavailable"
             else:
                 data["interactables"] = values
                 data["interactables_ready"] = True
