@@ -1,5 +1,12 @@
 {
-  "children": [],
+  "children": [
+    "observed",
+    "list",
+    "apply",
+    "register",
+    "unregister",
+    "whitelist"
+  ],
   "envelope": {
     "stdin": "json",
     "keys": [
