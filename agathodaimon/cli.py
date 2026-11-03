@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon import _load_trace
-ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "upload": ("storage", "upload"), "nas": ("storage", "nas"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime"), "attendance": ("exousia", "attendance"), "pin": ("exousia", "pin")}
+ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "upload": ("storage", "upload"), "nas": ("storage", "nas"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime")}
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
     "staff-daemon": ("python", "staff-daemon"),
@@ -40,6 +40,14 @@ def _index(path: Path) -> dict:
     index = path / "index.json"
     if not index.is_file(): return {}
     return json.loads(index.read_text(encoding="utf-8"))
+
+def _mutation_allowed(path: Path) -> bool | None:
+    try:
+        declaration = _index(path)
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return None
+    value = declaration.get("mutation_allowed") if isinstance(declaration, dict) else None
+    return value if isinstance(value, bool) else None
 
 def _children(path: Path) -> list[str]: return list(_index(path).get("children", []))
 
@@ -367,7 +375,7 @@ def _walk_chord(path: Path, envelope: dict) -> int:
             except Exception:
                 refusal = "chord-stage-invocation-failed"
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
-            if row["outcome"] == "stage-completed" and stage_target is not None and _index(stage_target.parent).get("mutation_allowed", True) is not False:
+            if row["outcome"] == "stage-completed" and stage_target is not None and _mutation_allowed(stage_target.parent if stage_target.is_file() else stage_target) is not False:
                 changed = True
             if refusal and (phase == "finally" or stage.get("required", True)) and failed is None:
                 failed, signal = sid, refusal
@@ -906,8 +914,6 @@ def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | 
         return operation != "read"
     if target == "network/dns":
         return operation not in {"read", "status"}
-    if target == "network/firewall":
-        return operation not in {"observed", "list", "whitelist-get", "whitelist get"}
     if target == "network/child-device":
         return operation not in read_only and operation != "whitelist get"
     if target == "appliance/service":
@@ -976,7 +982,10 @@ def _administrative_pin_admits(
         if publication is None
         else _administrative_target(target, publication)
     )
-    if not is_admin or not _admin_mutation_request(target, remainder, envelope):
+    if not is_admin:
+        return True
+    declared = _mutation_allowed(ROOT / target)
+    if declared is False or (declared is None and not _admin_mutation_request(target, remainder, envelope)):
         return True
     if not pin_present:
         tty_available, pin = _prompt_administrative_pin()

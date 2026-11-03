@@ -1,1 +1,1 @@
-{"children":[],"sclerite":{"name":"nas","features":{"nas":{"band":true,"verbs":[["nas","list"]],"routes":["/api/v1/storage/nas/list"],"administrative":{"band":false,"verbs":[],"routes":[]}}}}}
+{"children":[],"mutation_allowed":false,"sclerite":{"name":"nas","features":{"nas":{"band":true,"verbs":[["nas","list"]],"routes":["/api/v1/storage/nas/list"],"administrative":{"band":false,"verbs":[],"routes":[]}}}}}

@@ -1,5 +1,6 @@
 {
   "children": [],
+  "mutation_allowed": false,
   "sclerite": {
     "name": "nas",
     "features": {
