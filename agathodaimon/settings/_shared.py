@@ -614,9 +614,9 @@ def family_main(kind: str, argv: Sequence[str] | None = None) -> int:
         args = request.payload.get("args")
         if isinstance(args, list):
             return main([kind, *args])
-        if request.verb in {"read", "get", "state"}:
-            return emit(attach({"ok": True, "values": get_values(kind), "mutationPerformed": False}, request), 0)
         changes = {field: value for field, value in request.payload.items() if field in FIELDS[kind]}
+        if request.verb in {"read", "get", "state"} or (request.verb in {kind, "settings"} and not changes):
+            return emit(attach({"ok": True, "values": get_values(kind), "mutationPerformed": False}, request), 0)
         if not changes:
             return emit(attach({"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}, request), 1)
         receipt = Receipt(kind, list(changes))
