@@ -5,7 +5,6 @@
     "sway",
     "pactl",
     "desktop",
-    "nmcli",
     "games",
     "sddm",
     "console-restart"

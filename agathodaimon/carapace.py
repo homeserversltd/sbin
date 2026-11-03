@@ -216,7 +216,8 @@ def _resolve_profile(profile: str, tree: Mapping[str, Any]) -> set[str]:
         ]
         # Specula is the all-features probe: its choice records the default,
         # while both option features must remain available to the probe.
-        all_features_probe = profile == "specula" and selected == set(tree["features"])
+        option_features = set().union(*(spec["features"] for spec in choice["options"].values()))
+        all_features_probe = profile == "specula" and option_features.issubset(selected)
         if not all_features_probe and (len(memberships) != 1 or memberships[0] != declared):
             raise CarapaceError(
                 f"defconfigs/{profile}.json.choices.{name}: declared option {declared!r} "
