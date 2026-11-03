@@ -1,6 +1,7 @@
 {
   "children": [
     "staff-daemon",
-    "staff-path"
+    "staff-path",
+    "crossing-daemon"
   ]
 }
