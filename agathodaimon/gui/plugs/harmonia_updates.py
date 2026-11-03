@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import ipaddress
+import uuid
 
 import re
 import sys
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from ._common import _receipt_ok, _request, _signal
+    from ._common import CADUCEUS_URL, _direct_request, _receipt_ok, _request, _signal
 except ImportError:
     _common_path = Path(__file__).with_name("_common.py")
     _common_spec = importlib.util.spec_from_file_location("_common", _common_path)
@@ -22,7 +24,7 @@ except ImportError:
     _common_module = importlib.util.module_from_spec(_common_spec)
     sys.modules["_common"] = _common_module
     _common_spec.loader.exec_module(_common_module)
-    from _common import _receipt_ok, _request, _signal
+    from _common import CADUCEUS_URL, _direct_request, _receipt_ok, _request, _signal
 
 
 PLUG = {
@@ -44,6 +46,66 @@ STATUS_SCHEMA = "caduceus.update.status.v1"
 HISTORY_SCHEMA = "caduceus.update.history.v1"
 
 _MODULE_CARD_CLASS: Any = None
+
+
+class _InteractableGate:
+    """A single in-memory document attendance, shared by this plug's actions."""
+
+    def __init__(self) -> None:
+        self.document = str(uuid.uuid4())
+        self.incarnation = str(uuid.uuid4())
+        self.attendance = ""
+        self.lock = threading.Lock()
+
+    def _open(self, prompt: Callable[[], str | None]) -> None:
+        host = urllib.parse.urlsplit(CADUCEUS_URL).hostname or ""
+        try:
+            loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if not loopback:
+            raise RuntimeError("PIN can only be sent to local Caduceus")
+        pin = prompt()
+        if pin is None:
+            raise RuntimeError("PIN entry cancelled")
+        try:
+            receipt = _direct_request("/api/v1/exousia/open", "POST", {
+                "pin": pin, "documentId": self.document,
+                "documentIncarnation": self.incarnation,
+            })
+        finally:
+            pin = ""
+        if not _receipt_ok(receipt):
+            if "pin-wrong" in _signal(receipt):
+                raise RuntimeError("PIN not accepted")
+            raise RuntimeError(_receipt_error(receipt, "Attendance refused"))
+        attendance = receipt.get("attendance")
+        if not isinstance(attendance, str) or not attendance:
+            raise RuntimeError("Attendance unavailable")
+        self.attendance = attendance
+
+    def run(self, path: str, prompt: Callable[[], str | None]) -> dict[str, Any]:
+        with self.lock:
+            gate = _direct_request("/api/v1/access/gate")
+            pin_state = gate.get("pin")
+            if not isinstance(pin_state, dict) or type(pin_state.get("pin_required")) is not bool:
+                raise RuntimeError("PIN switch unavailable")
+            if pin_state["pin_required"] and not self.attendance:
+                self._open(prompt)
+            for attempt in range(2):
+                headers = ({"x-caduceus-document": self.document,
+                            "x-caduceus-attendance": self.attendance}
+                           if self.attendance else {})
+                receipt = _request(path, "POST", None, headers=headers)
+                signal = _signal(receipt)
+                if (attempt == 0 and not _receipt_ok(receipt)
+                        and signal in {"caduceus-administrative-pin-required",
+                                       "caduceus-administrative-pin-wrong"}):
+                    self.attendance = ""
+                    self._open(prompt)
+                    continue
+                return receipt
+            raise RuntimeError("Interactable request unavailable")
 
 
 def _module_card_class(Gtk: Any) -> Any:
@@ -215,6 +277,8 @@ def build_widget() -> Any:
     from gi.repository import Adw, GLib, Gtk
 
     ModuleSquareCard = _module_card_class(Gtk)
+    interactable_gate = _InteractableGate()
+    active_dialog: dict[str, Any] = {}
 
     reads = {name: 0 for name in ("status", "timer", "modules", "interactables", "history")}
     data: dict[str, Any] = {
@@ -413,6 +477,48 @@ def build_widget() -> Any:
             post_to_ui(callback, receipt, None, *args)
         except Exception as error:  # transport failures remain visible in the pane
             post_to_ui(callback, None, str(error), *args)
+
+    def prompt_pin() -> str | None:
+        done = threading.Event()
+        answer: list[str | None] = [None]
+
+        def show() -> bool:
+            if not data["alive"]:
+                done.set()
+                return False
+            dialog = Adw.AlertDialog(heading="Appliance PIN", body="Enter your PIN to continue.")
+            entry = Gtk.PasswordEntry()
+            entry.set_show_peek_icon(False)
+            dialog.set_extra_child(entry)
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("continue", "Continue")
+            dialog.set_default_response("continue")
+            dialog.set_close_response("cancel")
+            active_dialog["dialog"] = dialog
+
+            def responded(_dialog: Any, response: str) -> None:
+                if response == "continue":
+                    answer[0] = entry.get_text()
+                entry.set_text("")
+                active_dialog.clear()
+                done.set()
+
+            dialog.connect("response", responded)
+            entry.connect("activate", lambda _entry: dialog.response("continue"))
+            dialog.present(stack)
+            entry.grab_focus()
+            return False
+
+        GLib.idle_add(show)
+        done.wait()
+        return answer.pop()
+
+    def mutate_interactable(path: str, callback: Callable[..., bool]) -> None:
+        try:
+            receipt = interactable_gate.run(path, prompt_pin)
+            post_to_ui(callback, receipt, None)
+        except Exception as error:
+            post_to_ui(callback, None, str(error))
 
     def render_status() -> None:
         pending = [item for item in data["interactables"] if not item["silenced"]]
@@ -982,7 +1088,7 @@ def build_widget() -> Any:
                 request_read("interactables", INTERACTABLES_DOOR, finish_interactables)
             return False
 
-        threading.Thread(target=mutate_door, args=(path, None, finish), daemon=True).start()
+        threading.Thread(target=mutate_interactable, args=(path, finish), daemon=True).start()
 
     def set_silence(_button: Any, identifier: str, silenced: bool) -> None:
         if identifier in data["agree_busy"]:
@@ -1007,7 +1113,7 @@ def build_widget() -> Any:
                     request_read("interactables", INTERACTABLES_DOOR, finish_interactables)
             return False
 
-        threading.Thread(target=mutate_door, args=(path, None, finish), daemon=True).start()
+        threading.Thread(target=mutate_interactable, args=(path, finish), daemon=True).start()
 
     def update_now(_button: Any) -> None:
         if data["update_busy"] or not data["status_ready"]:
@@ -1051,6 +1157,9 @@ def build_widget() -> Any:
         if not data["alive"]:
             return
         data["alive"] = False
+        dialog = active_dialog.get("dialog")
+        if dialog is not None:
+            dialog.response("cancel")
         if data["refresh_source"] is not None:
             GLib.source_remove(data["refresh_source"])
             data["refresh_source"] = None
