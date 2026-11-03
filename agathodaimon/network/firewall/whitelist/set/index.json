@@ -1,0 +1,29 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "sclerite": {
+    "name": "firewall",
+    "features": {
+      "all": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
+        "band": true,
+        "routes": [],
+        "verbs": []
+      },
+      "firewall": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
+        "band": true,
+        "routes": [],
+        "verbs": []
+      }
+    }
+  }
+}

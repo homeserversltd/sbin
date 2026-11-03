@@ -1,5 +1,5 @@
 {
-  "children": [],
+  "children": ["observed", "list", "register", "unregister", "whitelist"],
   "sclerite": {
     "features": {
       "all": {
