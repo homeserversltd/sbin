@@ -506,11 +506,13 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
                 if _parity.backends.select_backend():
                     import ast
                     dry_run = os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1"
-                    good_theme, raw_theme, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"])
-                    try:
-                        theme = ast.literal_eval(raw_theme) if good_theme else None
-                    except (SyntaxError, ValueError):
-                        theme = None
+                    theme = get_values("appearance").get("cursor_theme")
+                    if not isinstance(theme, str) or not theme:
+                        good_theme, raw_theme, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"])
+                        try:
+                            theme = ast.literal_eval(raw_theme) if good_theme else None
+                        except (SyntaxError, ValueError):
+                            theme = None
                     if not isinstance(theme, str) or not theme:
                         theme = "default"
                     good_old, old_size, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-size"])
