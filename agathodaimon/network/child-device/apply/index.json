@@ -1,7 +1,6 @@
 {
   "hand": "envelope",
   "children": [],
-  "mutation_allowed": false,
   "sclerite": {
     "name": "all",
     "features": {
@@ -10,7 +9,7 @@
         "verbs": [],
         "routes": [],
         "administrative": {
-          "band": false,
+          "band": true,
           "verbs": [],
           "routes": []
         }
