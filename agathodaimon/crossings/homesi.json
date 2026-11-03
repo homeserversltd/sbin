@@ -549,6 +549,9 @@
       "/api/v1/thyrsus/admit",
       "/api/v1/thyrsus/forge-token",
       "/api/v1/thyrsus/propose",
+      "POST /api/v1/interactables/{id}/run",
+      "POST /api/v1/interactables/{id}/silence",
+      "POST /api/v1/interactables/{id}/unsilence",
       "PUT /api/v1/local-ai/slot/:slot"
     ]
   }

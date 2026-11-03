@@ -435,7 +435,10 @@
       "/api/v1/settings/notifications",
       "/api/v1/settings/region",
       "/api/v1/settings/sound",
-      "/api/v1/storage/vault/auto-decrypt"
+      "/api/v1/storage/vault/auto-decrypt",
+      "POST /api/v1/interactables/{id}/run",
+      "POST /api/v1/interactables/{id}/silence",
+      "POST /api/v1/interactables/{id}/unsilence"
     ]
   }
 }

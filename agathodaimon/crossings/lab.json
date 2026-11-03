@@ -744,6 +744,9 @@
       ]
     ],
     "routes": [
+      "POST /api/v1/interactables/{id}/run",
+      "POST /api/v1/interactables/{id}/silence",
+      "POST /api/v1/interactables/{id}/unsilence",
       "POST /api/v1/storage/nas/list",
       "POST /api/v1/storage/backup/forgejo/skip-check",
       "/api/v1/access/pin/change",

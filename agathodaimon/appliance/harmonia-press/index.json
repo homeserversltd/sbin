@@ -15,7 +15,11 @@
         "administrative": {
           "band": false,
           "verbs": [],
-          "routes": []
+          "routes": [
+            "POST /api/v1/interactables/{id}/run",
+            "POST /api/v1/interactables/{id}/silence",
+            "POST /api/v1/interactables/{id}/unsilence"
+          ]
         }
       }
     }
