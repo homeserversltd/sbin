@@ -53,7 +53,6 @@ class _InteractableGate:
 
     def __init__(self) -> None:
         self.document = str(uuid.uuid4())
-        self.incarnation = str(uuid.uuid4())
         self.attendance = ""
         self.lock = threading.Lock()
 
@@ -71,7 +70,7 @@ class _InteractableGate:
         try:
             receipt = _direct_request("/api/v1/exousia/open", "POST", {
                 "pin": pin, "documentId": self.document,
-                "documentIncarnation": self.incarnation,
+                "documentIncarnation": self.document,
             })
         finally:
             pin = ""
