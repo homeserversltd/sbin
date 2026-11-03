@@ -452,6 +452,7 @@ def build_widget() -> Any:
 
     def append_interactable_file(card: Any, item: dict[str, Any], *, maximum: bool = False) -> None:
         title = Gtk.Label(label=_text(item.get("target_path")), xalign=0, wrap=True, selectable=True)
+        title.set_focusable(False)
         title.add_css_class("title-4")
         card.append(title)
         diff = item.get("diff")
@@ -465,7 +466,9 @@ def build_widget() -> Any:
         section = item.get("slice")
         sentence = section.get("sentence") if isinstance(section, dict) else None
         if isinstance(sentence, str) and sentence:
-            card.append(Gtk.Label(label=sentence, xalign=0, wrap=True, selectable=True))
+            explanation = Gtk.Label(label=sentence, xalign=0, wrap=True, selectable=True)
+            explanation.set_focusable(False)
+            card.append(explanation)
         if not isinstance(diff, str) or not diff:
             append_message(card, "Diff unavailable")
             return
