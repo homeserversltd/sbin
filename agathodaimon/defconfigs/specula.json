@@ -1,0 +1,40 @@
+{
+  "schema": "agathodaimon.defconfig.v1",
+  "profile": "specula",
+  "features": [
+    "portals",
+    "thyrsus",
+    "kea",
+    "unbound",
+    "gateway",
+    "nft",
+    "firewall",
+    "identity",
+    "sway",
+    "pactl",
+    "desktop",
+    "nmcli",
+    "local-ai",
+    "keyman",
+    "nas",
+    "luks",
+    "xfs",
+    "linker",
+    "games",
+    "transmission",
+    "vpn-namespace",
+    "pia",
+    "openvpn",
+    "wireguard",
+    "tailscale",
+    "pid2-unit",
+    "console-select-branch",
+    "console-restart",
+    "sunshine",
+    "sddm",
+    "gtk4"
+  ],
+  "choices": {
+    "transmission-pia-protocol": "openvpn"
+  }
+}

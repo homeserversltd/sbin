@@ -563,15 +563,17 @@ def _profile_for_crossing() -> tuple[str, bool]:
         return "unknown", False
     try:
         value = _read_json_nofollow(profile_path)
-    except FileNotFoundError:
-        return "lab", True
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-        return "unknown", False
-    if not isinstance(value, dict) or not isinstance(value.get("profile"), str):
-        return "unknown", False
-    profile = value["profile"]
-    valid = len(profile) <= 64 and _CROSSING_PART.fullmatch(profile) is not None
-    return (profile if valid else "unknown"), valid
+        return "specula", True
+    if not isinstance(value, dict):
+        return "specula", True
+    kernel = value.get("kernel")
+    if isinstance(kernel, dict) and kernel.get("engine_component") == "harmonia-monad":
+        return "specula", True
+    profile = value.get("profile")
+    if profile in ("homeserver", "homesi", "homeconsole", "tv"):
+        return profile, True
+    return "specula", True
 
 
 def _crossing_publication(
@@ -581,11 +583,11 @@ def _crossing_publication(
     try:
         value = _read_json_nofollow(ROOT / "crossings" / f"{profile}.json")
     except FileNotFoundError:
-        if profile == "lab":
+        if profile == "specula":
             return None
         try:
-            value = _read_json_nofollow(ROOT / "crossings" / "lab.json")
-            seat_profile = "lab"
+            value = _read_json_nofollow(ROOT / "crossings" / "specula.json")
+            seat_profile = "specula"
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
             return None
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError):

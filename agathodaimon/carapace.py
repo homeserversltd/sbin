@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive sold appliance crossings from Agathodaimon sclerite declarations."""
+"""Derive appliance crossings from Agathodaimon sclerite declarations."""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 FEATURES_PATH = ROOT / "sclerites.json"
 DEFCONFIG_DIR = ROOT / "defconfigs"
 CROSSINGS_DIR = ROOT / "crossings"
-PROFILES = ("homeserver", "homeconsole", "tv", "homesi")
+PROFILES = ("homeserver", "homeconsole", "tv", "homesi", "specula")
 CROSSING_SCHEMA = "appliance.crossings.v1"
 PART = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 ROUTE_SEGMENT = r"(?:[a-z0-9][a-z0-9_.-]*|:[a-z][a-z0-9_]*)"
@@ -214,7 +214,10 @@ def _resolve_profile(profile: str, tree: Mapping[str, Any]) -> set[str]:
             for option, spec in choice["options"].items()
             if set(spec["features"]).intersection(selected)
         ]
-        if len(memberships) != 1 or memberships[0] != declared:
+        # Specula is the all-features probe: its choice records the default,
+        # while both option features must remain available to the probe.
+        all_features_probe = profile == "specula" and selected == set(tree["features"])
+        if not all_features_probe and (len(memberships) != 1 or memberships[0] != declared):
             raise CarapaceError(
                 f"defconfigs/{profile}.json.choices.{name}: declared option {declared!r} "
                 f"contradicts materialized option feature memberships {memberships}"

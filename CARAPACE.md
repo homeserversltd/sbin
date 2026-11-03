@@ -1,8 +1,8 @@
 # Agathodaimon carapace
 
-`python3 agathodaimon/carapace.py generate` derives the four generated profile
+`python3 agathodaimon/carapace.py generate` derives the five generated profile
 `appliance.crossings.v1` files from source declarations. It reads
-`agathodaimon/sclerites.json`, the four files under `agathodaimon/defconfigs/`,
+`agathodaimon/sclerites.json`, the five files under `agathodaimon/defconfigs/`,
 and each band owner's adjacent `index.json` `sclerite` declaration. It does not
 read the generated crossings as inputs. All profiles and output targets are
 prepared before writes; absent output files are created, while symlink and
@@ -54,9 +54,10 @@ itself requires `kea`, `unbound`, and `nft`. `nas` requires `keyman`, and
 
 `transmission` implies `vpn-namespace`, which requires `transmission` and
 implies `pia`. PIA requires exactly one protocol choice, `openvpn` or
-`wireguard`; the generator rejects empty or overlapping option memberships and
-checks the final closed feature set so explicitly or transitively selecting a
-nonchosen protocol is an error. HomeServer selects `openvpn`, matching the
+`wireguard`; for product profiles the generator rejects empty or overlapping
+option memberships and checks the final closed feature set so explicitly or
+transitively selecting a nonchosen protocol is an error. Specula is the
+all-features exception. HomeServer selects `openvpn`, matching the
 existing `transmission/vpn/pia/index.json` `defaultProtocol`. `console-restart`
 requires either `sunshine` or `sddm`; HomeConsole selects `sddm` explicitly.
 
@@ -72,4 +73,7 @@ their owning feature (HomeServer here). These observer declarations remain
 honest-not-found where dispatch has no implementation; the internal
 Transmission bands are not exposed by the crossings. `samba` is likewise
 common observer surface.
-`crossings/lab.json` remains separately owned and is not generated here.
+`specula` is generated from its defconfig with every declared feature selected;
+its protocol choice records HomeServer's default without narrowing the probe.
+It is the deliberately un-narrowed probe for unnamed appliances and monadic
+profiles, not a grant of private lab authority.
