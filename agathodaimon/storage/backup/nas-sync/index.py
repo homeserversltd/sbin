@@ -53,23 +53,25 @@ def mount_info(path,runner):
 def device_facts(source,runner):
  resolved=os.path.realpath(source)
  if not resolved.startswith("/dev/"): raise Refusal("device-alias-unresolvable:"+source)
- r=run([LSBLK,"-s","-n","-r","-P","-o","NAME,KNAME,PKNAME,PATH,MAJ:MIN","--",resolved],runner)
+ r=run([LSBLK,"-s","-n","-P","-o","NAME,KNAME,PKNAME,PATH,MAJ:MIN,TYPE,PARTLABEL","--",resolved],runner)
  if r.returncode or not r.stdout.strip(): raise Refusal("backing-device-unevaluable:"+source)
- ids={source,resolved}; roots=set()
+ ids={source,resolved}; roots=set(); rows=[]
  for line in r.stdout.splitlines():
   try: fields=dict(item.split("=",1) for item in shlex.split(line))
   except (ValueError,TypeError) as e: raise Refusal("backing-device-output-malformed:"+source) from e
-  if set(fields)!={"NAME","KNAME","PKNAME","PATH","MAJ:MIN"}: raise Refusal("backing-device-output-malformed:"+source)
+  if set(fields)!={"NAME","KNAME","PKNAME","PATH","MAJ:MIN","TYPE","PARTLABEL"}: raise Refusal("backing-device-output-malformed:"+source)
   name,kname,parent,path,majmin=(fields[k] for k in ("NAME","KNAME","PKNAME","PATH","MAJ:MIN"))
   if not name or not kname or not path or not majmin: raise Refusal("backing-device-output-malformed:"+source)
   ids.update({name,kname,path,majmin,"/dev/"+name,"/dev/"+kname})
   if parent: ids.update({parent,"/dev/"+parent})
-  else: roots.update({kname,path,majmin})
+  if fields["TYPE"]=="disk": roots.update({kname,path,majmin})
+  rows.append(fields)
  if not roots: raise Refusal("backing-device-root-unevaluable:"+source)
- return {"source":source,"resolved":resolved,"identities":ids,"roots":roots}
-def partlabel(device,runner):
- r=run([BLKID,"-s","PARTLABEL","-o","value","--",device],runner); labels=[x.strip() for x in r.stdout.splitlines() if x.strip()]
- if r.returncode or len(labels)!=1: raise Refusal("backup-partlabel-unevaluable:"+device)
+ partitions=[row["PARTLABEL"].strip() for row in rows if row["TYPE"]=="part" and row["PKNAME"]==rows[0]["KNAME"]]
+ return {"source":source,"resolved":resolved,"identities":ids,"roots":roots,"partitionLabels":partitions}
+def partlabel(facts,runner):
+ labels=facts["partitionLabels"]
+ if len(labels)!=1 or not labels[0]: raise Refusal("backup-partlabel-unevaluable:"+facts["resolved"])
  return labels[0]
 def tokens(facts):
  out=set()
@@ -188,7 +190,7 @@ def sync(baseline=None,accept_shrink=False,planned=False,runner=command,measure_
   sf,df=device_facts(s,runner),device_facts(d,runner); facts.update(sourceDevice=s,destinationDevice=d)
   if sf["roots"]&df["roots"]: raise Refusal("source-and-destination-share-backing-device")
   checked(checks,"different-backing-devices",sourceRoots=sorted(sf["roots"]),destinationRoots=sorted(df["roots"]))
-  label=partlabel(df["resolved"],runner); facts["backupPartlabel"]=label
+  label=partlabel(df,runner); facts["backupPartlabel"]=label
   if label in DENYLIST: raise Refusal("backup-partlabel-denied:"+label)
   checked(checks,"backup-partlabel-allowed",partlabel=label); scopes=kernel_gate(sf,df,runner); checked(checks,"current-boot-kernel-log-clean",attachScopes=scopes)
   files,bytes_=measure_fn(SOURCE); old=baseline; facts.update(currentFileCount=files,currentTotalBytes=bytes_,priorState=old); checked(checks,"source-measured",fileCount=files,totalBytes=bytes_)
