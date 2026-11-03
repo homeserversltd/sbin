@@ -2507,12 +2507,19 @@ def _item_name(value: Any, fallback: str) -> str:
 
 
 def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
-    feed_path = Path(os.environ.get("HARMONIA_FEED_PATH", "/var/lib/harmonia/interactables.json"))
+    feed_path = os.environ.get("HARMONIA_FEED_PATH")
     receipt_dir = Path(os.environ.get("HARMONIA_RECEIPT_DIR", "/var/lib/harmonia/receipts/tv-update-latest"))
     subscription_path = Path(os.environ.get("HARMONIA_SUBSCRIPTION_PATH", "/var/lib/harmonia/subscription.json"))
     try:
-        feed = json.loads(feed_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        if feed_path is not None:
+            feed_text = Path(feed_path).read_text(encoding="utf-8")
+        else:
+            feed_text = subprocess.run(
+                ["sudo", "-n", "/usr/local/bin/harmonia", "interactable", "list", "--json"],
+                check=True, capture_output=True, text=True,
+            ).stdout
+        feed = json.loads(feed_text)
+    except (OSError, UnicodeError, ValueError, subprocess.SubprocessError):
         raise FaceError("harmonia-feed-observation-failed")
     if not isinstance(feed, dict):
         raise FaceError("harmonia-feed-object-required")
