@@ -1,0 +1,5 @@
+{
+  "mutation_allowed": false,
+  "envelope": {"stdin": "json", "keys": [], "unknown_fields": "skipped"},
+  "sclerite": {"name": "backup-drive", "features": {"backup-drive": {"band": true}}}
+}

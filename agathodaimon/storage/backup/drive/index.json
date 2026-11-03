@@ -1,0 +1,4 @@
+{
+  "children": ["ask", "status"],
+  "sclerite": {"name": "backup-drive", "features": {}}
+}
