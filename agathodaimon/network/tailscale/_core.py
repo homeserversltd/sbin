@@ -27,7 +27,6 @@ from urllib.parse import urlsplit, urlunsplit
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
 
 NOUN = "tailscale"
-VERBS = ["status", "up", "down", "authkey", "tailnet"]
 SCHEMA = "caduceus.staff.v1"
 TAILSCALE = "/usr/bin/tailscale"
 KEA_CONFIG = Path("/etc/kea/kea-dhcp4.conf")

@@ -100,7 +100,6 @@
     "network/identity/claim",
     "network/identity/device/list",
     "network/linker",
-    "network/tailscale",
     "network/tailscale/authkey",
     "network/tailscale/down",
     "network/tailscale/status",
@@ -371,10 +370,6 @@
     [
       "network",
       "linker"
-    ],
-    [
-      "network",
-      "tailscale"
     ],
     [
       "notify",

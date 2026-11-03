@@ -7,11 +7,15 @@
       "tailscale": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": [
+          "/api/v1/network/tailscale/tailnet"
+        ],
         "administrative": {
           "band": true,
           "verbs": [],
-          "routes": []
+          "routes": [
+            "/api/v1/network/tailscale/tailnet"
+          ]
         }
       }
     }
