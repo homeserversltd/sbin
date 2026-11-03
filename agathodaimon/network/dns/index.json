@@ -1,5 +1,9 @@
 {
-  "children": [],
+  "children": [
+    "status",
+    "read",
+    "resolver"
+  ],
   "sclerite": {
     "features": {
       "all": {

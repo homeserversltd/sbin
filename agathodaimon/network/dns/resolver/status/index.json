@@ -1,0 +1,30 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "sclerite": {
+    "name": "unbound",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      },
+      "unbound": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  },
+  "mutation_allowed": false
+}
