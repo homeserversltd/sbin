@@ -42,6 +42,8 @@
     "network/dns",
     "network/firewall",
     "network/identity",
+    "network/identity/claim",
+    "network/identity/device/list",
     "network/linker",
     "network/wake-on-lan",
     "network/wifi",
