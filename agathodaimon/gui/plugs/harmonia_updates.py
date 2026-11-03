@@ -92,9 +92,9 @@ class _InteractableGate:
             if pin_state["pin_required"] and not self.attendance:
                 self._open(prompt)
             for attempt in range(2):
-                headers = ({"x-caduceus-document": self.document,
-                            "x-caduceus-attendance": self.attendance}
-                           if self.attendance else {})
+                headers = {"x-caduceus-document": self.document}
+                if self.attendance:
+                    headers["x-caduceus-attendance"] = self.attendance
                 receipt = _request(path, "POST", None, headers=headers)
                 signal = _signal(receipt)
                 if (attempt == 0 and not _receipt_ok(receipt)
