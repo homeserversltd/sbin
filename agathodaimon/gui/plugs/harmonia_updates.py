@@ -311,6 +311,7 @@ def build_widget() -> Any:
         "refresh_source": None,
         "max_id": None,
         "max_rendered": None,
+        "max_buttons": {},
     }
 
     stack = Gtk.Stack(hexpand=True, vexpand=True)
@@ -434,7 +435,11 @@ def build_widget() -> Any:
         rows = []
         in_hunk = False
         for line in diff.splitlines():
-            if not in_hunk and line.startswith(("--- ", "+++ ")):
+            if not in_hunk and line.startswith((
+                "--- ", "+++ ", "diff --git ", "index ", "new file mode ",
+                "deleted file mode ", "old mode ", "new mode ",
+                "similarity index ", "rename from ", "rename to ",
+            )):
                 continue
             match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
             if match:
@@ -449,6 +454,25 @@ def build_widget() -> Any:
             else:
                 rows.append(("", line, "dim-label"))
         return rows
+
+    class DiffPreview(Gtk.ScrolledWindow):
+        def __init__(self) -> None:
+            super().__init__(hexpand=True)
+            self.preview_rows = []
+
+        def do_get_request_mode(self) -> Any:
+            return Gtk.SizeRequestMode.HEIGHT_FOR_WIDTH
+
+        def do_measure(self, orientation: Any, for_size: int) -> tuple[int, int, int, int]:
+            minimum, natural, minimum_baseline, natural_baseline = Gtk.ScrolledWindow.do_measure(
+                self, orientation, for_size
+            )
+            if orientation == Gtk.Orientation.VERTICAL and self.preview_rows:
+                width = max(1, for_size - 32) if for_size >= 0 else -1
+                needed = sum(row.measure(orientation, width)[1] for row in self.preview_rows)
+                minimum = max(minimum, needed)
+                natural = max(minimum, needed)
+            return minimum, natural, minimum_baseline, natural_baseline
 
     def append_interactable_file(card: Any, item: dict[str, Any], *, maximum: bool = False) -> None:
         title = Gtk.Label(label=_text(item.get("target_path")), xalign=0, wrap=True, selectable=True)
@@ -472,9 +496,10 @@ def build_widget() -> Any:
         if not isinstance(diff, str) or not diff:
             append_message(card, "Diff unavailable")
             return
-        scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=maximum)
+        scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=True) if maximum else DiffPreview()
         scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         lines = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        visible_lines = 0
         for sign, text, style in rows:
             row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
             mark = Gtk.Label(label=sign, xalign=0, valign=Gtk.Align.START, width_chars=1)
@@ -489,14 +514,11 @@ def build_widget() -> Any:
             label.add_css_class(style)
             row.append(label)
             lines.append(row)
+            if not maximum and visible_lines < 15:
+                scroller.preview_rows.append(row)
+                if style != "caption":
+                    visible_lines += 1
         scroller.set_child(lines)
-        if not maximum and rows:
-            metrics = lines.get_pango_context().get_metrics(None, None)
-            line_height = (metrics.get_ascent() + metrics.get_descent() + Pango.SCALE - 1) // Pango.SCALE
-            height = min(17, len(rows) + 2) * line_height
-            scroller.set_min_content_height(height)
-            scroller.set_max_content_height(17 * line_height)
-            scroller.set_propagate_natural_height(True)
         card.append(scroller)
 
     def append_actions(box: Any, item: dict[str, Any], *, maximize: bool = False) -> None:
@@ -519,6 +541,7 @@ def build_widget() -> Any:
         if maximize:
             button = Gtk.Button(label="Maximize", valign=Gtk.Align.CENTER)
             button.connect("clicked", show_diff, identifier)
+            data["max_buttons"][identifier] = button
             actions.append(button)
         box.append(actions)
 
@@ -769,6 +792,7 @@ def build_widget() -> Any:
 
     def render_pending() -> None:
         clear(pending_box)
+        data["max_buttons"] = {}
         if not data["interactables_ready"]:
             append_message(
                 pending_box,
@@ -835,6 +859,9 @@ def build_widget() -> Any:
         data["max_rendered"] = None
         render_max()
         stack.set_visible_child_name("diff")
+        back = max_page.get_first_child()
+        if back is not None:
+            back.grab_focus()
 
     def render_history() -> None:
         clear(history_box)
@@ -1235,9 +1262,12 @@ def build_widget() -> Any:
         stack.set_visible_child_name("history")
 
     def show_updates(_row: Any) -> None:
+        button = data["max_buttons"].get(data["max_id"])
         data["max_id"] = None
         data["max_rendered"] = None
         stack.set_visible_child_name("updates")
+        if button is not None:
+            button.grab_focus()
 
     def on_key(_controller: Any, keyval: int, _keycode: int, _state: Any) -> bool:
         if keyval == Gdk.KEY_Escape and stack.get_visible_child_name() == "diff":
