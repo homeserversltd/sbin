@@ -49,6 +49,8 @@
     "network/linker",
     "network/tailscale",
     "network/wake-on-lan",
+    "network/wake-on-lan/probe",
+    "network/wake-on-lan/send",
     "notify/act",
     "notify/post",
     "settings/datetime",
