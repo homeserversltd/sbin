@@ -1246,6 +1246,12 @@ def main(argv=None):
             if raw.strip():
                 print("invalid envelope JSON", file=sys.stderr); return 2
             envelope = _fresh_envelope(cli_target)
+        elif "schema" not in envelope:
+            stub = envelope
+            envelope = _fresh_envelope(cli_target)
+            for field in ("payload", "flags"):
+                if isinstance(stub.get(field), dict):
+                    envelope[field] = stub[field]
         try:
             options = _hand_options(remainder)
         except ValueError as exc:
