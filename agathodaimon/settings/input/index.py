@@ -77,7 +77,9 @@ def read_values() -> dict[str, Any]:
     from agathodaimon.settings import _parity, _shared
     sway = _parity.backends.select_backend()
     if sway:
-        values = _parity.sway_input_values()
+        values, sources = _parity.sway_input_values()
+        base = _shared.home() / ".config/sway/conf.d/input.conf"
+        override = _parity._keyboard_path()
     else:
         values = {field: (values.get("pointer_sensitivity") if field == "pointer_speed" else values.get(field)) for field in _shared.FIELDS["input"]}
     return {"values": values, "sources": sources, "base": str(base), "override": str(override)}

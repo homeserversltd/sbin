@@ -345,6 +345,10 @@ def get_values(kind: str) -> dict[str, Any]:
             if good:
                 try: values[field] = int(text) if field == "cursor_size" else float(text)
                 except ValueError: pass
+        from agathodaimon.settings import _parity
+        if _parity.backends.select_backend():
+            cursor = _parity.sway_cursor_override()
+            if cursor is not None: values["cursor_size"] = cursor[1]
         good, text, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "font-name"])
         if good:
             import ast
@@ -498,6 +502,39 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
                 raise ValueError("invalid:" + field)
             if field == "cursor_size":
                 if int(value) != value or not 8 <= value <= 256: raise ValueError("invalid:cursor_size")
+                from agathodaimon.settings import _parity
+                if _parity.backends.select_backend():
+                    import ast
+                    dry_run = os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1"
+                    good_theme, raw_theme, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"])
+                    try:
+                        theme = ast.literal_eval(raw_theme) if good_theme else None
+                    except (SyntaxError, ValueError):
+                        theme = None
+                    if not isinstance(theme, str) or not theme:
+                        theme = "default"
+                    good_old, old_size, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-size"])
+                    if not dry_run and (not good_old or not old_size.isdigit()):
+                        raise ValueError("cursor-size-observation-failed")
+                    cmd = ["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", str(int(value))]
+                    if dry_run:
+                        receipt.commands.append({"argv": cmd, "dryRun": True})
+                    else:
+                        good, _, result = command(cmd)
+                        receipt.commands.append({"argv": cmd, "returncode": result.returncode})
+                        if not good: raise ValueError("command-failed:cursor_size")
+                    try:
+                        _parity.set_sway_cursor(theme, int(value), receipt)
+                    except Exception as error:
+                        receipt.restore_backups()
+                        if not dry_run:
+                            rollback = ["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", old_size]
+                            restored, _, result = command(rollback)
+                            receipt.commands.append({"argv": rollback, "returncode": result.returncode})
+                            if not restored: raise ValueError("cursor-gsettings-rollback-failed") from error
+                        raise
+                    receipt.changed = True
+                    return
                 gkey, gval = "cursor-size", str(int(value))
             elif field == "text_scale":
                 if not 0.5 <= value <= 3: raise ValueError("invalid:text_scale")

@@ -4,7 +4,7 @@ try:
 except ImportError:
     from _common import build_settings_widget
 
-PLUG = {"id": "keyboard", "title": "Keyboard", "icon": "input-keyboard-symbolic", "order": 62, "parent": None}
+PLUG = None
 SPECS = [
     {"field": "keyboard_layout", "title": "Keyboard layout", "kind": "entry"},
     {"field": "repeat_rate", "title": "Repeat rate", "kind": "spin", "minimum": 0, "maximum": 1000},
@@ -12,4 +12,4 @@ SPECS = [
 ]
 
 def build_widget():
-    return build_settings_widget(PLUG, "keyboard", "Keyboard", SPECS, required_route="/api/v1/settings/keyboard")
+    raise RuntimeError("keyboard plug is retired; use Keyboard & Mouse")

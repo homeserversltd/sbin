@@ -69,7 +69,10 @@ def discover_plugs(directory: Path = PLUGS_DIR) -> dict[str, Plug]:
     for path in sorted(directory.glob("*.py")):
         if path.name.startswith("_") or path.name == "index.py":
             continue
-        plug = _validate(_load_module(path), path)
+        module = _load_module(path)
+        if hasattr(module, "PLUG") and module.PLUG is None:
+            continue
+        plug = _validate(module, path)
         if plug.ident in registry:
             raise ValueError(f"duplicate plug id: {plug.ident}")
         registry[plug.ident] = plug

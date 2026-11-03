@@ -241,7 +241,7 @@ def build_manager_widget(plug: dict[str, Any], program: str) -> Any:
     return page
 
 
-def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, specs: list[dict[str, Any]], *, required_route: str | None = None, mutation_method: str = "PATCH") -> Any:
+def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, specs: list[dict[str, Any]], *, required_route: str | None = None, mutation_method: str = "PATCH", page: Any = None) -> Any:
     """Build one receipt-backed settings pane over its admitted Caduceus door."""
     import gi
 
@@ -249,7 +249,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     gi.require_version("Adw", "1")
     from gi.repository import Adw, GLib, Gtk
 
-    page = _page(Adw, plug)
+    if page is None:
+        page = _page(Adw, plug)
     group = _group(Adw, page, group_title)
     path = f"/api/v1/settings/{family}"
     discovery_path = "/api/v1/doors"
