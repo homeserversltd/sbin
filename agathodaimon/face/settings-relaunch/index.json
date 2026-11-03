@@ -1,0 +1,13 @@
+{
+  "children": [],
+  "sclerite": {
+    "features": {
+      "gtk4": {
+        "band": false,
+        "routes": [],
+        "verbs": []
+      }
+    },
+    "name": "gtk4"
+  }
+}
