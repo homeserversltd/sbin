@@ -1,5 +1,5 @@
 {
-  "children": [],
+  "children": ["create-key", "update-key", "admin-password", "rotate-capability", "key-status"],
   "envelope": {
     "stdin": "json",
     "keys": [
