@@ -14,7 +14,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from urllib.parse import urlsplit, unquote
 
 # Direct execution by the transient service and dynamic staff loading share a root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
@@ -130,8 +132,9 @@ def database_rows(database):
     query = ("SELECT row_to_json(t) FROM (SELECT "
              "COALESCE((SELECT json_agg(json_build_array(u.lower_name,r.lower_name,r.id)) "
              "FROM repository r JOIN \"user\" u ON u.id=r.owner_id),'[]'::json) AS repos, "
-             "COALESCE((SELECT json_agg(json_build_array(a.repo_id,a.uuid)) FROM attachment a "
-             "WHERE a.repo_id IS NOT NULL),'[]'::json) AS attachments, "
+             "COALESCE((SELECT json_agg(json_build_array(a.repo_id,a.uuid, "
+             "COALESCE(r.tag_name ~ '^sha-[0-9a-f]{40}$',false))) FROM attachment a "
+             "LEFT JOIN release r ON r.id=a.release_id),'[]'::json) AS attachments, "
              "COALESCE((SELECT json_agg(json_build_array(l.repository_id,l.oid)) "
              "FROM lfs_meta_object l),'[]'::json) AS lfs) t")
     try:
@@ -163,12 +166,16 @@ def inventory(paths, skips):
             ids.add(repo_id)
         else:
             included += 1
-    uuids = []
+    uuids, ci_count = set(), 0
     for row in data["attachments"]:
-        if not isinstance(row, list) or len(row) != 2 or type(row[0]) is not int or not isinstance(row[1], str) or not UUID.fullmatch(row[1]):
+        if (not isinstance(row, list) or len(row) != 3 or
+                (row[0] is not None and type(row[0]) is not int) or
+                not isinstance(row[1], str) or not UUID.fullmatch(row[1]) or type(row[2]) is not bool):
             refuse("database", "forgejo-attachment-invalid")
-        if row[0] in ids:
-            uuids.append(row[1])
+        if row[2]:
+            ci_count += 1
+        if row[0] in ids or row[2]:
+            uuids.add(row[1])
     skipped_oids, kept_oids = set(), set()
     for item in data['lfs']:
         if (not isinstance(item, list) or len(item) != 2 or type(item[0]) is not int or
@@ -178,7 +185,7 @@ def inventory(paths, skips):
     lfs_excluded = sorted(skipped_oids - kept_oids)
     shared = len(skipped_oids & kept_oids)
     excluded.sort()
-    return included, excluded, uuids, lfs_excluded, shared
+    return included, excluded, sorted(uuids), lfs_excluded, shared, ci_count
 
 
 def restic_repo(row):
@@ -188,8 +195,8 @@ def restic_repo(row):
 def plan(bucket, config_path, ini_path, work):
     row, skips = read_config(bucket, config_path)
     paths = forgejo_paths(ini_path, work)
-    included, excluded, uuids, lfs_excluded, shared = inventory(paths, skips)
-    return row, paths, included, excluded, uuids, lfs_excluded, shared
+    included, excluded, uuids, lfs_excluded, shared, ci_count = inventory(paths, skips)
+    return row, paths, included, excluded, uuids, lfs_excluded, shared, ci_count
 
 
 def _escaped(path):
@@ -345,12 +352,74 @@ def prepare_repository(row, env, application_key):
         signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
-def log_deed(bucket, started, outcome, included, excluded, snapshot, failure, byte_counts):
+def capture_restic_error(stream, env, application_key, result):
+    """Drain stderr concurrently, redact before retaining a bounded line tail."""
+    values = [bytes(application_key)]
+    for key in ("B2_ACCOUNT_ID", "B2_ACCOUNT_KEY", "RESTIC_PASSWORD", "RESTIC_REPOSITORY"):
+        if env.get(key):
+            values.append(env[key].encode())
+    repo = env.get("RESTIC_REPOSITORY", "")
+    try:
+        url = urlsplit(repo)
+        for part in (url.username, url.password):
+            if part:
+                values.extend((part.encode(), unquote(part).encode()))
+    except ValueError:
+        pass
+    values = sorted({v for v in values if v}, key=len, reverse=True)
+    hold = max((len(v) for v in values), default=1)
+    pending = b""
+    line = bytearray()
+    last = b""
+    def emit(data):
+        nonlocal last
+        for c in data:
+            if c in (10, 13):
+                if bytes(line).strip():
+                    last = bytes(line)
+                line.clear()
+            else:
+                line.append(c)
+                if len(line) > 400:
+                    del line[:-400]
+    while True:
+        chunk = stream.read(4096)
+        if not chunk:
+            break
+        pending += chunk
+        while len(pending) >= hold:
+            match = next((v for v in values if pending.startswith(v)), None)
+            if match:
+                emit(b"[scrubbed]")
+                pending = pending[len(match):]
+            else:
+                emit(pending[:1])
+                pending = pending[1:]
+    while pending:
+        match = next((v for v in values if pending.startswith(v)), None)
+        if match:
+            emit(b"[scrubbed]")
+            pending = pending[len(match):]
+        else:
+            emit(pending[:1])
+            pending = pending[1:]
+    if bytes(line).strip():
+        last = bytes(line)
+    result.append(last.decode("utf-8", errors="replace"))
+
+
+def log_deed(bucket, started, outcome, included, excluded, snapshot, failure, byte_counts, ci_count, restic_error):
     record = {"who": "agathodaimon", "verb": ACTUATOR, "bucket": bucket, "outcome": outcome,
               "duration_ms": int((time.monotonic() - started) * 1000), "included": included,
               "excluded": excluded, "snapshot": snapshot, "signal": failure,
-              "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), **byte_counts}
+              "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "excludedCiReleaseAttachments": ci_count, **byte_counts}
+    if outcome != "ok" and restic_error:
+        record["restic_error"] = restic_error
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=True)
+    while len(line.encode()) + 1 >= 1024 and record.get("restic_error"):
+        record["restic_error"] = record["restic_error"][1:]
+        line = json.dumps(record, separators=(",", ":"), ensure_ascii=True)
     if len(line.encode()) + 1 >= 1024:
         print("forgejo-backup-deed-too-large", file=sys.stderr)
         return False
@@ -367,6 +436,7 @@ def backup(bucket):
     started = time.monotonic()
     included, excluded, snapshot, failure, outcome = 0, [], "", "none", "failed"
     byte_counts = {}
+    ci_count, restic_error = 0, ""
     restart_required = False
     operation_lock = None
     config_lock = None
@@ -409,7 +479,7 @@ def backup(bucket):
             dump = temporary / "forgejo.pg_dump"
             restart_required = True
             checked(["/usr/bin/systemctl", "stop", "forgejo.service"], "forgejo-stop", stdout=subprocess.DEVNULL)
-            included, excluded, uuids, lfs_oids, _shared = inventory(paths, skips)
+            included, excluded, uuids, lfs_oids, _shared, ci_count = inventory(paths, skips)
             exclude_file = temporary / "exclude"
             exclude_file.write_text("".join(p + "\n" for p in exclusions(paths, skips, uuids, lfs_oids)), encoding="utf-8")
             with dump.open("wb") as stream:
@@ -423,9 +493,11 @@ def backup(bucket):
             try:
                 with backup_child(["/usr/bin/restic", "--no-cache", "backup", "--json", "--tag", "forgejo",
                                           "--exclude-file", str(exclude_file), "--", *sources], env=env,
-                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                         text=True) as child:
-                    assert child.stdout is not None
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+                    assert child.stdout is not None and child.stderr is not None
+                    captured = []
+                    reader = threading.Thread(target=capture_restic_error, args=(child.stderr, env, application_key, captured), daemon=True)
+                    reader.start()
                     for line in child.stdout:
                         try:
                             message = json.loads(line)
@@ -436,7 +508,10 @@ def backup(bucket):
                             value = message.get("snapshot_id")
                             if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{8,64}", value):
                                 snapshot = value
-                    if child.wait() != 0 or not snapshot:
+                    status = child.wait()
+                    reader.join()
+                    if status != 0 or not snapshot:
+                        restic_error = captured[0] if captured else ""
                         refuse("restic-backup", "restic-backup-failed")
             except OSError:
                 refuse("restic-backup", "restic-unavailable")
@@ -454,7 +529,7 @@ def backup(bucket):
         deed_written = False
         if failure == "forgejo-backup-deadline":
             deed_written = True
-            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts)
+            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts, ci_count, restic_error)
         if restart_required:
             try:
                 restarted = subprocess.run(["/usr/bin/systemctl", "start", "forgejo.service"], stdin=subprocess.DEVNULL,
@@ -475,7 +550,7 @@ def backup(bucket):
         if config_lock is not None:
             os.close(config_lock)
         if not deed_written:
-            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts)
+            deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts, ci_count, restic_error)
         if not deed_ok:
             outcome = "failed"
     print(json.dumps({"ok": outcome == "ok", "signal": failure, "deadline_seconds": deadline_seconds, "deed_ok": deed_ok, **byte_counts}, separators=(",", ":")))
@@ -526,7 +601,7 @@ def main(argv=None):
         ini = Path(os.environ.get("FORGEJO_BACKUP_APP_INI", str(APP_INI))) if is_plan else APP_INI
         work = Path(os.environ.get("FORGEJO_BACKUP_WORK", str(WORK))) if is_plan else WORK
         if is_plan:
-            row, paths, included, excluded, uuids, lfs_oids, shared = plan(bucket, config, ini, work)
+            row, paths, included, excluded, uuids, lfs_oids, shared, ci_count = plan(bucket, config, ini, work)
             found = 0
             for u in uuids:
                 try:
@@ -539,6 +614,7 @@ def main(argv=None):
             result = {"ok": True, "plan": {"included": included, "excluded": len(excluded),
                       "excludedNames": [owner + "/" + repo for owner, repo in excluded],
                       "excludedAttachments": len(uuids), "excludedAttachmentsPresent":found,
+                      "excludedCiReleaseAttachments":ci_count,
                       "excludedLfs":len(lfs_oids), "sharedLfsKept":shared, "repo": restic_repo(row)}}
         else:
             read_config(bucket, CONFIG)
