@@ -1,6 +1,7 @@
 """Envelope-facing Forgejo backup stops over the existing implementation."""
 import json
 import os
+import signal
 from pathlib import Path
 from importlib import import_module
 
@@ -15,6 +16,25 @@ def finish(act, result, request=None):
         result = _envelope.attach(result, request)
     print(json.dumps(result, separators=(",", ":")))
     return 0 if result.get("ok") else 1
+
+
+def invoke(act, read_request):
+    def deadline(_signum, _frame):
+        _backup.refuse("request", "request-deadline-exceeded")
+    previous_handler = signal.signal(signal.SIGALRM, deadline)
+    signal.alarm(24)
+    try:
+        try:
+            request = read_request()
+        except _envelope.EnvelopeError:
+            return finish(act, {"ok": False, "firstMissingSignal": "forgejo-backup-b2-" + act + "-envelope-invalid"})
+        return dispatch(act, request)
+    except _backup.Refusal as error:
+        return finish(act, {"ok": False, "step": error.step, "reason": error.reason,
+                            "firstMissingSignal": "forgejo-backup-b2-" + act + "-" + error.reason})
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def dispatch(act, request):

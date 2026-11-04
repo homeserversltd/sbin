@@ -6,8 +6,4 @@ _stop = import_module("agathodaimon.storage.backup.forgejo.backup-b2._stop")
 
 
 def main(argv=None):
-    try:
-        request = _envelope.read_fields("bucket")
-    except _envelope.EnvelopeError:
-        return _stop.finish("plan", {"ok": False, "firstMissingSignal": "forgejo-backup-b2-plan-envelope-invalid"})
-    return _stop.dispatch("plan", request)
+    return _stop.invoke("plan", lambda: _envelope.read_fields("bucket"))
