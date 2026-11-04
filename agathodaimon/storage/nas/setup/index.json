@@ -1,5 +1,5 @@
 {
-  "children": [],
+  "children": ["plan"],
   "sclerite": {
     "name": "nas",
     "features": {

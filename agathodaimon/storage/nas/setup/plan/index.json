@@ -1,0 +1,11 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "mutation_allowed": false,
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {"band": true, "verbs": [], "routes": [], "administrative": {"band": true, "verbs": [], "routes": []}}
+    }
+  }
+}
