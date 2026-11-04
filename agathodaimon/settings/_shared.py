@@ -394,9 +394,11 @@ def get_values(kind: str) -> dict[str, Any]:
                 key, val = line.split("=", 1); mapping[key.strip()] = val.strip().rstrip(";")
         for field, mime_types in MIME_KEYS.items(): values[field] = next((mapping.get(mime) for mime in mime_types if mime in mapping), None)
     elif kind == "datetime":
-        good, out, _ = command(["timedatectl", "show", "--property=Timezone,NTP", "--value"])
+        good, out, _ = command(["timedatectl", "show", "-p", "Timezone", "-p", "NTP"])
         if good:
-            parts = out.splitlines(); values["timezone"] = parts[0] if parts else None; values["ntp_enabled"] = parts[1].lower() == "yes" if len(parts) > 1 else None
+            properties = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+            values["timezone"] = properties.get("Timezone")
+            values["ntp_enabled"] = properties["NTP"] == "yes" if "NTP" in properties else None
     return {key: values.get(key) for key in FIELDS[kind]}
 
 
