@@ -50,7 +50,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return 1
     payload = envelope.get("payload") if isinstance(envelope, dict) and "schema" in envelope else envelope
-    if not isinstance(payload, dict) or payload not in ({}, {"op": "get"}, {"operation": "get"}):
+    if not isinstance(payload, dict) or payload != {}:
         return 1
     return get()
 
