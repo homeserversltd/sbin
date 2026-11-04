@@ -1,51 +1,14 @@
 """Native Backblaze bucket staff: configuration, credentials and restic."""
 from __future__ import annotations
 
-import base64
-from datetime import datetime, timezone
-import errno
-import fcntl
-import hashlib
-import json
-import os
-from pathlib import Path
-import re
-import select
-import signal
-import socket
-import stat
-import struct
-import subprocess
 import sys
-import tempfile
-import time
-from typing import NoReturn
-import urllib.error
-import urllib.parse
-import urllib.request
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
-from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session, export_credential
+from agathodaimon.storage.backup.backblaze._store import base64, datetime, timezone, errno, fcntl, hashlib, json, os, re, select, signal, socket, stat, struct, subprocess, tempfile, time, NoReturn, urllib, KeymanExportError, exchange_session, export_credential, NAME, SKIP, CONFIG, SKELETON, LOG, KEYMAN, Refusal, fail
 
-NAME = re.compile(r"[A-Za-z0-9-]{6,63}\Z")
-SKIP = re.compile(r"[A-Za-z0-9_.-]+\Z")
 ACTUATORS = {name: 'backblaze-' + name for name in ('bucket-add', 'bucket-credentials', 'bucket-verify', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run', 'status', 'snapshots')}
-CONFIG = Path('/etc/appliance/config.json')
-SKELETON = Path('/root/key/skeleton.key')
-LOG = Path('/var/log/appliance/appliance.log')
-KEYMAN = '/vault/keyman/keyman'
 
-class Refusal(Exception):
-    def __init__(self, step, reason):
-        super().__init__(reason)
-        self.step, self.reason = step, reason
-
-def fail(step, reason) -> NoReturn:
-    raise Refusal(step, reason)
-
-
-# Register the facade for direct --worker execution as well as package imports.
-sys.modules.setdefault('agathodaimon.storage.backup.backblaze.shared', sys.modules[__name__])
 from agathodaimon.storage.backup.backblaze import _keyman
 from agathodaimon.storage.backup.backblaze._store import scratch_root, config_path, config_lock_path, skeleton_path, log_path, restic_bin, repository, valid_bucket, bucket_name, keyman_service, normalize_skips, valid_items, load, rows, row_for, manager, normalized_row, store, deed
 from agathodaimon.storage.backup.backblaze._keyman import derivation, skeleton_password, credentials, seed, authorize

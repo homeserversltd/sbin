@@ -1,6 +1,5 @@
 from __future__ import annotations
-from .shared import hashlib, os, subprocess, time, socket, struct, sys, Path, select, signal, json, re, Refusal, fail
-from ._store import scratch_root, row_for, load, valid_items, manager, deed
+from ._store import hashlib, os, subprocess, time, socket, struct, sys, Path, select, signal, json, re, Refusal, fail, scratch_root, row_for, load, valid_items, manager, deed
 from ._restic import restic_environment, ensure_repository, backup_files, add_counts
 
 # The unchanged worker bodies resolve paths relative to the facade entrypoint.

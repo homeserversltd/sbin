@@ -1,6 +1,5 @@
 from __future__ import annotations
-from .shared import base64, hashlib, subprocess, json, urllib, KEYMAN, KeymanExportError, exchange_session, export_credential, Refusal, fail
-from ._store import skeleton_path, keyman_service
+from ._store import base64, hashlib, subprocess, json, urllib, KEYMAN, KeymanExportError, exchange_session, export_credential, Refusal, fail, skeleton_path, keyman_service
 
 SEED_ATTEMPTED = False
 

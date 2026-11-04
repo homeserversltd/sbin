@@ -1,5 +1,46 @@
+"""Native Backblaze bucket staff: configuration, credentials and restic."""
 from __future__ import annotations
-from .shared import NAME, SKIP, CONFIG, SKELETON, LOG, fail, os, Path, json, stat, tempfile, time, datetime, timezone
+
+import base64
+from datetime import datetime, timezone
+import errno
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import select
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+from typing import NoReturn
+import urllib.error
+import urllib.parse
+import urllib.request
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session, export_credential
+
+NAME = re.compile(r"[A-Za-z0-9-]{6,63}\Z")
+SKIP = re.compile(r"[A-Za-z0-9_.-]+\Z")
+CONFIG = Path('/etc/appliance/config.json')
+SKELETON = Path('/root/key/skeleton.key')
+LOG = Path('/var/log/appliance/appliance.log')
+KEYMAN = '/vault/keyman/keyman'
+
+class Refusal(Exception):
+    def __init__(self, step, reason):
+        super().__init__(reason)
+        self.step, self.reason = step, reason
+
+def fail(step, reason) -> NoReturn:
+    raise Refusal(step, reason)
 
 def scratch_root():
     # BACKBLAZE_SCRATCH_ROOT is marker-guarded and for proof only.

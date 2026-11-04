@@ -1,6 +1,5 @@
 from __future__ import annotations
-from .shared import os, subprocess, json, time, tempfile, Path, re, fail
-from ._store import repository, scratch_root, restic_bin, deed
+from ._store import os, subprocess, json, time, tempfile, Path, re, fail, repository, scratch_root, restic_bin, deed
 from ._keyman import skeleton_password, credentials, derivation
 
 def restic_environment(row):
