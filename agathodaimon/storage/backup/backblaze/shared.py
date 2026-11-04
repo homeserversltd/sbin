@@ -28,70 +28,22 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
         fail('shape', 'metadata-invalid')
     data = load()
     if verb == 'status':
-        results = []
-        for row in rows(data):
-            bucket = bucket_name(row.get('bucket'))
-            state = unit_status(bucket)
-            running = unit_running(state)
-            stamp = state.get('ExecMainExitTimestamp', '')
-            finished = not running and state.get('LoadState') != 'not-found' and stamp.startswith('@')
-            try:
-                last_run_at = int(stamp[1:].split('.', 1)[0]) if finished else None
-            except ValueError:
-                last_run_at = None
-            result = state.get('Result')
-            entry = {'bucket':bucket, 'running':running, 'last_run_at':last_run_at,
-                     'last_run_ok':(result == 'success') if last_run_at is not None and result else None,
-                     'connected':None}
-            results.append(entry)
-        return {'ok':True, 'buckets':results}
+        from agathodaimon.storage.backup.backblaze.status.index import act
+        return act(data)
     if verb == 'snapshots':
-        requested = metadata.get('bucket')
-        selected = rows(data) if requested is None else [row_for(data, bucket_name(requested))]
-        result, errors = [], []
-        for row in selected:
-            bucket = row.get('bucket')
-            key = None
-            try:
-                bucket = bucket_name(bucket)
-                env, key = restic_environment(row)
-                result.extend(snapshot_list(row, env, key))
-            except Refusal as error:
-                if error.step == 'request':
-                    raise
-                errors.append({'bucket':bucket if valid_bucket(bucket) else None,
-                               'step':error.step, 'reason':error.reason})
-            except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
-                errors.append({'bucket':bucket if valid_bucket(bucket) else None,
-                               'step':'snapshots', 'reason':'snapshots-unavailable'})
-            finally:
-                if key is not None:
-                    key[:] = b'\0' * len(key)
-        return {'ok':True, 'snapshots':result, 'errors':errors}
+        from agathodaimon.storage.backup.backblaze.snapshots.index import act
+        return act(metadata, data)
     bucket = bucket_name(metadata.get('bucket'))
     if scratch_root() and verb in ('bucket-add', 'bucket-credentials', 'bucket-verify'):
         fail('scratch', 'scratch-live-authority-refused')
     if scratch_root() and verb in ('bucket-run', 'bucket-remove') and not bucket.startswith('scratch-'):
         fail('scratch', 'scratch-unit-name-required')
     if verb == 'bucket-run':
-        row = row_for(data, bucket)
-        valid_items(row.get('items', []))
-        manager(row)
-        return launch(bucket, scheduled=scheduled)
+        from importlib import import_module
+        return import_module('agathodaimon.storage.backup.backblaze.bucket-run.index').act(data, bucket, scheduled)
     if verb == 'bucket-verify':
-        row_for(data, bucket)
-        username = key = None
-        try:
-            username, key = credentials(bucket)
-            connected = authorize(bucket, username.decode('utf-8'), key.decode('utf-8'))
-        except UnicodeError:
-            fail('keyman', 'keyman-credential-invalid')
-        finally:
-            if username is not None:
-                username[:] = b'\0' * len(username)
-            if key is not None:
-                key[:] = b'\0' * len(key)
-        return {'ok':True, 'connected':connected}
+        from importlib import import_module
+        return import_module('agathodaimon.storage.backup.backblaze.bucket-verify.index').act(data, bucket)
     started = time.monotonic()
     outcome = 'failed'
     signal_name = 'unknown'
