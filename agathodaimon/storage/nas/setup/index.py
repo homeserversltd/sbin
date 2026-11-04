@@ -13,6 +13,12 @@ Refusal = _setup.Refusal
 SCHEMA = _setup.SCHEMA
 MAX_INPUT = _setup.MAX_INPUT
 dispatch = _setup.dispatch
+PORTAL_FOLDER_LAYOUT = _setup.PORTAL_FOLDER_LAYOUT
+_open_directory_nofollow = _setup._open_directory_nofollow
+_read_regular_nofollow = _setup._read_regular_nofollow
+_apply_permissions = _setup._apply_permissions
+_load_config = _setup._load_config
+_seed_portal_layout = _setup._seed_portal_layout
 
 def _read_request(raw: bytes):
     text = raw.decode("utf-8")
