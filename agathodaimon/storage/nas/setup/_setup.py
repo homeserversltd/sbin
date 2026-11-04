@@ -2072,24 +2072,8 @@ def _format_span(receipt: dict[str, Any], info: dict[str, Any], material: bytear
 
 
 
-def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, Any]) -> tuple[dict[str, Any] | None, bytearray]:
-    key_identity = None
-    material = bytearray()
-    mutations = {"diskMutationAttempted": False, "mapperOpenAttempted": False, "mountAttempted": False}
-    info["device"] = request["device"]
-    info["unitsStarted"] = list(info.get("unitsStarted", []))
-    info["servicesStarted"] = list(info.get("servicesStarted", []))
-    info["mutations"] = mutations
-    partition, device, mapper = info["partition"], request["device"], info["mapper"]
-    info.update(_preflight_reobserve(receipt, request, info))
-    material, key_identity = _create_key(receipt, info["serviceRole"], info)
-    info["secretMaterial"] = material
-    info.update(_preflight_reobserve(receipt, request, info))
-    if key_identity is not None:
-        info["createdKeyIdentity"] = key_identity
-
-    _format_span(receipt, info, material, mutations, partition, device, mapper)
-
+def _seat_span(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, Any],
+               mutations: dict[str, Any], mapper: str) -> None:
     _ensure_mountpoint_directory(info["mountpoint"])
     mutations["mapperOpenAttempted"] = True
     mutations["mountAttempted"] = True
@@ -2185,6 +2169,27 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
 
     _record(receipt, "transaction-complete", True, applications=len(info["config"]["applications"]),
             servicesStarted=[])
+
+
+def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, Any]) -> tuple[dict[str, Any] | None, bytearray]:
+    key_identity = None
+    material = bytearray()
+    mutations = {"diskMutationAttempted": False, "mapperOpenAttempted": False, "mountAttempted": False}
+    info["device"] = request["device"]
+    info["unitsStarted"] = list(info.get("unitsStarted", []))
+    info["servicesStarted"] = list(info.get("servicesStarted", []))
+    info["mutations"] = mutations
+    partition, device, mapper = info["partition"], request["device"], info["mapper"]
+    info.update(_preflight_reobserve(receipt, request, info))
+    material, key_identity = _create_key(receipt, info["serviceRole"], info)
+    info["secretMaterial"] = material
+    info.update(_preflight_reobserve(receipt, request, info))
+    if key_identity is not None:
+        info["createdKeyIdentity"] = key_identity
+
+    _format_span(receipt, info, material, mutations, partition, device, mapper)
+
+    _seat_span(receipt, request, info, mutations, mapper)
     return key_identity, material
 
 
@@ -2495,6 +2500,116 @@ def format(request: dict[str, Any]) -> dict[str, Any]:
         _zero(material)
         if info is not None:
             receipt["createdPartitionIdentity"] = info.get("createdPartitionIdentity")
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        if sync_guard_entered and sync_guard is not None:
+            sync_guard.__exit__(None, None, None)
+    return receipt
+
+
+def _seat_info(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any]:
+    """Observe the already-formatted role without using the blank-disk preflight."""
+    from agathodaimon.storage.nas.runtime import _observed_holder_info, role_partition
+
+    expected = ROLE[role]
+    identity = _device_identity(device, "device-preflight")
+    tree = _lsblk_tree(receipt)
+    matches = [node for node in _walk_nodes(tree) if node.get("path") == device]
+    if len(matches) != 1:
+        raise Refusal("agathodaimon-nas-device-not-in-block-census", "device-type-preflight")
+    node = matches[0]
+    if node.get("type") not in {"disk", "loop"}:
+        raise Refusal("agathodaimon-nas-whole-disk-required", "device-type-preflight")
+    if node.get("maj:min") != identity:
+        raise Refusal("agathodaimon-nas-device-identity-mismatch", "device-identity-preflight")
+    partition = _partition_path(device)
+    parts = [row for row in _walk_nodes({"blockdevices": [node]}) if row.get("path") == partition]
+    if (len(parts) != 1 or parts[0].get("type") != "part"
+            or _normalize_pkname(parts[0].get("pkname")) != os.path.basename(device)
+            or parts[0].get("partlabel") != expected["partlabel"]):
+        raise Refusal("agathodaimon-nas-partition-readback-missing", "partition-readback")
+    partition_identity = _device_identity(partition, "partition-readback")
+    if (parts[0].get("maj:min") != partition_identity
+            or _device_identity(role_partition(role), "partlabel-device-readback") != partition_identity):
+        raise Refusal("agathodaimon-nas-partition-readback-mismatch", "partition-readback")
+    mapper_info = _observed_holder_info(receipt, {"partition": partition, "mapper": expected["mapper"],
+                                                  "mountpoint": expected["mountpoint"]})
+    mapper_state = _mapper_state(receipt, mapper_info)
+    if mapper_state.get("exists") is not False:
+        raise Refusal("agathodaimon-nas-mapper-conflict", "mapper-preflight")
+    graph, graph_paths = _block_graph()
+    target_component = _component(graph, identity)
+    entries = _mountinfo()
+    _validate_vault_and_protected_mounts(receipt, target_component, graph, graph_paths, entries)
+    config = _load_config(receipt, expected["mountpoint"])
+    services = _list_enabled_nas_services(receipt, expected["mountpoint"])
+    return {"device": device, "deviceIdentity": identity, "deviceType": node["type"],
+            "partition": partition, "mapper": expected["mapper"], "mountpoint": expected["mountpoint"],
+            "partlabel": expected["partlabel"], "serviceRole": key_record_for_role(role), "role": role,
+            "mountUnit": expected["mount_unit"], "openUnit": expected["open_unit"],
+            "graph": graph, "targetComponent": target_component, "mountinfo": entries,
+            "config": config, "services": services, "unitStatesBefore": {},
+            "unitsStarted": [], "servicesStarted": []}
+
+
+def seat(request: dict[str, Any]) -> dict[str, Any]:
+    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.seat.v1", "ok": False,
+                               "firstMissingSignal": "agathodaimon-nas-not-complete",
+                               "role": request.get("role"), "device": request.get("device"),
+                               "partition": None, "partlabel": None, "mapper": None, "mountpoint": None,
+                               "createdPartitionIdentity": request.get("createdPartitionIdentity"),
+                               "steps": [], "servicesStarted": [], "servicesNotRunning": [],
+                               "rolledBack": False, "rollbackSteps": []}
+    lock_fd = None
+    sync_guard = None
+    sync_guard_entered = False
+    info = None
+    mutations = {"diskMutationAttempted": False, "mapperOpenAttempted": False, "mountAttempted": False}
+    try:
+        if os.geteuid() != 0:
+            raise Refusal("agathodaimon-nas-root-required", "root-preflight")
+        sync_guard = drive_guard()
+        sync_guard.__enter__()
+        sync_guard_entered = True
+        _record(receipt, "sync-lock", True, acquired=True)
+        try:
+            lock_fd = os.open(runtime_path(LOCK_PATH), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600)
+            lock_st = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_st.st_mode) or lock_st.st_uid != 0:
+                raise OSError("unsafe-lock")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            raise Refusal("agathodaimon-nas-transaction-lock-unavailable", "transaction-lock")
+        _record(receipt, "transaction-lock", True, acquired=True)
+        info = _seat_info(receipt, request["device"], request["role"])
+        info["createdPartitionIdentity"] = request["createdPartitionIdentity"]
+        info["mutations"] = mutations
+        receipt.update(partition=info["partition"], partlabel=info["partlabel"],
+                       mapper=info["mapper"], mountpoint=info["mountpoint"])
+        _seat_span(receipt, request, info, mutations, info["mapper"])
+        receipt.update(ok=True, firstMissingSignal="none")
+    except Refusal as failure:
+        if not receipt["steps"] or receipt["steps"][-1]["step"] != failure.step:
+            _record(receipt, failure.step, False, rc=failure.return_code)
+        receipt["firstMissingSignal"] = failure.signal_name
+        receipt["failedStep"] = _safe_step(failure.step)
+        if failure.return_code is not None:
+            receipt["returnCode"] = failure.return_code
+        if info is not None and (mutations.get("mountAttempted") or mutations.get("mapperOpenAttempted")):
+            steps = _rollback_receipt(receipt, info, None, mutations, failure.signal_name, failure.return_code)
+            receipt["rollbackSteps"] = steps
+            receipt["rolledBack"] = bool(steps) and all(step.get("ok") is True for step in steps)
+    except Exception:
+        receipt["firstMissingSignal"] = "agathodaimon-nas-setup-seat-aborted"
+        receipt["failedStep"] = "seat"
+        if info is not None and (mutations.get("mountAttempted") or mutations.get("mapperOpenAttempted")):
+            steps = _rollback_receipt(receipt, info, None, mutations, receipt["firstMissingSignal"])
+            receipt["rollbackSteps"] = steps
+            receipt["rolledBack"] = bool(steps) and all(step.get("ok") is True for step in steps)
+    finally:
         if lock_fd is not None:
             try:
                 os.close(lock_fd)
