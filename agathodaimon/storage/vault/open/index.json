@@ -5,12 +5,7 @@
     "features": {
       "all": {
         "band": false,
-        "verbs": [
-          [
-            "vault",
-            "open"
-          ]
-        ],
+        "verbs": [],
         "routes": [
           "/api/v1/storage/vault/auto-decrypt",
           "/api/v1/storage/vault/unlock"

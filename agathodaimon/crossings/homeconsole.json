@@ -232,10 +232,6 @@
     [
       "upload",
       "ingress"
-    ],
-    [
-      "vault",
-      "open"
     ]
   ],
   "routes": [
