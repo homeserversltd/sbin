@@ -71,7 +71,7 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
                 import_module('agathodaimon.storage.backup.backblaze.bucket-remove.index').act(data, bucket, row)
             elif verb == 'bucket-items':
                 from importlib import import_module
-                import_module('agathodaimon.storage.backup.backblaze.bucket-items.index').act(metadata, row)
+                import_module('agathodaimon.storage.backup.backblaze.bucket-items._items').act(metadata, row)
             elif verb == 'bucket-save':
                 from importlib import import_module
                 import_module('agathodaimon.storage.backup.backblaze.bucket-save.index').act(metadata, row)

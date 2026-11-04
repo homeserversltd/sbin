@@ -1,4 +1,3 @@
-from agathodaimon.storage.backup.backblaze.shared import main_for
 from agathodaimon.storage.backup.backblaze._store import valid_items, fail
 
 
@@ -13,9 +12,3 @@ def act(metadata, row):
     if op == 'remove':
         items = [x for x in items if x['path'] != path]
     row['items'] = items
-
-def main(argv=None):
-    return main_for('bucket-items')
-
-if __name__ == '__main__':
-    raise SystemExit(main())

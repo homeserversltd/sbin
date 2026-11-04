@@ -1,29 +1,7 @@
 {
   "children": ["add", "remove"],
-  "envelope": {
-    "stdin": "json",
-    "keys": [
-      "actuator",
-      "metadata"
-    ],
-    "actions": [
-      "backblaze-bucket-items"
-    ],
-    "unknown_fields": "skipped"
-  },
   "sclerite": {
-    "name": "gateway",
-    "features": {
-      "gateway": {
-        "band": true,
-        "verbs": [],
-        "routes": [],
-        "administrative": {
-          "band": true,
-          "verbs": [],
-          "routes": []
-        }
-      }
-    }
+    "name": "all",
+    "features": {}
   }
 }
