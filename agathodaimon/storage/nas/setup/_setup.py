@@ -1978,22 +1978,8 @@ def _merge_attach_receipt(receipt: dict[str, Any], info: dict[str, Any], attachm
                 receipt["steps"].append(dict(step))
 
 
-def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, Any]) -> tuple[dict[str, Any] | None, bytearray]:
-    key_identity = None
-    material = bytearray()
-    mutations = {"diskMutationAttempted": False, "mapperOpenAttempted": False, "mountAttempted": False}
-    info["device"] = request["device"]
-    info["unitsStarted"] = list(info.get("unitsStarted", []))
-    info["servicesStarted"] = list(info.get("servicesStarted", []))
-    info["mutations"] = mutations
-    partition, device, mapper = info["partition"], request["device"], info["mapper"]
-    info.update(_preflight_reobserve(receipt, request, info))
-    material, key_identity = _create_key(receipt, info["serviceRole"], info)
-    info["secretMaterial"] = material
-    info.update(_preflight_reobserve(receipt, request, info))
-    if key_identity is not None:
-        info["createdKeyIdentity"] = key_identity
-
+def _format_span(receipt: dict[str, Any], info: dict[str, Any], material: bytearray,
+                 mutations: dict[str, Any], partition: str, device: str, mapper: str) -> None:
     # Record possible partial effects before each command that can mutate disk state.
     mutations["diskMutationAttempted"] = True
     sgdisk = [SGDISK, "--zap-all", "--new=1:0:0", f"--typecode=1:{GPT_LINUX_LUKS_TYPE}", "--", device]
@@ -2083,6 +2069,26 @@ def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, A
     if not okay:
         bad = next((r for r in (label_command, trigger, settle) if r.returncode != 0), label_command)
         raise Refusal("agathodaimon-nas-partlabel-failed", "partlabel-assign", bad.returncode)
+
+
+
+def _execute(receipt: dict[str, Any], request: dict[str, Any], info: dict[str, Any]) -> tuple[dict[str, Any] | None, bytearray]:
+    key_identity = None
+    material = bytearray()
+    mutations = {"diskMutationAttempted": False, "mapperOpenAttempted": False, "mountAttempted": False}
+    info["device"] = request["device"]
+    info["unitsStarted"] = list(info.get("unitsStarted", []))
+    info["servicesStarted"] = list(info.get("servicesStarted", []))
+    info["mutations"] = mutations
+    partition, device, mapper = info["partition"], request["device"], info["mapper"]
+    info.update(_preflight_reobserve(receipt, request, info))
+    material, key_identity = _create_key(receipt, info["serviceRole"], info)
+    info["secretMaterial"] = material
+    info.update(_preflight_reobserve(receipt, request, info))
+    if key_identity is not None:
+        info["createdKeyIdentity"] = key_identity
+
+    _format_span(receipt, info, material, mutations, partition, device, mapper)
 
     _ensure_mountpoint_directory(info["mountpoint"])
     mutations["mapperOpenAttempted"] = True
@@ -2419,6 +2425,76 @@ def key_create(request: dict[str, Any]) -> dict[str, Any]:
     finally:
         if info is not None and info.get("createdKeyIdentity") is not None:
             receipt.update(keyCreated=True, createdKeyIdentity=info["createdKeyIdentity"])
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        if sync_guard_entered and sync_guard is not None:
+            sync_guard.__exit__(None, None, None)
+    return receipt
+
+
+def format(request: dict[str, Any]) -> dict[str, Any]:
+    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.format.v1", "ok": False,
+                               "firstMissingSignal": "agathodaimon-nas-not-complete",
+                               "role": request.get("role"), "device": request.get("device"),
+                               "partition": None, "partlabel": None, "mapper": None, "mountpoint": None,
+                               "createdPartitionIdentity": None, "steps": [], "servicesStarted": [],
+                               "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": []}
+    lock_fd = None
+    sync_guard = None
+    sync_guard_entered = False
+    info = None
+    material = bytearray()
+    mutations = {"diskMutationAttempted": False, "mapperOpenAttempted": False, "mountAttempted": False}
+    try:
+        if os.geteuid() != 0:
+            raise Refusal("agathodaimon-nas-root-required", "root-preflight")
+        sync_guard = drive_guard()
+        sync_guard.__enter__()
+        sync_guard_entered = True
+        _record(receipt, "sync-lock", True, acquired=True)
+        try:
+            lock_fd = os.open(runtime_path(LOCK_PATH), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600)
+            lock_st = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_st.st_mode) or lock_st.st_uid != 0:
+                raise OSError("unsafe-lock")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            raise Refusal("agathodaimon-nas-transaction-lock-unavailable", "transaction-lock")
+        _record(receipt, "transaction-lock", True, acquired=True)
+        info = _preflight(receipt, request["device"], request["role"])
+        receipt.update(partition=info["partition"], partlabel=info["partlabel"],
+                       mapper=info["mapper"], mountpoint=info["mountpoint"])
+        info.update(_preflight_reobserve(receipt, request, info))
+        info["device"] = request["device"]
+        info["mutations"] = mutations
+        material = _export_named_key(receipt, info["serviceRole"], "key-export")
+        _format_span(receipt, info, material, mutations, info["partition"], info["device"], info["mapper"])
+        receipt.update(ok=True, firstMissingSignal="none")
+    except Refusal as failure:
+        if not receipt["steps"] or receipt["steps"][-1]["step"] != failure.step:
+            _record(receipt, failure.step, False, rc=failure.return_code)
+        receipt["firstMissingSignal"] = failure.signal_name
+        receipt["failedStep"] = _safe_step(failure.step)
+        if failure.return_code is not None:
+            receipt["returnCode"] = failure.return_code
+        if info is not None and mutations.get("diskMutationAttempted"):
+            steps = _rollback_receipt(receipt, info, None, mutations, failure.signal_name, failure.return_code)
+            receipt["rollbackSteps"] = steps
+            receipt["rolledBack"] = bool(steps) and all(step.get("ok") is True for step in steps)
+    except Exception:
+        receipt["firstMissingSignal"] = "agathodaimon-nas-format-aborted"
+        receipt["failedStep"] = "format"
+        if info is not None and mutations.get("diskMutationAttempted"):
+            steps = _rollback_receipt(receipt, info, None, mutations, receipt["firstMissingSignal"])
+            receipt["rollbackSteps"] = steps
+            receipt["rolledBack"] = bool(steps) and all(step.get("ok") is True for step in steps)
+    finally:
+        _zero(material)
+        if info is not None:
+            receipt["createdPartitionIdentity"] = info.get("createdPartitionIdentity")
         if lock_fd is not None:
             try:
                 os.close(lock_fd)
