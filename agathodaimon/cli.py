@@ -30,7 +30,7 @@ ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "upload":
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
     "staff-daemon": ("python", "staff-daemon"),
-    "disk-doors": ("storage", "disk-doors"),
+    "disk-doors": ("storage", "disk", "wipe"),
     "ssh-exposure": ("settings", "ssh"),
     "desktop-cache": ("settings", "default-apps", "desktop-cache"),
     "rebis-profile-retire": ("update", "profile-retire"),

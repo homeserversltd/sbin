@@ -1,0 +1,16 @@
+{
+  "hand": "envelope",
+  "dry-run": true,
+  "children": [],
+  "sclerite": {
+    "name": "console-select-branch",
+    "features": {
+      "console-select-branch": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {"band": false, "verbs": [], "routes": []}
+      }
+    }
+  }
+}

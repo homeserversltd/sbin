@@ -150,6 +150,7 @@
     "storage/backup/nas-sync/sync",
     "storage/disk/partlabel/assign",
     "storage/disk/test",
+    "storage/disk/wipe",
     "storage/nas/attach",
     "storage/nas/detach",
     "storage/nas/drives",
