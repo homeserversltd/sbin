@@ -665,7 +665,7 @@ def run_files(bucket, result_socket=None):
     return 0 if outcome == 'ok' else 1
 
 
-def dispatch(verb, metadata, scheduled=False):
+def dispatch(verb, metadata, scheduled=False, deed_verb=None):
     if verb not in ACTUATORS or not isinstance(metadata, dict):
         fail('shape', 'metadata-invalid')
     data = load()
@@ -837,13 +837,13 @@ def dispatch(verb, metadata, scheduled=False):
     finally:
         if should_log and outcome == 'ok':
             try:
-                deed(ACTUATORS[verb], bucket, outcome, started, signal_name)
+                deed(deed_verb or ACTUATORS[verb], bucket, outcome, started, signal_name)
             except Refusal:
                 if outcome == 'ok':
                     mutation_result['deed'] = 'unwritten'
 
 
-def main_for(verb):
+def main_for(verb, request_override=None, return_result=False, deed_verb=None):
     global SEED_ATTEMPTED
     SEED_ATTEMPTED = False
     budgets = {'bucket-add':240, 'bucket-credentials':240, 'bucket-verify':240,
@@ -859,13 +859,16 @@ def main_for(verb):
     try:
         previous = signal.signal(signal.SIGALRM, deadline)
         signal.alarm(budgets.get(verb, 20))
-        raw = sys.stdin.buffer.read(16385)
-        if len(raw) > 16384:
-            fail('shape', 'request-too-large')
-        try:
-            request = json.loads(raw)
-        except (ValueError, UnicodeError):
-            fail('shape', 'request-invalid')
+        if request_override is None:
+            raw = sys.stdin.buffer.read(16385)
+            if len(raw) > 16384:
+                fail('shape', 'request-too-large')
+            try:
+                request = json.loads(raw)
+            except (ValueError, UnicodeError):
+                fail('shape', 'request-invalid')
+        else:
+            request = request_override
         scheduled = (isinstance(request, dict) and verb == 'bucket-run'
                      and request.get('actuator') == 'bucket-run'
                      and request.get('transition') == 'storage/backup/backblaze/bucket-run')
@@ -889,7 +892,7 @@ def main_for(verb):
                 lock_path = config_lock_path()
                 fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                result = dispatch(verb, request.get('metadata'), scheduled=scheduled)
+                result = dispatch(verb, request.get('metadata'), scheduled=scheduled, deed_verb=deed_verb)
             except BlockingIOError:
                 fail('config', 'config-update-active')
             finally:
@@ -916,9 +919,11 @@ def main_for(verb):
         metadata = request.get('metadata') if isinstance(request, dict) else None
         value = metadata.get('bucket') if isinstance(metadata, dict) else None
         try:
-            deed(ACTUATORS[verb], value if valid_bucket(value) else 'invalid', 'failed', started, result['reason'])
+            deed(deed_verb or ACTUATORS[verb], value if valid_bucket(value) else 'invalid', 'failed', started, result['reason'])
         except Exception:
             result['deed'] = 'unwritten'
+    if return_result:
+        return result
     print(json.dumps(result, separators=(',', ':')))
     return 0 if result.get('ok') else 1
 
