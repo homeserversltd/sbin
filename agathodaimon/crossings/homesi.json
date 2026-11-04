@@ -119,6 +119,8 @@
     "storage/vault/open",
     "storage/vault/open/unlock",
     "storage/vault/policy",
+    "storage/vault/policy/read",
+    "storage/vault/policy/write",
     "thyrsus/admit",
     "thyrsus/forge",
     "thyrsus/forge-token",
@@ -488,6 +490,8 @@
       "storage/backup/drive/ask",
       "storage/backup/mirror/pull",
       "storage/vault/policy",
+      "storage/vault/policy/read",
+      "storage/vault/policy/write",
       "thyrsus/admit",
       "thyrsus/forge-token",
       "thyrsus/propose"
