@@ -1,6 +1,5 @@
 {
   "hand": "envelope",
-  "dry-run": true,
   "children": [],
   "sclerite": {
     "name": "gateway",

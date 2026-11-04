@@ -7,7 +7,7 @@ _stop = import_module("agathodaimon.storage.backup.backblaze.bucket-items._stop"
 
 def main(argv=None):
     try:
-        request = _envelope.read_fields("bucket", "path", "expected", "dry-run")
+        request = _envelope.read_fields("bucket", "path", "expected")
     except _envelope.EnvelopeError:
         receipt = {"ok": False, "firstMissingSignal": "backblaze-bucket-items-remove-envelope-invalid"}
     else:
