@@ -1,0 +1,5 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "sclerite": {"name": "gateway", "features": {"gateway": {"band": true}}}
+}

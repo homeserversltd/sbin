@@ -221,6 +221,11 @@ def run_short(args, timeout=5):
         refuse("launch", "systemd-unavailable")
 
 
+def launch_command(bucket, unit):
+    return ["/usr/bin/systemd-run", "--quiet", "--unit=" + unit, "--property=Type=exec",
+            "--", sys.executable, str(Path(__file__).resolve()), "--worker", bucket]
+
+
 def launch(bucket):
     if os.geteuid() != 0:
         refuse("launch", "root-required")
@@ -238,8 +243,7 @@ def launch(bucket):
             if current.stdout.strip():
                 refuse("launch", "backup-already-active")
             unit = UNIT_PREFIX + str(int(time.time()))
-            command = ["/usr/bin/systemd-run", "--quiet", "--unit=" + unit, "--property=Type=exec",
-                       "--", sys.executable, str(Path(__file__).resolve()), "--worker", bucket]
+            command = launch_command(bucket, unit)
             launched = run_short(command, timeout=8)
             if launched.returncode:
                 refuse("launch", "backup-launch-refused")

@@ -1,5 +1,5 @@
 {
-  "children": [],
+  "children": ["run", "plan"],
   "envelope": {
     "stdin": "json",
     "keys": ["actuator", "metadata"],
@@ -11,9 +11,9 @@
     "features": {
       "gateway": {
         "band": true,
-        "verbs": [],
-        "routes": [],
-        "administrative": {"band": false, "verbs": [], "routes": []}
+        "verbs": [["forgejo", "backup-b2"]],
+        "routes": ["/api/v1/storage/backup/forgejo/backup-b2"],
+        "administrative": {"band": true, "verbs": [["forgejo", "backup-b2"]], "routes": ["POST /api/v1/storage/backup/forgejo/backup-b2"]}
       }
     }
   }

@@ -137,6 +137,8 @@
     "storage/backup/drive/ask",
     "storage/backup/drive/status",
     "storage/backup/forgejo/backup-b2",
+    "storage/backup/forgejo/backup-b2/plan",
+    "storage/backup/forgejo/backup-b2/run",
     "storage/backup/forgejo/credential",
     "storage/backup/forgejo/skip-check",
     "storage/backup/ledger",
@@ -269,6 +271,10 @@
     [
       "face",
       "workspace"
+    ],
+    [
+      "forgejo",
+      "backup-b2"
     ],
     [
       "forgejo",
@@ -681,6 +687,7 @@
     "/api/v1/settings/shortcuts",
     "/api/v1/settings/sound",
     "/api/v1/settings/ssh/status",
+    "/api/v1/storage/backup/forgejo/backup-b2",
     "/api/v1/storage/backup/forgejo/skip-check",
     "/api/v1/storage/backup/ledger",
     "/api/v1/storage/backup/nas-sync/hold",
@@ -770,6 +777,7 @@
       "storage/backup/backblaze/bucket-save",
       "storage/backup/backblaze/bucket-verify",
       "storage/backup/drive/ask",
+      "storage/backup/forgejo/backup-b2",
       "storage/backup/forgejo/skip-check",
       "storage/backup/mirror/pull",
       "storage/backup/mirror/serve",
@@ -813,6 +821,10 @@
       [
         "exousia",
         "reset-default"
+      ],
+      [
+        "forgejo",
+        "backup-b2"
       ],
       [
         "forgejo",
@@ -1046,6 +1058,7 @@
       "POST /api/v1/network/dns/device-name/remove",
       "POST /api/v1/network/dns/upstream",
       "POST /api/v1/network/firewall/children",
+      "POST /api/v1/storage/backup/forgejo/backup-b2",
       "POST /api/v1/storage/backup/forgejo/skip-check",
       "POST /api/v1/storage/nas/list",
       "POST /api/v1/transmission/vpn/settings",
