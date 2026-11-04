@@ -259,28 +259,32 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             listing.remove(child)
             child = following
         for item in model["notifications"]:
-            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             card.add_css_class("card")
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            for edge in ("top", "bottom", "start", "end"):
+                getattr(content, f"set_margin_{edge}")(12)
+            card.append(content)
             title = Gtk.Label(label=item["title"], xalign=0, wrap=True, selectable=True)
             title.add_css_class("heading")
             color_class = {"red": "error", "amber": "warning", "blue": "accent"}.get(item["color"])
             if color_class:
                 title.add_css_class(color_class)
-            card.append(title)
+            content.append(title)
             if item["body"]:
-                card.append(Gtk.Label(label=item["body"], xalign=0, wrap=True, selectable=True))
+                content.append(Gtk.Label(label=item["body"], xalign=0, wrap=True, selectable=True))
             details = [item["from"], _posted_label(item["posted_at"])]
             if item["count"] > 1:
                 details.append(f"{item['count']} times")
             detail = Gtk.Label(label=" · ".join(filter(None, details)), xalign=0, wrap=True, selectable=True)
             detail.add_css_class("dim-label")
-            card.append(detail)
+            content.append(detail)
             texts = []
             if item["names"]:
                 texts.append("Names: " + ", ".join(item["names"]))
             texts.extend(filter(None, (item["status"], item["instruction"])))
             for text in texts:
-                card.append(Gtk.Label(label=text, xalign=0, wrap=True, selectable=True))
+                content.append(Gtk.Label(label=text, xalign=0, wrap=True, selectable=True))
             listing.append(card)
         if on_model is not None:
             on_model(model)

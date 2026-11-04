@@ -54,7 +54,7 @@ def _binding_keys(binding):
 
 
 def _group_presentation(bindings):
-    keys = ", ".join(human_keys(_binding_keys(item)) or "(unbound)" for item in bindings)
+    keys = "\n".join(human_keys(_binding_keys(item)) or "(unbound)" for item in bindings)
     commands = list(dict.fromkeys(item.get("command") for item in bindings
                                   if isinstance(item.get("command"), str) and item.get("command")))
     overridden = [human_keys(_binding_keys(item)) or "(unbound)" for item in bindings
@@ -210,7 +210,7 @@ def _read_only_rows(Adw, Gtk, group):
             name = members[0].get("name") or "(no name)"
             keys, subtitle = _group_presentation(members)
             row = _plain_row(Adw, name, subtitle)
-            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22)
+            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22, valign=Gtk.Align.START)
             key_label.add_css_class("monospace")
             row.add_prefix(key_label)
             group.add(row)
@@ -259,7 +259,7 @@ def build_widget():
             title = name.strip() if isinstance(name, str) and name.strip() else "(no name)"
             keys, subtitle = _group_presentation(members)
             row = _plain_row(Adw, title, subtitle)
-            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22)
+            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22, valign=Gtk.Align.START)
             key_label.add_css_class("monospace")
             row.add_prefix(key_label)
             status_label = Gtk.Label(label="", xalign=1)
