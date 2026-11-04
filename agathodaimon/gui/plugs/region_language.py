@@ -11,4 +11,4 @@ SPECS = [
 ]
 
 def build_widget():
-    return build_settings_widget(PLUG, "region", "Region & Language", SPECS, required_route="/api/v1/settings/region")
+    return build_settings_widget(PLUG, "region", "", SPECS, required_route="/api/v1/settings/region")

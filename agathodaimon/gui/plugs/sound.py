@@ -18,6 +18,6 @@ SPECS=[
  {"field":"test_tone","title":"Test tone","kind":"action","button":"Play"},
 ]
 def build_widget():
-    page = build_settings_widget(PLUG, "sound", "Sound configuration", SPECS)
+    page = build_settings_widget(PLUG, "sound", "", SPECS)
     add_manager_row(page, "Advanced sound controls", "Advanced…", "pavucontrol")
     return page

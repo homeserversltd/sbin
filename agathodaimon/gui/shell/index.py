@@ -506,7 +506,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             sidebar_page = Adw.NavigationPage.new(_toolbar(Adw, sidebar_bar, sidebar_box), app_title)
             split.set_sidebar(sidebar_page)
             rows: dict[Any, Plug] = {}
-            markers: dict[Any, Any] = {}
+
             first_row = None
             notifications_row = None
             notification_model_changed = None
@@ -523,14 +523,11 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 label = Gtk.Label(label=plug.title, xalign=0)
                 label.set_hexpand(True)
                 line.append(label)
-                marker = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
-                marker.set_tooltip_text("Currently displayed")
-                marker.set_visible(False)
-                line.append(marker)
+
                 row.set_child(line)
                 listing.append(row)
                 rows[row] = plug
-                markers[row] = marker
+
                 if plug.ident == NOTIFICATIONS_PLUG:
                     notifications_row = row
                 if first_row is None or plug.ident == START_PLUG:
@@ -549,11 +546,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 split.set_content(Adw.NavigationPage.new(content_view, plug.title))
                 split.set_show_content(True)
                 active["content"] = page
-                previous = active["row"]
-                if previous is not None:
-                    markers[previous].set_visible(False)
                 active["row"] = row
-                markers[row].set_visible(True)
 
             if notifications_row is not None:
                 def open_notifications() -> None:

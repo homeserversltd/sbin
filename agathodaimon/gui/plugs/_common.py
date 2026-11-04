@@ -258,13 +258,44 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     rows: dict[str, Any] = {}
     status_rows: dict[str, Any] = {}
     unavailable_rows: dict[str, Any] = {}
+    absent_reasons: dict[str, str] = {}
+    status_generation: dict[str, int] = {}
     getters: dict[str, Any] = {}
     setters: dict[str, Any] = {}
     static_signals: dict[str, str] = {}
     action_fields: set[str] = set()
 
+    read_error = Adw.ActionRow(title="Couldn't read these settings")
+    read_error.set_visible(False)
+    group.add(read_error)
+
+    def selectable_subtitle(widget: Any) -> None:
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Label) and child.has_css_class("subtitle"):
+                child.set_selectable(True)
+                child.add_css_class("dim-label")
+            selectable_subtitle(child)
+            child = child.get_next_sibling()
+
+    def show_status(field: str, message: str = "", signal: str = "") -> None:
+        status = status_rows[field]
+        status.set_title(message)
+        status.set_subtitle(signal)
+        status.set_visible(bool(message))
+        if signal:
+            selectable_subtitle(status)
+
+    def clear_saved(field: str, generation: int) -> bool:
+        if status_generation.get(field) == generation and state["status"].get(field) == "Saved":
+            state["status"].pop(field, None)
+            show_status(field)
+        return False
+
     for spec in specs:
         field = spec["field"]
+        status_generation[field] = 0
+        absent_reasons[field] = spec.get("absent", "Can't be changed from Settings yet")
         kind = spec.get("kind", "entry")
         title = spec["title"]
         signal = spec.get("signal", "")
@@ -319,23 +350,20 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         rows[field] = row
         row.set_sensitive(False)
         group.add(row)
-        if kind == "entry":
-            status_row = Adw.ActionRow(title=f"{title} status")
-            status_rows[field] = status_row
-            group.add(status_row)
-        else:
-            status_rows[field] = row
-        unavailable = Adw.ActionRow(title=title, subtitle="Unavailable")
+        status_row = Adw.ActionRow()
+        status_row.set_visible(False)
+        status_rows[field] = status_row
+        group.add(status_row)
+        unavailable = Adw.ActionRow(title=title, subtitle=absent_reasons[field])
+        unavailable.set_sensitive(False)
         unavailable.set_visible(False)
         unavailable_rows[field] = unavailable
         group.add(unavailable)
         if signal:
             static_signals[field] = signal
-            status_rows[field].set_subtitle(signal)
+            show_status(field, "Can't be changed from Settings yet", signal)
         else:
             row.set_visible(False)
-            if status_rows[field] is not row:
-                status_rows[field].set_visible(False)
             unavailable.set_subtitle("Reading Caduceus…")
             unavailable.set_visible(True)
 
@@ -346,12 +374,22 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             value = getters[selected]()
             if value == previous and selected not in action_fields:
                 return
+            status_generation[selected] += 1
+            state["status"].pop(selected, None)
+            show_status(selected)
             state["busy"].add(selected)
             rows[selected].set_sensitive(False)
-            status_rows[selected].set_subtitle("Waiting for Caduceus receipt…")
+            show_status(selected, "Saving…")
             threading.Thread(target=mutate, args=(selected, value, previous), daemon=True).start()
 
         (event_source if event_source is not None else row).connect(changed_signal, on_changed)
+        if kind == "entry":
+            def on_entry_changed(_row: Any, selected: str = field) -> None:
+                if state["hydrated"] and not state["hydrating"] and selected not in state["busy"]:
+                    status_generation[selected] += 1
+                    state["status"].pop(selected, None)
+                    show_status(selected)
+            row.connect("changed", on_entry_changed)
 
     def apply_values(values: dict[str, Any], message_field: str | None = None) -> None:
         state["hydrating"] = True
@@ -360,54 +398,41 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 available = field in action_fields or (field in values and values[field] is not None)
                 show_unavailable = not available and field not in static_signals
                 row.set_visible(not show_unavailable)
-                if status_rows[field] is not row:
-                    status_rows[field].set_visible(not show_unavailable)
                 if show_unavailable:
-                    unavailable_rows[field].set_subtitle("Unavailable")
+                    unavailable_rows[field].set_subtitle(absent_reasons[field])
+                    show_status(field)
                 unavailable_rows[field].set_visible(show_unavailable)
                 if available and field not in state["busy"]:
                     setters[field](values.get(field))
                     state["values"][field] = getters[field]()
                 if field in static_signals:
-                    status_rows[field].set_subtitle(static_signals[field])
+                    show_status(field, "Can't be changed from Settings yet", static_signals[field])
                     row.set_sensitive(False)
                 elif not available:
                     row.set_sensitive(False)
-                    status_rows[field].set_subtitle("Unavailable")
                 else:
                     row.set_sensitive(field not in state["busy"])
                     if field == message_field:
-                        status_rows[field].set_subtitle(state["status"].get(field, "Saved"))
-                    elif field not in state["busy"]:
-                        status_rows[field].set_subtitle("")
+                        show_status(field, state["status"].get(field, "Saved"))
+                        GLib.timeout_add_seconds(3, clear_saved, field, status_generation[field])
         finally:
             state["hydrating"] = False
 
     def finish_read(generation: int, receipt: dict[str, Any] | None, error: str | None, message_field: str | None = None) -> bool:
         if generation != state["read_generation"]:
             return False
-        if error is not None:
+        if error is not None or receipt is None or not _receipt_ok(receipt) or not isinstance(receipt.get("values"), dict):
+            signal = error or (_signal(receipt) if receipt is not None else "") or "Settings read refused"
             for field, row in rows.items():
-                if field not in static_signals:
-                    row.set_visible(False)
-                    if status_rows[field] is not row:
-                        status_rows[field].set_visible(False)
-                    unavailable_rows[field].set_subtitle(error)
-                    unavailable_rows[field].set_visible(True)
-                    row.set_sensitive(False)
+                row.set_visible(False)
+                show_status(field)
+                unavailable_rows[field].set_visible(False)
+                row.set_sensitive(False)
+            read_error.set_subtitle(signal)
+            read_error.set_visible(True)
+            selectable_subtitle(read_error)
             return False
-        assert receipt is not None
-        if not _receipt_ok(receipt) or not isinstance(receipt.get("values"), dict):
-            signal = _signal(receipt) or "Settings read refused"
-            for field, row in rows.items():
-                if field not in static_signals:
-                    row.set_visible(False)
-                    if status_rows[field] is not row:
-                        status_rows[field].set_visible(False)
-                    unavailable_rows[field].set_subtitle(signal)
-                    unavailable_rows[field].set_visible(True)
-                    row.set_sensitive(False)
-            return False
+        read_error.set_visible(False)
         state["hydrated"] = True
         apply_values(receipt["values"], message_field)
         return False
@@ -437,12 +462,11 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     def finish_mutation(field: str, previous: Any, receipt: dict[str, Any] | None, error: str | None) -> bool:
         state["busy"].discard(field)
         row = rows[field]
-        status_row = status_rows[field]
         if error is not None:
             state["hydrating"] = True
             try:
                 setters[field](previous)
-                status_row.set_subtitle(error)
+                show_status(field, "Not saved", error)
                 row.set_sensitive(True)
             finally:
                 state["hydrating"] = False
@@ -456,7 +480,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         state["hydrating"] = True
         try:
             setters[field](previous)
-            status_row.set_subtitle(signal)
+            show_status(field, "Not saved", signal)
             if signal.startswith(("unsupported:", "privilege:")):
                 static_signals[field] = signal
                 row.set_sensitive(False)

@@ -16,7 +16,7 @@ except ImportError:
     _common_spec.loader.exec_module(_common_module)
     from _common import _command, _json, _page, _read
 
-PLUG = {"id": "about-system", "title": "About System", "icon": "computer-symbolic", "order": 0, "parent": None}
+PLUG = {"id": "about-system", "title": "About System", "icon": "help-about-symbolic", "order": 0, "parent": None}
 
 PRODUCTS = {"tv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
 

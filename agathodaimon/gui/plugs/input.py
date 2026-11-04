@@ -18,6 +18,8 @@ SPECS=[
  {"field":"left_handed","title":"Left-handed buttons","kind":"switch"},
  {"field":"disable_while_typing","title":"Disable touchpad while typing","kind":"switch"},
 ]
+for spec in SPECS:
+    spec["absent"] = "No mouse or touchpad is connected"
 def build_widget():
     page = build_settings_widget(PLUG, "keyboard", "Keyboard", KEYBOARD_SPECS,
                                  required_route="/api/v1/settings/keyboard")

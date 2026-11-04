@@ -19,4 +19,4 @@ SPECS=[
  {"field":"adaptive_sync","title":"Adaptive sync","kind":"switch"},
  {"field":"overscan","title":"Overscan","kind":"spin","minimum":0,"maximum":100},
 ]
-def build_widget(): return build_settings_widget(PLUG,"display","Display configuration",SPECS)
+def build_widget(): return build_settings_widget(PLUG,"display","",SPECS)

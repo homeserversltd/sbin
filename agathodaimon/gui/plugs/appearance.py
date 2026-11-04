@@ -7,7 +7,7 @@ except ImportError:
     _spec = _importlib_util.spec_from_file_location("_common", __file__.replace(__file__.split("/")[-1], "_common.py"))
     _module = _importlib_util.module_from_spec(_spec); _sys.modules["_common"] = _module; _spec.loader.exec_module(_module)
     from _common import build_settings_widget
-PLUG={"id":"appearance","title":"Appearance","icon":"preferences-desktop-theme-symbolic","order":40,"parent":None}
+PLUG={"id":"appearance","title":"Appearance","icon":"preferences-desktop-appearance-symbolic","order":40,"parent":None}
 SPECS=[
  {"field":"color_scheme","title":"Color scheme","kind":"combo","options":["light","dark"]},
  {"field":"accent_color","title":"Accent color"},
@@ -18,4 +18,4 @@ SPECS=[
  {"field":"font_size","title":"Interface font size","kind":"spin","minimum":6,"maximum":72},
  {"field":"text_scale","title":"Text scale","kind":"spin","minimum":0.5,"maximum":3,"step":0.05,"digits":2},
 ]
-def build_widget(): return build_settings_widget(PLUG,"appearance","Theme",SPECS)
+def build_widget(): return build_settings_widget(PLUG,"appearance","",SPECS)

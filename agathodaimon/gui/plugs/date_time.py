@@ -15,4 +15,4 @@ SPECS=[
  {"field":"date_format","title":"Date format"},
  {"field":"time_format","title":"Time format"},
 ]
-def build_widget(): return build_settings_widget(PLUG,"datetime","System clock",SPECS)
+def build_widget(): return build_settings_widget(PLUG,"datetime","",SPECS)
