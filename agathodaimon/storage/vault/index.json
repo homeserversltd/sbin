@@ -3,8 +3,7 @@
     "keyman",
     "open",
     "pin",
-    "policy",
-    "vault-material"
+    "policy"
   ],
   "sclerite": {
     "name": "all",
