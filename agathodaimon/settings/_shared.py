@@ -19,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from agathodaimon._envelope import EnvelopeError, attach, read
+from agathodaimon.settings import _options
 
 FIELDS: dict[str, tuple[str, ...]] = {
     "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan"),
@@ -657,7 +658,7 @@ def family_main(kind: str, argv: Sequence[str] | None = None) -> int:
             return main([kind, *args])
         changes = {field: value for field, value in request.payload.items() if field in FIELDS[kind]}
         if request.verb in {"read", "get", "state"} or (request.verb in {kind, "settings"} and not changes):
-            return emit(attach({"ok": True, "values": get_values(kind), "mutationPerformed": False}, request), 0)
+            return emit(attach({"ok": True, "values": get_values(kind), **({"options": _options.options(kind)} if kind in {"appearance", "sound", "default-apps", "datetime"} else {}), "mutationPerformed": False}, request), 0)
         if not changes:
             return emit(attach({"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}, request), 1)
         receipt = Receipt(kind, list(changes))
@@ -688,7 +689,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if operation == kind or operation in {"settings", "exousia"}:
                 operation = "set" if any(k in FIELDS[kind] for k in request.payload) else "read"
             if operation in {"read", "get", "state"}:
-                return emit(attach({"ok": True, "values": get_values(kind)}, request), 0)
+                return emit(attach({"ok": True, "values": get_values(kind), **({"options": _options.options(kind)} if kind in {"appearance", "sound", "default-apps", "datetime"} else {})}, request), 0)
             if operation not in {"set", "change", "apply", "mutate"}:
                 return emit(attach({"ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": f"unsupported-operation:{operation}"}, request), 1)
             changes = {field: value for field, value in request.payload.items() if field in FIELDS[kind]}
@@ -705,7 +706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return emit({"ok": False, "firstMissingSignal": str(exc), "mutationPerformed": False}, 1)
     try:
         args = parser().parse_args(argv)
-        if args.op == "get": return emit({"ok": True, "values": get_values(args.kind)}, 0)
+        if args.op == "get": return emit({"ok": True, "values": get_values(args.kind), **({"options": _options.options(args.kind)} if args.kind in {"appearance", "sound", "default-apps", "datetime"} else {})}, 0)
         if len(args.field) != len(args.value_json): return emit({"ok": False, "firstMissingSignal": "field-value-count-mismatch"}, 1)
         receipt = Receipt(args.kind, list(args.field))
         try:

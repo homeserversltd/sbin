@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings import _shared
+from agathodaimon.settings import _shared, _options
 from agathodaimon.settings.display import backends
 
 
@@ -510,7 +510,7 @@ def main(kind: str, argv: list[str] | None = None) -> int:
             return 1
     try:
         if args == ["get", "--json"]:
-            reply = {"ok": True, "values": get_values(kind), "mutationPerformed": False}
+            reply = {"ok": True, "values": get_values(kind), **({"options": _options.options(kind)} if kind in {"keyboard", "region"} else {}), "mutationPerformed": False}
         elif args and args[0] == "set":
             changes = {}
             i = 1
