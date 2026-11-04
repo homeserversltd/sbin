@@ -22,6 +22,47 @@ except ImportError:
 PLUG = {"id": "shortcuts", "title": "Shortcuts", "icon": "preferences-desktop-keyboard-shortcuts-symbolic", "order": 70, "parent": None}
 
 
+def human_keys(keys: str) -> str:
+    names = {"Mod4": "Super", "Mod1": "Alt", "Control": "Ctrl",
+             "Mod5": "AltGr", "Return": "Enter"}
+    return "+".join(names.get(part, part.upper() if len(part) == 1 and part.isalpha() else part)
+                    for part in keys.split("+"))
+
+
+def fold_bindings(bindings):
+    """Group named actions in door order without altering their wire values."""
+    groups = []
+    named = {}
+    for binding in bindings:
+        name = binding.get("name")
+        name = name if isinstance(name, str) and name.strip() else ""
+        if name and name in named:
+            named[name].append(binding)
+        else:
+            group = [binding]
+            groups.append(group)
+            if name:
+                named[name] = group
+    return groups
+
+
+def _binding_keys(binding):
+    keys = binding.get("keys")
+    if not isinstance(keys, str):
+        keys = binding.get("default_keys")
+    return keys if isinstance(keys, str) else ""
+
+
+def _group_presentation(bindings):
+    keys = ", ".join(human_keys(_binding_keys(item)) or "(unbound)" for item in bindings)
+    commands = list(dict.fromkeys(item.get("command") for item in bindings
+                                  if isinstance(item.get("command"), str) and item.get("command")))
+    overridden = [human_keys(_binding_keys(item)) or "(unbound)" for item in bindings
+                  if item.get("overridden") is True]
+    details = commands + (["Overridden: " + ", ".join(overridden)] if overridden else [])
+    return keys, " · ".join(details)
+
+
 def _logical_lines(text: str):
     pending = ""
     for line in text.splitlines():
@@ -163,9 +204,12 @@ def _read_only_rows(Adw, Gtk, group):
     sway_dir = Path.home() / ".config" / "sway"
     if "SWAYSOCK" in os.environ or sway_dir.exists():
         paths = [sway_dir / "config", *sorted((sway_dir / "conf.d").glob("*.conf"))]
-        bindings = _sway_bindings(paths)
-        for keys, name, command in bindings:
-            row = _plain_row(Adw, name or "(no name)", command)
+        bindings = [{"keys": keys, "name": name, "command": command}
+                    for keys, name, command in _sway_bindings(paths)]
+        for members in fold_bindings(bindings):
+            name = members[0].get("name") or "(no name)"
+            keys, subtitle = _group_presentation(members)
+            row = _plain_row(Adw, name, subtitle)
             key_label = Gtk.Label(label=keys, xalign=0, width_chars=22)
             key_label.add_css_class("monospace")
             row.add_prefix(key_label)
@@ -193,8 +237,8 @@ def build_widget():
     from gi.repository import Adw, Gdk, GLib, Gtk
 
     page = _page(Adw, PLUG)
-    fallback_group = _group(Adw, page, "Bindings")
-    editable_group = _group(Adw, page, "Bindings")
+    fallback_group = _group(Adw, page, "")
+    editable_group = _group(Adw, page, "")
     editable_group.set_visible(False)
     _read_only_rows(Adw, Gtk, fallback_group)
     fallback_status = Adw.ActionRow(title="Shortcut editing", subtitle="Checking Caduceus door…")
@@ -210,55 +254,42 @@ def build_widget():
             fallback_status.set_subtitle(message)
             return False
 
-        for binding in bindings:
-            name = binding.get("name")
+        for members in fold_bindings(bindings):
+            name = members[0].get("name")
             title = name.strip() if isinstance(name, str) and name.strip() else "(no name)"
-            default_keys = binding.get("default_keys")
-            if not isinstance(default_keys, str):
-                default_keys = ""
-            keys = binding.get("keys")
-            if not isinstance(keys, str):
-                keys = default_keys
-            command = binding.get("command")
-            command = command if isinstance(command, str) else ""
-            flags = binding.get("flags")
-            if isinstance(flags, list):
-                flags_text = " ".join(str(flag) for flag in flags if isinstance(flag, str))
-            else:
-                flags_text = ""
-            details = []
-            if binding.get("overridden") is True:
-                details.append("Overridden")
-            if command:
-                details.append(command)
-            if flags_text:
-                details.append(f"Flags: {flags_text}")
-            row = _plain_row(Adw, title, " · ".join(details))
-            key_label = Gtk.Label(label=keys or "(unbound)", xalign=0, width_chars=22)
+            keys, subtitle = _group_presentation(members)
+            row = _plain_row(Adw, title, subtitle)
+            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22)
             key_label.add_css_class("monospace")
             row.add_prefix(key_label)
             status_label = Gtk.Label(label="", xalign=1)
             row.add_suffix(status_label)
-            editable = binding.get("editable") is True
+            editable = any(binding.get("editable") is True for binding in members)
             if editable:
                 row.set_activatable(True)
                 row.set_focusable(True)
 
-                def open_editor(_row, selected=binding, selected_row=row,
+                def open_editor(_row, selected_members=members, selected_row=row,
                                 selected_keys=key_label, selected_status=status_label,
-                                original=default_keys):
+                                action_title=title):
                     dialog_parent = selected_row.get_root()
-                    dialog_kwargs = {"title": "Edit shortcut", "modal": True}
+                    dialog_kwargs = {"title": action_title, "modal": True}
                     if isinstance(dialog_parent, Gtk.Window):
                         dialog_kwargs["transient_for"] = dialog_parent
                     dialog = Gtk.Dialog(**dialog_kwargs)
                     content = dialog.get_content_area()
+                    chooser = None
+                    if len(selected_members) > 1:
+                        chooser = Gtk.DropDown.new_from_strings([
+                            human_keys(_binding_keys(item)) or "(unbound)" for item in selected_members
+                        ])
+                        content.append(chooser)
                     content.append(Gtk.Label(label="Press the new keys…", xalign=0))
                     capture_entry = Gtk.Entry()
                     capture_entry.set_editable(False)
                     capture_entry.set_placeholder_text("Press the new keys…")
                     content.append(capture_entry)
-                    dialog.add_button("Reset to default", Gtk.ResponseType.APPLY)
+                    reset_button = dialog.add_button("Reset to default", Gtk.ResponseType.APPLY)
                     dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
                     save_button = dialog.add_button("Save", Gtk.ResponseType.OK)
                     save_button.set_sensitive(False)
@@ -266,6 +297,19 @@ def build_widget():
                     captured: dict[str, str | None] = {"keys": None}
                     unsupported_keys: set[str] = set()
                     unsupported_names = {"Hyper_L", "Hyper_R", "ISO_Level3_Shift", "Mode_switch"}
+
+                    def chosen():
+                        return selected_members[chooser.get_selected() if chooser is not None else 0]
+
+                    def selection_changed(*_args):
+                        captured["keys"] = None
+                        capture_entry.set_text("")
+                        save_button.set_sensitive(False)
+                        reset_button.set_sensitive(chosen().get("editable") is True)
+
+                    if chooser is not None:
+                        chooser.connect("notify::selected", selection_changed)
+                    selection_changed()
 
                     def reject_modifiers():
                         captured["keys"] = None
@@ -319,8 +363,8 @@ def build_widget():
                             return False
                         chord = "+".join([*modifiers, key_name])
                         captured["keys"] = chord
-                        capture_entry.set_text(chord)
-                        save_button.set_sensitive(True)
+                        capture_entry.set_text(human_keys(chord))
+                        save_button.set_sensitive(chosen().get("editable") is True)
                         return True
 
                     def on_key_released(_controller, keyval, _keycode, _state):
@@ -333,11 +377,15 @@ def build_widget():
                     dialog.add_controller(key_controller)
 
                     def submit(to_keys):
+                        selected = chosen()
+                        original = selected.get("default_keys")
+                        if not isinstance(original, str):
+                            original = ""
                         selected_row.set_sensitive(False)
                         selected_status.set_text("Saving…")
                         threading.Thread(
                             target=post_change,
-                            args=(selected, selected_row, selected_keys, selected_status,
+                            args=(selected_members, selected, selected_row, selected_keys, selected_status,
                                   original, to_keys),
                             daemon=True,
                         ).start()
@@ -348,6 +396,8 @@ def build_widget():
                         elif response_id == Gtk.ResponseType.APPLY:
                             submit(None)
                         dialog.destroy()
+                        if selected_row.get_sensitive():
+                            selected_row.grab_focus()
 
                     dialog.connect("response", on_response)
                     dialog.present()
@@ -362,7 +412,7 @@ def build_widget():
         editable_group.set_visible(True)
         return False
 
-    def finish_change(binding, row, key_label, status_label, default_keys, to_keys,
+    def finish_change(members, binding, row, key_label, status_label, default_keys, to_keys,
                       receipt, error):
         if error:
             status_label.set_text("Caduceus unavailable")
@@ -370,7 +420,9 @@ def build_widget():
             current_keys = default_keys if to_keys is None else to_keys
             binding["keys"] = current_keys
             binding["overridden"] = current_keys != default_keys
-            key_label.set_text(current_keys or "(unbound)")
+            keys, subtitle = _group_presentation(members)
+            key_label.set_text(keys)
+            row.set_subtitle(subtitle)
             status_label.set_text("Reset to default" if to_keys is None else "Saved")
         else:
             signal = receipt.get("firstMissingSignal", receipt.get("first_missing_signal", ""))
@@ -390,9 +442,10 @@ def build_widget():
                 }.get(signal, "Change refused")
             status_label.set_text(message)
         row.set_sensitive(True)
+        row.grab_focus()
         return False
 
-    def post_change(binding, row, key_label, status_label, default_keys, to_keys):
+    def post_change(members, binding, row, key_label, status_label, default_keys, to_keys):
         try:
             receipt = _request(
                 settings_path,
@@ -400,12 +453,12 @@ def build_widget():
                 {"from": default_keys, "to": to_keys},
             )
             GLib.idle_add(
-                finish_change, binding, row, key_label, status_label,
+                finish_change, members, binding, row, key_label, status_label,
                 default_keys, to_keys, receipt, None,
             )
         except RuntimeError:
             GLib.idle_add(
-                finish_change, binding, row, key_label, status_label,
+                finish_change, members, binding, row, key_label, status_label,
                 default_keys, to_keys, None, "unavailable",
             )
 
