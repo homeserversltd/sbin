@@ -1,20 +1,5 @@
 {
   "children": ["create-key", "update-key", "admin-password", "rotate-capability", "key-status"],
-  "envelope": {
-    "stdin": "json",
-    "keys": [
-      "actuator",
-      "metadata"
-    ],
-    "actions": [
-      "create-key",
-      "update-key",
-      "admin-password",
-      "rotate-capability",
-      "key-status"
-    ],
-    "unknown_fields": "skipped"
-  },
   "sclerite": {
     "name": "all",
     "features": {}

@@ -94,9 +94,7 @@
     "storage/disk/test",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
-    "storage/vault/open",
     "storage/vault/open/unlock",
-    "storage/vault/policy",
     "storage/vault/policy/read",
     "storage/vault/policy/write",
     "update/service",
@@ -326,7 +324,6 @@
       "settings/ssh",
       "storage/backup/drive/ask",
       "storage/backup/mirror/pull",
-      "storage/vault/policy",
       "storage/vault/policy/read",
       "storage/vault/policy/write"
     ],

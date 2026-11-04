@@ -2,17 +2,6 @@
   "children": ["read", "write"],
   "sclerite": {
     "name": "all",
-    "features": {
-      "all": {
-        "band": true,
-        "verbs": [],
-        "routes": [],
-        "administrative": {
-          "band": true,
-          "verbs": [],
-          "routes": []
-        }
-      }
-    }
+    "features": {}
   }
 }

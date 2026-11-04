@@ -1000,8 +1000,6 @@ def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | 
         if not isinstance(payload, dict) and isinstance(envelope, dict):
             payload = envelope
         return isinstance(payload, dict) and any(key not in {"flags", "rooms", "stamps"} for key in payload)
-    if target == "storage/vault/policy":
-        return operation != "read"
     if target == "appliance/service":
         return operation not in {"read", "get", "show", "list", "observed", "status"}
     if target == "portals/service-control":
