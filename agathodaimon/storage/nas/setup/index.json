@@ -1,5 +1,5 @@
 {
-  "children": ["plan"],
+  "children": ["plan", "key-create"],
   "sclerite": {
     "name": "nas",
     "features": {

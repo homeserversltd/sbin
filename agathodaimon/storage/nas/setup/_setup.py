@@ -2366,6 +2366,69 @@ def dispatch(value: Any) -> dict[str, Any]:
     return attach_envelope(receipt, envelope_request)
 
 
+def key_create(request: dict[str, Any]) -> dict[str, Any]:
+    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.key-create.v1", "ok": False,
+                               "firstMissingSignal": "agathodaimon-nas-not-complete",
+                               "role": request.get("role"), "device": request.get("device"),
+                               "partition": None, "partlabel": None, "mapper": None, "mountpoint": None,
+                               "steps": [], "servicesStarted": [], "servicesNotRunning": [],
+                               "rolledBack": False, "rollbackSteps": [], "keyCreated": False,
+                               "createdKeyIdentity": None}
+    lock_fd = None
+    sync_guard = None
+    sync_guard_entered = False
+    info = None
+    material = bytearray()
+    try:
+        if os.geteuid() != 0:
+            raise Refusal("agathodaimon-nas-root-required", "root-preflight")
+        sync_guard = drive_guard()
+        sync_guard.__enter__()
+        sync_guard_entered = True
+        _record(receipt, "sync-lock", True, acquired=True)
+        try:
+            lock_fd = os.open(runtime_path(LOCK_PATH), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600)
+            lock_st = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_st.st_mode) or lock_st.st_uid != 0:
+                raise OSError("unsafe-lock")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            raise Refusal("agathodaimon-nas-transaction-lock-unavailable", "transaction-lock")
+        _record(receipt, "transaction-lock", True, acquired=True)
+        info = _preflight(receipt, request["device"], request["role"])
+        receipt.update(partition=info["partition"], partlabel=info["partlabel"],
+                       mapper=info["mapper"], mountpoint=info["mountpoint"])
+        info.update(_preflight_reobserve(receipt, request, info))
+        try:
+            material, identity = _create_key(receipt, info["serviceRole"], info)
+        finally:
+            _zero(material)
+        receipt.update(keyCreated=identity is not None, createdKeyIdentity=identity,
+                       ok=True, firstMissingSignal="none")
+    except Refusal as failure:
+        if not receipt["steps"] or receipt["steps"][-1]["step"] != failure.step:
+            _record(receipt, failure.step, False, rc=failure.return_code)
+        receipt["firstMissingSignal"] = failure.signal_name
+        receipt["failedStep"] = _safe_step(failure.step)
+        if failure.return_code is not None:
+            receipt["returnCode"] = failure.return_code
+    except Exception:
+        receipt["firstMissingSignal"] = "agathodaimon-nas-key-create-aborted"
+        receipt["failedStep"] = "key-create"
+        _record(receipt, "key-create", False, observed="unexpected-error")
+    finally:
+        if info is not None and info.get("createdKeyIdentity") is not None:
+            receipt.update(keyCreated=True, createdKeyIdentity=info["createdKeyIdentity"])
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        if sync_guard_entered and sync_guard is not None:
+            sync_guard.__exit__(None, None, None)
+    return receipt
+
+
 def plan(request: dict[str, Any]) -> dict[str, Any]:
     receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.plan.v1", "ok": False,
                                "firstMissingSignal": "agathodaimon-nas-not-complete",
