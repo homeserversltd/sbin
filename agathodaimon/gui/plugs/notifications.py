@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 import threading
 import urllib.error
 import urllib.request
@@ -25,6 +26,46 @@ SPECS = [
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def _posted_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _posted_label(value: str) -> str:
+    posted = _posted_datetime(value)
+    if posted is None:
+        return ""
+    local = posted.astimezone()
+    today = datetime.now().astimezone().date()
+    clock = local.strftime("%H:%M")
+    if local.date() == today:
+        return f"Today {clock}"
+    if local.date() == today - timedelta(days=1):
+        return f"Yesterday {clock}"
+    return f"{local.strftime('%b')} {local.day}, {clock}"
+
+
+def _fold(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold only rows with a known kind and body; keep newest row's fields."""
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    folded = []
+    oldest = datetime.min.replace(tzinfo=timezone.utc)
+    for item in sorted(items, key=lambda row: _posted_datetime(row["posted_at"]) or oldest, reverse=True):
+        identity = item["mac"] or item["hostname"]
+        key = (item["kind"], identity.casefold(), item["state"])
+        if item["kind"] and identity and key in groups:
+            groups[key]["count"] += 1
+            continue
+        item["count"] = 1
+        folded.append(item)
+        if item["kind"] and identity:
+            groups[key] = item
+    return folded
 
 
 def _get_json(path: str) -> tuple[int, dict[str, Any] | None]:
@@ -92,9 +133,10 @@ def read_model() -> dict[str, Any]:
                 continue
             origin = value.get("from")
             origin = origin if isinstance(origin, dict) else {}
-            source = list(dict.fromkeys(filter(None, (_text(origin.get(key)) for key in (
-                "hostname", "canonical_name", "ipv4", "mac",
-            )))))
+            hostname = _text(origin.get("hostname"))
+            ipv4 = _text(origin.get("ipv4"))
+            mac = _text(origin.get("mac"))
+            source = list(dict.fromkeys(filter(None, (hostname, ipv4))))
             names = value.get("names")
             names = [_text(name) for name in names if _text(name)] if isinstance(names, list) else []
             state = _text(value.get("state"))
@@ -102,13 +144,19 @@ def read_model() -> dict[str, Any]:
             items.append({
                 "id": _text(value.get("id")),
                 "title": _text(value.get("title")) or "Household notification",
+                "body": _text(value.get("body")),
+                "posted_at": _text(value.get("posted_at")),
+                "color": _text(value.get("color")),
+                "kind": kind, "state": state,
+                "hostname": hostname, "canonical_name": _text(origin.get("canonical_name")),
+                "ipv4": ipv4, "mac": mac,
                 "from": " · ".join(source) or "Household device",
                 "names": names,
-                "status": {"pending": "Waiting", "accepted": "Accepted", "dismissed": "Dismissed"}.get(state, ""),
+                "status": {"pending": "Waiting", "accepted": "Accepted", "dismissed": "Dismissed", "expired": "Expired"}.get(state, ""),
                 "instruction": GUEST_INSTRUCTION if kind == "house-link-up" and state == "pending" else "",
             })
         count = sum(isinstance(item, dict) and item.get("state") == "pending" for item in values)
-        model.update(state="ready" if items else "empty", pending_count=count, notifications=items,
+        model.update(state="ready" if items else "empty", pending_count=count, notifications=_fold(items),
                      message="" if items else "No household notifications.")
     except (OSError, ValueError, urllib.error.URLError):
         pass
@@ -212,7 +260,22 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             child = following
         for item in model["notifications"]:
             card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-            texts = [item["title"], f"From: {item['from']}"]
+            card.add_css_class("card")
+            title = Gtk.Label(label=item["title"], xalign=0, wrap=True, selectable=True)
+            title.add_css_class("heading")
+            color_class = {"red": "error", "amber": "warning", "blue": "accent"}.get(item["color"])
+            if color_class:
+                title.add_css_class(color_class)
+            card.append(title)
+            if item["body"]:
+                card.append(Gtk.Label(label=item["body"], xalign=0, wrap=True, selectable=True))
+            details = [item["from"], _posted_label(item["posted_at"])]
+            if item["count"] > 1:
+                details.append(f"{item['count']} times")
+            detail = Gtk.Label(label=" · ".join(filter(None, details)), xalign=0, wrap=True, selectable=True)
+            detail.add_css_class("dim-label")
+            card.append(detail)
+            texts = []
             if item["names"]:
                 texts.append("Names: " + ", ".join(item["names"]))
             texts.extend(filter(None, (item["status"], item["instruction"])))
@@ -230,7 +293,7 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             back = Gtk.Button(label="Back to household notifications")
             back.connect("clicked", lambda _button: stack.set_visible_child_name("inbox"))
             box.append(back)
-            box.append(build_settings_widget(PLUG, "notifications", "Notification configuration", SPECS))
+            box.append(build_settings_widget(PLUG, "notifications", "", SPECS))
             stack.add_named(box, "settings")
         stack.set_visible_child_name("settings")
 
