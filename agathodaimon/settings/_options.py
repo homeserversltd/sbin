@@ -23,7 +23,7 @@ def _sound(devices):
             return _choices((item.get("name"), item.get("description") or item.get("name"))
                             for item in data if isinstance(item, dict)
                             and not (devices == "sources" and
-                                     (item.get("monitor_of_sink_name") or
+                                     (item.get("monitor_source") or item.get("monitor_of_sink_name") or
                                       (isinstance(item.get("name"), str) and item["name"].endswith(".monitor")))))
         except (ValueError, TypeError):
             pass
