@@ -158,6 +158,9 @@ def _fresh_envelope(band: str) -> dict:
             "transition": band, "origin_of_intent": "near", "version": version, "timestamp": stamp, "payload": {}}
 
 
+_HAND_SECRET_NAMES = {"pin", "oldPin", "newPin", "key", "password", "passphrase", "token", "secret", "oldPassword", "newPassword", "currentPassword", "vaultPassword", "devicePasswords"}
+
+
 def _hand_options(words: list[str]) -> dict:
     result = {}
     repeated = set()
@@ -167,7 +170,7 @@ def _hand_options(words: list[str]) -> dict:
         if not word.startswith("--") or len(word) == 2:
             raise ValueError("expected a long option")
         name, equal, value = word[2:].partition("=")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin", "key", "password", "passphrase", "token", "secret", "oldPassword", "newPassword", "currentPassword", "vaultPassword", "devicePasswords"}:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args"} or name in _HAND_SECRET_NAMES:
             raise ValueError("invalid or forbidden long option")
         if not equal:
             if name == "dry-run" or i + 1 >= len(words) or words[i + 1].startswith("--"):
@@ -310,8 +313,8 @@ def _walk_chord(path: Path, envelope: dict) -> int:
     failed = None
     signal = "none"
     changed = False
-    from agathodaimon._envelope import _pin_bearing_exousia, _redact_pin_carriers
-    request = json.dumps(_redact_pin_carriers(envelope), separators=(",", ":"))
+    from agathodaimon._envelope import _pin_bearing_exousia, _redact_declared, _redact_pin_carriers
+    request = json.dumps(_redact_declared(_redact_pin_carriers(envelope), _HAND_SECRET_NAMES), separators=(",", ":"))
     if _pin_bearing_exousia(envelope):
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
@@ -341,7 +344,7 @@ def _walk_chord(path: Path, envelope: dict) -> int:
                 stage_envelope = copy.deepcopy(envelope)
                 payload = stage_envelope.get("payload")
                 stage_envelope["payload"] = {**(payload if isinstance(payload, dict) else {}), **arguments}
-                stage_envelope["routine"] = {"request": copy.deepcopy(envelope), "routine_id": routine_id,
+                stage_envelope["routine"] = {"request": _redact_declared(envelope, _HAND_SECRET_NAMES), "routine_id": routine_id,
                                              "stage": {"stage_id": sid, "arguments": arguments}}
                 stdout = StringIO()
                 before = time.monotonic()
@@ -394,6 +397,7 @@ def _walk_chord(path: Path, envelope: dict) -> int:
             if failed is None:
                 signal = "chord-deed-log-unavailable"
     for row in rows:
+        row["arguments"] = _redact_declared(row["arguments"], _HAND_SECRET_NAMES)
         if isinstance(row["receipt"], dict):
             row["receipt"] = {key: value for key, value in row["receipt"].items()
                               if key not in {"raw_envelope", "envelope"}}
