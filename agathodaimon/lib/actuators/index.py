@@ -44,14 +44,6 @@ ACTUATORS: dict[str, Actuator] = {
         launcher="", cli_path="/usr/local/sbin/agathodaimon/cli.py", cli_noun="storage", cli_verbs=("backup", "forgejo", "backup-b2"),
         description="Forgejo backup-to-B2 membrane.",
     ),
-    "forgejo-migrate": Actuator(
-        id="forgejo-migrate",
-        family="backup",
-        receipt_schema="caduceus.staff.forgejo.migrate.v1",
-        legacy_script="agathodaimon/storage/backup/homeserver-forgejo-migrate.py",
-        launcher="", cli_path="/usr/local/sbin/agathodaimon/cli.py", cli_noun="storage", cli_verbs=("backup", "forgejo", "migrate"),
-        description="Forgejo export/restore/migration membrane.",
-    ),
     "calibre-helper": Actuator(
         id="calibre-helper",
         family="service",

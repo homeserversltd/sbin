@@ -2,7 +2,6 @@
   "children": [
     "credential",
     "backup-b2",
-    "migrate",
     "skip-check"
   ],
   "sclerite": {
