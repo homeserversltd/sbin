@@ -2358,8 +2358,9 @@ def volume(payload: dict[str, Any]) -> Mapping[str, Any]:
         notified = _benchmark_call(
             "staff.notify",
             lambda: owner_run([
-                dunstify, "--app-name=volume", "--replace-id=91190", "--stack-tag=volume",
-                "--urgency=low", "--expire-time=1200", f"--hint=int:value:{notify_value}",
+                # Short flags and the stack-tag hint: dunst 1.12 (Debian) and 1.13 (Arch) both accept these.
+                dunstify, "-a", "volume", "-r", "91190", "-u", "low", "-t", "1200",
+                "-h", f"int:value:{notify_value}", "-h", "string:x-dunst-stack-tag:volume",
                 "Volume", notify_text,
             ], environment, timeout=5),
             success=lambda result: isinstance(result, subprocess.CompletedProcess) and result.returncode == 0,
