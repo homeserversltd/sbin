@@ -136,29 +136,41 @@ def main(argv=None):
             parsed = urllib.parse.urlsplit(api)
             if parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.username or parsed.password:
                 raise Failure('release-manifest-unavailable')
-        deadline = time.monotonic() + float(setting('XENIA_TEST_WAIT_SECONDS', '120'))
+        import math
+        wait_seconds = float(setting('XENIA_TEST_WAIT_SECONDS', '120'))
+        if not math.isfinite(wait_seconds) or not 0 < wait_seconds <= 120:
+            raise Failure('wait-duration-invalid')
+        deadline = time.monotonic() + wait_seconds
         wait(forge + '/api/healthz', 'forge-not-ready', deadline)
         wait(caduceus + '/api/v1/doors', 'caduceus-not-ready', deadline)
         wait(crown + '/api/registry', 'coronatio-not-ready', deadline)
         key = skeleton()
-        status, raw = request(forge + '/api/v1/repos/owner/cartridge-test', key=key)
-        if status == 404:
-            payload = {'clone_addr': GITHUB_REPO, 'repo_owner': 'owner', 'repo_name': 'cartridge-test', 'mirror': True, 'private': True}
-            status, raw = request(forge + '/api/v1/repos/migrate', method='POST', data=payload, key=key)
-            if status not in (200, 201, 202):
+        try:
+            status, raw = request(forge + '/api/v1/repos/owner/cartridge-test', key=key)
+            if status == 404:
+                payload = {'clone_addr': GITHUB_REPO, 'repo_owner': 'owner', 'repo_name': 'cartridge-test', 'mirror': True, 'private': True}
+                status, raw = request(forge + '/api/v1/repos/migrate', method='POST', data=payload, key=key)
+                if status not in (200, 201, 202):
+                    raise Failure('mirror-create-failed')
+                changed = True
+            elif status != 200:
                 raise Failure('mirror-create-failed')
-            changed = True
-        elif status != 200:
-            raise Failure('mirror-create-failed')
-        key = b''
+        except (OSError, ValueError, urllib.error.URLError, Failure):
+            raise Failure('mirror-create-failed') from None
+        finally:
+            key = b''
         status, raw = request(caduceus + '/api/v1/xenia/status/test')
         if status != 200:
             raise Failure('admit-refused:' + message(raw))
         state = decode(raw)
         if state.get('ok') is not True:
             raise Failure('admit-refused:' + message(raw))
-        if 'entry' not in state and state.get('runtime', {}).get('state') != 'entry-absent':
+        runtime = state.get('runtime')
+        if 'entry' not in state and (not isinstance(runtime, dict) or runtime.get('state') != 'entry-absent'):
             raise Failure('admit-refused:status-invalid')
+        observed = state.get('observed')
+        if 'entry' in state and (not isinstance(observed, dict) or observed.get('row_present') is not True):
+            raise Failure('admit-refused:row-missing')
         if 'entry' not in state:
             try:
                 status, raw = request(api, public=api == GITHUB_API)
@@ -192,7 +204,7 @@ def main(argv=None):
                     changed = True
     except Failure as exc:
         signal = str(exc)
-    except (OSError, ValueError, TypeError, UnicodeError, urllib.error.URLError):
+    except Exception:
         signal = 'test-tab-operation-failed'
     receipt = {'ok': signal == 'none', 'changed': changed, 'firstMissingSignal': signal}
     if changed or signal != 'none':
