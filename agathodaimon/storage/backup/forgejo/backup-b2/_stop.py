@@ -7,7 +7,7 @@ from importlib import import_module
 
 from agathodaimon import _envelope
 
-_backup = import_module("agathodaimon.storage.backup.forgejo.backup-b2.index")
+_backup = import_module("agathodaimon.storage.backup.forgejo.backup-b2._backup")
 
 
 def finish(act, result, request=None):

@@ -105,7 +105,6 @@
     "storage/backup/backblaze/bucket-verify",
     "storage/backup/backblaze/snapshots",
     "storage/backup/backblaze/status",
-    "storage/backup/forgejo/backup-b2",
     "storage/backup/forgejo/backup-b2/plan",
     "storage/backup/forgejo/backup-b2/run",
     "storage/backup/forgejo/credential",

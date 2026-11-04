@@ -166,7 +166,7 @@ def run_files(bucket, result_socket=None):
         if forgejo.get('backblazeBackup', False):
             if scratch_root():
                 fail('forgejo', 'scratch-live-forgejo-refused')
-            child = Path(__file__).resolve().parents[1] / 'forgejo/backup-b2/index.py'
+            child = Path(__file__).resolve().parents[1] / 'forgejo/backup-b2/_backup.py'
             with subprocess.Popen([sys.executable, str(child), '--worker', bucket],
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL) as process:

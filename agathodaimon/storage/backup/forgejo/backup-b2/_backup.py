@@ -558,76 +558,12 @@ def backup(bucket):
     return 0 if outcome == "ok" else 1
 
 
-def main(argv=None):
-    args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) == 2 and args[0] == "--worker" and backblaze.valid_bucket(args[1]):
-        if os.environ.get("BACKBLAZE_SCRATCH_ROOT"):
-            return 1
-        return backup(args[1])
-    def deadline(_signum, _frame):
-        refuse("request", "request-deadline-exceeded")
-    previous_handler = signal.signal(signal.SIGALRM, deadline)
-    signal.alarm(24)
-    try:
-        try:
-            raw = sys.stdin.read(16385)
-        except (OSError, UnicodeError):
-            refuse("shape", "request-invalid")
-        if len(raw) > 16384:
-            refuse("shape", "request-too-large")
-        try:
-            request = json.loads(raw)
-        except (ValueError, UnicodeError):
-            refuse("shape", "request-invalid")
-        if isinstance(request, dict) and request.get('transition') == 'storage/backup/forgejo/backup-b2' and isinstance(request.get('payload'), dict) and 'actuator' not in request:
-            request = {'actuator': ACTUATOR, 'metadata': request['payload']}
-        if not isinstance(request, dict) or request.get("actuator") != ACTUATOR or not isinstance(request.get("metadata"), dict):
-            refuse("shape", "actuator-envelope-invalid")
-        metadata = request["metadata"]
-        bucket = metadata.get("bucket")
-        if not backblaze.valid_bucket(bucket):
-            refuse("shape", "bucket-invalid")
-        if "plan" in metadata and not isinstance(metadata["plan"], bool):
-            refuse("shape", "plan-invalid")
-        is_plan = metadata.get("plan") is True
-        if not is_plan and any(k in os.environ for k in ("BACKBLAZE_SCRATCH_ROOT", "FORGEJO_BACKUP_CONFIG", "FORGEJO_BACKUP_APP_INI", "FORGEJO_BACKUP_WORK")):
-            refuse("launch", "scratch-overrides-plan-only")
-        # FORGEJO_BACKUP_* overrides are marker-guarded and for proof only.
-        overrides = {k:os.environ[k] for k in ('FORGEJO_BACKUP_CONFIG', 'FORGEJO_BACKUP_APP_INI', 'FORGEJO_BACKUP_WORK') if k in os.environ}
-        if is_plan and overrides:
-            root = backblaze.scratch_root()
-            if root is None or any(not value or not Path(value).resolve().is_relative_to(root) for value in overrides.values()):
-                refuse('shape', 'scratch-root-invalid')
-        config = Path(os.environ.get("FORGEJO_BACKUP_CONFIG", str(CONFIG))) if is_plan else CONFIG
-        ini = Path(os.environ.get("FORGEJO_BACKUP_APP_INI", str(APP_INI))) if is_plan else APP_INI
-        work = Path(os.environ.get("FORGEJO_BACKUP_WORK", str(WORK))) if is_plan else WORK
-        if is_plan:
-            row, paths, included, excluded, uuids, lfs_oids, shared, ci_count = plan(bucket, config, ini, work, include_ci_count=True)
-            found = 0
-            for u in uuids:
-                try:
-                    (paths['attachments'] / u[0] / u[1] / u).stat()
-                    found += 1
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    refuse('attachments', 'attachment-stat-unavailable')
-            result = {"ok": True, "plan": {"included": included, "excluded": len(excluded),
-                      "excludedNames": [owner + "/" + repo for owner, repo in excluded],
-                      "excludedAttachments": len(uuids), "excludedAttachmentsPresent":found,
-                      "excludedCiReleaseAttachments":ci_count,
-                      "excludedLfs":len(lfs_oids), "sharedLfsKept":shared, "repo": restic_repo(row)}}
-        else:
-            read_config(bucket, CONFIG)
-            result = launch(bucket)
-    except (Refusal, backblaze.Refusal) as error:
-        result = {"ok": False, "step": error.step, "reason": error.reason}
-    finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, previous_handler)
-    print(json.dumps(result, separators=(",", ":")))
-    return 0 if result["ok"] else 1
-
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    args = list(sys.argv[1:])
+    if len(args) == 2 and args[0] == "--worker" and backblaze.valid_bucket(args[1]):
+        if os.environ.get("BACKBLAZE_SCRATCH_ROOT"):
+            raise SystemExit(1)
+        raise SystemExit(backup(args[1]))
+    print(json.dumps({"ok": False, "step": "shape", "reason": "request-invalid"}, separators=(",", ":")))
+    raise SystemExit(1)

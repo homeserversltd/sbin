@@ -136,7 +136,6 @@
     "storage/backup/backblaze/status",
     "storage/backup/drive/ask",
     "storage/backup/drive/status",
-    "storage/backup/forgejo/backup-b2",
     "storage/backup/forgejo/backup-b2/plan",
     "storage/backup/forgejo/backup-b2/run",
     "storage/backup/forgejo/credential",
