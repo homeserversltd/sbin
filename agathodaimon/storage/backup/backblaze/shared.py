@@ -62,60 +62,19 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
             if unit_running(unit_status(bucket)):
                 fail('run', 'bucket-run-active')
         if verb in ('bucket-add', 'bucket-credentials'):
-            key_id, application_key = metadata.get('keyId'), metadata.get('applicationKey')
-            if not isinstance(key_id, str) or not key_id or not isinstance(application_key, str) or not application_key:
-                fail('shape', 'credential-invalid')
-            existing = [row for row in rows(data, True) if row.get('bucket') == bucket]
-            if verb == 'bucket-add' and existing:
-                fail('config', 'bucket-already-exists')
-            if verb == 'bucket-credentials' and len(existing) != 1:
-                fail('config', 'bucket-not-configured')
-            service = keyman_service(bucket)
-            if any(isinstance(other := row.get('bucket'), str) and other != bucket and
-                   (other.replace('-', '_') == service or
-                    (valid_bucket(other) and keyman_service(other) == service))
-                   for row in rows(data)):
-                fail('config', 'keyman-service-collision')
-            if not authorize(bucket, key_id, application_key, mutating=True):
-                fail('verify', 'bucket-not-visible-to-key')
-            service = seed(bucket, key_id, application_key)
-            if verb == 'bucket-add':
-                rows(data, True).append({'bucket':bucket, 'prefix':'', 'items':[],
-                                         'managers':{'forgejo':{'localNas':False,'backblazeBackup':False,'skip':[]}}})
-            mutation_result = {'ok':True, 'keyman_service':service}
+            from importlib import import_module
+            mutation_result = import_module('agathodaimon.storage.backup.backblaze.' + verb + '.index').act(verb, metadata, data, bucket)
         else:
             row = row_for(data, bucket)
             if verb == 'bucket-remove':
-                release_result(bucket)
-                rows(data).remove(row)
+                from importlib import import_module
+                import_module('agathodaimon.storage.backup.backblaze.bucket-remove.index').act(data, bucket, row)
             elif verb == 'bucket-items':
-                path, op = metadata.get('path'), metadata.get('op')
-                valid_items([{'path':path}])
-                if op not in ('add','remove'):
-                    fail('items', 'operation-invalid')
-                items = valid_items(row.get('items', []))
-                if op == 'add' and not any(x['path'] == path for x in items):
-                    items.append({'path':path})
-                if op == 'remove':
-                    items = [x for x in items if x['path'] != path]
-                row['items'] = items
+                from importlib import import_module
+                import_module('agathodaimon.storage.backup.backblaze.bucket-items.index').act(metadata, row)
             elif verb == 'bucket-save':
-                items = valid_items(metadata.get('items'))
-                managers = metadata.get('managers')
-                if not isinstance(managers, dict) or not isinstance(managers.get('forgejo'), dict):
-                    fail('config', 'forgejo-manager-invalid')
-                fg = managers['forgejo']
-                if not isinstance(fg.get('localNas'), bool) or not isinstance(fg.get('backblazeBackup'), bool):
-                    fail('config', 'forgejo-manager-invalid')
-                skip = normalize_skips(fg.get('skip', []))
-                row['items'] = items
-                current = row.setdefault('managers', {})
-                if not isinstance(current, dict):
-                    fail('config', 'forgejo-manager-invalid')
-                existing_manager = current.get('forgejo', {})
-                if not isinstance(existing_manager, dict):
-                    fail('config', 'forgejo-manager-invalid')
-                current['forgejo'] = {'localNas':fg['localNas'], 'backblazeBackup':fg['backblazeBackup'], 'skip':skip}
+                from importlib import import_module
+                import_module('agathodaimon.storage.backup.backblaze.bucket-save.index').act(metadata, row)
             else:
                 fail('shape', 'actuator-invalid')
             if verb in ('bucket-items', 'bucket-save'):
