@@ -41,6 +41,37 @@ class SameHostRedirect(urllib.request.HTTPRedirectHandler):
             raise Failure('release-redirect-refused')
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
+GITHUB_HOSTS = frozenset(('api.github.com', 'github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'))
+
+def github_url(url):
+    parsed = urllib.parse.urlsplit(url)
+    try:
+        valid = (parsed.scheme == 'https' and parsed.hostname in GITHUB_HOSTS and
+                 not parsed.username and not parsed.password and parsed.port in (None, 443))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise Failure('candidate-url-refused')
+
+class GitHubRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        github_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+def github_fetch(url, maximum=MAX_ASSET):
+    github_url(url)
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), GitHubRedirect())
+        with opener.open(urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'xenia'}), timeout=30) as response:
+            data = response.read(maximum + 1)
+    except urllib.error.HTTPError as exc:
+        raise Failure('candidate-http-' + str(exc.code)) from exc
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        raise Failure('candidate-fetch-failed') from exc
+    if len(data) > maximum:
+        raise Failure('release-asset-too-large')
+    return data
+
 def credential() -> str | None:
     path = Path(setting('XENIA_FORGE_CREDENTIAL', '/etc/default/forgejo'))
     try:
@@ -81,7 +112,7 @@ def fetch_json(url: str, token: str | None):
     except (ValueError, UnicodeError) as exc:
         raise Failure('release-json-invalid') from exc
 
-def release(entry: dict, ident: str):
+def release(entry: dict, ident: str, receipt: dict):
     source = entry.get('source') or {}
     repo, ref = source.get('release_repo'), source.get('ref')
     if not isinstance(repo, str) or not isinstance(ref, str) or not ref:
@@ -91,6 +122,38 @@ def release(entry: dict, ident: str):
         raise Failure('release-repository-invalid')
     base = 'https://git.home.arpa/api/v1/repos/' + repo
     token = credential()
+    declared = source.get('candidates') or []
+    if not isinstance(declared, list):
+        raise Failure('candidate-list-invalid')
+    urls = []
+    for candidate in declared:
+        if not isinstance(candidate, dict) or candidate.get('kind') != 'release' or candidate.get('credential_selector') is not None:
+            raise Failure('candidate-invalid')
+        url = candidate.get('url')
+        if not isinstance(url, str) or not re.fullmatch(r'https://github\.com/[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*', url):
+            raise Failure('candidate-url-invalid')
+        owner, name = url.removeprefix('https://github.com/').split('/')
+        if owner in ('.', '..') or name in ('.', '..'):
+            raise Failure('candidate-url-invalid')
+        urls.append((url, 'https://api.github.com/repos/' + owner + '/' + name + '/releases/tags/latest'))
+    cached = {}
+    def fallback(commit):
+        for url, api in urls:
+            if api not in cached:
+                try:
+                    cached[api] = json.loads(github_fetch(api, 1024 * 1024))
+                except Failure as exc:
+                    if exc.signal != 'candidate-http-404':
+                        raise
+                    cached[api] = None
+                except (ValueError, UnicodeError) as exc:
+                    raise Failure('candidate-json-invalid') from exc
+            row = cached[api]
+            if isinstance(row, dict) and not row.get('draft') and row.get('tag_name') == 'latest' and row.get('target_commitish') == commit:
+                return row, url
+        return None, None
+    selected_url = None
+    sha = ''
     if SHA.fullmatch(ref):
         metadata = None
         for tag in ('sha-' + ref, ref):
@@ -100,9 +163,11 @@ def release(entry: dict, ident: str):
             except Failure as exc:
                 if exc.signal != 'release-http-404':
                     raise
-        if metadata is None:
-            raise Failure('release-not-found')
         sha = ref
+        if metadata is None:
+            metadata, selected_url = fallback(sha)
+        if metadata is None:
+            raise Failure('candidate-release-not-found' if urls else 'release-not-found')
     else:
         if not re.fullmatch(r'[A-Za-z0-9_./-]+', ref) or '..' in ref or ref.startswith('/'):
             raise Failure('release-ref-invalid')
@@ -118,24 +183,35 @@ def release(entry: dict, ident: str):
             raise Failure('release-list-limit')
         candidates = [row for row in releases if not row.get('draft') and isinstance(row.get('target_commitish'), str) and SHA.fullmatch(row['target_commitish'])]
         candidates.sort(key=lambda x: (x.get('created_at', ''), x.get('id', 0)), reverse=True)
-        targets = {row['target_commitish'] for row in candidates}
-        history = set()
+        by_commit = {}
+        for row in candidates:
+            by_commit.setdefault(row['target_commitish'], row)
+        metadata = None
         for page in range(1, 101):
             commits = fetch_json(base + '/commits?sha=' + urllib.parse.quote(ref, safe='') + f'&limit=50&page={page}', token)
             if not isinstance(commits, list) or any(not isinstance(row, dict) for row in commits):
                 raise Failure('release-branch-history-invalid')
-            history.update(row.get('sha') for row in commits if isinstance(row.get('sha'), str))
-            if targets.issubset(history) or len(commits) < 50:
+            for commit in commits:
+                sha = commit.get('sha')
+                if not isinstance(sha, str) or not SHA.fullmatch(sha):
+                    raise Failure('release-branch-history-invalid')
+                metadata = by_commit.get(sha)
+                if metadata is None:
+                    metadata, selected_url = fallback(sha)
+                if metadata is not None:
+                    break
+            if metadata is not None or len(commits) < 50:
                 break
         else:
             raise Failure('release-branch-history-limit')
-        metadata = next((row for row in candidates if row['target_commitish'] in history), None)
         if metadata is None:
-            raise Failure('release-branch-not-found')
-        sha = metadata['target_commitish']
+            raise Failure('candidate-release-not-found' if urls else 'release-branch-not-found')
     if not isinstance(metadata, dict):
         raise Failure('release-metadata-invalid')
-    if metadata.get('draft') or metadata.get('target_commitish') != sha or metadata.get('tag_name') not in (sha, 'sha-' + sha):
+    receipt['source'] = 'candidate' if selected_url else 'forge'
+    receipt['candidate_url'] = selected_url
+    receipt['source_sha'] = sha
+    if metadata.get('draft') or metadata.get('target_commitish') != sha or metadata.get('tag_name') not in (('latest',) if selected_url else (sha, 'sha-' + sha)):
         raise Failure('release-target-mismatch')
     assets = {a.get('name'): a for a in metadata.get('assets', []) if isinstance(a, dict)}
     binary_name = parts[1] + '-x86_64'
@@ -143,7 +219,7 @@ def release(entry: dict, ident: str):
         row = assets.get(name)
         if not isinstance(row, dict) or not isinstance(row.get('browser_download_url'), str):
             raise Failure('release-asset-missing-' + name)
-        return fetch(row['browser_download_url'], token, maximum)
+        return github_fetch(row['browser_download_url'], maximum) if selected_url else fetch(row['browser_download_url'], token, maximum)
     try:
         flag = json.loads(asset('release.flag', 1024 * 1024))
     except (ValueError, UnicodeError) as exc:
@@ -158,6 +234,13 @@ def release(entry: dict, ident: str):
     digest = hashlib.sha256(data).hexdigest()
     if digest != expected:
         raise Failure('release-flag-digest-mismatch')
+    try:
+        checksum = asset(binary_name + '.sha256', 1024 * 1024).decode('ascii').split()[0]
+        manifest = json.loads(asset('cartridge.json', 1024 * 1024))
+    except (ValueError, UnicodeError, IndexError) as exc:
+        raise Failure('release-sidecar-invalid') from exc
+    if checksum != digest or not isinstance(manifest, dict):
+        raise Failure('release-sidecar-mismatch')
     return sha, digest, data
 
 def schema_base() -> str:
@@ -263,7 +346,7 @@ def deed(verb, ident, ok, signal, started):
 
 def run(verb: str, ident: str, dry: bool):
     started = time.monotonic()
-    receipt = {'schema': SCHEMA, 'verb': verb, 'id': ident, 'ok': False, 'road': 'release', 'source_sha': None, 'sha256': None, 'unit': None, 'active': None, 'health': None, 'signal': 'none', 'changed': False}
+    receipt = {'schema': SCHEMA, 'verb': verb, 'id': ident, 'ok': False, 'road': 'release', 'source': None, 'candidate_url': None, 'source_sha': None, 'sha256': None, 'unit': None, 'active': None, 'health': None, 'signal': 'none', 'changed': False}
     changed = False
     try:
         try:
@@ -335,7 +418,7 @@ def run(verb: str, ident: str, dry: bool):
             binary = seat / relative
             base = schema_base()
             text = render_unit(ident, seat, binary, owner, base).encode()
-            sha, digest, data = release(entry, ident)
+            sha, digest, data = release(entry, ident, receipt)
             receipt['source_sha'], receipt['sha256'] = sha, digest
             old_unit = safe_read(unit_path)
             if old_unit is not None and ('X-Xenia-Id=' + ident).encode() not in old_unit.splitlines():

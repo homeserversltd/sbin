@@ -2,6 +2,8 @@
 
 `caduceus-xenos-run install <id>` reads the registered release entry, fetches the exact pinned release or newest release on its branch, checks release.flag against the downloaded binary, seats the binary, renders `<id>.service`, enables and starts it, and requires the guest's single loopback `/health` to identify that release. `uninstall <id>` stops and disables the rendered unit and removes it; the seat is retained. Own-service and clone entries are refused. No checkout or build runs on the appliance. Both verbs return one `appliance.xenia.install.v1` JSON object and exit 0 on success, 1 on failure or 2 on refusal. `--dry-run` reads but writes nothing; `changed` reports whether work would be needed. A converged install does not restart.
 
+The release receipt reports `source: forge|candidate` and `candidate_url` when a GitHub fallback wins; the forge is preferred at each commit, and both roads verify the binary against its checksum and release flag.
+
 The proof-only variables `XENIA_REGISTER`, `XENIA_SEAT_ROOT`, `XENIA_UNIT_ROOT`, `XENIA_CONFIG`, `XENIA_SYSTEMCTL`, `XENIA_LOG`, `XENIA_FORGE_CREDENTIAL`, and `XENIA_PROOF_HEALTH_ENDPOINT` are honored only by a launcher executing from a Cibation ground under `/var/lib/work`, never by the installed root launcher. The production credential is read from `/etc/default/forgejo`; it is sent only to `git.home.arpa` over HTTPS and never on argv. The sibling Harmonia sudoers lane must grant the two exact anchored verb forms; this repo does not own the standing grant.
 
 `caduceus-xenos-run` acts on a seated clone at `/var/lib/xenia/<id>/`. It consumes that clone in place. It never installs the clone, its staff, or its `permissions/xenia` grant table.
