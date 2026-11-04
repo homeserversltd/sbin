@@ -164,6 +164,7 @@
     "storage/upload/force-permissions",
     "storage/upload/ingress",
     "storage/vault/open",
+    "storage/vault/open/unlock",
     "storage/vault/policy",
     "thyrsus/admit",
     "thyrsus/forge",
