@@ -17,6 +17,7 @@
     "keyman",
     "nas",
     "backup-drive",
+    "disk-wipe",
     "luks",
     "xfs",
     "linker",

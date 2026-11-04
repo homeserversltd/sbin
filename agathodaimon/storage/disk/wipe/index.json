@@ -3,9 +3,9 @@
   "dry-run": true,
   "children": [],
   "sclerite": {
-    "name": "console-select-branch",
+    "name": "disk-wipe",
     "features": {
-      "console-select-branch": {
+      "disk-wipe": {
         "band": true,
         "verbs": [],
         "routes": [],
