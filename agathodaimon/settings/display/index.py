@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 import json
+import math
+import os
+import pwd
+import shlex
 import sys
 import time
 from fractions import Fraction
@@ -16,6 +20,9 @@ from agathodaimon._envelope import EnvelopeError, Request, attach, read
 
 DISPLAY_FIELDS = ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan")
 MODE_FIELDS = {"resolution", "refresh_rate"}
+OVERRIDE_BEGIN = "# settings-display-output-begin"
+OVERRIDE_END = "# settings-display-output-end"
+ORIENTATIONS = {"normal", "90", "180", "270"}
 
 
 def startup_apply_allowed() -> bool:
@@ -59,6 +66,41 @@ def _sway_output(selected: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
 
 
+def _options(output: Mapping[str, Any] | None) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "scale": [{"value": value, "label": f"{value}×"} for value in (1, 2)],
+        "orientation": [{"value": value, "label": label} for value, label in (
+            ("normal", "Normal"), ("90", "Rotated 90°"),
+            ("180", "Rotated 180°"), ("270", "Rotated 270°"))],
+    }
+    if not output:
+        return result
+    modes = output.get("modes")
+    if not isinstance(modes, list) or not modes:
+        return result
+    dimensions = set()
+    rates = set()
+    current = output.get("current_mode")
+    for mode in modes[:policy.MAX_MODES]:
+        if not isinstance(mode, dict):
+            continue
+        width, height, refresh = mode.get("width"), mode.get("height"), mode.get("refresh")
+        if (type(width) is not int or type(height) is not int or width <= 0 or height <= 0):
+            continue
+        dimensions.add((width, height))
+        if (isinstance(current, dict) and width == current.get("width") and height == current.get("height")
+                and type(refresh) is int and refresh > 0):
+            rates.add(Fraction(refresh, 1000))
+    if dimensions:
+        result["resolution"] = [{"value": "auto", "label": "Automatic"}] + [
+            {"value": f"{w}x{h}", "label": f"{w} × {h}"} for w, h in sorted(dimensions)]
+    if rates:
+        result["refresh_rate"] = [{"value": int(rate) if rate.denominator == 1 else float(rate),
+                                   "label": f"{backends._refresh_hz_text(rate)} Hz"}
+                                  for rate in sorted(rates)]
+    return result
+
+
 def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict[str, Any]:
     kind = selected.get("kind")
     kms = _kms_observation()
@@ -89,6 +131,14 @@ def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict
         },
     }
     output = _sway_output(selected)
+    reply["options"] = _options(output)
+    if output:
+        scale = output.get("scale")
+        if isinstance(scale, (int, float)) and not isinstance(scale, bool):
+            reply["values"]["scale"] = scale
+        transform = output.get("transform")
+        if isinstance(transform, str):
+            reply["values"]["orientation"] = transform
     features = output.get("features") if output else None
     if output and isinstance(features, dict) and features.get("hdr") is True and isinstance(output.get("hdr"), bool):
         reply["values"]["hdr"] = output["hdr"]
@@ -154,8 +204,120 @@ def _mode_matches_current(mode: Mapping[str, Any], current: Any) -> bool:
     return selected_rate is not None and current_rate is not None and abs(selected_rate - current_rate) <= Fraction(1, 1000)
 
 
+def _output_override(selected: Mapping[str, Any], field: str, value: Any,
+                     settings: Mapping[str, Any]) -> dict[str, Any]:
+    if field == "scale":
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value not in (1, 2):
+            return _failure("display-fractional-scale-unsafe", settings=settings, backend=selected)
+        text = str(int(value))
+        key = "scale"
+    else:
+        if not isinstance(value, str) or value not in ORIENTATIONS:
+            return _failure("invalid:orientation", settings=settings, backend=selected)
+        text = value
+        key = "transform"
+    output = _sway_output(selected)
+    if not output or not isinstance(output.get("name"), str):
+        return _failure("sway-output-unavailable", settings=settings, backend=selected)
+    before = output.get(key)
+    if field == "scale":
+        if (isinstance(before, bool) or not isinstance(before, (int, float))
+                or not math.isfinite(before) or before <= 0):
+            return _failure("sway-output-prior-scale-unavailable", settings=settings, backend=selected)
+        prior_text = str(before)
+    else:
+        if not isinstance(before, str) or before not in {"normal", "90", "180", "270", "flipped", "flipped-90", "flipped-180", "flipped-270"}:
+            return _failure("sway-output-prior-transform-unavailable", settings=settings, backend=selected)
+        prior_text = before
+    try:
+        name = output["name"]
+        escaped = backends._escape_sway_name(name)
+        path = _shared.home() / ".config/sway/output-overrides.conf"
+        original = path.read_text(encoding="utf-8") if path.exists() else ""
+        lines = original.splitlines(keepends=True)
+        begins = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == OVERRIDE_BEGIN]
+        ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == OVERRIDE_END]
+        if len(begins) != len(ends) or len(begins) > 1 or (begins and ends[0] <= begins[0]):
+            raise ValueError("display-override-invalid")
+        existing = lines[begins[0] + 1:ends[0]] if begins else []
+        kept = []
+        for line in existing:
+            words = shlex.split(line, comments=True)
+            if not words:
+                kept.append(line)
+                continue
+            if len(words) != 4 or words[0] != "output" or words[2] not in {"scale", "transform"}:
+                raise ValueError("display-override-invalid")
+            if words[1] != name or words[2] != key:
+                kept.append(line)
+        if kept and not kept[-1].endswith("\n"):
+            kept[-1] += "\n"
+        block = [OVERRIDE_BEGIN + "\n", *kept, f"output {escaped} {key} {text}\n", OVERRIDE_END + "\n"]
+        if begins:
+            lines[begins[0]:ends[0] + 1] = block
+        else:
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            lines += block
+        payload = "".join(lines).encode("utf-8")
+        socket = str(selected["socket"])
+        receipt = _shared.Receipt("display", [field])
+        attempted = False
+        try:
+            receipt.replace(path, payload)
+            if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
+                owner = pwd.getpwnam(_shared.OWNER_USER)
+                os.chown(path, owner.pw_uid, owner.pw_gid)
+            argv, runtime, _ = backends._sway_argv(socket, [f"output {escaped} {key} {text}"])
+            attempted = True
+            result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
+            receipt.commands.append({"argv": argv, "returncode": result.get("returncode")})
+            responses = json.loads(result.get("stdout", "")) if result.get("ok") else []
+            if not isinstance(responses, list) or not responses or not all(
+                    isinstance(item, dict) and item.get("success") is True for item in responses):
+                raise ValueError("sway-display-apply-failed")
+            changed = receipt.changed or output.get(key) != value
+            answer = receipt.finish(True, changed)
+            answer["mutationPerformed"] = True
+            return answer
+        except Exception as error:
+            signal = str(error)
+            uncertain = attempted
+            try:
+                receipt.restore_backups()
+            except Exception as rollback_error:
+                signal = "rollback-failed:" + str(rollback_error) + ":" + signal
+                uncertain = True
+            if attempted:
+                try:
+                    rollback_argv, rollback_runtime, _ = backends._sway_argv(
+                        socket, [f"output {escaped} {key} {prior_text}"])
+                    rollback = backends._bounded_command(rollback_argv, runtime=rollback_runtime, socket_path=socket)
+                    receipt.commands.append({"argv": rollback_argv, "returncode": rollback.get("returncode")})
+                    responses = json.loads(rollback.get("stdout", "")) if rollback.get("ok") else []
+                    if not isinstance(responses, list) or not responses or not all(
+                            isinstance(item, dict) and item.get("success") is True for item in responses):
+                        raise ValueError("sway-display-rollback-failed")
+                except Exception as rollback_error:
+                    signal = "live-rollback-failed:" + str(rollback_error) + ":" + signal
+            failure = receipt.finish(False, error=signal)
+            return _failure(signal, settings=settings, backend=selected,
+                            mutation_performed=uncertain, receipt=failure.get("receipt"))
+    except (OSError, ValueError, UnicodeError, KeyError) as error:
+        return _failure(str(error), settings=settings, backend=selected)
+
+
 def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, Any],
            settings: Mapping[str, Any]) -> dict[str, Any]:
+    if "scale" in supplied:
+        value = supplied["scale"]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value not in (1, 2):
+            return _failure("display-fractional-scale-unsafe", settings=settings, backend=selected)
+    if "scale" in supplied or "orientation" in supplied:
+        if len(supplied) != 1:
+            return _failure("mixed-display-fields", settings=settings, backend=selected)
+        field = "scale" if "scale" in supplied else "orientation"
+        return _output_override(selected, field, supplied[field], settings)
     if "adaptive_sync" in supplied or "hdr" in supplied:
         if len(supplied) != 1: return _failure("mixed-display-fields", settings=settings, backend=selected)
         field = "hdr" if "hdr" in supplied else "adaptive_sync"
