@@ -264,6 +264,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     setters: dict[str, Any] = {}
     static_signals: dict[str, str] = {}
     action_fields: set[str] = set()
+    choices: dict[str, dict[str, Any]] = {}
 
     read_error = Adw.ActionRow(title="Couldn't read these settings")
     read_error.set_visible(False)
@@ -329,15 +330,24 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             setters[field] = lambda value, item=row, default=float(spec.get("minimum", 0.0)): item.set_value(_number(value, default))
             changed_signal = "notify::value"
         elif kind == "combo":
-            options = [str(item) for item in spec["options"]]
-            row = Adw.ComboRow(title=title, model=Gtk.StringList.new(options))
+            options = spec["options"]
+            typed = bool(options) and isinstance(options[0], dict)
+            values = [item["value"] for item in options] if typed else [str(item) for item in options]
+            labels = [item["label"] for item in options] if typed else values
+            row = Adw.ComboRow(title=title, model=Gtk.StringList.new(labels))
             aliases = {str(key): str(value) for key, value in spec.get("aliases", {}).items()}
-            def get_combo(item: Any = row, choices: list[str] = options) -> str:
+            def get_combo(item: Any = row, choices: list[Any] = values) -> Any:
                 index = item.get_selected()
                 return choices[index] if 0 <= index < len(choices) else ""
-            def set_combo(value: Any, item: Any = row, choices: list[str] = options, names: dict[str, str] = aliases) -> None:
-                text = names.get(str(value), str(value))
-                item.set_selected(choices.index(text) if text in choices else 0)
+            def set_combo(value: Any, item: Any = row, choices: list[Any] = values, names: dict[str, str] = aliases, original: list[Any] = list(values), original_labels: list[str] = list(labels), allow_unknown: bool = typed) -> None:
+                selected = names.get(str(value), str(value)) if not allow_unknown else value
+                choices[:] = original
+                names_list = list(original_labels)
+                if allow_unknown and selected not in choices:
+                    choices.insert(0, selected)
+                    names_list.insert(0, str(selected))
+                item.set_model(Gtk.StringList.new(names_list))
+                item.set_selected(choices.index(selected) if selected in choices else 0)
             getters[field] = get_combo
             setters[field] = set_combo
             changed_signal = "notify::selected"
@@ -350,6 +360,13 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         rows[field] = row
         row.set_sensitive(False)
         group.add(row)
+        if kind == "choice":
+            combo = Adw.ComboRow(title=title)
+            combo.set_visible(False)
+            combo.set_sensitive(False)
+            group.add(combo)
+            choices[field] = {"entry": row, "combo": combo, "values": [],
+                              "empty_label": spec.get("absent", "No selection")}
         status_row = Adw.ActionRow()
         status_row.set_visible(False)
         status_rows[field] = status_row
@@ -372,6 +389,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 return
             previous = state["values"].get(selected)
             value = getters[selected]()
+            if selected in choices and rows[selected] is choices[selected]["combo"] and value is None:
+                return
             if value == previous and selected not in action_fields:
                 return
             status_generation[selected] += 1
@@ -383,7 +402,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             threading.Thread(target=mutate, args=(selected, value, previous), daemon=True).start()
 
         (event_source if event_source is not None else row).connect(changed_signal, on_changed)
-        if kind == "entry":
+        if kind == "choice":
+            combo.connect("notify::selected", on_changed)
+        if kind in ("entry", "choice"):
             def on_entry_changed(_row: Any, selected: str = field) -> None:
                 if state["hydrated"] and not state["hydrating"] and selected not in state["busy"]:
                     status_generation[selected] += 1
@@ -391,11 +412,41 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     show_status(selected)
             row.connect("changed", on_entry_changed)
 
-    def apply_values(values: dict[str, Any], message_field: str | None = None) -> None:
+    def apply_values(values: dict[str, Any], options: dict[str, Any], message_field: str | None = None) -> None:
         state["hydrating"] = True
         try:
+            for field, choice in choices.items():
+                if field in state["busy"]:
+                    continue
+                raw = options.get(field)
+                offered = [item for item in raw if isinstance(item, dict) and "value" in item and isinstance(item.get("label"), str)] if isinstance(raw, list) else []
+                entry, combo = choice["entry"], choice["combo"]
+                if offered:
+                    offered_values = [item["value"] for item in offered]
+                    labels = [item["label"] for item in offered]
+                    value = values.get(field)
+                    if value is None:
+                        offered_values.insert(0, None)
+                        labels.insert(0, choice["empty_label"])
+                    elif value not in offered_values:
+                        offered_values.insert(0, value)
+                        labels.insert(0, str(value))
+                    choice["values"] = offered_values
+                    combo.set_model(Gtk.StringList.new(labels))
+                    if hasattr(combo, "set_enable_search"):
+                        combo.set_enable_search(len(offered) > 20)
+                    entry.set_visible(False)
+                    rows[field] = combo
+                    getters[field] = lambda item=combo, data=choice: data["values"][item.get_selected()] if 0 <= item.get_selected() < len(data["values"]) else None
+                    setters[field] = lambda value, item=combo, data=choice: item.set_selected(data["values"].index(value) if value in data["values"] else Gtk.INVALID_LIST_POSITION)
+                else:
+                    combo.set_visible(False)
+                    rows[field] = entry
+                    getters[field] = entry.get_text
+                    setters[field] = lambda value, item=entry: item.set_text("" if value is None else str(value))
             for field, row in rows.items():
-                available = field in action_fields or (field in values and values[field] is not None)
+                available = (field in action_fields or (field in values and values[field] is not None)
+                             or (field in choices and row is choices[field]["combo"]))
                 show_unavailable = not available and field not in static_signals
                 row.set_visible(not show_unavailable)
                 if show_unavailable:
@@ -434,7 +485,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             return False
         read_error.set_visible(False)
         state["hydrated"] = True
-        apply_values(receipt["values"], message_field)
+        options = receipt.get("options")
+        apply_values(receipt["values"], options if isinstance(options, dict) else {}, message_field)
         return False
 
     def read_door(generation: int, message_field: str | None = None) -> None:

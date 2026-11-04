@@ -9,7 +9,7 @@ except ImportError:
     from _common import build_settings_widget
 PLUG={"id":"date-time","title":"Date & Time","icon":"preferences-system-time-symbolic","order":100,"parent":None}
 SPECS=[
- {"field":"timezone","title":"Time zone"},
+ {"field":"timezone","title":"Time zone","kind":"choice"},
  {"field":"ntp_enabled","title":"Automatic date and time","kind":"switch"},
  {"field":"automatic_timezone","title":"Automatic time zone","kind":"switch"},
  {"field":"date_format","title":"Date format"},

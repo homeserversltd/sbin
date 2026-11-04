@@ -17,4 +17,5 @@ SPECS=[
 ]
 for spec in SPECS:
     spec["absent"] = "No default chosen"
+    spec["kind"] = "choice"
 def build_widget(): return build_settings_widget(PLUG,"default-apps","",SPECS)

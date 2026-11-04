@@ -6,29 +6,14 @@ except ImportError:
 
 PLUG = {"id": "energy-power", "title": "Energy & Power", "icon": "battery-symbolic", "order": 97, "parent": None}
 SPECS = [
-    {"field": "screen_off_seconds", "title": "Screen-off timeout (seconds)", "kind": "spin", "minimum": 0, "maximum": 86400},
+    {"field": "screen_off_seconds", "title": "Turn screen off after", "kind": "combo", "options": [
+        {"value": 0, "label": "Never"}, {"value": 300, "label": "5 minutes"},
+        {"value": 600, "label": "10 minutes"}, {"value": 900, "label": "15 minutes"},
+        {"value": 1800, "label": "30 minutes"}, {"value": 3600, "label": "1 hour"},
+    ]},
     {"field": "sleep_seconds", "title": "Sleep timeout (seconds)", "kind": "spin", "minimum": 0, "maximum": 86400, "absent": "This TV does not sleep"},
     {"field": "power_button_action", "title": "Power button action", "kind": "combo", "options": ["poweroff", "suspend", "ignore"]},
 ]
 
 def build_widget():
-    page = build_settings_widget(PLUG, "energy", "", SPECS, required_route="/api/v1/settings/energy")
-    from gi.repository import Adw
-
-    def describe_when_idle(row, _property=None):
-        if not row.get_subtitle():
-            row.set_subtitle("0 means never")
-
-    def visit(widget):
-        if isinstance(widget, Adw.SpinRow) and widget.get_title() == "Screen-off timeout (seconds)":
-            row = widget
-            row.connect("notify::subtitle", describe_when_idle)
-            describe_when_idle(row)
-            return
-        child = widget.get_first_child()
-        while child is not None:
-            visit(child)
-            child = child.get_next_sibling()
-
-    visit(page)
-    return page
+    return build_settings_widget(PLUG, "energy", "", SPECS, required_route="/api/v1/settings/energy")

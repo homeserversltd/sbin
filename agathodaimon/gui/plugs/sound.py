@@ -9,8 +9,8 @@ except ImportError:
     from _common import add_manager_row, build_settings_widget
 PLUG={"id":"sound","title":"Sound","icon":"audio-volume-high-symbolic","order":50,"parent":None}
 SPECS=[
- {"field":"output_device","title":"Output device"},
- {"field":"input_device","title":"Input device"},
+ {"field":"output_device","title":"Output device","kind":"choice"},
+ {"field":"input_device","title":"Input device","kind":"choice"},
  {"field":"volume","title":"Output volume (%)","kind":"spin","minimum":0,"maximum":100,"step":1},
  {"field":"input_volume","title":"Input volume (%)","kind":"spin","minimum":0,"maximum":100,"step":1},
  {"field":"muted","title":"Mute output","kind":"switch"},

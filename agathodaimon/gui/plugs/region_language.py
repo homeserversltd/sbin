@@ -6,7 +6,7 @@ except ImportError:
 
 PLUG = {"id": "region-language", "title": "Region & Language", "icon": "preferences-desktop-locale-symbolic", "order": 95, "parent": None}
 SPECS = [
-    {"field": "locale", "title": "Locale", "kind": "entry"},
+    {"field": "locale", "title": "Locale", "kind": "choice"},
     {"field": "measurement_units", "title": "Measurement units", "kind": "combo", "options": ["metric", "imperial"]},
 ]
 

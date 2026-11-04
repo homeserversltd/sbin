@@ -6,7 +6,7 @@ except ImportError:
 
 PLUG = None
 SPECS = [
-    {"field": "keyboard_layout", "title": "Keyboard layout", "kind": "entry"},
+    {"field": "keyboard_layout", "title": "Keyboard layout", "kind": "choice"},
     {"field": "repeat_rate", "title": "Repeat rate", "kind": "spin", "minimum": 0, "maximum": 1000},
     {"field": "repeat_delay", "title": "Repeat delay (ms)", "kind": "spin", "minimum": 0, "maximum": 10000},
 ]
