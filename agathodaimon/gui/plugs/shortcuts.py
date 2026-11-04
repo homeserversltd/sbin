@@ -264,6 +264,7 @@ def build_widget():
             row.add_prefix(key_label)
             status_label = Gtk.Label(label="", xalign=1)
             row.add_suffix(status_label)
+            activity = {"busy": False}
             editable = any(binding.get("editable") is True for binding in members)
             if editable:
                 row.set_activatable(True)
@@ -271,7 +272,9 @@ def build_widget():
 
                 def open_editor(_row, selected_members=members, selected_row=row,
                                 selected_keys=key_label, selected_status=status_label,
-                                action_title=title):
+                                action_title=title, selected_activity=activity):
+                    if selected_activity["busy"]:
+                        return
                     dialog_parent = selected_row.get_root()
                     dialog_kwargs = {"title": action_title, "modal": True}
                     if isinstance(dialog_parent, Gtk.Window):
@@ -381,11 +384,11 @@ def build_widget():
                         original = selected.get("default_keys")
                         if not isinstance(original, str):
                             original = ""
-                        selected_row.set_sensitive(False)
+                        selected_activity["busy"] = True
                         selected_status.set_text("Saving…")
                         threading.Thread(
                             target=post_change,
-                            args=(selected_members, selected, selected_row, selected_keys, selected_status,
+                            args=(selected_members, selected, selected_row, selected_keys, selected_status, selected_activity,
                                   original, to_keys),
                             daemon=True,
                         ).start()
@@ -396,8 +399,7 @@ def build_widget():
                         elif response_id == Gtk.ResponseType.APPLY:
                             submit(None)
                         dialog.destroy()
-                        if selected_row.get_sensitive():
-                            selected_row.grab_focus()
+                        selected_row.grab_focus()
 
                     dialog.connect("response", on_response)
                     dialog.present()
@@ -412,7 +414,7 @@ def build_widget():
         editable_group.set_visible(True)
         return False
 
-    def finish_change(members, binding, row, key_label, status_label, default_keys, to_keys,
+    def finish_change(members, binding, row, key_label, status_label, activity, default_keys, to_keys,
                       receipt, error):
         if error:
             status_label.set_text("Caduceus unavailable")
@@ -441,11 +443,10 @@ def build_widget():
                     "sway-session-unavailable": "Sway is not available",
                 }.get(signal, "Change refused")
             status_label.set_text(message)
-        row.set_sensitive(True)
-        row.grab_focus()
+        activity["busy"] = False
         return False
 
-    def post_change(members, binding, row, key_label, status_label, default_keys, to_keys):
+    def post_change(members, binding, row, key_label, status_label, activity, default_keys, to_keys):
         try:
             receipt = _request(
                 settings_path,
@@ -453,12 +454,12 @@ def build_widget():
                 {"from": default_keys, "to": to_keys},
             )
             GLib.idle_add(
-                finish_change, members, binding, row, key_label, status_label,
+                finish_change, members, binding, row, key_label, status_label, activity,
                 default_keys, to_keys, receipt, None,
             )
         except RuntimeError:
             GLib.idle_add(
-                finish_change, members, binding, row, key_label, status_label,
+                finish_change, members, binding, row, key_label, status_label, activity,
                 default_keys, to_keys, None, "unavailable",
             )
 
