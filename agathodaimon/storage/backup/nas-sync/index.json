@@ -1,25 +1,7 @@
 {
   "children": ["hold", "release", "schedule", "sync", "plan"],
-  "envelope": {
-    "stdin": "json",
-    "keys": [
-      "actuator",
-      "metadata"
-    ],
-    "actions": [
-      "sync"
-    ],
-    "unknown_fields": "skipped"
-  },
   "sclerite": {
-    "name": "nas",
-    "features": {
-      "nas": {
-        "band": true,
-        "administrative": {
-          "band": true
-        }
-      }
-    }
+    "name": "all",
+    "features": {}
   }
 }

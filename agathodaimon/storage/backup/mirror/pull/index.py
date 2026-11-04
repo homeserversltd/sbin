@@ -16,7 +16,7 @@ from agathodaimon.lib.keyman_export.index import export_credential
 from agathodaimon.storage.nas import deed
 
 HERE = Path(__file__).resolve()
-spec = importlib.util.spec_from_file_location("nas_sync_guard", HERE.parents[2] / "nas-sync" / "index.py")
+spec = importlib.util.spec_from_file_location("nas_sync_guard", HERE.parents[2] / "nas-sync" / "_sync.py")
 if spec is None or spec.loader is None:
     raise RuntimeError("nas-sync-guard-unavailable")
 nas = importlib.util.module_from_spec(spec)
