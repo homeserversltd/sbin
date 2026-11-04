@@ -192,11 +192,12 @@ def restic_repo(row):
     return "b2:" + row["bucket"] + ":" + row.get("prefix", "")
 
 
-def plan(bucket, config_path, ini_path, work):
+def plan(bucket, config_path, ini_path, work, *, include_ci_count=False):
     row, skips = read_config(bucket, config_path)
     paths = forgejo_paths(ini_path, work)
     included, excluded, uuids, lfs_excluded, shared, ci_count = inventory(paths, skips)
-    return row, paths, included, excluded, uuids, lfs_excluded, shared, ci_count
+    result = (row, paths, included, excluded, uuids, lfs_excluded, shared)
+    return (*result, ci_count) if include_ci_count else result
 
 
 def _escaped(path):
@@ -601,7 +602,7 @@ def main(argv=None):
         ini = Path(os.environ.get("FORGEJO_BACKUP_APP_INI", str(APP_INI))) if is_plan else APP_INI
         work = Path(os.environ.get("FORGEJO_BACKUP_WORK", str(WORK))) if is_plan else WORK
         if is_plan:
-            row, paths, included, excluded, uuids, lfs_oids, shared, ci_count = plan(bucket, config, ini, work)
+            row, paths, included, excluded, uuids, lfs_oids, shared, ci_count = plan(bucket, config, ini, work, include_ci_count=True)
             found = 0
             for u in uuids:
                 try:
