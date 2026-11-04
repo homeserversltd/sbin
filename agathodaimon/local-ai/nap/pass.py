@@ -197,27 +197,39 @@ def run(path, counts, floor, override, dry_run, marks, gists, gist_every):
     if not setup.is_file() or not json.loads(setup.read_text(encoding="utf-8")).get("user_id"):
         raise ValueError("native-config-unavailable")
     from mem0 import Memory
-    if dry_run:
-        from qdrant_client import QdrantClient
+    from qdrant_client import QdrantClient
+    from qdrant_client.http.exceptions import UnexpectedResponse
 
-        class ExistingCollectionClient(QdrantClient):
-            absent_collection_attempted = False
+    class ExistingCollectionClient(QdrantClient):
+        absent_collection_attempted = False
 
-            def create_collection(self, *args, **kwargs):
-                self.absent_collection_attempted = True
-                raise ValueError("collection-absent")
-
-        store = oss["vector_store"]
-        settings = store["config"]
-        params = {key: settings[key] for key in ("url", "api_key") if settings.get(key)}
-        if settings.get("host") and settings.get("port"):
-            params.update(host=settings["host"], port=settings["port"])
-        if settings.get("https") is not None:
-            params["https"] = settings["https"]
-        client = ExistingCollectionClient(**params)
-        if not client.collection_exists(settings.get("collection_name", "mem0")):
+        def create_collection(self, *args, **kwargs):
+            self.absent_collection_attempted = True
             raise ValueError("collection-absent")
-        oss = {**oss, "vector_store": {**store, "config": {**settings, "client": client}}}
+
+    class ExistingIndexClient(QdrantClient):
+        def create_payload_index(self, collection_name, field_name, *args, **kwargs):
+            try:
+                schema = self.get_collection(collection_name).payload_schema or {}
+            except UnexpectedResponse as error:
+                if error.status_code != 404:
+                    raise
+            else:
+                if field_name in schema:
+                    return None
+            return super().create_payload_index(collection_name, field_name, *args, **kwargs)
+
+    store = oss["vector_store"]
+    settings = store["config"]
+    params = {key: settings[key] for key in ("url", "api_key") if settings.get(key)}
+    if settings.get("host") and settings.get("port"):
+        params.update(host=settings["host"], port=settings["port"])
+    if settings.get("https") is not None:
+        params["https"] = settings["https"]
+    client = (ExistingCollectionClient if dry_run else ExistingIndexClient)(**params)
+    if dry_run and not client.collection_exists(settings.get("collection_name", "mem0")):
+        raise ValueError("collection-absent")
+    oss = {**oss, "vector_store": {**store, "config": {**settings, "client": client}}}
     memory = Memory.from_config(oss)
     agent = config.get("agent_id")
     for rowid, ident in add_rows(db, ceiling):
