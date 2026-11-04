@@ -51,6 +51,7 @@ class Request:
     load_context_present: bool = False
     load_context: Any = None
     returned_load_context: Any = None
+    secret_fields: tuple[str, ...] = ()
     @property
     def verb(self) -> str:
         if isinstance(self.transition, str) and self.transition:
@@ -59,7 +60,7 @@ class Request:
         return "unknown"
 def _selected(source: Mapping[str, Any], names: Sequence[str]) -> dict[str, Any]:
     return {k: source[k] for k in names if k in source}
-def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = (), rooms: Sequence[str] = ()) -> Request:
+def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = (), rooms: Sequence[str] = (), secret: Sequence[str] = ()) -> Request:
     try:
         raw = sys.stdin.read(); value = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
@@ -68,14 +69,14 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
     load_context_present, load_context = _load_trace.extract_load_context(value)
     if "schema" not in value:
         return Request(
-            value, False, _selected(value, known_fields), raw,
-            load_context_present=load_context_present, load_context=load_context,
+            value, False, _selected(value, tuple(known_fields) + tuple(secret)), raw,
+            load_context_present=load_context_present, load_context=load_context, secret_fields=tuple(secret),
         )
     if value.get("schema") != SCHEMA: raise EnvelopeError("foreign envelope schema")
     missing = [k for k in KERNEL_KEYS if k not in value]
     if missing: raise EnvelopeError("missing envelope kernel keys: " + ",".join(missing))
     source = value.get("payload") if isinstance(value.get("payload"), Mapping) else {}
-    payload = _selected(source, tuple(known_fields) + tuple(declared_flags) + tuple(rooms))
+    payload = _selected(source, tuple(known_fields) + tuple(declared_flags) + tuple(rooms) + tuple(secret))
     for group, names in (("flags", declared_flags), ("rooms", rooms)):
         candidates = []
         for container in (source, value):
@@ -88,6 +89,7 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
     return Request(
         value, True, payload, raw, value["intent_id"], value["transition"],
         value["version"], value["timestamp"], load_context_present, load_context,
+        secret_fields=tuple(secret),
     )
 def _outcome(receipt: Mapping[str, Any]) -> str:
     first_missing_signal = receipt.get("firstMissingSignal")
@@ -131,19 +133,33 @@ def _redact_pin_carriers(value: dict[str, Any]) -> dict[str, Any]:
     return redacted
 
 
+def _redact_declared(value: Any, names: Sequence[str]) -> Any:
+    if isinstance(value, dict):
+        return {key: _REDACTED_PIN if key in names else _redact_declared(child, names)
+                for key, child in value.items()}
+    if isinstance(value, list):
+        return [_redact_declared(child, names) for child in value]
+    return value
+
+
 def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     explicit_context = (
         request.returned_load_context
         if request.returned_load_context is not None
         else request.load_context if request.load_context_present else None
     )
+    if request.secret_fields:
+        explicit_context = _redact_declared(explicit_context, request.secret_fields)
     if not request.envelope:
         return _load_trace.attach_context(receipt, explicit_context)
-    result = dict(receipt); prior = request.value.get("stamps"); prior = list(prior) if isinstance(prior, list) else []
+    result = dict(receipt)
     stamp = {"verb": request.verb, "outcome": _outcome(result), "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     pin_bearing = _pin_bearing_exousia(request.value)
     carried = _redact_pin_carriers(request.value) if pin_bearing else copy.deepcopy(request.value)
-    raw_envelope = json.dumps(carried, separators=(",", ":")) if pin_bearing else request.raw_envelope
+    if request.secret_fields:
+        carried = _redact_declared(carried, request.secret_fields)
+    prior = carried.get("stamps"); prior = list(prior) if isinstance(prior, list) else []
+    raw_envelope = json.dumps(carried, separators=(",", ":")) if pin_bearing or request.secret_fields else request.raw_envelope
     envelope = carried
     # Absent/list stamps are an additive custody lane. Preserve malformed
     # caller data in the carried envelope while top-level custody stays usable.
@@ -151,5 +167,5 @@ def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
         envelope["stamps"] = prior + [dict(stamp)]
     result.update(intent_id=request.intent_id, raw_envelope=raw_envelope, envelope=envelope, stamps=prior + [dict(stamp)], staff=dict(stamp))
     return _load_trace.attach_context(result, explicit_context)
-def read_fields(*fields: str, flags: Sequence[str] = (), rooms: Sequence[str] = ()) -> Request:
-    return read(known_fields=fields, declared_flags=flags, rooms=rooms)
+def read_fields(*fields: str, flags: Sequence[str] = (), rooms: Sequence[str] = (), secret: Sequence[str] = ()) -> Request:
+    return read(known_fields=fields, declared_flags=flags, rooms=rooms, secret=secret)

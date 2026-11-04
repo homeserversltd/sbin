@@ -167,7 +167,7 @@ def _hand_options(words: list[str]) -> dict:
         if not word.startswith("--") or len(word) == 2:
             raise ValueError("expected a long option")
         name, equal, value = word[2:].partition("=")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin", "key", "password", "passphrase", "token", "secret"}:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", name) or name in {"action", "op", "operation", "verb", "command", "mode", "args", "pin", "oldPin", "newPin", "key", "password", "passphrase", "token", "secret", "oldPassword", "newPassword", "currentPassword", "vaultPassword", "devicePasswords"}:
             raise ValueError("invalid or forbidden long option")
         if not equal:
             if name == "dry-run" or i + 1 >= len(words) or words[i + 1].startswith("--"):
