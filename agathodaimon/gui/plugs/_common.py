@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import configparser
 import json
+import math
 import os
 import subprocess
 import threading
@@ -265,6 +266,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     static_signals: dict[str, str] = {}
     action_fields: set[str] = set()
     choices: dict[str, dict[str, Any]] = {}
+    numeric_choices = {spec["field"] for spec in specs
+                       if spec.get("kind") == "choice" and spec.get("number") is True}
 
     read_error = Adw.ActionRow(title="Couldn't read these settings")
     read_error.set_visible(False)
@@ -393,6 +396,17 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 return
             if value == previous and selected not in action_fields:
                 return
+            if selected in numeric_choices and rows[selected] is choices[selected]["entry"]:
+                try:
+                    number = float(value)
+                    if not math.isfinite(number):
+                        raise ValueError("not finite")
+                except (ValueError, OverflowError):
+                    status_generation[selected] += 1
+                    state["status"][selected] = "Not saved"
+                    show_status(selected, "Not saved", "not a number")
+                    return
+                value = int(number) if number.is_integer() else number
             status_generation[selected] += 1
             state["status"].pop(selected, None)
             show_status(selected)
