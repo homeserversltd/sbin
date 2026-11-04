@@ -312,6 +312,8 @@ def build_widget() -> Any:
         "max_id": None,
         "max_rendered": None,
         "max_buttons": {},
+        "action_focus": [],
+        "module_focus": [],
     }
 
     stack = Gtk.Stack(hexpand=True, vexpand=True)
@@ -543,6 +545,10 @@ def build_widget() -> Any:
             button.connect("clicked", show_diff, identifier)
             data["max_buttons"][identifier] = button
             actions.append(button)
+            child = actions.get_first_child()
+            while child is not None:
+                data["action_focus"].append(child)
+                child = child.get_next_sibling()
         box.append(actions)
 
     def post_to_ui(callback: Callable[..., bool], *args: Any) -> None:
@@ -658,12 +664,14 @@ def build_widget() -> Any:
         else:
             for run in history[:10]:
                 outcome = run["outcome"]
-                label_text = {"ok": "OK", "failed": "Failed", None: "Unknown"}[outcome]
-                label = Gtk.Label(label=label_text)
-                label.add_css_class(
+                icon_name = {"ok": "object-select-symbolic", "failed": "dialog-error-symbolic",
+                             None: "dialog-warning-symbolic"}[outcome]
+                mark = Gtk.Image.new_from_icon_name(icon_name)
+                mark.add_css_class(
                     "success" if outcome == "ok" else "error" if outcome == "failed" else "dim-label"
                 )
-                outcomes_box.append(label)
+                mark.set_tooltip_text(f"{_local_time(run['finished_at'])} · {outcome or 'unknown'}")
+                outcomes_box.append(mark)
 
         clear(failure_signals_box)
         if latest_failed is True and history:
@@ -727,6 +735,7 @@ def build_widget() -> Any:
             )
 
     def render_modules() -> None:
+        data["module_focus"] = []
         clear(module_flow)
         module_empty_label.set_visible(False)
         if not data["modules_ready"]:
@@ -782,6 +791,7 @@ def build_widget() -> Any:
             control_row.append(module_switch)
             content.append(control_row)
             module_switch.connect("state-set", toggle_module, identifier)
+            data["module_focus"].append(module_switch)
 
             error_message = data["module_errors"].get(identifier, "")
             if error_message:
@@ -793,6 +803,7 @@ def build_widget() -> Any:
     def render_pending() -> None:
         clear(pending_box)
         data["max_buttons"] = {}
+        data["action_focus"] = []
         if not data["interactables_ready"]:
             append_message(
                 pending_box,
@@ -967,6 +978,8 @@ def build_widget() -> Any:
     def finish_modules(receipt: Any, error: str | None, generation: int) -> bool:
         if generation != reads["modules"] or not data["alive"]:
             return False
+        previous = (data["modules_ready"], data["modules_error"], data["modules"],
+                    dict(data["module_pending"]), dict(data["module_errors"]))
         data["modules_ready"] = False
         data["modules_error"] = ""
         if error:
@@ -1004,7 +1017,10 @@ def build_widget() -> Any:
                         data["module_errors"][identifier] = "Module change was not confirmed by Caduceus."
                     else:
                         data["module_errors"].pop(identifier, None)
-        render_modules()
+        current = (data["modules_ready"], data["modules_error"], data["modules"],
+                   data["module_pending"], data["module_errors"])
+        if previous != current:
+            render_modules()
         return False
 
     def _normalise_interactables(receipt: Any) -> list[dict[str, Any]] | None:
@@ -1032,6 +1048,7 @@ def build_widget() -> Any:
     def finish_interactables(receipt: Any, error: str | None, generation: int) -> bool:
         if generation != reads["interactables"] or not data["alive"]:
             return False
+        previous = (data["interactables_ready"], data["interactables_error"], data["interactables"])
         data["interactables_ready"] = False
         data["interactables_error"] = ""
         if error:
@@ -1043,7 +1060,8 @@ def build_widget() -> Any:
             else:
                 data["interactables"] = values
                 data["interactables_ready"] = True
-        render_pending()
+        if previous != (data["interactables_ready"], data["interactables_error"], data["interactables"]):
+            render_pending()
         _refresh_headline()
         return False
 
@@ -1273,6 +1291,27 @@ def build_widget() -> Any:
         if keyval == Gdk.KEY_Escape and stack.get_visible_child_name() == "diff":
             show_updates(None)
             return True
+        if stack.get_visible_child_name() == "updates" and keyval in (Gdk.KEY_Tab, Gdk.KEY_ISO_Left_Tab):
+            blocked = (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.ALT_MASK |
+                       Gdk.ModifierType.SUPER_MASK | Gdk.ModifierType.META_MASK |
+                       Gdk.ModifierType.HYPER_MASK)
+            if _state & blocked:
+                return False
+            root = stack.get_root()
+            focus = root.get_focus() if root is not None else None
+            targets = [update_button, history_row, timer_row, timer_switch,
+                       *data["action_focus"], *data["module_focus"]]
+            targets = [widget for widget in targets if widget.get_mapped()
+                       and widget.get_focusable() and widget.is_sensitive()]
+            current = focus
+            while current is not None and current not in targets:
+                current = current.get_parent()
+            if current is not None:
+                index = targets.index(current)
+                reverse = keyval == Gdk.KEY_ISO_Left_Tab or bool(_state & Gdk.ModifierType.SHIFT_MASK)
+                next_index = index - 1 if reverse else index + 1
+                if 0 <= next_index < len(targets):
+                    return bool(targets[next_index].grab_focus())
         return False
 
     key_controller = Gtk.EventControllerKey.new()
