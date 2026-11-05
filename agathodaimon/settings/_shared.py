@@ -56,16 +56,6 @@ def home() -> Path:
     return Path(os.environ.get("CADUCEUS_SETTINGS_HOME", str(OWNER_HOME)))
 
 
-def owner_session_command(argv: Sequence[str]) -> tuple[list[str], dict[str, str] | None]:
-    command_argv = list(argv)
-    if os.geteuid() != 0 or not command_argv or command_argv[0] not in OWNER_SESSION_TOOLS:
-        return command_argv, None
-    owner_uid = pwd.getpwnam(OWNER_USER).pw_uid
-    environment = os.environ.copy()
-    environment["XDG_RUNTIME_DIR"] = f"/run/user/{owner_uid}"
-    environment["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{owner_uid}/bus"
-    environment["HOME"] = str(OWNER_HOME)
-    return ["runuser", "-u", OWNER_USER, "--", *command_argv], environment
 
 
 def paths() -> dict[str, Path]:
@@ -79,12 +69,6 @@ def paths() -> dict[str, Path]:
     }
 
 
-def run_command(argv: Sequence[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    command_argv, environment = owner_session_command(argv)
-    try:
-        return subprocess.run(command_argv, input=input_text, capture_output=True, text=True, timeout=8, check=False, env=environment)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(command_argv, 127, "", str(exc))
 
 
 def command(argv: Sequence[str]) -> tuple[bool, str, subprocess.CompletedProcess[str]]:
@@ -122,141 +106,12 @@ def percentage(value: Any, field: str) -> str:
     return f"{amount:g}%"
 
 
-def ini_read(path: Path) -> list[str]:
-    try:
-        return path.read_text(encoding="utf-8").splitlines(keepends=True)
-    except OSError:
-        return []
 
 
-def ini_get(lines: Iterable[str], key: str, section: str | None = None) -> str | None:
-    active: str | None = None
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            active = stripped[1:-1].strip()
-        if section is not None and active != section:
-            continue
-        match = re.match(r"^\s*" + re.escape(key) + r"\s*=\s*(.*?)\s*(?:[;#].*)?$", line)
-        if match:
-            return match.group(1).strip()
-    return None
 
 
-def ini_set(lines: list[str], key: str, value: str, section: str | None = None) -> list[str]:
-    out: list[str] = []
-    active: str | None = None
-    replaced = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            if section is not None and active == section and not replaced:
-                out.append(f"{key}={value}\n")
-                replaced = True
-            active = stripped[1:-1].strip()
-        if (section is None or active == section) and re.match(r"^\s*" + re.escape(key) + r"\s*=", line):
-            if not replaced:
-                prefix = line[: len(line) - len(line.lstrip())]
-                out.append(f"{prefix}{key}={value}\n")
-                replaced = True
-            continue
-        out.append(line)
-    if section is not None and active == section and not replaced:
-        out.append(f"{key}={value}\n")
-        replaced = True
-    if not replaced:
-        if out and not out[-1].endswith("\n"):
-            out[-1] += "\n"
-        if section is not None:
-            out.append(f"\n[{section}]\n")
-        out.append(f"{key}={value}\n")
-    return out
 
 
-class Receipt:
-    def __init__(self, kind: str, fields: list[str]) -> None:
-        root = Path(os.environ.get("CADUCEUS_RECEIPT_ROOT", "/var/lib/caduceus/receipts"))
-        self.run_dir = root / str(uuid.uuid4())
-        self.run_dir.mkdir(parents=True, exist_ok=False)
-        self.kind = kind
-        self.fields = fields
-        self.backups: list[dict[str, Any]] = []
-        self._saved: dict[Path, bytes | None] = {}
-        self.commands: list[dict[str, Any]] = []
-        self.changed = False
-
-    def backup(self, path: Path) -> None:
-        if path in self._saved:
-            return
-        existed = path.exists()
-        original = path.read_bytes() if existed else None
-        self._saved[path] = original
-        stat_result = path.stat() if existed else None
-        mode = (stat_result.st_mode & 0o777) if stat_result else None
-        self.backups.append({"path": str(path), "bytes": len(original) if original is not None else 0, "mode": mode, "uid": stat_result.st_uid if stat_result else None, "gid": stat_result.st_gid if stat_result else None, "existed": existed})
-
-    def replace(self, path: Path, payload: bytes) -> bool:
-        if path.exists() and path.read_bytes() == payload:
-            return False
-        self.backup(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
-                temporary = Path(handle.name)
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(temporary, mode)
-            os.replace(temporary, path)
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-            self.changed = True
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-        return True
-
-    def rollback(self, path: Path, payload: bytes) -> None:
-        if path.exists() and path.read_bytes() == payload:
-            return
-        mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
-        temporary: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.rollback.", delete=False) as handle:
-                temporary = Path(handle.name); handle.write(payload); handle.flush(); os.fsync(handle.fileno())
-            os.chmod(temporary, mode); os.replace(temporary, path)
-            fd = os.open(path.parent, os.O_RDONLY)
-            try: os.fsync(fd)
-            finally: os.close(fd)
-        finally:
-            if temporary is not None: temporary.unlink(missing_ok=True)
-
-    def restore_backups(self) -> None:
-        for path, payload in reversed(list(self._saved.items())):
-            if payload is None:
-                path.unlink(missing_ok=True)
-            else:
-                self.rollback(path, payload)
-                metadata = next(item for item in self.backups if item["path"] == str(path))
-                if metadata["mode"] is not None: os.chmod(path, metadata["mode"])
-                current = path.stat()
-                if (current.st_uid, current.st_gid) != (metadata["uid"], metadata["gid"]):
-                    os.chown(path, metadata["uid"], metadata["gid"])
-        self.changed = False
-
-    def finish(self, ok: bool, changed: bool = False, error: str | None = None) -> dict[str, Any]:
-        metadata = {"ok": ok, "changed": bool(changed), "kind": self.kind, "fields": self.fields,
-                    "backups": self.backups, "commands": self.commands}
-        if ok:
-            (self.run_dir / "run.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
-            return {"ok": True, "changed": bool(changed), "receiptPath": str(self.run_dir / "run.json"), "receipt": metadata}
-        self.run_dir.rmdir()
-        return {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
 
 
 class ReceiptFailure(ValueError):
@@ -290,23 +145,6 @@ def monitor_orientation(value: Any) -> int:
     if text not in TRANSFORMS: raise ValueError("invalid:orientation")
     return TRANSFORMS[text]
 
-def _default_card() -> tuple[str | None, str | None]:
-    ok, sink_name, _ = command(["pactl", "get-default-sink"])
-    good, text, _ = command(["pactl", "-f", "json", "list", "sinks"])
-    cards_ok, cards_text, _ = command(["pactl", "-f", "json", "list", "cards"])
-    if not ok or not good or not cards_ok:
-        return None, None
-    try:
-        sinks, cards = json.loads(text), json.loads(cards_text)
-        sink = next(item for item in sinks if isinstance(item, dict) and item.get("name") == sink_name)
-        card_id = sink.get("card")
-        card = next(item for item in cards if isinstance(item, dict) and item.get("index") == card_id)
-        active = card.get("active_profile")
-        profile = active.get("name") if isinstance(active, dict) else active
-        return (card.get("name") if isinstance(card.get("name"), str) else None,
-                profile if isinstance(profile, str) else None)
-    except (ValueError, TypeError, StopIteration):
-        return None, None
 
 
 def get_values(kind: str) -> dict[str, Any]:
@@ -403,9 +241,6 @@ def get_values(kind: str) -> dict[str, Any]:
     return {key: values.get(key) for key in FIELDS[kind]}
 
 
-def set_file_value(receipt: Receipt, path: Path, key: str, value: str, section: str | None = None) -> None:
-    lines = ini_read(path)
-    receipt.replace(path, "".join(ini_set(lines, key, value, section)).encode())
 
 
 def monitor_edit(receipt: Receipt, field: str, value: Any) -> None:
@@ -719,6 +554,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return emit({"ok": False, "firstMissingSignal": "cli-parse-failure"}, 2)
     except Exception as exc:
         return emit({"ok": False, "firstMissingSignal": str(exc)}, 1)
+
+
+from agathodaimon.settings._receipt import Receipt
+from agathodaimon.settings._ini import ini_read, ini_get, ini_set, set_file_value
+from agathodaimon.settings._cmd import run_command, owner_session_command, _default_card
 
 
 if __name__ == "__main__": raise SystemExit(main())

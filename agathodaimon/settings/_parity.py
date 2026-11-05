@@ -15,6 +15,7 @@ from typing import Any
 from agathodaimon._envelope import EnvelopeError, attach, read
 from agathodaimon.settings import _shared, _options
 from agathodaimon.settings.display import backends
+from agathodaimon.settings._sway import _sway_reload
 
 
 def _command(argv: list[str], receipt: _shared.Receipt | None = None) -> tuple[bool, str]:
@@ -124,20 +125,6 @@ def get_values(kind: str) -> dict[str, Any]:
     return {"keyboard": _keyboard_values, "region": _region_values, "energy": _energy_values}[kind]()
 
 
-def _sway_reload(receipt: _shared.Receipt) -> None:
-    selected = backends.select_backend()
-    if not selected:
-        raise ValueError("sway-session-unavailable")
-    socket = str(selected["socket"])
-    argv, runtime, _ = backends._sway_argv(socket, ["reload"])
-    result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
-    receipt.commands.append({"argv": argv, "returncode": result.get("returncode")})
-    try:
-        responses = json.loads(result.get("stdout", ""))
-    except (TypeError, json.JSONDecodeError):
-        responses = []
-    if not result.get("ok") or not isinstance(responses, list) or not responses or any(not isinstance(x, dict) or x.get("success") is not True for x in responses):
-        raise ValueError("sway-reload-failed")
 
 
 def _set_keyboard(field: str, value: Any, receipt: _shared.Receipt) -> None:
