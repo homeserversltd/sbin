@@ -1,7 +1,0 @@
-{
-  "children": ["create-key", "update-key", "admin-password", "rotate-capability", "key-status"],
-  "sclerite": {
-    "name": "all",
-    "features": {}
-  }
-}

@@ -1,8 +1,6 @@
 {
   "children": [
-    "keyman",
     "open",
-    "pin",
     "policy"
   ],
   "sclerite": {

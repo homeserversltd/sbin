@@ -2,7 +2,7 @@
 import sys
 
 NOUN = 'vault'
-VERBS = ['keyman', 'open', 'pin']
+VERBS = ['open']
 
 
 def main(argv=None):
