@@ -190,7 +190,7 @@ def systemctl() -> str:
 
 
 def timedatectl_readback() -> dict[str, Any]:
-    result = _run([timedatectl(), "show", "--property=NTPSynchronized,NTP,Timezone"])
+    result = _run([timedatectl(), "show", "-p", "NTPSynchronized", "-p", "NTP", "-p", "Timezone"])
     values: dict[str, str] = {}
     for line in result.stdout.splitlines() if result.returncode == 0 else ():
         if "=" in line:
@@ -208,7 +208,7 @@ def timedatectl_readback() -> dict[str, Any]:
         elif key == "Time zone" and "Timezone" not in values:
             values["Timezone"] = value.split(" ", 1)[0]
     return {
-        "command": [timedatectl(), "show", "--property=NTPSynchronized,NTP,Timezone"],
+        "command": [timedatectl(), "show", "-p", "NTPSynchronized", "-p", "NTP", "-p", "Timezone"],
         "show_exit": result.returncode,
         "show_stdout": result.stdout.strip(),
         "show_stderr": result.stderr.strip(),
