@@ -399,6 +399,8 @@ def admin_suite_revert(payload: dict[str, Any], *, planned: bool) -> dict[str, A
 
 def _admin_owner(payload: dict[str, Any], *, planned: bool, revert: bool) -> dict[str, Any]:
     password = _required(payload, "oldPassword" if revert else "newPassword")
+    if any(char in password for char in "\r\n\x00"):
+        raise Refusal("agathodaimon-keyman-owner-password-invalid")
     action = "admin-password.owner-revert" if revert else "admin-password.owner"
     command = _sudo([CHPASSWD])
     if not planned:
