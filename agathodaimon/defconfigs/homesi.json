@@ -10,7 +10,8 @@
     "nmcli",
     "local-ai",
     "pid2-unit",
-    "backup-drive"
+    "backup-drive",
+    "clock-follower"
   ],
   "choices": {}
 }

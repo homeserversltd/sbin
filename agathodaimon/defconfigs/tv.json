@@ -6,7 +6,8 @@
     "pactl",
     "desktop",
     "gtk4",
-    "backup-drive"
+    "backup-drive",
+    "clock-follower"
   ],
   "choices": {}
 }

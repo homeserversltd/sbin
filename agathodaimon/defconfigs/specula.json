@@ -33,7 +33,8 @@
     "console-restart",
     "sunshine",
     "sddm",
-    "gtk4"
+    "gtk4",
+    "clock-follower"
   ],
   "choices": {
     "transmission-pia-protocol": "openvpn"

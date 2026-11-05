@@ -1,5 +1,10 @@
 {
-  "children": [],
+  "children": [
+    "state",
+    "resolve",
+    "ensure-ntp",
+    "set-timezone"
+  ],
   "sclerite": {
     "name": "all",
     "features": {

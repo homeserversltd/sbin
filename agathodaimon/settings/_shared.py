@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 from agathodaimon._envelope import EnvelopeError, attach, read
 from agathodaimon.settings import _options
+from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
 FIELDS: dict[str, tuple[str, ...]] = {
     "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan"),
@@ -459,6 +460,7 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
         lines[start:end]=section; receipt.replace(path,"".join(lines).encode()); return
     if kind == "datetime":
         if field not in ("timezone","ntp_enabled"): raise ValueError("unsupported:"+field)
+        if field == "timezone": require_timezone_change_allowed()
         require("timedatectl",field); val=("yes" if boolean(value,field) else "no") if field=="ntp_enabled" else str(scalar(value,field)); argv=["timedatectl","set-ntp",val] if field=="ntp_enabled" else ["timedatectl","set-timezone",val]; good,_,result=command(argv); receipt.commands.append({"argv":argv,"returncode":result.returncode})
         if not good: raise ValueError("privilege:"+field)
         return
@@ -498,6 +500,7 @@ def family_main(kind: str, argv: Sequence[str] | None = None) -> int:
             return emit(attach({"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}, request), 1)
         receipt = Receipt(kind, list(changes))
         try:
+            if kind == "datetime" and "timezone" in changes: require_timezone_change_allowed()
             for field, value in changes.items():
                 set_value(kind, field, value, receipt)
             return emit(attach(receipt.finish(True, receipt.changed), request), 0)
@@ -532,6 +535,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return emit(attach({"ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": "no-fields-supplied"}, request), 1)
             receipt = Receipt(kind, list(changes))
             try:
+                if kind == "datetime" and "timezone" in changes: require_timezone_change_allowed()
                 for field, value in changes.items():
                     set_value(kind, field, value, receipt)
                 return emit(attach(receipt.finish(True, receipt.changed), request), 0)
@@ -545,6 +549,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if len(args.field) != len(args.value_json): return emit({"ok": False, "firstMissingSignal": "field-value-count-mismatch"}, 1)
         receipt = Receipt(args.kind, list(args.field))
         try:
+            if args.kind == "datetime" and "timezone" in args.field: require_timezone_change_allowed()
             for field, raw in zip(args.field, args.value_json): set_value(args.kind, field, json.loads(raw), receipt)
             return emit(receipt.finish(True, receipt.changed), 0)
         except Exception as exc:
