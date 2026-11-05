@@ -57,11 +57,9 @@ requires either `sunshine` or `sddm`; HomeConsole selects `sddm` explicitly.
 the existing HomeServer games crossings. HomeConsole selects `games` directly
 for its ROM library and artwork. These are not physical package dependencies.
 
-`keyman/key-status` is owned by `keyman`, and `transmission/status` by
-`transmission`; neither status is globally selected under `all`. `face/badge`
+`transmission/status` is owned by `transmission`; it is not globally selected under `all`. `face/badge`
 and `face/meter` are among the twelve `gtk4`-owned face leaves, not common `all`
-observers. Those key/status bands are available only to profiles selecting
-their owning feature (HomeServer here). These observer declarations remain
+observers. That status band is available only to profiles selecting its owning feature (HomeServer here). These observer declarations remain
 honest-not-found where dispatch has no implementation; the internal
 Transmission bands are not exposed by the crossings. `samba` is likewise
 common observer surface.

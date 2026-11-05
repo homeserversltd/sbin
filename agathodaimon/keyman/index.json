@@ -1,10 +1,6 @@
 {
   "children": [
-    "admin-password",
-    "create-key",
-    "key-status",
-    "newkey",
-    "update-key"
+    "newkey"
   ],
   "sclerite": {
     "name": "all",

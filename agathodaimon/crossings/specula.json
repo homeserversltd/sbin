@@ -33,11 +33,7 @@
     "face/workspace",
     "games/provider-keys",
     "games/sync",
-    "keyman/admin-password",
-    "keyman/create-key",
-    "keyman/key-status",
     "keyman/newkey",
-    "keyman/update-key",
     "linker/browse",
     "linker/delete",
     "linker/deploy",
@@ -277,23 +273,7 @@
     ],
     [
       "keyman",
-      "admin-password"
-    ],
-    [
-      "keyman",
-      "create-key"
-    ],
-    [
-      "keyman",
-      "key-status"
-    ],
-    [
-      "keyman",
       "newkey"
-    ],
-    [
-      "keyman",
-      "update-key"
     ],
     [
       "linker",
@@ -612,10 +592,6 @@
     "/api/v1/interactables/:id/run",
     "/api/v1/interactables/:id/silence",
     "/api/v1/interactables/:id/unsilence",
-    "/api/v1/keyman/admin-password",
-    "/api/v1/keyman/create-key",
-    "/api/v1/keyman/key-status",
-    "/api/v1/keyman/update-key",
     "/api/v1/linker/browse",
     "/api/v1/linker/delete",
     "/api/v1/linker/deploy",
@@ -720,10 +696,7 @@
       "appliance/sudo-passwordless",
       "exousia/change",
       "exousia/reset-default",
-      "keyman/admin-password",
-      "keyman/create-key",
       "keyman/newkey",
-      "keyman/update-key",
       "linker/delete",
       "linker/deploy",
       "linker/mkdir",
@@ -815,19 +788,7 @@
       ],
       [
         "keyman",
-        "admin-password"
-      ],
-      [
-        "keyman",
-        "create-key"
-      ],
-      [
-        "keyman",
         "newkey"
-      ],
-      [
-        "keyman",
-        "update-key"
       ],
       [
         "linker",
@@ -975,9 +936,6 @@
       "/api/v1/appliance/service/:service/status",
       "/api/v1/appliance/service/:service/stop",
       "/api/v1/appliance/stats/admin",
-      "/api/v1/keyman/admin-password",
-      "/api/v1/keyman/create-key",
-      "/api/v1/keyman/update-key",
       "/api/v1/linker/delete",
       "/api/v1/linker/deploy",
       "/api/v1/linker/mkdir",
