@@ -1,0 +1,21 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "dry-run": true,
+  "mutation_allowed": false,
+  "sclerite": {
+    "name": "keyman",
+    "features": {
+      "keyman": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

@@ -30,7 +30,7 @@ def _show(prefix, unit):
     return code, values
 
 
-def control(action, unit, scope, deadline_seconds=30):
+def control(action, unit, scope, deadline_seconds=30, *, planned=False):
     receipt = {"schema": SCHEMA, "ok": False, "action": action, "unit": unit, "scope": scope,
                "command": None, "returncode": None,
                "observed": {name: None for name in PROPERTIES.values()},
@@ -49,6 +49,9 @@ def control(action, unit, scope, deadline_seconds=30):
         receipt["first_missing_signal"] = "invalid-scope"
         return receipt
     prefix = ["systemctl"] + (["--user", "-M", f"{OWNER}@.host"] if scope == "owner" else [])
+    if action == "restart" and planned:
+        receipt.update(ok=True, command=[*prefix, action, unit], first_missing_signal="none")
+        return receipt
     code, initial = _show(prefix, unit)
     receipt["observed"] = dict(initial)
     receipt["readback"] = initial

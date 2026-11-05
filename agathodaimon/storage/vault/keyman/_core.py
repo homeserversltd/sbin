@@ -360,6 +360,72 @@ def admin_password(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
     return _receipt("admin-password", True, planned=False, commands=commands, sambaUser=samba_user)
 
 
+def admin_verify(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
+    old = _required(payload, "oldPassword")
+    command = [KEYMAN, "export", "service_suite"]
+    if not planned:
+        suite_password = _export_named_key("service_suite", planned=False)
+        try:
+            try:
+                matches = bytes(suite_password) == old.encode("utf-8")
+            except UnicodeEncodeError:
+                matches = False
+        finally:
+            _zero(suite_password)
+        if not matches:
+            raise Refusal("agathodaimon-keyman-current-password-invalid")
+    return _receipt("admin-password.verify", True, planned=planned, commands=[command], mutationPerformed=False)
+
+
+def _admin_rotate(payload: dict[str, Any], *, planned: bool, revert: bool) -> dict[str, Any]:
+    old = _required(payload, "oldPassword")
+    new = _required(payload, "newPassword")
+    action = "admin-password.suite-revert" if revert else "admin-password.rotate-suite"
+    command = [KEYMAN, "rotate-suite", "--stdin"]
+    if not planned:
+        current, replacement = (new, old) if revert else (old, new)
+        signal = "agathodaimon-keyman-suite-revert-refused" if revert else "agathodaimon-keyman-service-suite-rotate-refused"
+        _must(_run(command, secret_input=json.dumps({"current_password": current, "new_password": replacement})), signal)
+    return _receipt(action, True, planned=planned, commands=[command])
+
+
+def admin_rotate_suite(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
+    return _admin_rotate(payload, planned=planned, revert=False)
+
+
+def admin_suite_revert(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
+    return _admin_rotate(payload, planned=planned, revert=True)
+
+
+def _admin_owner(payload: dict[str, Any], *, planned: bool, revert: bool) -> dict[str, Any]:
+    password = _required(payload, "oldPassword" if revert else "newPassword")
+    action = "admin-password.owner-revert" if revert else "admin-password.owner"
+    command = _sudo([CHPASSWD])
+    if not planned:
+        signal = "agathodaimon-keyman-owner-revert-refused" if revert else "agathodaimon-keyman-owner-password-refused"
+        _must(_run(command, secret_input=f"owner:{password}\n"), signal)
+    return _receipt(action, True, planned=planned, commands=[command])
+
+
+def admin_owner(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
+    return _admin_owner(payload, planned=planned, revert=False)
+
+
+def admin_owner_revert(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
+    return _admin_owner(payload, planned=planned, revert=True)
+
+
+def admin_samba(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
+    new = _required(payload, "newPassword")
+    samba_user = payload.get("sambaUser", "admin")
+    if not isinstance(samba_user, str) or not samba_user or any(not (part.isalnum() or part in "_-.") for part in samba_user):
+        raise Refusal("agathodaimon-keyman-samba-user-invalid")
+    command = _sudo([SMBPASSWD, "-s", samba_user])
+    if not planned:
+        _must(_run(command, secret_input=f"{new}\n{new}\n"), "agathodaimon-keyman-samba-password-refused")
+    return _receipt("admin-password.samba", True, planned=planned, commands=[command], sambaUser=samba_user)
+
+
 def rotate_capability(payload: dict[str, Any], *, planned: bool) -> dict[str, Any]:
     if set(payload) - {"action", "dryRun"}:
         raise Refusal("agathodaimon-keyman-capability-arguments-forbidden")

@@ -10,6 +10,12 @@ _ACTS = {
     "create-key": _core.create,
     "update-key": _core.update,
     "admin-password": _core.admin_password,
+    "admin-password.verify": _core.admin_verify,
+    "admin-password.rotate-suite": _core.admin_rotate_suite,
+    "admin-password.owner": _core.admin_owner,
+    "admin-password.samba": _core.admin_samba,
+    "admin-password.suite-revert": _core.admin_suite_revert,
+    "admin-password.owner-revert": _core.admin_owner_revert,
     "rotate-capability": _core.rotate_capability,
     "key-status": _core.key_status,
 }
