@@ -1,0 +1,16 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": false,
+  "sclerite": {
+    "name": "clock-follower",
+    "features": {
+      "clock-follower": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {"band": false, "verbs": [], "routes": []}
+      }
+    }
+  }
+}

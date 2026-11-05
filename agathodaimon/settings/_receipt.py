@@ -21,6 +21,7 @@ class Receipt:
         self._saved: dict[Path, bytes | None] = {}
         self.commands: list[dict[str, Any]] = []
         self.changed = False
+        self.timezone_command_performed = False
 
     def backup(self, path: Path) -> None:
         if path in self._saved:

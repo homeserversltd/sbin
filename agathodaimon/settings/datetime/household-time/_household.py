@@ -192,12 +192,12 @@ def systemctl() -> str:
 def timedatectl_readback() -> dict[str, Any]:
     result = _run([timedatectl(), "show", "--property=NTPSynchronized,NTP,Timezone"])
     values: dict[str, str] = {}
-    for line in result.stdout.splitlines():
+    for line in result.stdout.splitlines() if result.returncode == 0 else ():
         if "=" in line:
             key, value = line.split("=", 1)
             values[key] = value
     status = _run([timedatectl(), "status"])
-    for line in status.stdout.splitlines():
+    for line in status.stdout.splitlines() if status.returncode == 0 else ():
         if ":" not in line:
             continue
         key, value = (part.strip() for part in line.split(":", 1))
@@ -255,15 +255,29 @@ def set_timezone(candidate: str) -> dict[str, Any]:
     if previous is not None:
         previous = validated_timezone(previous)
     if previous == requested:
-        return receipt("set-timezone", ok=True, changed=False, requested_timezone=requested,
-                       previously_applied_timezone=previous, applied_timezone=previous,
-                       debounce_gated=False, post_apply=timedatectl_readback())
+        try:
+            readback = timedatectl_readback()
+        except (OSError, subprocess.SubprocessError):
+            return receipt("set-timezone", ok=False, changed=False, requested_timezone=requested,
+                           previously_applied_timezone=previous, applied_timezone=previous,
+                           debounce_gated=False,
+                           first_missing_signal="agathodaimon-household-time-timezone-readback-failed")
+        current = readback["values"].get("Timezone")
+        if not current:
+            return receipt("set-timezone", ok=False, changed=False, requested_timezone=requested,
+                           previously_applied_timezone=previous, applied_timezone=previous,
+                           debounce_gated=False, post_apply=readback,
+                           first_missing_signal="agathodaimon-household-time-timezone-readback-failed")
+        if current == requested:
+            return receipt("set-timezone", ok=True, changed=False, requested_timezone=requested,
+                           previously_applied_timezone=previous, applied_timezone=previous,
+                           debounce_gated=False, post_apply=readback)
     hold = _hold_seconds()
     observed = now()
     first_application = previous is None
     pending = state.get("pending_timezone")
     pending_at = parse_stamp(state.get("pending_observed_at"))
-    gated = not first_application and (pending != requested or pending_at is None or (observed - pending_at).total_seconds() < hold)
+    gated = not first_application and previous != requested and (pending != requested or pending_at is None or (observed - pending_at).total_seconds() < hold)
     if gated:
         if pending != requested or pending_at is None:
             state["pending_timezone"] = requested

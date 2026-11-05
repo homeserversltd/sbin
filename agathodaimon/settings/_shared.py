@@ -463,6 +463,11 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
         if field == "timezone": require_timezone_change_allowed()
         require("timedatectl",field); val=("yes" if boolean(value,field) else "no") if field=="ntp_enabled" else str(scalar(value,field)); argv=["timedatectl","set-ntp",val] if field=="ntp_enabled" else ["timedatectl","set-timezone",val]; good,_,result=command(argv); receipt.commands.append({"argv":argv,"returncode":result.returncode})
         if not good: raise ValueError("privilege:"+field)
+        if field == "timezone":
+            receipt.timezone_command_performed = True
+            from agathodaimon.settings.datetime import _zone_mode
+            _zone_mode.set_mode("manual")
+            receipt.changed = True
         return
     raise ValueError("unsupported:"+field)
 
@@ -481,6 +486,15 @@ def parser() -> argparse.ArgumentParser:
     g = sub.add_parser("get", add_help=False); g.add_argument("--json", action="store_true", required=True)
     s = sub.add_parser("set", add_help=False); s.add_argument("--field", action="append", required=True); s.add_argument("--value-json", action="append", required=True)
     return p
+
+
+def _failed_settings_receipt(receipt: Receipt, error: Exception) -> dict[str, Any]:
+    performed = getattr(receipt, "timezone_command_performed", False)
+    result = receipt.finish(False, performed, str(error))
+    if performed:
+        result["changed"] = True
+        result["mutationPerformed"] = True
+    return result
 
 
 def family_main(kind: str, argv: Sequence[str] | None = None) -> int:
@@ -506,7 +520,7 @@ def family_main(kind: str, argv: Sequence[str] | None = None) -> int:
             return emit(attach(receipt.finish(True, receipt.changed), request), 0)
         except Exception as error:
             receipt.restore_backups()
-            return emit(attach(receipt.finish(False, False, str(error)), request), 1)
+            return emit(attach(_failed_settings_receipt(receipt, error), request), 1)
     except (EnvelopeError, ValueError) as error:
         return emit({"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}, 1)
 
@@ -540,7 +554,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     set_value(kind, field, value, receipt)
                 return emit(attach(receipt.finish(True, receipt.changed), request), 0)
             except Exception as exc:
-                return emit(attach(receipt.finish(False, False, str(exc)), request), 1)
+                return emit(attach(_failed_settings_receipt(receipt, exc), request), 1)
         except (EnvelopeError, ValueError) as exc:
             return emit({"ok": False, "firstMissingSignal": str(exc), "mutationPerformed": False}, 1)
     try:
@@ -554,7 +568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return emit(receipt.finish(True, receipt.changed), 0)
         except Exception as exc:
             receipt.restore_backups()
-            return emit(receipt.finish(False, False, str(exc)), 1)
+            return emit(_failed_settings_receipt(receipt, exc), 1)
     except SystemExit:
         return emit({"ok": False, "firstMissingSignal": "cli-parse-failure"}, 2)
     except Exception as exc:

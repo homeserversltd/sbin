@@ -15,5 +15,7 @@ def require_timezone_change_allowed():
             profile = value.get("profile") if isinstance(value, dict) else None
         except (OSError, UnicodeError, ValueError):
             profile = None
+    if not isinstance(profile, str) or not profile:
+        raise ValueError("agathodaimon-household-time-profile-unavailable")
     if profile == "homeserver":
         raise ValueError("agathodaimon-household-time-homeserver-utc-only")
