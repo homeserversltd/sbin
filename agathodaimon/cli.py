@@ -1040,7 +1040,9 @@ def _envelope_operation(envelope: dict | None, remainder: list[str]) -> str | No
 def _display_startup_reapplication_without_pin(
     target: str, remainder: list[str], envelope: dict | None,
 ) -> bool:
-    if target != "settings/display" or remainder != ["apply"] or envelope is not None:
+    flat_apply = target == "settings/display" and remainder == ["apply"]
+    split_apply = target == "settings/display/apply" and not remainder
+    if not (flat_apply or split_apply) or envelope is not None:
         return False
     try:
         module = _load(ROOT / "settings" / "display" / "index.py")
@@ -1070,16 +1072,8 @@ def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | 
     if _display_startup_reapplication_without_pin(target, remainder, envelope):
         return False
     read_only = {"get", "read", "status", "list", "show", "observed", "validate", "verify"}
-    mutation = {"set", "change", "apply", "mutate", "write", "create", "remove", "update", "start", "stop", "restart", "enable", "disable", "reset-default", "unlock", "open", "register", "unregister"}
     if target.startswith("settings/"):
-        if operation in read_only:
-            return False
-        if operation in mutation:
-            return True
-        payload = envelope.get("payload") if isinstance(envelope, dict) else None
-        if not isinstance(payload, dict) and isinstance(envelope, dict):
-            payload = envelope
-        return isinstance(payload, dict) and any(key not in {"flags", "rooms", "stamps"} for key in payload)
+        return True
     if target == "appliance/service":
         return operation not in {"read", "get", "show", "list", "observed", "status"}
     if target == "portals/service-control":
@@ -1138,6 +1132,7 @@ def _administrative_pin_admits(
     pin_present: bool,
     pin: object,
     publication,
+    startup_unenveloped: bool = False,
 ) -> bool:
     if not pin_required or caduceus_root or target is None:
         return True
@@ -1147,6 +1142,9 @@ def _administrative_pin_admits(
         else _administrative_target(target, publication)
     )
     if not is_admin:
+        return True
+    startup_envelope = None if startup_unenveloped else envelope
+    if _display_startup_reapplication_without_pin(target, remainder, startup_envelope):
         return True
     declared = _mutation_allowed(ROOT / target)
     if declared is False or (declared is None and not _admin_mutation_request(target, remainder, envelope)):
@@ -1318,6 +1316,7 @@ def main(argv=None):
     hand_form = (chord or (bool(remainder) and remainder[0].startswith("--"))
                  or (not remainder and (envelope is None or "schema" in envelope)))
     if hand_form:
+        startup_unenveloped = envelope is None and not remainder
         if envelope is None:
             raw = sys.stdin.getvalue() if isinstance(sys.stdin, _EnvelopeStdin) else ""
             if raw.strip():
@@ -1345,7 +1344,7 @@ def main(argv=None):
             return 2
         if chord and pin_required and not caduceus_root and publication is None:
             return _refuse_administrative("agathodaimon-crossings-unavailable")
-        admitted = _administrative_pin_admits(cli_target, [], envelope, pin_required, caduceus_root, pin_present, pin, publication)
+        admitted = _administrative_pin_admits(cli_target, [], envelope, pin_required, caduceus_root, pin_present, pin, publication, startup_unenveloped)
         pin = None
         if not admitted:
             return 1
