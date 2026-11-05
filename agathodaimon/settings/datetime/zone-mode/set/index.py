@@ -6,9 +6,9 @@ from agathodaimon.settings.datetime import _zone_mode
 
 def main(argv=None):
     try:
-        request = read(known_fields=("mode",))
+        request = read(known_fields=("zoneMode",))
         try:
-            mode = request.payload.get("mode")
+            mode = request.payload.get("zoneMode")
             changed = _zone_mode.set_mode(mode)
             value = {"schema": "caduceus.settings.datetime.zone-mode.set.v1", "ok": True, "changed": changed, "mode": mode, "firstMissingSignal": "none"}
         except (OSError, UnicodeError, ValueError) as error:
