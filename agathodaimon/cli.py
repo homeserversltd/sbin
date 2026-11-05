@@ -1216,8 +1216,11 @@ def main(argv=None):
             if cli_target is None:
                 print("invalid stream path", file=sys.stderr)
                 return 2
+            # A stream is not inspected here, so it cannot prove the absence
+            # of input required for the display startup exception.
+            gate_envelope = {} if cli_target == "settings/display/apply" else None
             if not _administrative_pin_admits(
-                cli_target, remainder, None, pin_required, caduceus_root,
+                cli_target, remainder, gate_envelope, pin_required, caduceus_root,
                 False, None, publication,
             ):
                 return 1
