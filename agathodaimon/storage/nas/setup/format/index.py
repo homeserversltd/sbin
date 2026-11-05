@@ -18,6 +18,7 @@ def main(argv=None):
         receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": failure.signal_name,
                    "role": None, "device": None, "partition": None, "partlabel": None,
                    "mapper": None, "mountpoint": None, "createdPartitionIdentity": None,
+                   "diskMutationAttempted": False, "deviceIdentity": None, "diskCleanVerified": False,
                    "steps": [{"step": failure.step, "ok": False, "readback": {"rc": failure.return_code}}],
                    "servicesStarted": [], "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": []}
         if 'envelope' in locals():

@@ -2348,35 +2348,6 @@ def _envelope_refusal(error: EnvelopeError) -> Refusal:
     return Refusal("agathodaimon-nas-envelope-invalid", "request-envelope")
 
 
-def dispatch(value: Any) -> dict[str, Any]:
-    from agathodaimon.storage.nas import deed
-    started = time.monotonic()
-    try:
-        if all(hasattr(value, field) for field in ("value", "payload", "envelope")):
-            envelope_request = value
-        else:
-            raw = value.decode("utf-8") if isinstance(value, bytes) else value if isinstance(value, str) else json.dumps(value)
-            envelope_request = _read_envelope_text(raw)
-        request = _request(envelope_request)
-    except Refusal as failure:
-        return {"schema": SCHEMA, "ok": False, "firstMissingSignal": failure.signal_name,
-                "role": None, "device": None, "partition": None, "partlabel": None, "mapper": None,
-                "mountpoint": None, "steps": [{"step": failure.step, "ok": False,
-                "readback": {"rc": failure.return_code}}], "servicesStarted": [],
-                "servicesNotRunning": [], "rolledBack": False,
-                "rollbackSteps": []}
-    except (UnicodeError, json.JSONDecodeError, EnvelopeError) as error:
-        failure = _envelope_refusal(error) if isinstance(error, EnvelopeError) else Refusal("agathodaimon-nas-request-invalid", "request")
-        return {"schema": SCHEMA, "ok": False, "firstMissingSignal": failure.signal_name,
-                "role": None, "device": None, "partition": None, "partlabel": None, "mapper": None,
-                "mountpoint": None, "steps": [{"step": failure.step, "ok": False,
-                "readback": {"rc": None}}], "servicesStarted": [],
-                "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": []}
-    receipt = _perform(request)
-    deed.finish("nas-setup", "nas-" + request["role"], receipt, started, request=envelope_request.intent_id)
-    return attach_envelope(receipt, envelope_request)
-
-
 def key_create(request: dict[str, Any]) -> dict[str, Any]:
     receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.key-create.v1", "ok": False,
                                "firstMissingSignal": "agathodaimon-nas-not-complete",
@@ -2498,6 +2469,10 @@ def format(request: dict[str, Any]) -> dict[str, Any]:
             receipt["rolledBack"] = bool(steps) and all(step.get("ok") is True for step in steps)
     finally:
         _zero(material)
+        receipt["diskMutationAttempted"] = mutations["diskMutationAttempted"] is True
+        receipt["deviceIdentity"] = info.get("deviceIdentity") if info is not None else None
+        receipt["diskCleanVerified"] = any(step.get("step") == "disk-clean-readback" and step.get("ok") is True
+                                           for step in receipt["rollbackSteps"])
         if info is not None:
             receipt["createdPartitionIdentity"] = info.get("createdPartitionIdentity")
         if lock_fd is not None:
@@ -2610,12 +2585,134 @@ def seat(request: dict[str, Any]) -> dict[str, Any]:
             receipt["rollbackSteps"] = steps
             receipt["rolledBack"] = bool(steps) and all(step.get("ok") is True for step in steps)
     finally:
+        receipt["mutationAttempted"] = bool(mutations.get("mapperOpenAttempted") or mutations.get("mountAttempted"))
         if lock_fd is not None:
             try:
                 os.close(lock_fd)
             except OSError:
                 pass
         if sync_guard_entered and sync_guard is not None:
+            sync_guard.__exit__(None, None, None)
+    return receipt
+
+
+def rollback(request: dict[str, Any]) -> dict[str, Any]:
+    """Rescue only changes witnessed by the individual setup stages."""
+    role, device = request["role"], request["device"]
+    expected = ROLE[role]
+    info: dict[str, Any] = {
+        "device": device, "partition": _partition_path(device), "mapper": expected["mapper"],
+        "mountpoint": expected["mountpoint"], "mountUnit": expected["mount_unit"],
+        "openUnit": expected["open_unit"], "serviceRole": key_record_for_role(role),
+        "deviceIdentity": request.get("deviceIdentity"),
+        "createdPartitionIdentity": request.get("createdPartitionIdentity"),
+        "services": [], "unitsStarted": [], "servicesStarted": [], "directMountStarted": False,
+    }
+    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.rollback.v1", "ok": False,
+        "firstMissingSignal": "agathodaimon-nas-not-complete", "role": role, "device": device,
+        "steps": [], "rollbackSteps": [], "servicesStarted": [], "servicesNotRunning": [],
+        "diskRetained": None, "keyRetained": None}
+    lock_fd = None
+    sync_guard = None
+    entered = False
+    try:
+        if os.geteuid() != 0:
+            raise Refusal("agathodaimon-nas-root-required", "root-preflight")
+        sync_guard = drive_guard()
+        sync_guard.__enter__()
+        entered = True
+        _record(receipt, "sync-lock", True, acquired=True)
+        try:
+            lock_fd = os.open(runtime_path(LOCK_PATH), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0), 0o600)
+            lock_st = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_st.st_mode) or lock_st.st_uid != 0:
+                raise OSError("unsafe-lock")
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            raise Refusal("agathodaimon-nas-transaction-lock-unavailable", "transaction-lock")
+        _record(receipt, "transaction-lock", True, acquired=True)
+        try:
+            mapper_state = _mapper_state(receipt, info)
+        except Exception:
+            receipt["attachmentConflict"] = "mapper-unobservable"
+            raise Refusal("agathodaimon-nas-setup-rescue-attachment-unobservable", "attachment-preflight") from None
+        receipt["attachmentReadback"] = {"mapper": mapper_state}
+        if mapper_state.get("exists") is not False:
+            receipt["attachmentConflict"] = "mapper"
+            raise Refusal("agathodaimon-nas-setup-rescue-attachment-present", "attachment-preflight")
+        try:
+            mount_state = _mount_readback(info)
+        except Exception:
+            receipt["attachmentConflict"] = "mountpoint-unobservable"
+            raise Refusal("agathodaimon-nas-setup-rescue-attachment-unobservable", "attachment-preflight") from None
+        receipt["attachmentReadback"]["mount"] = mount_state
+        if mount_state.get("mounted") is not False:
+            receipt["attachmentConflict"] = "mountpoint"
+            raise Refusal("agathodaimon-nas-setup-rescue-attachment-present", "attachment-preflight")
+        _record(receipt, "attachment-preflight", True, mapperAbsent=True, mountAbsent=True)
+        for field in ("formatOk", "diskMutationAttempted", "diskCleanVerified", "seatMutationAttempted", "seatRolledBack"):
+            value = request.get(field)
+            if value is not None and type(value) is not bool:
+                receipt["firstMissingField"] = field
+                raise Refusal("agathodaimon-nas-request-invalid", "rescue-witness")
+        seat_mutation, seat_rollback = request.get("seatMutationAttempted"), request.get("seatRolledBack")
+        seat_ran = seat_mutation is not None or seat_rollback is not None
+        if seat_ran and seat_mutation is not False and seat_rollback is not True:
+            receipt.update(diskRetained="seat-rollback-incomplete", keyRetained="seat-rollback-incomplete")
+            raise Refusal("agathodaimon-nas-setup-rescue-seat-rollback-incomplete", "seat-rollback")
+        identity = request.get("createdKeyIdentity")
+        valid_key = (isinstance(identity, dict) and all(type(identity.get(k)) is int and identity[k] >= 0
+                                                        for k in ("dev", "ino", "uid", "mode")))
+        if not valid_key:
+            receipt["keyRetained"] = "createdKeyIdentity-null" if identity is None else "createdKeyIdentity-invalid"
+            identity = None
+        format_ok = request.get("formatOk")
+        device_id, partition_id = request.get("deviceIdentity"), request.get("createdPartitionIdentity")
+        valid_ids = all(isinstance(v, str) and re.fullmatch(r"[0-9]+:[0-9]+", v) for v in (device_id, partition_id))
+        if format_ok is True and valid_ids:
+            info["services"] = _list_enabled_nas_services(receipt, info["mountpoint"])
+            records = _rollback(receipt, info, identity, {"diskMutationAttempted": True,
+                                "mapperOpenAttempted": False, "mountAttempted": False})
+            receipt["rollbackSteps"] = records
+            if not records or not all(step.get("ok") is True for step in records):
+                raise Refusal("agathodaimon-nas-setup-rescue-incomplete", "rollback")
+            receipt.update(ok=True, firstMissingSignal="none")
+        else:
+            if format_ok is True:
+                receipt["diskRetained"] = "format-identity-missing-or-invalid"
+            elif format_ok is False:
+                receipt["diskRetained"] = "format-refused"
+            else:
+                receipt["diskRetained"] = "format-unrun"
+            format_unrun = format_ok is None and request.get("diskMutationAttempted") is None
+            clean = (format_ok is not True and (format_unrun or request.get("diskMutationAttempted") is False
+                                                or request.get("diskCleanVerified") is True))
+            if identity is not None and clean:
+                records: list[dict[str, Any]] = []
+                _cleanup_key(receipt, info["serviceRole"], identity, True, records)
+                receipt["rollbackSteps"] = records
+                if not records or not all(step.get("ok") is True for step in records):
+                    raise Refusal("agathodaimon-nas-setup-rescue-key-cleanup-incomplete", "key-cleanup")
+                receipt.update(ok=True, firstMissingSignal="none")
+            else:
+                if identity is not None:
+                    receipt["keyRetained"] = "disk-clean-unverified"
+                raise Refusal("agathodaimon-nas-setup-rescue-witness-missing", "rescue-witness")
+    except Refusal as failure:
+        receipt["firstMissingSignal"] = failure.signal_name
+        receipt["failedStep"] = _safe_step(failure.step)
+        if not receipt["steps"] or receipt["steps"][-1]["step"] != failure.step:
+            _record(receipt, failure.step, False, rc=failure.return_code)
+    except Exception:
+        receipt["firstMissingSignal"] = "agathodaimon-nas-setup-rescue-aborted"
+        receipt["failedStep"] = "rollback"
+    finally:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
+        if entered and sync_guard is not None:
             sync_guard.__exit__(None, None, None)
     return receipt
 

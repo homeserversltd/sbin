@@ -26,7 +26,8 @@ def main(argv=None):
                    "role": None, "device": None, "partition": None, "partlabel": None,
                    "mapper": None, "mountpoint": None, "createdPartitionIdentity": None,
                    "steps": [{"step": failure.step, "ok": False, "readback": {"rc": failure.return_code}}],
-                   "servicesStarted": [], "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": []}
+                   "servicesStarted": [], "servicesNotRunning": [], "rolledBack": False, "rollbackSteps": [],
+                   "mutationAttempted": False}
         if missing_identity:
             receipt["firstMissingField"] = "createdPartitionIdentity"
         if 'envelope' in locals():

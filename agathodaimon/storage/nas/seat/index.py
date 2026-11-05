@@ -9,7 +9,7 @@ from _envelope import EnvelopeError, attach as attach_envelope
 from agathodaimon.storage.nas import deed
 from agathodaimon.storage.nas.folders.index import _attached_info, _observe_layout, _raw_config, _read_request
 from agathodaimon.storage.nas.runtime import Refusal, _role_info, guarded_drive
-from agathodaimon.storage.nas.setup.index import _apply_permissions, _load_config, _seed_portal_layout
+from agathodaimon.storage.nas.setup._setup import _apply_permissions, _load_config, _seed_portal_layout
 
 SCHEMA = "caduceus.nas.seat.v1"
 

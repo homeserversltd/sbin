@@ -16,7 +16,7 @@ from agathodaimon.storage.nas.runtime import (
     MAX_INPUT, Refusal, _info_for, _mount_for_target, _mount_readback, _mountinfo,
     _observed_holder_info, _record, _require_root, _role_info, guarded_drive, role_partition,
 )
-from agathodaimon.storage.nas.setup.index import PORTAL_FOLDER_LAYOUT, _open_directory_nofollow, _read_regular_nofollow
+from agathodaimon.storage.nas.setup._setup import PORTAL_FOLDER_LAYOUT, _open_directory_nofollow, _read_regular_nofollow
 
 SCHEMA = "caduceus.nas.folders.v1"
 

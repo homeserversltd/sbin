@@ -1,5 +1,14 @@
 {
-  "children": ["plan", "key-create", "format", "seat"],
+  "children": ["plan", "key-create", "format", "seat", "rollback"],
+  "serve": [
+    {"stage_id":"plan", "snake":"storage/nas/setup/plan", "arguments":{"device":{"$ref":"request.payload.device"}, "role":{"$ref":"request.payload.role"}}, "receipt":"caduceus.storage.nas.setup.plan.v1"},
+    {"stage_id":"key-create", "snake":"storage/nas/setup/key-create", "arguments":{"device":{"$ref":"request.payload.device"}, "role":{"$ref":"request.payload.role"}}, "receipt":"caduceus.storage.nas.setup.key-create.v1"},
+    {"stage_id":"format", "snake":"storage/nas/setup/format", "arguments":{"device":{"$ref":"request.payload.device"}, "role":{"$ref":"request.payload.role"}}, "receipt":"caduceus.storage.nas.setup.format.v1"},
+    {"stage_id":"seat", "snake":"storage/nas/setup/seat", "arguments":{"device":{"$ref":"request.payload.device"}, "role":{"$ref":"request.payload.role"}, "createdPartitionIdentity":{"$ref":"stages.format.receipt.createdPartitionIdentity"}}, "receipt":"caduceus.storage.nas.setup.seat.v1"}
+  ],
+  "rescue": [
+    {"stage_id":"rollback", "snake":"storage/nas/setup/rollback", "on_refusal_of":["key-create", "format", "seat"], "arguments":{"device":{"$ref":"request.payload.device"}, "role":{"$ref":"request.payload.role"}, "createdKeyIdentity":{"$ref":"stages.key-create.receipt.createdKeyIdentity"}, "formatOk":{"$ref":"stages.format.receipt.ok"}, "diskMutationAttempted":{"$ref":"stages.format.receipt.diskMutationAttempted"}, "createdPartitionIdentity":{"$ref":"stages.format.receipt.createdPartitionIdentity"}, "deviceIdentity":{"$ref":"stages.format.receipt.deviceIdentity"}, "diskCleanVerified":{"$ref":"stages.format.receipt.diskCleanVerified"}, "seatMutationAttempted":{"$ref":"stages.seat.receipt.mutationAttempted"}, "seatRolledBack":{"$ref":"stages.seat.receipt.rolledBack"}}, "receipt":"caduceus.storage.nas.setup.rollback.v1"}
+  ],
   "sclerite": {
     "name": "nas",
     "features": {
