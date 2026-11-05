@@ -100,6 +100,8 @@ def _help(path: Path) -> None:
                                  for name in fields]}
     if kind == "chord":
         result["stages"] = [stage.get("stage_id") for stage in declaration.get("serve", []) + declaration.get("rescue", []) + declaration.get("finally", [])]
+        if declaration.get("children"):
+            result["children"] = declaration["children"]
     print(json.dumps(result))
 
 def _slash_target(raw_path: str) -> Path | None:
@@ -1295,9 +1297,9 @@ def main(argv=None):
         if remainder or (not sys.stdin.isatty() and sys.stdin.read()):
             print("agathodaimon-noun-has-no-act", file=sys.stderr); return 2
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
-    if children and not has_index and remainder and remainder[0] != "--help":
+    if children and not has_index and not chord and remainder and remainder[0] != "--help":
         print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
-    if (remainder==["--help"] and (children or (not has_index and not chord))) or (not remainder and children and not has_index):
+    if not chord and ((remainder==["--help"] and (children or not has_index)) or (not remainder and children and not has_index)):
         print(json.dumps({"noun":original[0],"verbs":children},indent=2))
         if has_index:
             _help(path)
