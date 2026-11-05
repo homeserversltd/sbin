@@ -16,6 +16,8 @@ def main(argv=None):
         result.update(nativeUnit=rt.NATIVE_UNIT, nativeActiveBefore=before, mutationPerformed=False)
         if isinstance(before, bool):
             raise rt.TransmissionError("transmission-native-before-unavailable", "rollback-stop")
+        if not isinstance(attempted, bool):
+            raise rt.TransmissionError("rollback-witness-unresolved", "rollback-stop")
         if attempted is not True:
             result.update(ok=True, firstMissingSignal="none", reason="native-start-not-attempted")
         elif before in ("active", "reloading", "activating", "deactivating"):
