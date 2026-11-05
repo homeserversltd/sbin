@@ -10,6 +10,7 @@ import time
 import json
 import os
 import re
+import signal as signal_module
 import stat
 import sys
 import warnings
@@ -195,6 +196,14 @@ def _hand_options(words: list[str]) -> dict:
     return result
 
 
+def _contains_secret_name(value):
+    if isinstance(value, dict):
+        return any(key in _HAND_SECRET_NAMES or _contains_secret_name(child) for key, child in value.items())
+    if isinstance(value, list):
+        return any(_contains_secret_name(child) for child in value)
+    return False
+
+
 class _ChordError(ValueError):
     pass
 
@@ -248,6 +257,8 @@ def _validate_chord(declaration: dict):
                 raise _ChordError("chord-stage-deadline-invalid")
             for ref in _references(stage.get("arguments", {})):
                 parts = ref.split(".")
+                if parts[-1] in _HAND_SECRET_NAMES:
+                    raise _ChordError("chord-ref-secret")
                 if len(parts) >= 3 and parts[:2] == ["request", "payload"] and all(parts[2:]):
                     continue
                 if len(parts) >= 4 and parts[0] == "stages" and parts[2] == "receipt" and parts[1] in seen and all(parts[3:]):
@@ -259,24 +270,24 @@ def _validate_chord(declaration: dict):
     return serve, rescue, final
 
 
-def _resolve_arguments(value, request, completed):
+def _resolve_arguments(value, request, completed, allow_unrun=False):
     if isinstance(value, dict):
         if "$ref" in value:
             parts = value["$ref"].split(".")
             if parts[0] == "request":
                 current = {"request": request}
             else:
+                if allow_unrun and (parts[1] not in completed or completed[parts[1]]["outcome"] == "stage-skipped"):
+                    return None
                 current = {"stages": completed}
             for part in parts:
                 if not isinstance(current, dict) or part not in current:
                     raise _ChordError("chord-ref-unresolved")
                 current = current[part]
-            if current is None:
-                raise _ChordError("chord-ref-unresolved")
             return copy.deepcopy(current)
-        return {key: _resolve_arguments(child, request, completed) for key, child in value.items()}
+        return {key: _resolve_arguments(child, request, completed, allow_unrun) for key, child in value.items()}
     if isinstance(value, list):
-        return [_resolve_arguments(child, request, completed) for child in value]
+        return [_resolve_arguments(child, request, completed, allow_unrun) for child in value]
     return value
 
 
@@ -306,6 +317,20 @@ def _chord_deed(routine_id, envelope, rows, ok, failed, signal, started):
 
 
 def _walk_chord(path: Path, envelope: dict) -> int:
+    interrupted = [False]
+    def mark_interrupted(signum, frame):
+        interrupted[0] = True
+    previous = {sig: signal_module.getsignal(sig) for sig in (signal_module.SIGTERM, signal_module.SIGINT)}
+    try:
+        for sig in previous:
+            signal_module.signal(sig, mark_interrupted)
+        return _walk_chord_inner(path, envelope, interrupted)
+    finally:
+        for sig, handler in previous.items():
+            signal_module.signal(sig, handler)
+
+
+def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> int:
     started = time.monotonic()
     routine_id = path.relative_to(ROOT).as_posix()
     rows = []
@@ -326,31 +351,71 @@ def _walk_chord(path: Path, envelope: dict) -> int:
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": reason}))
         return 1
+    payload = envelope.get("payload")
+    dry_run = isinstance(payload, dict) and payload.get("dry-run") is True
+    if dry_run:
+        for stage in serve + rescue + final:
+            target = _slash_target(stage["snake"])
+            if _index(target.parent).get("dry-run") is not True:
+                print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
+                                  "request": request, "stages": [], "failedStage": None,
+                                  "firstMissingSignal": "chord-dry-run-undeclared-stage",
+                                  "firstMissingField": stage["stage_id"]}))
+                return 1
     blocked = False
+    last_executed = None
+
+    def consume_between_stages():
+        nonlocal blocked, failed, signal
+        if not interrupted[0] or last_executed is None:
+            return
+        interrupted[0] = False
+        previous_row, previous_phase = last_executed
+        previous_row["outcome"] = "stage-refused"
+        previous_row["firstMissingSignal"] = "chord-interrupted"
+        if failed is None:
+            failed, signal = previous_row["stage_id"], "chord-interrupted"
+        if previous_phase == "serve":
+            blocked = True
+
     for phase, stages in (("serve", serve), ("rescue", rescue), ("finally", final)):
         for stage in stages:
+            consume_between_stages()
             sid, band = stage["stage_id"], stage["snake"]
             row = {"stage_id": sid, "transition": band, "outcome": "stage-skipped", "arguments": {}, "receipt": None}
             rows.append(row)
             rescue_untriggered = phase == "rescue" and not any(completed.get(dep, {}).get("outcome") == "stage-refused" for dep in stage["on_refusal_of"])
-            if (phase == "serve" and blocked) or rescue_untriggered or any(completed.get(dep, {}).get("outcome") != "stage-completed" for dep in stage.get("depends_on", [])):
+            dependency_blocked = any(
+                completed.get(dep, {}).get("outcome") != "stage-completed"
+                and not (phase == "finally" and completed.get(dep, {}).get("firstMissingSignal") == "chord-interrupted")
+                for dep in stage.get("depends_on", [])
+            )
+            if (phase == "serve" and blocked) or rescue_untriggered or dependency_blocked:
                 completed[sid] = row
                 continue
             refusal = None
             stage_target = None
             try:
-                arguments = _resolve_arguments(stage.get("arguments", {}), envelope, completed)
+                arguments = _resolve_arguments(stage.get("arguments", {}), envelope, completed, phase != "serve")
                 row["arguments"] = arguments
                 stage_envelope = copy.deepcopy(envelope)
                 payload = stage_envelope.get("payload")
                 stage_envelope["payload"] = {**(payload if isinstance(payload, dict) else {}), **arguments}
                 stage_envelope["routine"] = {"request": _redact_declared(envelope, _HAND_SECRET_NAMES), "routine_id": routine_id,
-                                             "stage": {"stage_id": sid, "arguments": arguments}}
+                                             "stage": {"stage_id": sid, "arguments": _redact_declared(arguments, _HAND_SECRET_NAMES)}}
                 stdout = StringIO()
                 before = time.monotonic()
                 stage_target = _slash_target(band)
                 if stage_target is None:
                     raise _ChordError("chord-stage-invocation-failed")
+                if interrupted[0] and last_executed is not None:
+                    consume_between_stages()
+                    if phase == "serve" and blocked:
+                        completed[sid] = row
+                        continue
+                if interrupted[0]:
+                    raise _ChordError("chord-interrupted")
+                last_executed = (row, phase)
                 with contextlib.redirect_stdout(stdout):
                     try:
                         code = _invoke_envelope(stage_target, stage_envelope)
@@ -377,14 +442,21 @@ def _walk_chord(path: Path, envelope: dict) -> int:
                 refusal = str(exc)
             except Exception:
                 refusal = "chord-stage-invocation-failed"
+            was_interrupted = interrupted[0]
+            if was_interrupted:
+                interrupted[0] = False
+                refusal = "chord-interrupted"
+                row["firstMissingSignal"] = refusal
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
-            if row["outcome"] == "stage-completed" and stage_target is not None and _mutation_allowed(stage_target.parent if stage_target.is_file() else stage_target) is not False:
+            if not dry_run and row["outcome"] == "stage-completed" and stage_target is not None and _mutation_allowed(stage_target.parent if stage_target.is_file() else stage_target) is not False:
                 changed = True
-            if refusal and (phase == "finally" or stage.get("required", True)) and failed is None:
+            if refusal and (was_interrupted or phase == "finally" or stage.get("required", True)) and failed is None:
                 failed, signal = sid, refusal
-            if refusal and phase == "serve" and stage.get("required", True):
+            if refusal and phase == "serve" and (was_interrupted or stage.get("required", True)):
                 blocked = True
             completed[sid] = row
+            last_executed = (row, phase)
+    consume_between_stages()
     ok = (failed is None and
           all(not stage.get("required", True) or row["outcome"] == "stage-completed"
               for stage, row in zip(serve, rows[:len(serve)])) and
@@ -399,8 +471,8 @@ def _walk_chord(path: Path, envelope: dict) -> int:
     for row in rows:
         row["arguments"] = _redact_declared(row["arguments"], _HAND_SECRET_NAMES)
         if isinstance(row["receipt"], dict):
-            row["receipt"] = {key: value for key, value in row["receipt"].items()
-                              if key not in {"raw_envelope", "envelope"}}
+            row["receipt"] = _redact_declared({key: value for key, value in row["receipt"].items()
+                                               if key not in {"raw_envelope", "envelope"}}, _HAND_SECRET_NAMES)
     print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": ok, "routine_id": routine_id,
                       "request": request, "stages": rows, "failedStage": failed, "firstMissingSignal": signal, "changed": changed}, separators=(",", ":")))
     return 0 if ok else 1
@@ -426,6 +498,8 @@ def _dry_run_admits(path: Path, envelope: dict | None, argv: list[str] | None = 
                           "mutationPerformed": False}, separators=(",", ":")))
         return False
     declaration = _index(path if path.is_dir() else path.parent)
+    if path.is_dir() and "serve" in declaration and payload["dry-run"] is True:
+        return True
     if declaration.get("dry-run") is not True:
         signal = "agathodaimon-dry-run-undeclared"
     elif not isinstance(payload["dry-run"], bool):
@@ -1095,6 +1169,14 @@ def _trace_operation(target: str | None, remainder: list[str]) -> str:
 
 def main(argv=None):
     args=list(sys.argv[1:] if argv is None else argv)
+    if len(args) == 2 and "/" in args[0]:
+        try:
+            argv_envelope = json.loads(args[1])
+        except (TypeError, ValueError):
+            argv_envelope = None
+        if isinstance(argv_envelope, dict) and _contains_secret_name(argv_envelope.get("payload")):
+            print("invalid or forbidden long option", file=sys.stderr)
+            return 2
     if _transmission_keys_json_argv(args):
         return _refuse_administrative("transmission-keys-stdin-required")
     caduceus_root = os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0
