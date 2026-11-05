@@ -479,7 +479,10 @@ def _root_process_run(
 
 
 def owner_spawn(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[subprocess.Popen, int | None]:
-    command, outer = owner_session_command(argv, environment)
+    # Birth the whole app tree inside the owner's user manager, never in the staff unit's cgroup:
+    # a staff restart kills its cgroup, and Chromium's zygotes and GPU process died with it.
+    scoped = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--slice=app.slice", "--", *argv]
+    command, outer = owner_session_command(scoped, environment)
     try:
         process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
