@@ -1,0 +1,4 @@
+{
+  "children": [],
+  "sclerite": {"name": "thyrsus", "features": {"thyrsus": {"band": true, "verbs": [["thyrsus", "new-tab"]], "routes": ["/api/v1/thyrsus/new-tab"], "administrative": {"band": true, "verbs": [["thyrsus", "new-tab"]], "routes": ["/api/v1/thyrsus/new-tab"]}}}}
+}

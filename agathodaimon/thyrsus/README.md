@@ -30,11 +30,20 @@ opened by Thyrsus.
 exporting a key or writing a log. A nonzero HTTP response still establishes
 reachability; it does not establish authentication or readiness to merge.
 
+`cli.py thyrsus new-tab <id> --into /absolute/directory [--display "Name"]`
+creates a private `cartridge-<id>` repository, seeds it from the public Test tab,
+and pushes its `main` branch. The directory must already exist and belong to
+its repository owner. The id is a lowercase slug of 2–40 letters, digits and
+hyphens. Read `repo_url`, `path`, `next`, `firstMissingSignal` and `attempt`.
+Activate the repository in Woodpecker and add its `FORGEJO_TOKEN` secret; this
+does not admit the tab. If a later step fails, the created repository and any
+local work remain; inspect `attempt` before trying again.
+
 Privileged callers use the declared staff bands `thyrsus/propose`,
-`thyrsus/admit`, `thyrsus/forge-token` and `thyrsus/forge`, with the ordinary
+`thyrsus/admit`, `thyrsus/forge-token`, `thyrsus/new-tab` and `thyrsus/forge`, with the ordinary
 staff envelope on stdin. Payloads are respectively `{repo,message,branch?}`,
-`{repo,pr}`, `{token}`, and `{}`. Ordinary CLI calls fill their own kernel.
-Three writing bands are administrative; the read is not. Credentials are
+`{repo,pr}`, `{token}`, `{id,into,display?}` and `{}`. Ordinary CLI calls fill their own kernel.
+The four writing bands are administrative; the read is not. Credentials are
 read within the privileged crossing; Git itself runs as the repository owner.
 
 Secrets stay in the existing Keyman exchange/vault or in memory. The Git

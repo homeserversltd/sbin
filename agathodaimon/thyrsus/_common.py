@@ -33,8 +33,8 @@ from agathodaimon.lib.receipts.index import emit, now_iso
 
 FORGE = "git.home.arpa"
 SERVICE = "thyrsus_forgejo"
-VERBS = ("propose", "admit", "forge-token", "forge")
-WRITES = frozenset(VERBS[:3])
+VERBS = ("propose", "admit", "forge-token", "forge", "new-tab")
+WRITES = frozenset(("propose", "admit", "forge-token", "new-tab"))
 MAX_INPUT = 65536
 MAX_RESPONSE = 65536
 GIT = "/usr/bin/git"
@@ -337,6 +337,93 @@ def _repo_api(repo, owner):
     return "/repos/" + quote(owner, safe="") + "/" + quote(repo.name, safe="")
 
 
+def _seed_tab(repo, tab_id, display, owner):
+    name = "cartridge-" + tab_id
+    manifest_path = repo / "cartridge.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(id=tab_id, display=display, proxy_route="/api/tabs/" + tab_id)
+    manifest["source"] = {"release_repo": owner + "/" + name, "ref": "main"}
+    manifest["install"]["bin"] = "/var/lib/xenia/" + tab_id + "/" + name
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    for filename in ("Cargo.toml", "Cargo.lock"):
+        path = repo / filename
+        text = path.read_text(encoding="utf-8")
+        if 'name = "cartridge-test"' not in text:
+            raise Refusal("new-tab-seed-invalid")
+        path.write_text(text.replace('name = "cartridge-test"', 'name = "' + name + '"'), encoding="utf-8")
+    css = repo / "static" / "pack.css"
+    if css.is_file():
+        css.write_text(css.read_text(encoding="utf-8").replace('data-pane-panel="test"', 'data-pane-panel="' + tab_id + '"'), encoding="utf-8")
+    # The example's GitHub mirror job is specific to its own public repository.
+    pipeline = repo / ".woodpecker.yml"
+    text = pipeline.read_text(encoding="utf-8")
+    marker = "\n  - name: github-latest\n"
+    if marker in text:
+        pipeline.write_text(text.split(marker, 1)[0] + "\n", encoding="utf-8")
+
+
+def _new_tab(payload, profile, receipt):
+    tab_id = payload.get("id")
+    if not isinstance(tab_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,38}[a-z0-9]", tab_id):
+        raise Refusal("new-tab-id-invalid")
+    into = payload.get("into")
+    try:
+        if not isinstance(into, str) or not os.path.isabs(into):
+            raise ValueError()
+        directory = Path(into).resolve(strict=True)
+        uid = pwd.getpwnam("owner").pw_uid if os.geteuid() == 0 else os.geteuid()
+        if not directory.is_dir() or directory.stat().st_uid != uid:
+            raise ValueError()
+        repo = directory / ("cartridge-" + tab_id)
+        if os.path.lexists(repo):
+            raise ValueError()
+    except (OSError, ValueError, KeyError):
+        raise Refusal("new-tab-into-invalid") from None
+    display = payload.get("display")
+    if display is None:
+        display = tab_id.replace("-", " ").title()
+    if not isinstance(display, str) or not display.strip() or "\0" in display:
+        raise Refusal("thyrsus-arguments-invalid")
+    with _credential(profile):
+        pass
+    if not _reachable():
+        raise Refusal("forge-unreachable")
+    try:
+        _api(profile, "GET", lambda owner: _repo_api(repo, owner))
+    except Refusal as error:
+        if error.signal == "thyrsus-forge-unreachable":
+            raise Refusal("forge-unreachable") from None
+        if error.signal != "thyrsus-forge-refused" or error.details.get("http_status") != 404:
+            raise
+    else:
+        raise Refusal("new-tab-repo-exists")
+    receipt["attempt"].append({"step": "create-repository", "ok": None})
+    receipt["mutationPerformed"] = None
+    _, owner, _ = _api(profile, "POST", lambda owner: "/user/repos", {
+        "name": repo.name, "private": True, "default_branch": "main", "auto_init": False,
+    })
+    receipt["attempt"][-1]["ok"] = True
+    receipt["mutationPerformed"] = True
+    receipt["repo_url"] = "https://" + FORGE + "/" + quote(owner, safe="") + "/" + repo.name
+    receipt["path"] = str(repo)
+    receipt["next"] = ["Activate " + repo.name + " in Woodpecker", "Add FORGEJO_TOKEN to its Woodpecker secrets"]
+    if _git(directory, ["clone", "--quiet", "--branch", "main", "--", "https://github.com/homeserversltd/xenia-hello-world-example", str(repo)], capture=False).returncode:
+        raise Refusal("new-tab-clone-failed")
+    receipt["attempt"].append({"step": "clone-example", "ok": True})
+    _seed_tab(repo, tab_id, display, owner)
+    receipt["attempt"].append({"step": "seed", "ok": True})
+    for step, args in (
+        ("origin", ["remote", "set-url", "origin", receipt["repo_url"] + ".git"]),
+        ("stage", ["add", "--all", "--"]),
+        ("commit", ["-c", "user.name=HomeServer", "-c", "user.email=owner@home.arpa", "commit", "--quiet", "-m", "New tab " + tab_id]),
+    ):
+        if _git(repo, args, capture=False).returncode:
+            raise Refusal("thyrsus-git-failed")
+        receipt["attempt"].append({"step": step, "ok": True})
+    _push(repo, "main", profile)
+    receipt["attempt"].append({"step": "push", "ok": True})
+
+
 def _propose(payload, profile, receipt):
     repo = _worktree(payload.get("repo"))
     message = payload.get("message")
@@ -490,7 +577,7 @@ def _input(verb, arguments):
         original = sys.stdin
         try:
             sys.stdin = io.StringIO(raw)
-            request = read(known_fields=("repo", "message", "branch", "pr", "token"))
+            request = read(known_fields=("repo", "message", "branch", "pr", "token", "id", "into", "display"))
             payload = request.payload
             if not request.envelope and isinstance(request.value.get("payload"), dict):
                 payload = dict(request.value["payload"])
@@ -510,6 +597,10 @@ def _input(verb, arguments):
             parser.add_argument("--branch", default=None)
         if verb == "admit":
             parser.add_argument("pr")
+        if verb == "new-tab":
+            parser.add_argument("id")
+            parser.add_argument("--into", required=True)
+            parser.add_argument("--display", default=None)
         payload = vars(parser.parse_args(arguments))
     if payload is None:
         payload = {}
@@ -557,6 +648,8 @@ def main_for(verb, arguments=None):
         receipt.update(merged_sha=None)
     if verb == "forge":
         receipt.update(forge=FORGE, token_present=False, reachable=False)
+    if verb == "new-tab":
+        receipt.update(repo_url=None, path=None, next=[])
     try:
         profile = _configuration()
         raw, payload, request = _input(verb, list(arguments or []))
@@ -569,6 +662,9 @@ def main_for(verb, arguments=None):
         elif verb == "admit":
             receipt["could-change"] = ["merge"]
             _admit(payload, profile, receipt)
+        elif verb == "new-tab":
+            receipt["could-change"] = ["create-repository", "clone-example", "seed", "commit", "push"]
+            _new_tab(payload, profile, receipt)
         else:
             receipt["could-change"] = ["store-credential"]
             _set_token(raw, payload if raw.lstrip().startswith("{") else None, profile, receipt)
@@ -582,7 +678,7 @@ def main_for(verb, arguments=None):
     finally:
         receipt["final"] = {"ok": receipt["ok"], "signal": receipt["firstMissingSignal"],
                             "mutationPerformed": receipt["mutationPerformed"]}
-        if verb in WRITES:
+        if verb in WRITES and not (verb == "new-tab" and receipt["mutationPerformed"] is False):
             try:
                 _deed(verb, receipt, started)
             except (OSError, ValueError):
