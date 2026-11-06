@@ -18,7 +18,7 @@ from agathodaimon.settings import _shared
 from agathodaimon.settings.display import backends, policy
 from agathodaimon._envelope import EnvelopeError, Request, attach, read
 
-DISPLAY_FIELDS = ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan")
+DISPLAY_FIELDS = ("output", "resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan")
 MODE_FIELDS = {"resolution", "refresh_rate"}
 OVERRIDE_BEGIN = "# settings-display-output-begin"
 OVERRIDE_END = "# settings-display-output-end"
@@ -51,19 +51,6 @@ def _kms_observation() -> dict[str, Any]:
 
 def _resolution_observation(connectors: Sequence[Mapping[str, Any]], settings: Mapping[str, Any]) -> dict[str, Any]:
     return policy.resolve_mode(connectors, settings)
-
-
-def _sway_output(selected: Mapping[str, Any]) -> dict[str, Any] | None:
-    if selected.get("kind") != "sway": return None
-    socket = str(selected["socket"])
-    argv, runtime, _ = backends._sway_argv(socket, ["-t", "get_outputs"])
-    result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
-    try:
-        raw = json.loads(result.get("stdout", "")) if result.get("ok") else []
-        active = [item for item in raw if isinstance(item, dict) and item.get("active") is True]
-        return active[0] if len(active) == 1 else None
-    except (ValueError, TypeError):
-        return None
 
 
 def _options(output: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -99,62 +86,6 @@ def _options(output: Mapping[str, Any] | None) -> dict[str, Any]:
                                    "label": f"{backends._refresh_hz_text(rate)} Hz"}
                                   for rate in sorted(rates)]
     return result
-
-
-def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict[str, Any]:
-    kind = selected.get("kind")
-    kms = _kms_observation()
-    if kind == "sway":
-        sway = backends.observe_sway(str(selected["socket"]), kms)
-        connectors = sway.get("connectors", []) if sway.get("ok") is True else []
-        resolution = (_resolution_observation(connectors, settings) if sway.get("ok") is True
-                      else {"ok": False, "connector": None, "mode": None,
-                            "reason": str(sway.get("signal") or "sway-observation-unavailable"),
-                            "fallback": False})
-        live = {"ok": sway.get("ok") is True, "source": "sway-ipc",
-                "preferred_exposed_by_sway": False,
-                "kms_status": kms.get("status"), "kms_errors": kms.get("errors", []),
-                "connectors": connectors, "signal": sway.get("signal")}
-    else:
-        return {"ok": False, "values": _values(settings), "mutationPerformed": False,
-                "firstMissingSignal": "display-backend-unavailable"}
-    reply: dict[str, Any] = {
-        "ok": live.get("ok") is True,
-        "values": _values(settings),
-        "mutationPerformed": False,
-        "observations": {
-            "backend": dict(selected),
-            "settings": {"source": settings.get("source"), "fallback": settings.get("fallback"),
-                         "defaulted": settings.get("defaulted", [])},
-            "live": live,
-            "resolved": resolution,
-        },
-    }
-    output = _sway_output(selected)
-    reply["options"] = _options(output)
-    if output:
-        scale = output.get("scale")
-        if isinstance(scale, (int, float)) and not isinstance(scale, bool):
-            reply["values"]["scale"] = scale
-        transform = output.get("transform")
-        if isinstance(transform, str):
-            reply["values"]["orientation"] = transform
-    features = output.get("features") if output else None
-    if output and isinstance(features, dict) and features.get("hdr") is True and isinstance(output.get("hdr"), bool):
-        reply["values"]["hdr"] = output["hdr"]
-    adaptive = output.get("adaptive_sync_status") if output else None
-    if isinstance(features, dict) and features.get("adaptive_sync") is True and adaptive in {"enabled", "disabled"}:
-        reply["values"]["adaptive_sync"] = adaptive == "enabled"
-    if live.get("ok") is not True:
-        signal = live.get("signal")
-        if not isinstance(signal, str) or not signal:
-            errors = live.get("errors")
-            if isinstance(errors, list) and errors and isinstance(errors[0], str) and errors[0]:
-                signal = errors[0]
-            else:
-                signal = f"{str(live.get('source') or 'display')}-observation-unavailable"
-        reply["firstMissingSignal"] = signal
-    return reply
 
 
 def _failure(signal: str, *, settings: Mapping[str, Any] | None = None,
@@ -204,188 +135,419 @@ def _mode_matches_current(mode: Mapping[str, Any], current: Any) -> bool:
     return selected_rate is not None and current_rate is not None and abs(selected_rate - current_rate) <= Fraction(1, 1000)
 
 
-def _output_override(selected: Mapping[str, Any], field: str, value: Any,
-                     settings: Mapping[str, Any]) -> dict[str, Any]:
-    if field == "scale":
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value not in (1, 2):
-            return _failure("display-fractional-scale-unsafe", settings=settings, backend=selected)
-        text = str(int(value))
-        key = "scale"
-    else:
-        if not isinstance(value, str) or value not in ORIENTATIONS:
-            return _failure("invalid:orientation", settings=settings, backend=selected)
-        text = value
-        key = "transform"
-    output = _sway_output(selected)
-    if not output or not isinstance(output.get("name"), str):
-        return _failure("sway-output-unavailable", settings=settings, backend=selected)
-    before = output.get(key)
-    if field == "scale":
-        if (isinstance(before, bool) or not isinstance(before, (int, float))
-                or not math.isfinite(before) or before <= 0):
-            return _failure("sway-output-prior-scale-unavailable", settings=settings, backend=selected)
-        prior_text = str(before)
-    else:
-        if not isinstance(before, str) or before not in {"normal", "90", "180", "270", "flipped", "flipped-90", "flipped-180", "flipped-270"}:
-            return _failure("sway-output-prior-transform-unavailable", settings=settings, backend=selected)
-        prior_text = before
-    try:
-        name = output["name"]
-        escaped = backends._escape_sway_name(name)
-        path = _shared.home() / ".config/sway/output-overrides.conf"
-        original = path.read_text(encoding="utf-8") if path.exists() else ""
-        lines = original.splitlines(keepends=True)
-        begins = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == OVERRIDE_BEGIN]
-        ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == OVERRIDE_END]
-        if len(begins) != len(ends) or len(begins) > 1 or (begins and ends[0] <= begins[0]):
+# The Sway backend owns a sparse per-screen table; absence means Automatic.
+SELECTED_PREFIX = "# settings-display-selected-output "
+
+
+def _display_settings(selected: Mapping[str, Any]) -> dict[str, Any]:
+    if selected.get("kind") == "sway":
+        return {"resolution": "auto", "refresh_rate": policy.DEFAULT_REFRESH_RATE,
+                "source": "output-overrides", "fallback": None, "defaulted": []}
+    return policy.load_settings()
+
+
+def _outputs(selected: Mapping[str, Any]) -> list[dict[str, Any]]:
+    socket = str(selected["socket"])
+    argv, runtime, _ = backends._sway_argv(socket, ["-t", "get_outputs"])
+    result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
+    raw, error = backends._parse_json_list(result)
+    if error:
+        raise ValueError(error)
+    return [x for x in raw if isinstance(x, dict) and x.get("active") is True
+            and isinstance(x.get("name"), str)]
+
+
+def _identifier(output: Mapping[str, Any]) -> str | None:
+    parts = [output.get(k) for k in ("make", "model", "serial")]
+    if any(not isinstance(x, str) or not x.strip() or x.strip().lower() == "unknown" for x in parts):
+        return None
+    return " ".join(parts)
+
+
+def _keys(outputs: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    identifiers = [_identifier(x) for x in outputs]
+    return {str(x["name"]): ident if ident and identifiers.count(ident) == 1 else str(x["name"])
+            for x, ident in zip(outputs, identifiers)}
+
+
+def _listed(outputs: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    physical = [x for x in outputs if not str(x["name"]).startswith("HEADLESS-")]
+    return sorted(physical or list(outputs), key=policy._connector_rank)
+
+
+def _table_path() -> Path:
+    return _shared.home() / ".config/sway/output-overrides.conf"
+
+
+def _table_parse(original: str) -> tuple[list[str], int, int, list[str], dict[tuple[str, str], str], str | None]:
+    lines = original.splitlines(keepends=True)
+    begins = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == OVERRIDE_BEGIN]
+    ends = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == OVERRIDE_END]
+    if len(begins) != len(ends) or len(begins) > 1 or (begins and ends[0] <= begins[0]):
+        raise ValueError("display-override-invalid")
+    start, end = (begins[0], ends[0]) if begins else (len(lines), len(lines) - 1)
+    body = lines[start + 1:end] if begins else []
+    rows: dict[tuple[str, str], str] = {}
+    selection = None
+    for line in body:
+        if line.startswith(SELECTED_PREFIX):
+            if selection is not None:
+                raise ValueError("display-selection-duplicate")
+            selection = line[len(SELECTED_PREFIX):].rstrip("\r\n")
+            continue
+        words = shlex.split(line, comments=True)
+        if not words:
+            continue
+        if len(words) != 4 or words[0] != "output" or words[2] not in {"mode", "scale", "transform"}:
             raise ValueError("display-override-invalid")
-        existing = lines[begins[0] + 1:ends[0]] if begins else []
-        kept = []
-        for line in existing:
-            words = shlex.split(line, comments=True)
-            if not words:
-                kept.append(line)
-                continue
-            if len(words) != 4 or words[0] != "output" or words[2] not in {"scale", "transform"}:
-                raise ValueError("display-override-invalid")
-            if words[1] != name or words[2] != key:
-                kept.append(line)
-        if kept and not kept[-1].endswith("\n"):
-            kept[-1] += "\n"
-        block = [OVERRIDE_BEGIN + "\n", *kept, f"output {escaped} {key} {text}\n", OVERRIDE_END + "\n"]
-        if begins:
-            lines[begins[0]:ends[0] + 1] = block
+        rows[(words[1], words[2])] = words[3]
+    return lines, start, end, body, rows, selection
+
+
+def _table_update(original: str, *, key: str, field: str, value: str | None,
+                  aliases: Sequence[str] = ()) -> str:
+    lines, start, end, body, _rows, _selection = _table_parse(original)
+    kept = []
+    for line in body:
+        if field == "selection" and line.startswith(SELECTED_PREFIX):
+            continue
+        words = shlex.split(line, comments=True)
+        if field != "selection" and len(words) == 4 and words[0] == "output" and words[1] in {key, *aliases} and words[2] == field:
+            continue
+        kept.append(line if line.endswith("\n") else line + "\n")
+    if value is not None:
+        if field == "selection":
+            if "\n" in value or "\r" in value:
+                raise ValueError("invalid:output")
+            kept.append(SELECTED_PREFIX + value + "\n")
         else:
-            if lines and not lines[-1].endswith("\n"):
-                lines[-1] += "\n"
-            lines += block
-        payload = "".join(lines).encode("utf-8")
-        socket = str(selected["socket"])
-        receipt = _shared.Receipt("display", [field])
-        attempted = False
-        try:
-            receipt.replace(path, payload)
-            if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
-                owner = pwd.getpwnam(_shared.OWNER_USER)
-                os.chown(path, owner.pw_uid, owner.pw_gid)
-            argv, runtime, _ = backends._sway_argv(socket, [f"output {escaped} {key} {text}"])
-            attempted = True
-            result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
-            receipt.commands.append({"argv": argv, "returncode": result.get("returncode")})
-            responses = json.loads(result.get("stdout", "")) if result.get("ok") else []
-            if not isinstance(responses, list) or not responses or not all(
-                    isinstance(item, dict) and item.get("success") is True for item in responses):
-                raise ValueError("sway-display-apply-failed")
-            changed = receipt.changed or output.get(key) != value
-            answer = receipt.finish(True, changed)
-            answer["mutationPerformed"] = True
-            return answer
-        except Exception as error:
-            signal = str(error)
-            uncertain = attempted
-            try:
-                receipt.restore_backups()
-            except Exception as rollback_error:
-                signal = "rollback-failed:" + str(rollback_error) + ":" + signal
-                uncertain = True
-            if attempted:
-                try:
-                    rollback_argv, rollback_runtime, _ = backends._sway_argv(
-                        socket, [f"output {escaped} {key} {prior_text}"])
-                    rollback = backends._bounded_command(rollback_argv, runtime=rollback_runtime, socket_path=socket)
-                    receipt.commands.append({"argv": rollback_argv, "returncode": rollback.get("returncode")})
-                    responses = json.loads(rollback.get("stdout", "")) if rollback.get("ok") else []
-                    if not isinstance(responses, list) or not responses or not all(
-                            isinstance(item, dict) and item.get("success") is True for item in responses):
-                        raise ValueError("sway-display-rollback-failed")
-                except Exception as rollback_error:
-                    signal = "live-rollback-failed:" + str(rollback_error) + ":" + signal
-            failure = receipt.finish(False, error=signal)
-            return _failure(signal, settings=settings, backend=selected,
-                            mutation_performed=uncertain, receipt=failure.get("receipt"))
-    except (OSError, ValueError, UnicodeError, KeyError) as error:
+            kept.append(f"output {backends._escape_sway_name(key)} {field} {value}\n")
+    block = [OVERRIDE_BEGIN + "\n", *kept, OVERRIDE_END + "\n"]
+    if end >= start:
+        lines[start:end + 1] = block
+    else:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.extend(block)
+    return "".join(lines)
+
+
+def _read_table() -> str:
+    path = _table_path()
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def _row(rows: Mapping[tuple[str, str], str], output: Mapping[str, Any], keys: Mapping[str, str], field: str) -> str | None:
+    name = str(output["name"])
+    return rows.get((keys[name], field), rows.get((name, field)))
+
+
+def _picked(outputs: Sequence[Mapping[str, Any]], selection: str | None) -> Mapping[str, Any] | None:
+    keys = _keys(outputs)
+    choices = _listed(outputs)
+    return next((x for x in choices if keys[str(x["name"])] == selection), choices[0] if choices else None)
+
+
+def _sway_command(selected: Mapping[str, Any], command: str) -> None:
+    socket = str(selected["socket"])
+    argv, runtime, _ = backends._sway_argv(socket, [command])
+    result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
+    responses, error = backends._parse_json_list(result)
+    if error or not responses or not all(isinstance(x, dict) and x.get("success") is True for x in responses):
+        raise ValueError(error or "sway-display-apply-failed")
+
+
+def _position_command(outputs: Sequence[Mapping[str, Any]]) -> str:
+    physical = sorted([x for x in outputs if not str(x["name"]).startswith("HEADLESS-")], key=policy._connector_rank)
+    headless = [x for x in outputs if str(x["name"]).startswith("HEADLESS-")]
+    commands = []
+    x = 0
+    for output in physical:
+        rect = output.get("rect")
+        if not isinstance(rect, dict) or not isinstance(rect.get("width"), int) or rect["width"] <= 0:
+            raise ValueError("sway-output-logical-width-unavailable")
+        commands.append(f"output {backends._escape_sway_name(str(output['name']))} pos {x} 0")
+        x += rect["width"]
+    commands.extend(f"output {backends._escape_sway_name(str(output['name']))} pos 0 0" for output in headless)
+    return "; ".join(commands)
+
+
+def _arrange(selected: Mapping[str, Any]) -> None:
+    outputs = _outputs(selected)
+    command = _position_command(outputs)
+    if command:
+        _sway_command(selected, command)
+        after = {x["name"]: x for x in _outputs(selected)}
+        x = 0
+        for output in sorted([o for o in outputs if not str(o["name"]).startswith("HEADLESS-")], key=policy._connector_rank):
+            rect = after.get(output["name"], {}).get("rect", {})
+            if rect.get("x") != x or rect.get("y") != 0:
+                raise ValueError("sway-position-readback-mismatch")
+            x += output["rect"]["width"]
+        for output in outputs:
+            if str(output["name"]).startswith("HEADLESS-"):
+                rect = after.get(output["name"], {}).get("rect", {})
+                if rect.get("x") != 0 or rect.get("y") != 0:
+                    raise ValueError("sway-position-readback-mismatch")
+
+
+def _positions(outputs: Sequence[Mapping[str, Any]]) -> dict[str, tuple[int, int]]:
+    positions = {}
+    for output in outputs:
+        rect = output.get("rect")
+        if (not isinstance(rect, dict) or type(rect.get("x")) is not int
+                or type(rect.get("y")) is not int):
+            raise ValueError("sway-output-prior-position-unavailable")
+        positions[str(output["name"])] = (rect["x"], rect["y"])
+    return positions
+
+
+def _restore_positions(selected: Mapping[str, Any], positions: Mapping[str, tuple[int, int]]) -> None:
+    commands = [f"output {backends._escape_sway_name(name)} pos {x} {y}"
+                for name, (x, y) in positions.items()]
+    if not commands:
+        return
+    _sway_command(selected, "; ".join(commands))
+    after = {str(item["name"]): item for item in _outputs(selected)}
+    for name, (x, y) in positions.items():
+        rect = after.get(name, {}).get("rect", {})
+        if rect.get("x") != x or rect.get("y") != y:
+            raise ValueError("sway-position-rollback-mismatch")
+
+
+def _mode_for(output: Mapping[str, Any], resolution: str, refresh: int | float) -> dict[str, Any]:
+    connectors = backends._merge_kms_modes(policy.normalize_sway_outputs([output]), _kms_observation())
+    resolved = policy.resolve_mode(connectors, {"resolution": resolution, "refresh_rate": refresh})
+    if not resolved.get("ok"):
+        raise ValueError("display-no-eligible-advertised-mode")
+    mode = resolved["mode"]
+    if resolution != "auto" and resolution != f"{mode['width']}x{mode['height']}":
+        raise ValueError("display-no-eligible-advertised-mode")
+    return mode
+
+
+def _mode_text(mode: Mapping[str, Any]) -> str:
+    rate = policy._rate_fraction(mode)
+    if rate is None:
+        raise ValueError("display-mode-rate-unavailable")
+    return f"{mode['width']}x{mode['height']}@{backends._refresh_hz_text(rate)}Hz"
+
+
+def _mode_current_text(output: Mapping[str, Any]) -> str:
+    mode = output.get("current_mode")
+    if not isinstance(mode, dict) or not isinstance(mode.get("refresh"), int):
+        raise ValueError("sway-output-prior-mode-unavailable")
+    return f"{mode['width']}x{mode['height']}@{backends._refresh_hz_text(Fraction(mode['refresh'], 1000))}Hz"
+
+
+def _live_matches(output: Mapping[str, Any] | None, field: str, value: str) -> bool:
+    if not output:
+        return False
+    if field == "scale":
+        return output.get("scale") == float(value)
+    if field == "transform":
+        return output.get("transform") == value
+    if field == "mode":
+        return _mode_current_text(output) == value
+    if field == "hdr":
+        return output.get("hdr") is (value == "on")
+    if field == "adaptive_sync":
+        return output.get("adaptive_sync_status") == ("enabled" if value == "on" else "disabled")
+    return False
+
+
+def _set_live(selected: Mapping[str, Any], name: str, field: str, value: str) -> None:
+    _sway_command(selected, f"output {backends._escape_sway_name(name)} {field} {value}")
+    after = next((x for x in _outputs(selected) if x.get("name") == name), None)
+    if not _live_matches(after, field, value):
+        raise ValueError("sway-" + field + "-readback-mismatch")
+
+
+def _write_table(path: Path, payload: str) -> None:
+    import tempfile
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    temp = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+            temp = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp, mode)
+        if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
+            owner = pwd.getpwnam(_shared.OWNER_USER)
+            os.chown(temp, owner.pw_uid, owner.pw_gid)
+        os.replace(temp, path)
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
+
+
+def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict[str, Any]:
+    try:
+        outputs = _outputs(selected)
+        _lines, _start, _end, _body, rows, selection = _table_parse(_read_table())
+        keys = _keys(outputs)
+        output = _picked(outputs, selection)
+        kms = _kms_observation()
+        connectors = backends._merge_kms_modes(policy.normalize_sway_outputs(outputs), kms)
+        connector = next((x for x in connectors if output and x.get("name") == output.get("name")), None)
+        resolved = policy.resolve_mode([connector] if connector else [], {"resolution": "auto", "refresh_rate": policy.DEFAULT_REFRESH_RATE})
+        values = _values(settings)
+        values["output"] = keys[str(output["name"])] if output else None
+        values["resolution"] = "auto"
+        values["scale"] = "auto"
+        values["orientation"] = "auto"
+        options = _options(output)
+        automatic = {"value": "auto", "label": "Automatic"}
+        options.setdefault("resolution", [automatic])
+        options["scale"].insert(0, automatic)
+        options["orientation"].insert(0, automatic)
+        options.setdefault("refresh_rate", [])
+        options["output"] = [{"value": keys[str(x["name"])], "label":
+                              f"{x['make']} {x['model']} ({x['name']})" if _identifier(x) else str(x["name"])}
+                             for x in _listed(outputs)]
+        if output:
+            mode = _row(rows, output, keys, "mode")
+            if mode:
+                values["resolution"] = mode.split("@", 1)[0]
+            current = output.get("current_mode")
+            if isinstance(current, dict) and isinstance(current.get("refresh"), int):
+                values["refresh_rate"] = current["refresh"] / 1000
+            scale = _row(rows, output, keys, "scale")
+            if scale is not None:
+                number = float(scale)
+                if not math.isfinite(number) or number <= 0:
+                    raise ValueError("display-override-invalid-scale")
+                values["scale"] = int(number) if number.is_integer() else number
+            values["orientation"] = _row(rows, output, keys, "transform") or "auto"
+            features = output.get("features")
+            if isinstance(features, dict):
+                if features.get("hdr") is True and isinstance(output.get("hdr"), bool):
+                    values["hdr"] = output["hdr"]
+                if features.get("adaptive_sync") is True and output.get("adaptive_sync_status") in {"enabled", "disabled"}:
+                    values["adaptive_sync"] = output["adaptive_sync_status"] == "enabled"
+        return {"ok": True, "values": values, "options": options, "mutationPerformed": False,
+                "observations": {"backend": dict(selected), "settings": {"source": settings.get("source"), "fallback": None, "defaulted": []},
+                                 "live": {"ok": True, "source": "sway-ipc", "preferred_exposed_by_sway": False, "kms_status": kms.get("status"), "kms_errors": kms.get("errors", []), "connectors": connectors, "signal": None}, "resolved": resolved}}
+    except (OSError, ValueError, TypeError, KeyError) as error:
         return _failure(str(error), settings=settings, backend=selected)
 
 
-def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, Any],
-           settings: Mapping[str, Any]) -> dict[str, Any]:
-    if "scale" in supplied:
-        value = supplied["scale"]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value not in (1, 2):
-            return _failure("display-fractional-scale-unsafe", settings=settings, backend=selected)
-    if "scale" in supplied or "orientation" in supplied:
-        if len(supplied) != 1:
-            return _failure("mixed-display-fields", settings=settings, backend=selected)
-        field = "scale" if "scale" in supplied else "orientation"
-        return _output_override(selected, field, supplied[field], settings)
-    if "adaptive_sync" in supplied or "hdr" in supplied:
-        if len(supplied) != 1: return _failure("mixed-display-fields", settings=settings, backend=selected)
-        field = "hdr" if "hdr" in supplied else "adaptive_sync"
-        value = supplied[field]
-        if not isinstance(value, bool): return _failure("invalid:" + field, settings=settings, backend=selected)
-        output = _sway_output(selected)
-        observed = output.get("hdr") if output and field == "hdr" else output.get("adaptive_sync_status") if output else None
-        features = output.get("features") if output else None
-        available = isinstance(features, dict) and features.get(field) is True and (isinstance(observed, bool) if field == "hdr" else observed in {"enabled", "disabled"})
-        if not output or not available or not isinstance(output.get("name"), str):
-            return _failure("unsupported:" + field, settings=settings, backend=selected)
-        socket = str(selected["socket"])
-        text = f"output {backends._escape_sway_name(output['name'])} {field} {'on' if value else 'off'}"
-        argv, runtime, _ = backends._sway_argv(socket, [text])
-        receipt = _shared.Receipt("display", [field])
-        result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
-        receipt.commands.append({"argv": argv, "returncode": result.get("returncode")})
-        try: responses = json.loads(result.get("stdout", "")) if result.get("ok") else []
-        except (TypeError, ValueError): responses = []
-        if not responses or not all(isinstance(x, dict) and x.get("success") is True for x in responses):
-            receipt.finish(False)
-            return _failure("sway-" + field + "-failed", settings=settings, backend=selected)
-        current = observed if field == "hdr" else observed == "enabled"
-        return receipt.finish(True, current != value)
-    unsupported = _unsupported_field(supplied)
-    if unsupported is not None:
-        return _failure(f"unsupported:{unsupported}", settings=settings, backend=selected)
+def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, Any], settings: Mapping[str, Any]) -> dict[str, Any]:
+    if selected.get("kind") != "sway":
+        return _failure("display-backend-unavailable", settings=settings, backend=selected)
+    path = _table_path()
+    original = None
+    existed = path.exists()
+    live_attempted = False
+    changes: list[tuple[str, str, str]] = []
+    positions: dict[str, tuple[int, int]] | None = None
     try:
-        effective = policy.validate_settings({
-            "resolution": supplied.get("resolution", settings.get("resolution", "auto")),
-            "refresh_rate": supplied.get("refresh_rate", settings.get("refresh_rate", policy.DEFAULT_REFRESH_RATE)),
-        })
-    except ValueError as exc:
-        return _failure(f"invalid-display-setting:{exc}", settings=settings, backend=selected)
-    kind = selected.get("kind")
-    if kind == "sway":
-        kms = _kms_observation()
-        observed = backends.observe_sway(str(selected["socket"]), kms)
-        if observed.get("ok") is not True:
-            return _failure(str(observed.get("signal") or "sway-observation-unavailable"),
-                            settings=settings, requested=effective, backend=selected)
-        connectors = observed.get("connectors", [])
-        resolved = _resolution_observation(connectors, effective)
-        if resolved.get("ok") is not True:
-            signal = ("display-no-connected-screen" if resolved.get("reason") == "no-connected-screen"
-                      else "display-no-eligible-advertised-mode")
-            return _failure(signal, settings=settings, requested=effective, backend=selected,
-                            resolved=resolved)
-        connector = resolved["connector"]
-        mode = resolved["mode"]
-        before = _current_summary(connector)
-        result = backends.apply_sway_mode(str(selected["socket"]), connector, mode, kms)
-        changed = not _mode_matches_current(mode, before)
-        return {
-            "ok": result.get("ok") is True,
-            "changed": bool(result.get("ok") is True and changed),
-            "mutationPerformed": result.get("mutation_performed") is True,
-            "firstMissingSignal": result.get("signal") or "none",
-            "values": _values(settings),
-            "settingsSource": settings.get("source"),
-            "backend": dict(selected),
-            "requested": effective,
-            "resolved": resolved,
-            "current": {"before": before, "after": result.get("current_mode")},
-            "physicalModeVerified": result.get("physical_mode_verified") is True,
-            "swayCommand": result.get("command"),
-        }
-    return _failure("display-backend-unavailable", settings=settings, backend=selected)
+        original = _read_table()
+        _lines, _start, _end, _body, rows, selection = _table_parse(original)
+        outputs = _outputs(selected)
+        keys = _keys(outputs)
+        if operation == "apply":
+            positions = _positions(outputs)
+            for output in _listed(outputs):
+                if str(output["name"]).startswith("HEADLESS-") or _row(rows, output, keys, "mode"):
+                    continue
+                mode = _mode_text(_mode_for(output, "auto", policy.DEFAULT_REFRESH_RATE))
+                name = str(output["name"])
+                changes.append((name, "mode", _mode_current_text(output)))
+                live_attempted = True
+                _set_live(selected, name, "mode", mode)
+            live_attempted = True
+            _arrange(selected)
+            return {"ok": True, "changed": True, "mutationPerformed": True}
+        if len(supplied) != 1:
+            raise ValueError("mixed-display-fields")
+        requested_field, value = next(iter(supplied.items()))
+        if requested_field == "output":
+            if not isinstance(value, str) or value not in [keys[str(x['name'])] for x in _listed(outputs)]:
+                raise ValueError("invalid:output")
+            updated = _table_update(original, key=value, field="selection", value=value)
+            if updated != original:
+                _write_table(path, updated)
+            return {"ok": True, "changed": updated != original, "mutationPerformed": updated != original}
+        output = _picked(outputs, selection)
+        if not output:
+            raise ValueError("sway-output-unavailable")
+        name = str(output["name"])
+        key = keys[name]
+        aliases = [name]
+        identifier = _identifier(output)
+        if identifier and sum(_identifier(item) == identifier for item in outputs) == 1:
+            aliases.append(identifier)
+        if requested_field == "scale":
+            if value != "auto" and (isinstance(value, bool) or not isinstance(value, (int, float)) or value not in (1, 2)):
+                raise ValueError("display-fractional-scale-unsafe")
+            field, desired = "scale", "1" if value == "auto" else str(int(value))
+            prior_value = output.get("scale")
+            if isinstance(prior_value, bool) or not isinstance(prior_value, (int, float)) or not math.isfinite(prior_value) or prior_value <= 0:
+                raise ValueError("sway-output-prior-scale-unavailable")
+            prior = str(prior_value)
+        elif requested_field == "orientation":
+            if value != "auto" and value not in ORIENTATIONS:
+                raise ValueError("invalid:orientation")
+            field, desired = "transform", "normal" if value == "auto" else value
+            prior = output.get("transform")
+            if prior not in {"normal", "90", "180", "270", "flipped", "flipped-90", "flipped-180", "flipped-270"}:
+                raise ValueError("sway-output-prior-transform-unavailable")
+        elif requested_field in MODE_FIELDS:
+            current = output.get("current_mode")
+            if not isinstance(current, dict):
+                raise ValueError("sway-output-prior-mode-unavailable")
+            prior = _mode_current_text(output)
+            resolution = value if requested_field == "resolution" else f"{current['width']}x{current['height']}"
+            refresh = value if requested_field == "refresh_rate" else current.get("refresh", 60000) / 1000
+            policy.validate_settings({"resolution": resolution, "refresh_rate": refresh})
+            desired = _mode_text(_mode_for(output, resolution, refresh))
+            field = "mode"
+        elif requested_field in {"hdr", "adaptive_sync"}:
+            features = output.get("features")
+            observed = output.get("hdr") if requested_field == "hdr" else output.get("adaptive_sync_status")
+            if not isinstance(value, bool) or not isinstance(features, dict) or features.get(requested_field) is not True or (not isinstance(observed, bool) if requested_field == "hdr" else observed not in {"enabled", "disabled"}):
+                raise ValueError("unsupported:" + requested_field)
+            field, desired = requested_field, "on" if value else "off"
+            prior = "on" if (observed is True or observed == "enabled") else "off"
+        else:
+            raise ValueError("unsupported:" + requested_field)
+        positions = _positions(outputs)
+        updated = original
+        if field in {"scale", "transform", "mode"}:
+            updated = _table_update(original, key=key, field=field, value=None if value == "auto" else desired, aliases=aliases)
+            if updated != original:
+                _write_table(path, updated)
+        live_attempted = True
+        changes.append((name, field, str(prior)))
+        _set_live(selected, name, field, desired)
+        _arrange(selected)
+        return {"ok": True, "changed": updated != original or str(prior) != str(desired), "mutationPerformed": True}
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        signal = str(error)
+        if original is not None:
+            try:
+                if path.exists() and path.read_text(encoding="utf-8") != original:
+                    if existed:
+                        _write_table(path, original)
+                    else:
+                        path.unlink()
+            except OSError as rollback:
+                signal = "rollback-failed:" + str(rollback) + ":" + signal
+        for name, field, prior in reversed(changes):
+            try:
+                _set_live(selected, name, field, prior)
+            except (OSError, ValueError, TypeError, KeyError) as rollback:
+                signal = "live-rollback-failed:" + str(rollback) + ":" + signal
+        if live_attempted and positions is not None:
+            try:
+                _restore_positions(selected, positions)
+            except (OSError, ValueError, TypeError, KeyError) as rollback:
+                signal = "position-rollback-failed:" + str(rollback) + ":" + signal
+        return _failure(signal, settings=settings, backend=selected, mutation_performed=live_attempted)
 
 
 def _envelope_operation(request: Request) -> str:
@@ -427,7 +589,7 @@ def _dispatch_envelope(selected: Mapping[str, Any], request: Request) -> int:
     operation = _envelope_operation(request)
     started = time.monotonic()
     if operation in {"read", "get", "state"}:
-        settings = policy.load_settings()
+        settings = _display_settings(selected)
         receipt = _get_reply(settings, selected)
     elif operation in {"set", "change", "mutate", "apply"}:
         supplied = {field: request.payload[field] for field in DISPLAY_FIELDS if field in request.payload}
@@ -436,7 +598,7 @@ def _dispatch_envelope(selected: Mapping[str, Any], request: Request) -> int:
         elif operation != "apply" and not supplied:
             receipt = _failure("no-fields-supplied", backend=selected)
         else:
-            settings = policy.load_settings()
+            settings = _display_settings(selected)
             receipt = _apply(selected, operation, supplied, settings)
     else:
         receipt = _failure(f"unsupported-operation:{operation}", backend=selected)
@@ -478,19 +640,19 @@ def _dispatch_argv(selected: Mapping[str, Any], original: Sequence[str]) -> int 
     if operation in {"get", "read", "state"}:
         if arguments[1:] not in ([], ["--json"]):
             return None
-        settings = policy.load_settings()
+        settings = _display_settings(selected)
         receipt = _get_reply(settings, selected)
     elif operation == "apply":
         if arguments[1:]:
             return None
-        settings = policy.load_settings()
+        settings = _display_settings(selected)
         receipt = _apply(selected, operation, {}, settings)
     elif operation in {"set", "change", "mutate"}:
         supplied, error = _parse_set_arguments(arguments[1:])
         if error or supplied is None:
             receipt = _failure(error or "invalid-set-arguments", backend=selected)
         else:
-            settings = policy.load_settings()
+            settings = _display_settings(selected)
             receipt = _apply(selected, operation, supplied, settings)
     else:
         return None

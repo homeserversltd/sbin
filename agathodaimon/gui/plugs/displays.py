@@ -9,6 +9,7 @@ except ImportError:
     from _common import build_settings_widget
 PLUG={"id":"displays","title":"Displays","icon":"video-display-symbolic","order":30,"parent":None}
 SPECS=[
+ {"field":"output","title":"Display","kind":"choice"},
  {"field":"resolution","title":"Resolution","kind":"choice"},
  {"field":"refresh_rate","title":"Refresh rate (Hz)","kind":"choice","number":True},
  {"field":"scale","title":"Scale","kind":"choice","number":True,"info":"Makes everything on the screen bigger at once: windows, text, icons and the pointer. To make only the text bigger, use Appearance → Text size."},
