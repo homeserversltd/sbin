@@ -125,6 +125,8 @@ def _pack_header_buttons(header: Any, widget: Any) -> bool:
     buttons = tuple(getattr(widget, "header_buttons", ()) or ())
     for button in reversed(buttons):
         header.pack_end(button)
+    if buttons:
+        header.add_css_class("plug-header-buttons")
     return bool(buttons)
 
 
@@ -401,6 +403,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             css = (
                 "windowcontrols > button.close {"
                 " background-color: @destructive_bg_color; color: @destructive_fg_color; }"
+                " headerbar.plug-header-buttons { border-bottom: 2px solid black; box-shadow: none; }"
             )
             if hasattr(provider, "load_from_string"):
                 provider.load_from_string(css)

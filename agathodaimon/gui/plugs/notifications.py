@@ -1,20 +1,27 @@
 """Household inbox and notification settings, through this device's Caduceus."""
 from __future__ import annotations
 
+import ipaddress
 import json
+import uuid
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
-from ._common import CADUCEUS_URL, build_settings_widget
+from ._common import CADUCEUS_URL, _receipt_ok, _signal, build_settings_widget
 
 PLUG = {"id": "notifications", "title": "Notifications", "icon": "preferences-system-notifications-symbolic", "order": 5, "parent": None}
 NOTIFICATIONS_DOOR = "/api/v1/notifications"
 SCHEMA_ID = "caduceus.notifications.v1"
 SCHEMA_DOOR = f"/api/v1/schema/{SCHEMA_ID}"
 GUEST_INSTRUCTION = "Accept this from your HomeServer in Admin Mode"
+GATEWAY_INSTRUCTION = "Act on this from your HomeServer in Admin Mode"
+ADMIN_SIGNALS = {"link-up-admin-required", "caduceus-administrative-pin-required",
+                 "caduceus-administrative-pin-wrong"}
 SPECS = [
     {"field": "enabled", "title": "Notifications enabled", "kind": "switch"},
     {"field": "do_not_disturb", "title": "Do not disturb", "kind": "switch"},
@@ -96,6 +103,8 @@ def _refusal(value: dict[str, Any]) -> str:
         "link-up-name-taken": "That household name is already in use.",
         "link-up-admin-required": GUEST_INSTRUCTION,
         "link-up-accept-on-homeserver": GUEST_INSTRUCTION,
+        "notification-act-on-homeserver": GATEWAY_INSTRUCTION,
+        "notification-not-pending": "This notification was already handled.",
     }.get(signal, "Notifications are not available on this device yet.")
 
 
@@ -141,6 +150,12 @@ def read_model() -> dict[str, Any]:
             names = [_text(name) for name in names if _text(name)] if isinstance(names, list) else []
             state = _text(value.get("state"))
             kind = _text(value.get("kind"))
+            actions = value.get("actions")
+            actions = [
+                {"verb": _text(action.get("verb")), "label": _text(action.get("label")) or _text(action.get("verb"))}
+                for action in (actions if isinstance(actions, list) else [])
+                if isinstance(action, dict) and _text(action.get("verb"))
+            ] if state == "pending" and _text(value.get("id")) else []
             items.append({
                 "id": _text(value.get("id")),
                 "title": _text(value.get("title")) or "Household notification",
@@ -151,7 +166,7 @@ def read_model() -> dict[str, Any]:
                 "hostname": hostname, "canonical_name": _text(origin.get("canonical_name")),
                 "ipv4": ipv4, "mac": mac,
                 "from": " · ".join(source) or "Household device",
-                "names": names,
+                "names": names, "actions": actions,
                 "status": {"pending": "Waiting", "accepted": "Accepted", "dismissed": "Dismissed", "expired": "Expired"}.get(state, ""),
                 "instruction": GUEST_INSTRUCTION if kind == "house-link-up" and state == "pending" else "",
             })
@@ -163,24 +178,109 @@ def read_model() -> dict[str, Any]:
     return model
 
 
+def _is_gateway() -> bool:
+    """Notification actions are answered only by the HomeServer's own Caduceus."""
+    try:
+        profile = json.loads(Path("/etc/appliance/profile.json").read_text(encoding="utf-8")).get("profile")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return profile == "homeserver"
+
+
+class _ActionGate:
+    """One in-memory Admin Mode attendance for this pane's notification actions."""
+
+    def __init__(self) -> None:
+        self.document = str(uuid.uuid4())
+        self.attendance = ""
+        self.lock = threading.Lock()
+
+    def _open(self, prompt: Callable[[], str | None]) -> None:
+        host = urllib.parse.urlsplit(CADUCEUS_URL).hostname or ""
+        try:
+            loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if not loopback:
+            raise RuntimeError("PIN can only be sent to local Caduceus")
+        pin = prompt()
+        if pin is None:
+            raise RuntimeError("PIN entry cancelled")
+        try:
+            receipt = self._post("/api/v1/exousia/open", {
+                "pin": pin, "documentId": self.document, "documentIncarnation": self.document,
+            }, attend=False)
+        finally:
+            pin = ""
+        if not _receipt_ok(receipt):
+            raise RuntimeError("PIN not accepted" if "pin-wrong" in _signal(receipt) else "Admin Mode refused")
+        attendance = receipt.get("attendance")
+        if not isinstance(attendance, str) or not attendance:
+            raise RuntimeError("Admin Mode unavailable")
+        self.attendance = attendance
+
+    def _post(self, path: str, payload: dict[str, Any] | None = None, attend: bool = True) -> dict[str, Any]:
+        # Never through an environment proxy: the PIN and attendance stay on this body.
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        if attend:
+            headers["x-caduceus-document"] = self.document
+            if self.attendance:
+                headers["x-caduceus-attendance"] = self.attendance
+        data = json.dumps(payload if payload is not None else {}).encode("utf-8")
+        request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=headers, method="POST")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            response = opener.open(request, timeout=120)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            raw = response.read(256 * 1024)
+        try:
+            value = json.loads(raw)
+        except (UnicodeDecodeError, ValueError) as error:
+            raise RuntimeError("Caduceus returned an unreadable receipt") from error
+        if not isinstance(value, dict):
+            raise RuntimeError("Caduceus returned an invalid receipt")
+        return value
+
+    def run(self, ident: str, verb: str, prompt: Callable[[], str | None]) -> dict[str, Any]:
+        path = f"{NOTIFICATIONS_DOOR}/{urllib.parse.quote(ident, safe='')}/{urllib.parse.quote(verb, safe='')}"
+        with self.lock:
+            try:
+                receipt = self._post(path)
+                if not _receipt_ok(receipt) and _signal(receipt) in ADMIN_SIGNALS:
+                    self.attendance = ""
+                    self._open(prompt)
+                    receipt = self._post(path)
+            except RuntimeError:
+                raise
+            except Exception as error:  # transport failures (OSError, http.client) surface on the card
+                raise RuntimeError("Caduceus is unavailable") from error
+            return receipt
+
+
 def _watch(widget: Any, render: Callable[[dict[str, Any]], None]) -> Callable[..., None]:
     """One bounded read on entry or a deliberate refresh; no polling or disk state."""
     from gi.repository import GLib
 
-    state = {"alive": False, "busy": False, "generation": 0}
+    state = {"alive": False, "busy": False, "again": False, "generation": 0}
 
     def refresh(*_args: Any) -> None:
-        if not state["alive"] or state["busy"]:
+        if not state["alive"]:
+            return
+        if state["busy"]:
+            state["again"] = True
             return
         state["busy"] = True
         generation = state["generation"]
 
         def finish(model: dict[str, Any]) -> bool:
             state["busy"] = False
+            again, state["again"] = state["again"], False
             if state["alive"]:
                 if generation == state["generation"]:
                     render(model)
-                else:
+                if again or generation != state["generation"]:
                     refresh()
             return False
 
@@ -232,23 +332,113 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gtk
+    from gi.repository import Adw, GLib, Gtk
 
     stack = Gtk.Stack(hexpand=True, vexpand=True)
     page = Adw.PreferencesPage()
     stack.add_named(page, "inbox")
     group = Adw.PreferencesGroup()
     page.add(group)
-    toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     refresh_button = Gtk.Button(label="Refresh")
     settings_button = Gtk.Button(label="Notification settings")
-    toolbar.append(refresh_button)
-    toolbar.append(settings_button)
-    group.add(toolbar)
+    back_button = Gtk.Button(label="Back to notifications", visible=False)
+    # The shell packs these into the top bar beside the close button, in shell and standalone alike.
+    stack.header_buttons = (refresh_button, settings_button, back_button)
     message = Gtk.Label(label="Reading household notifications…", xalign=0, wrap=True)
     group.add(message)
     listing = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
     group.add(listing)
+    gate = _ActionGate()
+    gateway = _is_gateway()
+    alive = {"value": False}
+    stack.connect("map", lambda _widget: alive.update(value=True))
+    stack.connect("unmap", lambda _widget: alive.update(value=False))
+
+    def prompt_pin() -> str | None:
+        done = threading.Event()
+        answer: list[str | None] = [None]
+
+        def show() -> bool:
+            try:
+                return present()
+            except Exception:
+                done.set()
+                return False
+
+        def present() -> bool:
+            if not alive["value"]:
+                done.set()
+                return False
+            dialog = Adw.AlertDialog(heading="Appliance PIN", body="Enter your PIN to enter Admin Mode.")
+            entry = Gtk.PasswordEntry()
+            entry.set_show_peek_icon(False)
+            dialog.set_extra_child(entry)
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("continue", "Continue")
+            dialog.set_default_response("continue")
+            dialog.set_close_response("cancel")
+
+            def responded(_dialog: Any, response: str) -> None:
+                if response == "continue":
+                    answer[0] = entry.get_text()
+                entry.set_text("")
+                done.set()
+
+            dialog.connect("response", responded)
+            entry.connect("activate", lambda _entry: dialog.response("continue"))
+            dialog.present(stack)
+            entry.grab_focus()
+            return False
+
+        GLib.idle_add(show)
+        done.wait()
+        return answer.pop()
+
+    def action_column(item: dict[str, Any]) -> Any:
+        column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
+        status = Gtk.Label(xalign=1, wrap=True, visible=False, max_width_chars=24)
+        status.add_css_class("dim-label")
+        buttons = []
+
+        def finish(receipt: dict[str, Any] | None, error: str) -> bool:
+            if receipt is not None and _receipt_ok(receipt):
+                status.set_visible(False)
+                refresh()
+                return False
+            status.set_text(error or _refusal(receipt or {}))
+            status.set_visible(True)
+            for button in buttons:
+                button.set_sensitive(gateway)
+            return False
+
+        def act(_button: Any, verb: str) -> None:
+            for button in buttons:
+                button.set_sensitive(False)
+            status.set_visible(False)
+
+            def run() -> None:
+                try:
+                    GLib.idle_add(finish, gate.run(item["id"], verb, prompt_pin), "")
+                except Exception as error:  # every failure re-enables the card
+                    GLib.idle_add(finish, None, str(error) or "Caduceus is unavailable")
+
+            threading.Thread(target=run, daemon=True).start()
+
+        for action in item["actions"]:
+            button = Gtk.Button(label=action["label"])
+            if action["verb"] == "accept":
+                button.add_css_class("suggested-action")
+            button.connect("clicked", act, action["verb"])
+            if not gateway:
+                button.set_sensitive(False)
+                button.set_tooltip_text(GATEWAY_INSTRUCTION)
+            buttons.append(button)
+            column.append(button)
+        if buttons and not gateway:
+            status.set_text(GATEWAY_INSTRUCTION)
+            status.set_visible(True)
+        column.append(status)
+        return column
 
     def render(model: dict[str, Any]) -> None:
         message.set_text(model["message"])
@@ -259,10 +449,11 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             listing.remove(child)
             child = following
         for item in model["notifications"]:
-            card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             card.add_css_class("card")
-            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-            for edge in ("top", "bottom", "start", "end"):
+            # Left column: what the notification says. Right column: what you can do about it.
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True)
+            for edge in ("top", "bottom", "start"):
                 getattr(content, f"set_margin_{edge}")(12)
             card.append(content)
             title = Gtk.Label(label=item["title"], xalign=0, wrap=True, selectable=True)
@@ -282,24 +473,35 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             texts = []
             if item["names"]:
                 texts.append("Names: " + ", ".join(item["names"]))
-            texts.extend(filter(None, (item["status"], item["instruction"])))
+            # A card with buttons carries its guidance in the action column instead.
+            texts.extend(filter(None, (item["status"], "" if item["actions"] else item["instruction"])))
             for text in texts:
                 content.append(Gtk.Label(label=text, xalign=0, wrap=True, selectable=True))
+            actions = action_column(item)
+            for edge in ("top", "bottom", "end"):
+                getattr(actions, f"set_margin_{edge}")(12)
+            card.append(actions)
             listing.append(card)
         if on_model is not None:
             on_model(model)
 
-    refresh_button.connect("clicked", _watch(page, render))
+    refresh = _watch(page, render)
+    refresh_button.connect("clicked", refresh)
+
+    def show_inbox(_button: Any) -> None:
+        stack.set_visible_child_name("inbox")
+        back_button.set_visible(False)
+        refresh_button.set_visible(True)
+        settings_button.set_visible(True)
 
     def show_settings(_button: Any) -> None:
         if stack.get_child_by_name("settings") is None:
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-            back = Gtk.Button(label="Back to household notifications")
-            back.connect("clicked", lambda _button: stack.set_visible_child_name("inbox"))
-            box.append(back)
-            box.append(build_settings_widget(PLUG, "notifications", "", SPECS))
-            stack.add_named(box, "settings")
+            stack.add_named(build_settings_widget(PLUG, "notifications", "", SPECS), "settings")
         stack.set_visible_child_name("settings")
+        refresh_button.set_visible(False)
+        settings_button.set_visible(False)
+        back_button.set_visible(True)
 
+    back_button.connect("clicked", show_inbox)
     settings_button.connect("clicked", show_settings)
     return stack
