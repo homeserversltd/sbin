@@ -120,6 +120,14 @@ def _app_title() -> str:
     return f"{PRODUCT_TITLES.get(profile, 'Appliance')} Settings"
 
 
+def _pack_header_buttons(header: Any, widget: Any) -> bool:
+    """A plug may offer top-bar buttons as `widget.header_buttons`; they read left to right."""
+    buttons = tuple(getattr(widget, "header_buttons", ()) or ())
+    for button in reversed(buttons):
+        header.pack_end(button)
+    return bool(buttons)
+
+
 def _toolbar(Adw: Any, header: Any, child: Any) -> Any:
     view = Adw.ToolbarView()
     view.add_top_bar(header)
@@ -487,10 +495,14 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
         def show_settings(self, warning: str = "") -> None:
             if self.standalone is not None:
                 plug = self.registry[self.standalone]
-                page, _scroller = _ensure_page_scroller(Gtk, plug.build_widget())
+                widget = plug.build_widget()
+                page, _scroller = _ensure_page_scroller(Gtk, widget)
                 self.window.set_title(plug.title)
                 self.window.set_default_size(720, 640)
-                self.set_settings_content(page, warning)
+                header = Adw.HeaderBar()
+                header.set_title_widget(Gtk.Box())
+                shown = _toolbar(Adw, header, page) if _pack_header_buttons(header, widget) else page
+                self.set_settings_content(shown, warning)
                 content = {"root": page}
                 _install_page_keyboard(self.window, Gtk, Gdk, Adw, lambda: content["root"])
                 return
@@ -543,6 +555,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 page, _scroller = _ensure_page_scroller(Gtk, widget)
                 content_bar = Adw.HeaderBar(show_start_title_buttons=False, decoration_layout=":close")
                 content_bar.set_title_widget(Gtk.Box())
+                _pack_header_buttons(content_bar, widget)
                 content_view = _toolbar(Adw, content_bar, page)
                 split.set_content(Adw.NavigationPage.new(content_view, plug.title))
                 split.set_show_content(True)

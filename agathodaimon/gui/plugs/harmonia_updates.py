@@ -313,79 +313,107 @@ def build_widget() -> Any:
         "max_rendered": None,
         "max_buttons": {},
         "action_focus": [],
-        "module_focus": [],
     }
 
     stack = Gtk.Stack(hexpand=True, vexpand=True)
     updates_page = Adw.PreferencesPage(title="Updates", icon_name=PLUG["icon"])
-    history_page = Adw.PreferencesPage(title="History", icon_name=PLUG["icon"])
     max_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, hexpand=True, vexpand=True)
     for edge in ("top", "bottom", "start", "end"):
         getattr(max_page, f"set_margin_{edge}")(12)
     stack.add_named(updates_page, "updates")
-    stack.add_named(history_page, "history")
     stack.add_named(max_page, "diff")
     stack.set_visible_child_name("updates")
 
-    status_group = Adw.PreferencesGroup(title="Update status")
+    def make_dialog(title: str, width: int) -> tuple[Any, Any]:
+        dialog = Adw.Dialog(title=title, content_width=width, content_height=560)
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for edge in ("top", "bottom", "start", "end"):
+            getattr(body, f"set_margin_{edge}")(18)
+        scroller = Gtk.ScrolledWindow(hexpand=True, vexpand=True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroller.set_child(body)
+        view = Adw.ToolbarView()
+        view.add_top_bar(Adw.HeaderBar())
+        view.set_content(scroller)
+        dialog.set_child(view)
+        return dialog, body
+
+    def make_header_button(label: str, icon_name: str, tooltip: str) -> Any:
+        button = Gtk.Button(valign=Gtk.Align.CENTER)
+        content = Adw.ButtonContent(label=label, icon_name=icon_name)
+        content.set_use_underline(False)
+        button.set_child(content)
+        button.set_tooltip_text(tooltip)
+        return button
+
+    modules_button = make_header_button("Modules", "preferences-system-symbolic", "Turn update modules on or off")
+    history_button = make_header_button("History", "document-open-recent-symbolic", "The last 10 update runs")
+    silenced_button = make_header_button("Silenced", "notifications-disabled-symbolic", "Files you silenced")
+    header_buttons = (modules_button, history_button, silenced_button)
+    modules_dialog, modules_dialog_body = make_dialog("Update modules", 760)
+    history_dialog, history_dialog_body = make_dialog("Update history", 640)
+    silenced_dialog, silenced_box = make_dialog("Silenced updates", 760)
+    silenced_box.set_spacing(10)
+
+    status_group = Adw.PreferencesGroup()
     updates_page.add(status_group)
-    status_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    status_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
     status_card.add_css_class("card")
-    for edge in ("top", "bottom", "start", "end"):
-        getattr(status_card, f"set_margin_{edge}")(12)
     status_group.add(status_card)
+    status_top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+    for edge in ("top", "start", "end"):
+        getattr(status_top, f"set_margin_{edge}")(18)
+    status_card.append(status_top)
+    status_icon = Gtk.Image.new_from_icon_name("dialog-warning-symbolic")
+    status_icon.set_pixel_size(64)
+    status_icon.set_valign(Gtk.Align.START)
+    status_icon.add_css_class("dim-label")
+    status_top.append(status_icon)
+    status_text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True)
+    status_top.append(status_text)
     headline_label = Gtk.Label(label="Update status unavailable", xalign=0, wrap=True)
-    headline_label.add_css_class("title-4")
-    status_card.append(headline_label)
+    headline_label.add_css_class("title-1")
+    status_text.append(headline_label)
     last_update_label = Gtk.Label(label="Last update time unavailable", xalign=0, wrap=True)
     last_update_label.add_css_class("dim-label")
-    status_card.append(last_update_label)
+    status_text.append(last_update_label)
     outcomes_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-    status_card.append(outcomes_box)
+    status_text.append(outcomes_box)
     failure_signals_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-    status_card.append(failure_signals_box)
+    status_text.append(failure_signals_box)
     status_error_label = Gtk.Label(xalign=0, wrap=True)
     status_error_label.add_css_class("error")
-    status_card.append(status_error_label)
+    status_text.append(status_error_label)
     update_message_label = Gtk.Label(xalign=0, wrap=True)
-    status_card.append(update_message_label)
+    status_text.append(update_message_label)
     update_button = Gtk.Button(label="Update Now (?)", valign=Gtk.Align.CENTER)
-    status_card.append(update_button)
-    history_list = Gtk.ListBox()
-    history_list.set_selection_mode(Gtk.SelectionMode.NONE)
-    history_list.set_activate_on_single_click(True)
-    history_row = Adw.ActionRow(title="History", subtitle="Last 10 update runs")
-    history_row.set_activatable(True)
-    history_row.add_suffix(Gtk.Image.new_from_icon_name("go-next-symbolic"))
-    history_list.append(history_row)
-    status_card.append(history_list)
+    update_button.add_css_class("suggested-action")
+    update_button.add_css_class("pill")
+    status_top.append(update_button)
 
-    timer_group = Adw.PreferencesGroup(title="Automatic updates")
-    updates_page.add(timer_group)
-    timer_row = Adw.ActionRow(
-        title="Automatic updates",
-        subtitle="Install available updates automatically on schedule.",
-    )
+    status_card.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+    timer_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+    for edge in ("bottom", "start", "end"):
+        getattr(timer_row, f"set_margin_{edge}")(18)
+    status_card.append(timer_row)
+    timer_text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True)
+    timer_row.append(timer_text)
+    timer_title = Gtk.Label(label="Automatic updates", xalign=0)
+    timer_title.add_css_class("heading")
+    timer_text.append(timer_title)
+    timer_message_label = Gtk.Label(label="Reading Caduceus…", xalign=0, wrap=True)
+    timer_text.append(timer_message_label)
     timer_switch = Gtk.Switch(valign=Gtk.Align.CENTER)
     timer_switch.set_sensitive(False)
     timer_switch.set_visible(False)
-    timer_row.add_suffix(timer_switch)
-    timer_group.add(timer_row)
-    timer_message_label = Gtk.Label(label="Reading Caduceus…", xalign=0, wrap=True)
-    timer_group.add(timer_message_label)
+    timer_switch.update_property([Gtk.AccessibleProperty.LABEL], ["Automatic updates"])
+    timer_row.append(timer_switch)
 
-    pending_group = Adw.PreferencesGroup(title="Pending updates")
+    pending_group = Adw.PreferencesGroup()
     updates_page.add(pending_group)
     pending_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     pending_group.add(pending_box)
 
-    silenced_group = Adw.PreferencesGroup(title="Silenced updates")
-    updates_page.add(silenced_group)
-    silenced_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-    silenced_group.add(silenced_box)
-
-    modules_group = Adw.PreferencesGroup(title="Update modules")
-    updates_page.add(modules_group)
     module_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
     module_flow = Gtk.FlowBox()
     module_flow.set_selection_mode(Gtk.SelectionMode.NONE)
@@ -402,16 +430,10 @@ def build_widget() -> Any:
     module_error_label = Gtk.Label(xalign=0, wrap=True)
     module_error_label.add_css_class("error")
     module_box.append(module_error_label)
-    modules_group.add(module_box)
+    modules_dialog_body.append(module_box)
 
-    history_group = Adw.PreferencesGroup(title="Update history")
-    history_page.add(history_group)
-    back_row = Adw.ActionRow(title="Back to Updates", subtitle="Return to update status")
-    back_row.set_activatable(True)
-    back_row.add_suffix(Gtk.Image.new_from_icon_name("go-previous-symbolic"))
-    history_group.add(back_row)
     history_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-    history_group.add(history_box)
+    history_dialog_body.append(history_box)
 
     def clear(box: Any) -> None:
         child = box.get_first_child()
@@ -426,12 +448,15 @@ def build_widget() -> Any:
         box.append(label)
         return label
 
-    def make_card() -> Any:
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+    def make_card() -> tuple[Any, Any]:
+        """Return a card and its padded body."""
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         card.add_css_class("card")
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         for edge in ("top", "bottom", "start", "end"):
-            getattr(card, f"set_margin_{edge}")(12)
-        return card
+            getattr(body, f"set_margin_{edge}")(16)
+        card.append(body)
+        return card, body
 
     def diff_rows(diff: str) -> list[tuple[str, str, str]]:
         rows = []
@@ -523,7 +548,8 @@ def build_widget() -> Any:
         scroller.set_child(lines)
         card.append(scroller)
 
-    def append_actions(box: Any, item: dict[str, Any], *, maximize: bool = False) -> None:
+    def append_actions(box: Any, item: dict[str, Any], *, maximize: bool = False,
+                       in_dialog: bool = False) -> None:
         identifier = item["id"]
         actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         if item["silenced"]:
@@ -542,11 +568,14 @@ def build_widget() -> Any:
             actions.append(button)
         if maximize:
             button = Gtk.Button(label="Maximize", valign=Gtk.Align.CENTER)
-            button.connect("clicked", show_diff, identifier)
-            data["max_buttons"][identifier] = button
+            if in_dialog:
+                button.connect("clicked", show_silenced_diff, identifier)
+            else:
+                button.connect("clicked", show_diff, identifier)
+                data["max_buttons"][identifier] = button
             actions.append(button)
             child = actions.get_first_child()
-            while child is not None:
+            while child is not None and not in_dialog:
                 data["action_focus"].append(child)
                 child = child.get_next_sibling()
         box.append(actions)
@@ -645,6 +674,16 @@ def build_widget() -> Any:
             headline_label.remove_css_class(css_class)
         if style:
             headline_label.add_css_class(style)
+        if headline == "Up to date":
+            icon_name, icon_style = "emblem-ok-symbolic", "success"
+        elif style == "error":
+            icon_name, icon_style = "dialog-error-symbolic", "error"
+        else:
+            icon_name, icon_style = PLUG["icon"], "accent"
+        status_icon.set_from_icon_name(icon_name)
+        for css_class in ("success", "error", "accent", "dim-label"):
+            status_icon.remove_css_class(css_class)
+        status_icon.add_css_class(icon_style)
 
         history = data["history"] if data["history_ready"] else []
         if history and isinstance(history[0].get("finished_at"), str):
@@ -724,18 +763,16 @@ def build_widget() -> Any:
         timer_switch.set_sensitive(known and not data["timer_busy"] and data["timer_pending"] is None)
         if known:
             timer_switch.set_active(data["timer_enabled"])
-        message = data["timer_message"]
+        message = data["timer_message"] or "Install available updates automatically on schedule."
         timer_message_label.set_text(message)
-        timer_message_label.set_visible(bool(message))
         timer_message_label.remove_css_class("success")
         timer_message_label.remove_css_class("error")
-        if message:
-            timer_message_label.add_css_class(
-                "error" if "unavailable" in message.lower() or "refus" in message.lower() else "dim-label"
-            )
+        timer_message_label.remove_css_class("dim-label")
+        timer_message_label.add_css_class(
+            "error" if "unavailable" in message.lower() or "refus" in message.lower() else "dim-label"
+        )
 
     def render_modules() -> None:
-        data["module_focus"] = []
         clear(module_flow)
         module_empty_label.set_visible(False)
         if not data["modules_ready"]:
@@ -791,7 +828,6 @@ def build_widget() -> Any:
             control_row.append(module_switch)
             content.append(control_row)
             module_switch.connect("state-set", toggle_module, identifier)
-            data["module_focus"].append(module_switch)
 
             error_message = data["module_errors"].get(identifier, "")
             if error_message:
@@ -804,6 +840,7 @@ def build_widget() -> Any:
         clear(pending_box)
         data["max_buttons"] = {}
         data["action_focus"] = []
+        pending_group.set_visible(True)
         if not data["interactables_ready"]:
             append_message(
                 pending_box,
@@ -813,11 +850,10 @@ def build_widget() -> Any:
             render_silenced()
             return
         visible_items = [item for item in data["interactables"] if not item["silenced"]]
-        if not visible_items:
-            append_message(pending_box, "Nothing waiting")
+        pending_group.set_visible(bool(visible_items))
         for item in visible_items:
             identifier = item["id"]
-            card = make_card()
+            frame, card = make_card()
             append_interactable_file(card, item)
             message = data["agree_messages"].get(identifier, "")
             if message:
@@ -826,7 +862,7 @@ def build_widget() -> Any:
                 card.append(message_label)
 
             append_actions(card, item, maximize=True)
-            pending_box.append(card)
+            pending_box.append(frame)
         render_silenced()
         if data["max_id"] is not None:
             render_max()
@@ -834,16 +870,20 @@ def build_widget() -> Any:
     def render_silenced() -> None:
         clear(silenced_box)
         items = [item for item in data["interactables"] if item["silenced"]] if data["interactables_ready"] else []
-        silenced_group.set_visible(bool(items))
+        silenced_button.get_child().set_label(f"Silenced ({len(items)})" if items else "Silenced")
+        silenced_button.set_tooltip_text("Files you silenced" if items else "Nothing is silenced")
+        silenced_button.set_sensitive(bool(items) or silenced_dialog.get_parent() is not None)
+        if not items:
+            append_message(silenced_box, "Nothing is silenced.")
         for item in items:
             identifier = item["id"]
-            card = make_card()
+            frame, card = make_card()
             append_interactable_file(card, item)
             message = data["agree_messages"].get(identifier, "")
             if message:
                 append_message(card, message, error=True)
-            append_actions(card, item, maximize=True)
-            silenced_box.append(card)
+            append_actions(card, item, maximize=True, in_dialog=True)
+            silenced_box.append(frame)
 
     def render_max() -> None:
         identifier = data["max_id"]
@@ -874,6 +914,11 @@ def build_widget() -> Any:
         if back is not None:
             back.grab_focus()
 
+    def show_silenced_diff(_button: Any, identifier: str) -> None:
+        if silenced_dialog.get_parent() is not None:
+            silenced_dialog.close()
+        show_diff(_button, identifier)
+
     def render_history() -> None:
         clear(history_box)
         if not data["history_ready"]:
@@ -887,7 +932,7 @@ def build_widget() -> Any:
             append_message(history_box, "No update runs are recorded.")
             return
         for run in data["history"][:10]:
-            card = make_card()
+            frame, card = make_card()
             outcome = run["outcome"]
             title_text = {"ok": "Update completed", "failed": "Update failed", None: "Outcome unavailable"}[outcome]
             title_label = Gtk.Label(label=title_text, xalign=0, wrap=True)
@@ -923,7 +968,7 @@ def build_widget() -> Any:
                 copy_button.connect("clicked", copy_failure, clipboard_text)
                 failure_row.append(copy_button)
                 card.append(failure_row)
-            history_box.append(card)
+            history_box.append(frame)
 
     def copy_failure(_button: Any, text: str) -> None:
         display = _button.get_display()
@@ -971,7 +1016,7 @@ def build_widget() -> Any:
                     data["timer_message"] = "Automatic-update setting confirmed."
                 data["timer_pending"] = None
             else:
-                data["timer_message"] = "Automatic updates are on." if enabled else "Automatic updates are off."
+                data["timer_message"] = ""
         render_timer()
         return False
 
@@ -1276,8 +1321,9 @@ def build_widget() -> Any:
 
         threading.Thread(target=mutate_door, args=(UPDATE_DOOR, None, finish), daemon=True).start()
 
-    def show_history(_row: Any) -> None:
-        stack.set_visible_child_name("history")
+    def open_dialog(_button: Any, dialog: Any) -> None:
+        if dialog.get_parent() is None:
+            dialog.present(stack)
 
     def show_updates(_row: Any) -> None:
         button = data["max_buttons"].get(data["max_id"])
@@ -1299,8 +1345,7 @@ def build_widget() -> Any:
                 return False
             root = stack.get_root()
             focus = root.get_focus() if root is not None else None
-            targets = [update_button, history_row, timer_row, timer_switch,
-                       *data["action_focus"], *data["module_focus"]]
+            targets = [*header_buttons, update_button, timer_switch, *data["action_focus"]]
             targets = [widget for widget in targets if widget.get_mapped()
                        and widget.get_focusable() and widget.is_sensitive()]
             current = focus
@@ -1314,10 +1359,11 @@ def build_widget() -> Any:
                     return bool(targets[next_index].grab_focus())
         return False
 
-    key_controller = Gtk.EventControllerKey.new()
-    key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-    key_controller.connect("key-pressed", on_key)
-    stack.add_controller(key_controller)
+    for widget in (stack, *header_buttons):
+        key_controller = Gtk.EventControllerKey.new()
+        key_controller.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        key_controller.connect("key-pressed", on_key)
+        widget.add_controller(key_controller)
 
     def on_unmap(_widget: Any) -> None:
         if not data["alive"]:
@@ -1326,6 +1372,9 @@ def build_widget() -> Any:
         dialog = active_dialog.get("dialog")
         if dialog is not None:
             dialog.response("cancel")
+        for popup in (modules_dialog, history_dialog, silenced_dialog):
+            if popup.get_parent() is not None:
+                popup.force_close()
         if data["refresh_source"] is not None:
             GLib.source_remove(data["refresh_source"])
             data["refresh_source"] = None
@@ -1347,8 +1396,9 @@ def build_widget() -> Any:
 
     timer_switch.connect("state-set", toggle_timer)
     update_button.connect("clicked", update_now)
-    history_row.connect("activated", show_history)
-    back_row.connect("activated", show_updates)
+    modules_button.connect("clicked", open_dialog, modules_dialog)
+    history_button.connect("clicked", open_dialog, history_dialog)
+    silenced_button.connect("clicked", open_dialog, silenced_dialog)
     stack.connect("map", on_map)
     stack.connect("unmap", on_unmap)
 
@@ -1358,4 +1408,5 @@ def build_widget() -> Any:
     render_pending()
     render_history()
     refresh_all()
+    stack.header_buttons = header_buttons
     return stack
