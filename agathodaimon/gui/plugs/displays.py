@@ -11,7 +11,7 @@ PLUG={"id":"displays","title":"Displays","icon":"video-display-symbolic","order"
 SPECS=[
  {"field":"resolution","title":"Resolution","kind":"choice"},
  {"field":"refresh_rate","title":"Refresh rate (Hz)","kind":"choice","number":True},
- {"field":"scale","title":"Scale","kind":"choice","number":True},
+ {"field":"scale","title":"Scale","kind":"choice","number":True,"info":"Makes everything on the screen bigger at once: windows, text, icons and the pointer. To make only the text bigger, use Appearance → Text size."},
  {"field":"orientation","title":"Orientation","kind":"choice"},
  {"field":"brightness","title":"Brightness (%)","kind":"spin","minimum":0,"maximum":100,"step":1,"absent":"Not available on this TV yet"},
  {"field":"night_light","title":"Night light","kind":"switch","absent":"Not available on this TV yet"},

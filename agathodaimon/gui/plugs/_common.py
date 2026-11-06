@@ -296,6 +296,19 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             show_status(field)
         return False
 
+    def add_info(row: Any, info: Any) -> None:
+        if not isinstance(info, str) or not info.strip():
+            return
+        label = Gtk.Label(label=info, wrap=True, max_width_chars=40)
+        popover = Gtk.Popover()
+        popover.set_child(label)
+        button = Gtk.MenuButton(icon_name="help-about-symbolic", valign=Gtk.Align.CENTER)
+        button.add_css_class("flat")
+        button.set_focusable(True)
+        button.set_tooltip_text(info)
+        button.set_popover(popover)
+        row.add_prefix(button)
+
     for spec in specs:
         field = spec["field"]
         status_generation[field] = 0
@@ -360,11 +373,13 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             getters[field] = row.get_text
             setters[field] = lambda value, item=row: item.set_text("" if value is None else str(value))
             changed_signal = "apply"
+        add_info(row, spec.get("info"))
         rows[field] = row
         row.set_sensitive(False)
         group.add(row)
         if kind == "choice":
             combo = Adw.ComboRow(title=title)
+            add_info(combo, spec.get("info"))
             combo.set_visible(False)
             combo.set_sensitive(False)
             group.add(combo)
@@ -375,7 +390,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         status_rows[field] = status_row
         group.add(status_row)
         unavailable = Adw.ActionRow(title=title, subtitle=absent_reasons[field])
-        unavailable.set_sensitive(False)
+        add_info(unavailable, spec.get("info"))
+        unavailable.set_sensitive(bool(isinstance(spec.get("info"), str) and spec["info"].strip()))
         unavailable.set_visible(False)
         unavailable_rows[field] = unavailable
         group.add(unavailable)
