@@ -178,8 +178,16 @@ def get_values(kind: str) -> dict[str, Any]:
         ok, text, _ = command(["brightnessctl", "g"])
         values["brightness"] = text if ok else None
     elif kind == "appearance":
-        lines = ini_read(p[kind]); dark = ini_get(lines, "gtk-application-prefer-dark-theme", "Settings")
-        values.update(color_scheme=("dark" if dark == "1" else "light" if dark == "0" else None), icon_theme=ini_get(lines, "gtk-icon-theme-name", "Settings"), cursor_theme=ini_get(lines, "gtk-cursor-theme-name", "Settings"), font=ini_get(lines, "gtk-font-name", "Settings"))
+        import ast
+        for field, key in (("color_scheme", "color-scheme"), ("icon_theme", "icon-theme"),
+                           ("cursor_theme", "cursor-theme"), ("font", "font-name")):
+            good, text, _ = command(["gsettings", "get", "org.gnome.desktop.interface", key])
+            if good:
+                try:
+                    value = ast.literal_eval(text)
+                    if isinstance(value, str):
+                        values[field] = ("dark" if value == "prefer-dark" else "light") if field == "color_scheme" else value
+                except (ValueError, SyntaxError): pass
         for field, key in (("cursor_size", "cursor-size"), ("text_scale", "text-scaling-factor")):
             good, text, _ = command(["gsettings", "get", "org.gnome.desktop.interface", key])
             if good:
@@ -188,14 +196,7 @@ def get_values(kind: str) -> dict[str, Any]:
         from agathodaimon.settings import _parity
         if _parity.backends.select_backend():
             cursor = _parity.sway_cursor_override()
-            if cursor is not None: values["cursor_size"] = cursor[1]
-        good, text, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "font-name"])
-        if good:
-            import ast
-            try:
-                font = ast.literal_eval(text)
-                if isinstance(font, str): values["font"] = font
-            except (ValueError, SyntaxError): pass
+            if cursor is not None: values["cursor_theme"], values["cursor_size"] = cursor
         if isinstance(values["font"], str):
             match = re.search(r"\s+(\d+(?:\.\d+)?)$", values["font"])
             if match: values["font_size"] = float(match.group(1))
@@ -341,6 +342,7 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
                 raise ValueError("invalid:" + field)
             if field == "cursor_size":
                 if int(value) != value or not 8 <= value <= 256: raise ValueError("invalid:cursor_size")
+                require("gsettings", field)
                 from agathodaimon.settings import _parity
                 if _parity.backends.select_backend():
                     import ast
@@ -392,17 +394,39 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
             receipt.changed = True
             return
         if field in ("accent_color","wallpaper"): raise ValueError("unsupported:"+field)
-        key={"color_scheme":"gtk-application-prefer-dark-theme","icon_theme":"gtk-icon-theme-name","cursor_theme":"gtk-cursor-theme-name","font":"gtk-font-name"}[field]
         if field == "color_scheme":
             if isinstance(value,bool): val="1" if value else "0"
             elif isinstance(value,str) and value.lower() in ("dark","light"): val="1" if value.lower()=="dark" else "0"
             else: raise ValueError("invalid:color_scheme:type")
         else: val=str(scalar(value,field))
         gkey={"color_scheme":"color-scheme","icon_theme":"icon-theme","cursor_theme":"cursor-theme","font":"font-name"}[field]; gval=("prefer-dark" if val=="1" else "prefer-light") if field=="color_scheme" else val
-        if shutil.which("gsettings"):
-            cmd=["gsettings","set","org.gnome.desktop.interface",gkey,gval]; good,_,result=command(cmd); receipt.commands.append({"argv":cmd,"returncode":result.returncode})
-            if not good: raise ValueError("command-failed:"+field)
-        set_file_value(receipt,paths()[kind],key,val,"Settings"); return
+        require("gsettings", field)
+        from agathodaimon.settings import _parity
+        sway = field == "cursor_theme" and _parity.backends.select_backend()
+        if sway:
+            import ast
+            good_old, old_theme, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"])
+            try:
+                previous_theme = ast.literal_eval(old_theme) if good_old else None
+            except (SyntaxError, ValueError):
+                previous_theme = None
+            size = get_values("appearance").get("cursor_size")
+            if not isinstance(previous_theme, str) or not isinstance(size, int):
+                raise ValueError("cursor-theme-observation-failed")
+        cmd=["gsettings","set","org.gnome.desktop.interface",gkey,gval]; good,_,result=command(cmd); receipt.commands.append({"argv":cmd,"returncode":result.returncode})
+        if not good: raise ValueError("command-failed:"+field)
+        if sway:
+            try:
+                _parity.set_sway_cursor(gval, size, receipt)
+            except Exception as error:
+                receipt.restore_backups()
+                rollback = ["gsettings", "set", "org.gnome.desktop.interface", "cursor-theme", previous_theme]
+                restored, _, result = command(rollback)
+                receipt.commands.append({"argv": rollback, "returncode": result.returncode})
+                if not restored: raise ValueError("cursor-gsettings-rollback-failed") from error
+                raise
+        receipt.changed = True
+        return
     if kind == "sound":
         if field == "test_tone":
             if value is not True: raise ValueError("invalid:test_tone")

@@ -25,7 +25,4 @@ def build_widget():
                                  required_route="/api/v1/settings/keyboard")
     build_settings_widget(PLUG, "input", "Mouse &amp; Touchpad", SPECS,
                           required_route="/api/v1/settings/input", page=page)
-    build_settings_widget(PLUG, "appearance", "Pointer size", [
-        {"field": "cursor_size", "title": "Cursor size", "kind": "spin", "minimum": 8, "maximum": 256}
-    ], required_route="/api/v1/settings/appearance", page=page)
     return page
