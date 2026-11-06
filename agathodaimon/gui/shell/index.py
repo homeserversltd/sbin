@@ -108,6 +108,7 @@ def ordered_plugs(registry: dict[str, Plug]) -> list[tuple[Plug, int]]:
 
 START_PLUG = "about-system"
 NOTIFICATIONS_PLUG = "notifications"
+MANUAL_MODULE = "manual"
 PRODUCT_TITLES = {"tv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
 
 
@@ -557,6 +558,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                     open_notifications,
                 )
                 sidebar_bar.pack_end(indicator)
+            sidebar_bar.pack_end(_load_module(PLUGS_DIR / f"{MANUAL_MODULE}.py").build_indicator())
 
             listing.connect("row-activated", activate_row)
             self.window.set_title(app_title)
