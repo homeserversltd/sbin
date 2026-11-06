@@ -670,7 +670,9 @@ def main_for(verb, arguments=None):
             _set_token(raw, payload if raw.lstrip().startswith("{") else None, profile, receipt)
         receipt["ok"] = True
     except Refusal as error:
-        receipt.update(firstMissingSignal=error.signal, **error.details)
+        signal_name = ("forge-unreachable" if verb == "new-tab" and error.signal == "thyrsus-forge-unreachable"
+                       else error.signal)
+        receipt.update(firstMissingSignal=signal_name, **error.details)
     except EnvelopeError:
         receipt["firstMissingSignal"] = "thyrsus-envelope-invalid"
     except (OSError, ValueError, UnicodeError, KeyError, TypeError):
