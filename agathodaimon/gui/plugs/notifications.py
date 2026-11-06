@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import socket
+import struct
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -18,6 +20,7 @@ PLUG = {"id": "notifications", "title": "Notifications", "icon": "preferences-sy
 NOTIFICATIONS_DOOR = "/api/v1/notifications"
 SCHEMA_ID = "caduceus.notifications.v1"
 SCHEMA_DOOR = f"/api/v1/schema/{SCHEMA_ID}"
+APPLIANCE_CONFIG_PATH = "/etc/appliance/config.json"
 GUEST_INSTRUCTION = "Accept this from your HomeServer in Admin Mode"
 GATEWAY_INSTRUCTION = "Act on this from your HomeServer in Admin Mode"
 ADMIN_SIGNALS = {"link-up-admin-required", "caduceus-administrative-pin-required",
@@ -75,8 +78,8 @@ def _fold(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return folded
 
 
-def _get_json(path: str) -> tuple[int, dict[str, Any] | None]:
-    request = urllib.request.Request(CADUCEUS_URL + path, headers={"Accept": "application/json"})
+def _get_json(path: str, base: str = CADUCEUS_URL) -> tuple[int, dict[str, Any] | None]:
+    request = urllib.request.Request(base + path, headers={"Accept": "application/json"})
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         response = opener.open(request, timeout=4)
@@ -87,8 +90,9 @@ def _get_json(path: str) -> tuple[int, dict[str, Any] | None]:
         # Older profiles can answer an absent door with an HTML 404.
         if status in (404, 405, 501):
             return status, None
-        raw = response.read(256 * 1024 + 1)
-    if len(raw) > 256 * 1024:
+        limit = 16 * 1024 * 1024 if path == "/api/v1/ruyi" else 256 * 1024
+        raw = response.read(limit + 1)
+    if len(raw) > limit:
         raise ValueError("response too large")
     value = json.loads(raw)
     if not isinstance(value, dict):
@@ -108,7 +112,7 @@ def _refusal(value: dict[str, Any]) -> str:
     }.get(signal, "Notifications are not available on this device yet.")
 
 
-def read_model() -> dict[str, Any]:
+def _read_notifications_model() -> dict[str, Any]:
     """Transient, guest-only projection; missing doors are quiet, failed reads are not."""
     model: dict[str, Any] = {
         "state": "unavailable", "pending_count": None, "notifications": [],
@@ -176,6 +180,114 @@ def read_model() -> dict[str, Any]:
     except (OSError, ValueError, urllib.error.URLError):
         pass
     return model
+
+
+def _default_gateway() -> str:
+    with open("/proc/net/route", encoding="ascii") as routes:
+        next(routes, None)
+        for line in routes:
+            fields = line.split()
+            if (len(fields) >= 4 and fields[1] == "00000000" and fields[2] != "00000000"
+                    and int(fields[3], 16) & 3 == 3):
+                return socket.inet_ntoa(struct.pack("<I", int(fields[2], 16)))
+    return ""
+
+
+def _seat_port() -> int | None:
+    try:
+        with open(APPLIANCE_CONFIG_PATH, encoding="utf-8") as config:
+            port = json.load(config).get("caduceus", {}).get("seat_port")
+        if not isinstance(port, bool) and isinstance(port, int) and 1 <= port <= 65535:
+            return port
+    except (OSError, ValueError, AttributeError):
+        pass
+    return None
+
+
+def _read_trust() -> dict[str, Any] | None:
+    trust = {"state": "unavailable", "fingerprint": "", "gateway_fingerprint": "",
+             "server": "", "message": "Your HomeServer could not be reached."}
+    try:
+        status, own = _get_json("/api/v1/cert/status")
+        if status >= 400 or not own or own.get("ok") is False:
+            return trust
+        if _text(own.get("role")).lower() == "homeserver":
+            return None
+        trust["fingerprint"] = _text(own.get("ca_fingerprint"))
+        gateway = _default_gateway()
+        seat_port = _seat_port()
+        if not gateway or seat_port is None:
+            return trust
+        status, roster = _get_json("/api/v1/ruyi", f"http://{gateway}:{seat_port}")
+        if status >= 400 or not roster or roster.get("ok") is False:
+            return trust
+        seat = roster.get("seat")
+        staves = roster.get("staves")
+        if not isinstance(seat, dict) or seat.get("ipv4") != gateway or not isinstance(staves, list):
+            return trust
+        mac = _text(seat.get("mac")).casefold()
+        if not mac:
+            return trust
+        row = next((item for item in staves if isinstance(item, dict) and _text(item.get("mac")).casefold() == mac), None)
+        port = row.get("caduceus_port") if row else None
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            return trust
+        trust["server"] = f"{gateway}:{port}"
+        status, remote = _get_json("/api/v1/cert/status", f"http://{trust['server']}")
+        if status >= 400 or not remote or remote.get("ok") is False:
+            return trust
+        served = _text(remote.get("ca_fingerprint"))
+        if not served:
+            return trust
+        trust["gateway_fingerprint"] = served
+        recorded = trust["fingerprint"]
+        if recorded and recorded.casefold() != served.casefold():
+            trust.update(state="renew", message="HomeServer trust needs to be renewed.")
+        elif own.get("bundle_installed") is not True or own.get("browser_trust", True) is False or not recorded:
+            trust.update(state="accept", message="Accept HomeServer trust on this device.")
+        else:
+            trust.update(state="trusted", message="Trusted")
+    except (OSError, ValueError, TypeError, urllib.error.URLError):
+        pass
+    return trust
+
+
+def read_model() -> dict[str, Any]:
+    model = _read_notifications_model()
+    trust = _read_trust()
+    model["trust"] = trust
+    if trust and trust["state"] in ("accept", "renew"):
+        model["pending_count"] = (model["pending_count"] or 0) + 1
+    return model
+
+
+def _trust_fetch(server: str, renew: bool) -> str:
+    request = urllib.request.Request(
+        CADUCEUS_URL + "/api/v1/cert/trust-fetch",
+        data=json.dumps({"server": server, "platform": "linux", "renew": renew}).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
+    try:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            response = opener.open(request, timeout=30)
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            status = response.code
+            raw = response.read(256 * 1024 + 1)
+        if len(raw) > 256 * 1024:
+            raise ValueError("response too large")
+        receipt = json.loads(raw)
+        if not isinstance(receipt, dict):
+            raise ValueError("invalid receipt")
+        if status < 400 and receipt.get("ok") is True:
+            return ""
+        signal = _text(receipt.get("firstMissingSignal", receipt.get("first_missing_signal")))
+        if signal and signal != "none":
+            return "Could not update trust: " + signal.replace("-", " ").replace("_", " ") + "."
+    except (OSError, ValueError, urllib.error.URLError):
+        pass
+    return "Could not update HomeServer trust. Try again."
 
 
 def _is_gateway() -> bool:
@@ -350,6 +462,7 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
     group.add(listing)
     gate = _ActionGate()
     gateway = _is_gateway()
+    trust_action = {"busy": False, "message": ""}
     alive = {"value": False}
     stack.connect("map", lambda _widget: alive.update(value=True))
     stack.connect("unmap", lambda _widget: alive.update(value=False))
@@ -448,6 +561,59 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             following = child.get_next_sibling()
             listing.remove(child)
             child = following
+        trust = model.get("trust")
+        if trust is not None:
+            card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            card.add_css_class("card")
+            content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True)
+            for edge in ("top", "bottom", "start"):
+                getattr(content, f"set_margin_{edge}")(12)
+            card.append(content)
+            title = Gtk.Label(label="HomeServer trust", xalign=0, wrap=True)
+            title.add_css_class("heading")
+            content.append(title)
+            state_label = Gtk.Label(label=trust["message"], xalign=0, wrap=True)
+            state_label.add_css_class("accent" if trust["state"] == "trusted" else "warning")
+            content.append(state_label)
+            fingerprint = trust["gateway_fingerprint"] or trust["fingerprint"]
+            if fingerprint:
+                label = Gtk.Label(label="Fingerprint: " + fingerprint, xalign=0, wrap=True, selectable=True)
+                label.add_css_class("dim-label")
+                content.append(label)
+            column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)
+            for edge in ("top", "bottom", "end"):
+                getattr(column, f"set_margin_{edge}")(12)
+            if trust["state"] in ("accept", "renew"):
+                button = Gtk.Button(label="Accept" if trust["state"] == "accept" else "Renew")
+                button.set_sensitive(not trust_action["busy"])
+                column.append(button)
+                notice = Gtk.Label(label=trust_action["message"], xalign=1, wrap=True, selectable=True, max_width_chars=24)
+                notice.add_css_class("warning")
+                column.append(notice)
+
+                def pressed(_button: Any) -> None:
+                    if trust_action["busy"]:
+                        return
+                    trust_action["busy"] = True
+                    trust_action["message"] = ""
+                    button.set_sensitive(False)
+                    notice.set_text("Updating trust…")
+
+                    def complete(updated: dict[str, Any], failure: str) -> bool:
+                        trust_action["busy"] = False
+                        trust_action["message"] = failure
+                        render(updated)
+                        return False
+
+                    def run() -> None:
+                        failure = _trust_fetch(trust["server"], trust["state"] == "renew")
+                        GLib.idle_add(complete, read_model(), failure)
+
+                    threading.Thread(target=run, daemon=True).start()
+
+                button.connect("clicked", pressed)
+            card.append(column)
+            listing.append(card)
         for item in model["notifications"]:
             card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             card.add_css_class("card")
