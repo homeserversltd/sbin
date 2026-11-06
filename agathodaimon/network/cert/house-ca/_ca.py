@@ -434,6 +434,56 @@ def _trust_store_layout() -> tuple[bool, Path, Path]:
     return arch, store, system_bundle
 
 
+def _browser_bridge(arch: bool) -> tuple[str, Path | None]:
+    """Read the NSS module and p11-kit in this body's filesystem."""
+    root = _root()
+    directories = [root / "usr/lib"] if arch else sorted((root / "usr/lib").glob("*-linux-gnu"))
+    for directory in directories:
+        module = directory / "libnssckbi.so"
+        trust = directory / "pkcs11/p11-kit-trust.so"
+        if not trust.is_file():
+            continue
+        if module.is_symlink():
+            link = os.readlink(module)
+            destination = root / link.lstrip("/") if link.startswith("/") else module.parent / link
+            if destination.resolve() == trust.resolve():
+                return "bridged", module
+        if module.is_file() and not module.is_symlink():
+            return "unbridged", module
+        return "unbridged", module
+    return "unsupported", None
+
+
+def _bridge_browser(module: Path) -> tuple[int | None, bool]:
+    """Divert only NSS's built-in module, then install the relative bridge."""
+    root = _root()
+    rooted = root.resolve() != Path("/")
+    logical = "/" + str(module.relative_to(root)).lstrip("/") if rooted else str(module)
+    executable = shutil.which("dpkg-divert")
+    if not executable:
+        for directory in ("/usr/sbin", "/usr/bin", "/sbin", "/bin"):
+            candidate = Path(directory) / "dpkg-divert"
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                executable = str(candidate)
+                break
+    if not executable:
+        return None, False
+    command = [executable]
+    if rooted:
+        command.extend(["--root", str(root)])
+    command.extend(["--package", "homeserver-house-trust", "--divert", logical + ".distrib", "--rename", logical])
+    diverted = False
+    try:
+        result = subprocess.run(command, check=False, text=True, capture_output=True)
+        if result.returncode != 0:
+            return result.returncode, False
+        diverted = True
+        module.symlink_to("pkcs11/p11-kit-trust.so")
+        return 0, True
+    except OSError:
+        return None, diverted
+
+
 def _trust_refresh_command(arch: bool, store: Path) -> tuple[str, list[str], str | None]:
     """Resolve a safe refresher, preferring PATH shims for rooted witnesses."""
     root = _root()
@@ -630,7 +680,9 @@ def trust_install(
     )
     program, refresh_command, executable = _trust_refresh_command(arch, store)
     refresh_needed = not store_current
-    already_current = state_current and anchor_current and store_current and not ring_changed
+    bridge_before, bridge_module = _browser_bridge(arch)
+    bridge_enabled = _profile() != "homeserver"
+    already_current = state_current and anchor_current and store_current and not ring_changed and (not bridge_enabled or bridge_before == "bridged")
     if already_current:
         reason = "already-current"
 
@@ -646,7 +698,8 @@ def trust_install(
             would_write_anchor=not anchor_current,
             would_refresh=refresh_needed,
             would_commit_state=not state_current,
-            plan=["validate-ca-only-bundle", "resolve-root-pin", "install-platform-anchor", "refresh-system-trust", "verify-system-bundle", "record-root-state"],
+            would_bridge=bridge_enabled and bridge_before == "unbridged" and not arch,
+            plan=["validate-ca-only-bundle", "resolve-root-pin", "install-platform-anchor", "refresh-system-trust", "verify-system-bundle", "record-root-state", "bridge-browser-trust"],
             proof="trust-install-plan-only",
         )
 
@@ -765,6 +818,27 @@ def trust_install(
             )
 
     changed = anchor_changed or system_before != system_after or committed is not None
+    bridge = {"state_before": bridge_before, "attempted": False, "exit": None}
+    if bridge_enabled:
+        if bridge_before == "unsupported":
+            return _trust_refusal(
+                "agathodaimon-cert-browser-bridge-unsupported", changed=changed,
+                platform=platform, reason=reason, ca_fingerprint=root_fingerprint,
+                bundle_fingerprint=supplied, bundle_installed=True,
+                browser_trust="unsupported", bridge=bridge, state_commit=committed,
+            )
+        if bridge_before == "unbridged":
+            bridge["attempted"] = not arch and bridge_module is not None
+            if not arch and bridge_module is not None:
+                bridge["exit"], bridge_changed = _bridge_browser(bridge_module)
+                changed = changed or bridge_changed
+            if bridge["exit"] != 0 or _browser_bridge(arch)[0] != "bridged":
+                return _trust_refusal(
+                    "agathodaimon-cert-browser-bridge-failed", changed=changed,
+                    platform=platform, reason=reason, ca_fingerprint=root_fingerprint,
+                    bundle_fingerprint=supplied, bundle_installed=True,
+                    browser_trust=False, bridge=bridge, state_commit=committed,
+                )
     return _receipt(
         "trust_install", changed=changed, platform=platform,
         ca_fingerprint=root_fingerprint, bundle_fingerprint=supplied,
@@ -772,7 +846,8 @@ def trust_install(
         pin_sources=pin_sources, anchor_path=str(target),
         system_bundle=str(system_bundle), store_refresh=store_refresh,
         state_generation=(committed["state_generation"] if committed else _generation()),
-        state_commit=committed, proof="anchor-and-system-bundle-readback",
+        state_commit=committed, browser_trust=True if bridge_enabled else None,
+        bridge=bridge, proof="anchor-and-system-bundle-readback",
     )
 
 
@@ -1044,6 +1119,9 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
 def status() -> dict[str, Any]:
     ca, path, role = cert_dir() / "ca.pem", state_path(), _profile()
     value = _receipt("status", changed=False, profile=role, root_present=ca.is_file(), bundle_installed=False, portals=[], constituents=[])
+    if role != "homeserver":
+        bridge_state, _ = _browser_bridge(_trust_store_layout()[0])
+        value["browser_trust"] = "unsupported" if bridge_state == "unsupported" else bridge_state == "bridged"
     if ca.is_file():
         value.update(ca_fingerprint=_fingerprint(ca), ca_not_after=_not_after(ca))
     ledger: dict[str, Any] = {}
