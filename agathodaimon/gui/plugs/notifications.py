@@ -205,6 +205,8 @@ def _seat_port() -> int | None:
 
 
 def _read_trust() -> dict[str, Any] | None:
+    if _is_gateway():
+        return None
     trust = {"state": "unavailable", "fingerprint": "", "gateway_fingerprint": "",
              "server": "", "message": "Your HomeServer could not be reached."}
     try:
