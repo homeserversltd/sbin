@@ -248,10 +248,12 @@ def _picked(outputs: Sequence[Mapping[str, Any]], selection: str | None) -> Mapp
     return next((x for x in choices if keys[str(x["name"])] == selection), choices[0] if choices else None)
 
 
-def _sway_command(selected: Mapping[str, Any], command: str) -> None:
+def _sway_command(selected: Mapping[str, Any], command: str, receipt: Any = None) -> None:
     socket = str(selected["socket"])
     argv, runtime, _ = backends._sway_argv(socket, [command])
     result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
+    if receipt is not None:
+        receipt.commands.append({"argv": argv, "returncode": result.get("returncode")})
     responses, error = backends._parse_json_list(result)
     if error or not responses or not all(isinstance(x, dict) and x.get("success") is True for x in responses):
         raise ValueError(error or "sway-display-apply-failed")
@@ -272,11 +274,11 @@ def _position_command(outputs: Sequence[Mapping[str, Any]]) -> str:
     return "; ".join(commands)
 
 
-def _arrange(selected: Mapping[str, Any]) -> None:
+def _arrange(selected: Mapping[str, Any], receipt: Any = None) -> None:
     outputs = _outputs(selected)
     command = _position_command(outputs)
     if command:
-        _sway_command(selected, command)
+        _sway_command(selected, command, receipt)
         after = {x["name"]: x for x in _outputs(selected)}
         x = 0
         for output in sorted([o for o in outputs if not str(o["name"]).startswith("HEADLESS-")], key=policy._connector_rank):
@@ -302,12 +304,12 @@ def _positions(outputs: Sequence[Mapping[str, Any]]) -> dict[str, tuple[int, int
     return positions
 
 
-def _restore_positions(selected: Mapping[str, Any], positions: Mapping[str, tuple[int, int]]) -> None:
+def _restore_positions(selected: Mapping[str, Any], positions: Mapping[str, tuple[int, int]], receipt: Any = None) -> None:
     commands = [f"output {backends._escape_sway_name(name)} pos {x} {y}"
                 for name, (x, y) in positions.items()]
     if not commands:
         return
-    _sway_command(selected, "; ".join(commands))
+    _sway_command(selected, "; ".join(commands), receipt)
     after = {str(item["name"]): item for item in _outputs(selected)}
     for name, (x, y) in positions.items():
         rect = after.get(name, {}).get("rect", {})
@@ -356,8 +358,8 @@ def _live_matches(output: Mapping[str, Any] | None, field: str, value: str) -> b
     return False
 
 
-def _set_live(selected: Mapping[str, Any], name: str, field: str, value: str) -> None:
-    _sway_command(selected, f"output {backends._escape_sway_name(name)} {field} {value}")
+def _set_live(selected: Mapping[str, Any], name: str, field: str, value: str, receipt: Any = None) -> None:
+    _sway_command(selected, f"output {backends._escape_sway_name(name)} {field} {value}", receipt)
     after = next((x for x in _outputs(selected) if x.get("name") == name), None)
     if not _live_matches(after, field, value):
         raise ValueError("sway-" + field + "-readback-mismatch")
@@ -444,7 +446,9 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
     live_attempted = False
     changes: list[tuple[str, str, str]] = []
     positions: dict[str, tuple[int, int]] | None = None
+    receipt = None
     try:
+        receipt = _shared.Receipt("display", ["apply" if operation == "apply" else next(iter(supplied), "apply")])
         original = _read_table()
         _lines, _start, _end, _body, rows, selection = _table_parse(original)
         outputs = _outputs(selected)
@@ -458,10 +462,12 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
                 name = str(output["name"])
                 changes.append((name, "mode", _mode_current_text(output)))
                 live_attempted = True
-                _set_live(selected, name, "mode", mode)
+                _set_live(selected, name, "mode", mode, receipt)
             live_attempted = True
-            _arrange(selected)
-            return {"ok": True, "changed": True, "mutationPerformed": True}
+            _arrange(selected, receipt)
+            answer = receipt.finish(True, True)
+            answer["mutationPerformed"] = True
+            return answer
         if len(supplied) != 1:
             raise ValueError("mixed-display-fields")
         requested_field, value = next(iter(supplied.items()))
@@ -471,7 +477,9 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
             updated = _table_update(original, key=value, field="selection", value=value)
             if updated != original:
                 _write_table(path, updated)
-            return {"ok": True, "changed": updated != original, "mutationPerformed": updated != original}
+            answer = receipt.finish(True, updated != original)
+            answer["mutationPerformed"] = updated != original
+            return answer
         output = _picked(outputs, selection)
         if not output:
             raise ValueError("sway-output-unavailable")
@@ -523,9 +531,11 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
                 _write_table(path, updated)
         live_attempted = True
         changes.append((name, field, str(prior)))
-        _set_live(selected, name, field, desired)
-        _arrange(selected)
-        return {"ok": True, "changed": updated != original or str(prior) != str(desired), "mutationPerformed": True}
+        _set_live(selected, name, field, desired, receipt)
+        _arrange(selected, receipt)
+        answer = receipt.finish(True, updated != original or str(prior) != str(desired))
+        answer["mutationPerformed"] = True
+        return answer
     except (OSError, ValueError, TypeError, KeyError) as error:
         signal = str(error)
         if original is not None:
@@ -539,15 +549,17 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
                 signal = "rollback-failed:" + str(rollback) + ":" + signal
         for name, field, prior in reversed(changes):
             try:
-                _set_live(selected, name, field, prior)
+                _set_live(selected, name, field, prior, receipt)
             except (OSError, ValueError, TypeError, KeyError) as rollback:
                 signal = "live-rollback-failed:" + str(rollback) + ":" + signal
         if live_attempted and positions is not None:
             try:
-                _restore_positions(selected, positions)
+                _restore_positions(selected, positions, receipt)
             except (OSError, ValueError, TypeError, KeyError) as rollback:
                 signal = "position-rollback-failed:" + str(rollback) + ":" + signal
-        return _failure(signal, settings=settings, backend=selected, mutation_performed=live_attempted)
+        failure_receipt = receipt.finish(False, error=signal) if receipt is not None else None
+        return _failure(signal, settings=settings, backend=selected, mutation_performed=live_attempted,
+                        receipt=failure_receipt.get("receipt") if failure_receipt else None)
 
 
 def _envelope_operation(request: Request) -> str:
