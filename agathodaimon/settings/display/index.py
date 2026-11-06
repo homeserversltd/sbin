@@ -448,7 +448,11 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
     positions: dict[str, tuple[int, int]] | None = None
     receipt = None
     try:
-        receipt = _shared.Receipt("display", ["apply" if operation == "apply" else next(iter(supplied), "apply")])
+        try:
+            receipt = _shared.Receipt("display", ["apply" if operation == "apply" else next(iter(supplied), "apply")])
+        except OSError:
+            if operation != "apply":
+                raise
         original = _read_table()
         _lines, _start, _end, _body, rows, selection = _table_parse(original)
         outputs = _outputs(selected)
@@ -465,6 +469,8 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
                 _set_live(selected, name, "mode", mode, receipt)
             live_attempted = True
             _arrange(selected, receipt)
+            if receipt is None:
+                return {"ok": True, "changed": True, "mutationPerformed": True}
             answer = receipt.finish(True, True)
             answer["mutationPerformed"] = True
             return answer
