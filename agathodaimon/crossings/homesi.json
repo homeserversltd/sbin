@@ -93,6 +93,7 @@
     "network/wifi/device/disconnect",
     "network/wifi/device/ipv4/set",
     "network/wifi/network/connect",
+    "network/wifi/radio/get",
     "network/wifi/radio/set",
     "notify/act",
     "notify/post",
@@ -511,6 +512,13 @@
       "network/firewall/register",
       "network/firewall/unregister",
       "network/firewall/whitelist/set",
+      "network/wifi/connection/forget",
+      "network/wifi/connection/ipv4/set",
+      "network/wifi/device/connect",
+      "network/wifi/device/disconnect",
+      "network/wifi/device/ipv4/set",
+      "network/wifi/network/connect",
+      "network/wifi/radio/set",
       "settings/datetime",
       "settings/datetime/household-time/ensure-ntp",
       "settings/datetime/household-time/resolve",
@@ -659,6 +667,11 @@
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
       "POST /api/v1/interactables/{id}/unsilence",
+      "POST /api/v1/network/device/wifi/connect",
+      "POST /api/v1/network/device/wifi/disconnect",
+      "POST /api/v1/network/device/wifi/forget",
+      "POST /api/v1/network/device/wifi/ipv4",
+      "POST /api/v1/network/device/wifi/radio",
       "PUT /api/v1/local-ai/slot/{slot}"
     ]
   }

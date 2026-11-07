@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "envelope": {"stdin": "stream"},
+  "mutation_allowed": false,
+  "sclerite": {
+    "name": "nmcli",
+    "features": {
+      "nmcli": {
+        "band": true,
+        "verbs": [],
+        "routes": ["/api/v1/network/device/wifi/radio"],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

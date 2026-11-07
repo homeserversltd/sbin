@@ -11,9 +11,9 @@
           "/api/v1/network/device/wifi/disconnect"
         ],
         "administrative": {
-          "band": false,
+          "band": true,
           "verbs": [],
-          "routes": []
+          "routes": ["POST /api/v1/network/device/wifi/disconnect"]
         }
       }
     }
