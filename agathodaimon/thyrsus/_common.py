@@ -27,12 +27,13 @@ import uuid
 from agathodaimon._envelope import (
     EnvelopeError, Request, appliance_runtime_path, attach, read,
 )
-from agathodaimon.lib.keyman_export.index import KeymanExportError, export_credential
 from agathodaimon.keyman._common import _scrub
 from agathodaimon.lib.receipts.index import emit, now_iso
 
 FORGE = "git.home.arpa"
 SERVICE = "thyrsus_forgejo"
+ROOT_TOKEN = "/etc/default/forgejo"
+OWNER_TOKEN = "/home/owner/.ssh/forgejo-token"
 VERBS = ("propose", "admit", "forge-token", "forge", "new-tab")
 WRITES = frozenset(("propose", "admit", "forge-token", "new-tab"))
 MAX_INPUT = 65536
@@ -55,7 +56,16 @@ def _zero(value):
 def _rooted(path):
     # Use the same isolated-root coordinate as the staff's config/profile reader.
     config = appliance_runtime_path("config")
-    return config.parents[2] / path.lstrip("/")
+    root = config.parents[2]
+    target = root / path.lstrip("/")
+    scratch = os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
+    if scratch is not None:
+        requested = Path(scratch)
+        if (not requested.is_absolute() or requested != requested.resolve()
+                or requested == Path("/") or root != requested
+                or not target.parent.resolve().is_relative_to(requested)):
+            raise OSError("scratch-path-outside-root")
+    return target
 
 
 def _json_file(coordinate):
@@ -89,10 +99,85 @@ def _vault():
     return vault
 
 
-def _token_present(profile):
+def _env_field(path, key):
     try:
-        path = (appliance_runtime_path("skeleton") if profile == "homeserver"
-                else _vault() / ".keys" / (SERVICE + ".key"))
+        descriptor = os.open(_rooted(path), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return b""
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError("credential-not-regular")
+        data = stream.read(8193)
+    if len(data) > 8192:
+        raise ValueError("credential-too-large")
+    prefix = key.encode("ascii") + b"="
+    for line in data.splitlines():
+        if line.startswith(prefix):
+            value = line[len(prefix):].strip()
+            if len(value) >= 2 and value[:1] == value[-1:] and value[:1] in (b"'", b'"'):
+                value = value[1:-1]
+            return value
+    return b""
+
+
+def _store_runtime_token(token, receipt):
+    staged = []
+    receipt["places_written"] = []
+    try:
+        for place in (ROOT_TOKEN, OWNER_TOKEN):
+            path = _rooted(place)
+            username = _env_field(place, "FORGEJO_USERNAME") or b"owner"
+            if not re.fullmatch(rb"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", username):
+                raise Refusal("thyrsus-username-invalid")
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            staged.append([directory, None, path.name, place])
+            name = ".forge-token-" + uuid.uuid4().hex
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+            staged[-1][1] = name
+            try:
+                os.fchmod(descriptor, 0o600)
+                if os.geteuid() == 0:
+                    owner = pwd.getpwnam("owner") if place == OWNER_TOKEN else None
+                    os.fchown(descriptor, owner.pw_uid if owner else 0, owner.pw_gid if owner else 0)
+                data = b"FORGEJO_USERNAME=" + username + b"\nFORGEJO_TOKEN=" + token + b"\n"
+                with os.fdopen(descriptor, "wb") as stream:
+                    descriptor = -1
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+        for entry in staged:
+            directory, name, destination, place = entry
+            os.replace(name, destination, src_dir_fd=directory, dst_dir_fd=directory)
+            entry[1] = None
+            receipt["places_written"].append(place)
+            receipt["mutationPerformed"] = True
+            receipt["attempt"].append({"step": "store-credential", "place": place, "ok": True})
+            os.fsync(directory)
+    finally:
+        for directory, name, _, _ in staged:
+            if name is not None:
+                try:
+                    os.unlink(name, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+            os.close(directory)
+
+
+def _plane_present(path):
+    try:
+        return bool(_env_field(path, "FORGEJO_TOKEN"))
+    except (OSError, ValueError):
+        return False
+
+
+def _token_present(profile):
+    if profile == "homesi":
+        return _plane_present(ROOT_TOKEN)
+    try:
+        path = appliance_runtime_path("skeleton")
         metadata = path.lstat()
         return stat.S_ISREG(metadata.st_mode) and metadata.st_size > 0
     except (OSError, ValueError, Refusal):
@@ -113,18 +198,11 @@ def _credential_bytes(profile):
                 del password[-1:]
             username.extend(b"owner")
         else:
-            _vault()
-            # Scratch never borrows the body's real vault or an exporter stand-in.
-            if os.environ.get("AGATHODAIMON_SCRATCH_ROOT") is not None:
-                raise Refusal("thyrsus-token-absent")
             try:
-                username, password = export_credential(SERVICE)
-            except KeymanExportError as error:
-                if error.signal == "missing-key":
-                    raise Refusal("thyrsus-token-absent") from None
-                if error.signal in {"non-root", "uninitialized-system", "preflight-unobservable"}:
-                    raise Refusal("thyrsus-vault-locked") from None
-                raise Refusal("thyrsus-keyman-" + error.signal) from None
+                username.extend(_env_field(ROOT_TOKEN, "FORGEJO_USERNAME") or b"owner")
+                password.extend(_env_field(ROOT_TOKEN, "FORGEJO_TOKEN"))
+            except (OSError, ValueError):
+                raise Refusal("thyrsus-token-absent")
         if not password or len(password) > 4096 or any(x in password for x in (0, 10, 13)):
             raise Refusal("thyrsus-token-absent")
         try:
@@ -147,7 +225,7 @@ def _connection():
 
 
 def _api(profile, method, path, payload=None):
-    # A fresh export for each API call; headers and response bodies are never forwarded.
+    # Read the selected credential for each API call; never forward its bytes.
     with _credential(profile) as (owner, username, password):
         authentication = bytearray()
         encoded = bytearray()
@@ -520,15 +598,24 @@ def _admit(payload, profile, receipt):
 
 def _set_token(raw, payload, profile, receipt):
     # The setter never changes the HomeServer's skeleton authentication source.
-    _vault()
-    if os.environ.get("AGATHODAIMON_SCRATCH_ROOT") is not None:
-        raise Refusal("thyrsus-token-absent")
+    if profile == "homeserver":
+        _vault()
+        if os.environ.get("AGATHODAIMON_SCRATCH_ROOT") is not None:
+            raise Refusal("thyrsus-token-absent")
     token = payload.get("token") if payload is not None else raw.removesuffix("\n")
     if not isinstance(token, str) or not token or len(token.encode("utf-8")) > 511:
         raise Refusal("thyrsus-token-absent")
     if any(character in token for character in "\0\r\n\""):
         raise Refusal("thyrsus-token-invalid")
+    if profile == "homesi" and not re.fullmatch(r"[0-9a-fA-F]{40}", token):
+        raise Refusal("thyrsus-token-invalid")
     secret = bytearray(token.encode("utf-8"))
+    if profile == "homesi":
+        try:
+            _store_runtime_token(secret, receipt)
+        finally:
+            _zero(secret)
+        return
     output = io.StringIO()
     original = sys.stdin
     try:
@@ -656,6 +743,10 @@ def main_for(verb, arguments=None):
         if verb == "forge":
             receipt.update(token_present=_token_present(profile), reachable=_reachable())
             receipt["observed"] = {key: receipt[key] for key in ("forge", "token_present", "reachable")}
+            if profile == "homesi":
+                receipt["observed"]["token_present_by_plane"] = {
+                    "root": _plane_present(ROOT_TOKEN), "owner": _plane_present(OWNER_TOKEN),
+                }
         elif verb == "propose":
             receipt["could-change"] = ["branch", "stage", "commit", "push", "pull-request"]
             _propose(payload, profile, receipt)
