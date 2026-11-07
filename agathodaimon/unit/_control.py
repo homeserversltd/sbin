@@ -45,10 +45,13 @@ def control(action, unit, scope, deadline_seconds=30, *, planned=False):
     if not isinstance(unit, str) or len(unit) > 255 or not UNIT.fullmatch(unit):
         receipt["first_missing_signal"] = "invalid-unit"
         return receipt
-    if scope not in ("system", "owner"):
+    if scope not in ("system", "owner", "hermes"):
         receipt["first_missing_signal"] = "invalid-scope"
         return receipt
-    prefix = ["systemctl"] + (["--user", "-M", f"{OWNER}@.host"] if scope == "owner" else [])
+    if scope == "hermes" and (unit != "hermes-dashboard.service" or action != "restart"):
+        receipt["first_missing_signal"] = "hermes-scope-not-permitted"
+        return receipt
+    prefix = ["systemctl"] + (["--user", "-M", f"{scope}@.host"] if scope in ("owner", "hermes") else [])
     if action == "restart" and planned:
         receipt.update(ok=True, command=[*prefix, action, unit], first_missing_signal="none")
         return receipt
