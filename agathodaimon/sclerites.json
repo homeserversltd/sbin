@@ -9,6 +9,7 @@
     "settings": {},
     "portals": {},
     "thyrsus": {},
+    "hermes": {},
     "kea": {
       "requires": [
         "gateway"

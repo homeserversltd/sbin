@@ -29,6 +29,7 @@
     "face/screenshot",
     "face/volume",
     "face/workspace",
+    "hermes/dashboard-login",
     "local-ai/card",
     "local-ai/edition",
     "local-ai/library",
@@ -205,6 +206,10 @@
     [
       "face",
       "workspace"
+    ],
+    [
+      "hermes",
+      "dashboard-login"
     ],
     [
       "local-ai",
@@ -407,6 +412,7 @@
     "/api/v1/face/workspace",
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
+    "/api/v1/hermes/dashboard-login",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
     "/api/v1/interactables/:id/silence",
@@ -472,6 +478,7 @@
       "appliance/sudo-passwordless",
       "exousia/change",
       "exousia/reset-default",
+      "hermes/dashboard-login",
       "local-ai/slot",
       "network/child-device/apply",
       "network/child-device/register",
@@ -516,6 +523,10 @@
       [
         "exousia",
         "reset-default"
+      ],
+      [
+        "hermes",
+        "dashboard-login"
       ],
       [
         "local-ai",
@@ -608,6 +619,7 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
+      "/api/v1/hermes/dashboard-login",
       "/api/v1/settings/appearance",
       "/api/v1/settings/datetime",
       "/api/v1/settings/default-apps",

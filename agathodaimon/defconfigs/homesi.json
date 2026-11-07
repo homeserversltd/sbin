@@ -3,6 +3,7 @@
   "profile": "homesi",
   "features": [
     "thyrsus",
+    "hermes",
     "desktop",
     "sway",
     "pactl",
