@@ -4,6 +4,7 @@
   "features": [
     "thyrsus",
     "hermes",
+    "woodpecker",
     "desktop",
     "sway",
     "pactl",

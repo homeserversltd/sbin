@@ -140,7 +140,9 @@
     "unit/status",
     "unit/stop",
     "update/service",
-    "update/sources-reseed"
+    "update/sources-reseed",
+    "woodpecker/agent",
+    "woodpecker/agent-token"
   ],
   "verbs": [
     [
@@ -390,6 +392,14 @@
     [
       "upload",
       "ingress"
+    ],
+    [
+      "woodpecker",
+      "agent"
+    ],
+    [
+      "woodpecker",
+      "agent-token"
     ]
   ],
   "routes": [
@@ -463,7 +473,9 @@
     "/api/v1/update/now",
     "/api/v1/update/service/status",
     "/api/v1/update/service/toggle",
-    "/api/v1/upload/force-permissions"
+    "/api/v1/upload/force-permissions",
+    "/api/v1/woodpecker/agent",
+    "/api/v1/woodpecker/agent-token"
   ],
   "administrative": {
     "bands": [
@@ -513,7 +525,8 @@
       "thyrsus/admit",
       "thyrsus/forge-token",
       "thyrsus/new-tab",
-      "thyrsus/propose"
+      "thyrsus/propose",
+      "woodpecker/agent-token"
     ],
     "verbs": [
       [
@@ -615,6 +628,10 @@
       [
         "thyrsus",
         "propose"
+      ],
+      [
+        "woodpecker",
+        "agent-token"
       ]
     ],
     "routes": [
@@ -636,6 +653,7 @@
       "/api/v1/thyrsus/forge-token",
       "/api/v1/thyrsus/new-tab",
       "/api/v1/thyrsus/propose",
+      "/api/v1/woodpecker/agent-token",
       "POST /api/v1/config/patch",
       "POST /api/v1/config/set",
       "POST /api/v1/interactables/{id}/run",

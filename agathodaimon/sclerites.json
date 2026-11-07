@@ -10,6 +10,7 @@
     "portals": {},
     "thyrsus": {},
     "hermes": {},
+    "woodpecker": {},
     "kea": {
       "requires": [
         "gateway"

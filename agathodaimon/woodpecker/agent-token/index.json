@@ -1,0 +1,6 @@
+{
+  "children": [],
+  "mutation_allowed": true,
+  "envelope": {"stdin": "stream"},
+  "sclerite": {"name": "woodpecker", "features": {"woodpecker": {"band": true, "verbs": [["woodpecker", "agent-token"]], "routes": ["/api/v1/woodpecker/agent-token"], "administrative": {"band": true, "verbs": [["woodpecker", "agent-token"]], "routes": ["/api/v1/woodpecker/agent-token"]}}}}
+}

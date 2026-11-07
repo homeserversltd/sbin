@@ -1,0 +1,5 @@
+{
+  "children": [],
+  "mutation_allowed": false,
+  "sclerite": {"name": "woodpecker", "features": {"woodpecker": {"band": true, "verbs": [["woodpecker", "agent"]], "routes": ["/api/v1/woodpecker/agent"]}}}
+}
