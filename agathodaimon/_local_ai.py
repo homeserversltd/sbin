@@ -465,8 +465,13 @@ def edition_check(local: dict, edition: str) -> dict:
         return {"ok": True, "signal": None}
     if not _worker_drive_mounted():
         return {"ok": False, "signal": "drive_required"}
-    vram = _edition_card(local)["vram_gib"]
-    if vram is not None and vram < 12:
+    try:
+        vram = _gpu_memory()["bytes"]
+    except LocalAIError as error:
+        if str(error) != "local-ai-no-gpu":
+            raise
+        return {"ok": False, "signal": "card-too-small"}
+    if vram < 12 * GIB:
         return {"ok": False, "signal": "card-too-small"}
     return {"ok": True, "signal": None}
 
