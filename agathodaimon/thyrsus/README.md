@@ -2,7 +2,7 @@
 
 The household forge is always `git.home.arpa`. Enable `thyrsus.enabled` in
 `/etc/appliance/config.json`; `thyrsus.forge`, when present, is `git.home.arpa`.
-The immutable appliance profile selects HomeServer or HomeSI.
+The immutable appliance profile selects HomeServer or another profile.
 
 `cli.py thyrsus propose /path/to/repo -m "Describe the change" [--branch name]`
 creates the branch, stages everything, commits on it, pushes and opens a pull
@@ -19,7 +19,7 @@ Only when the human's words that turn explicitly authorize admission, call
 This merges through Forgejo and reads its merged state back; read `ok`,
 `merged_sha` and `firstMissingSignal`.
 
-`cli.py thyrsus forge-token` reads the Forgejo token from stdin on HomeSI and
+`cli.py thyrsus forge-token` reads the Forgejo token from stdin on every profile but HomeServer and
 writes `/etc/default/forgejo` and `/home/owner/.ssh/forgejo-token` as mode 0600
 env files. Each keeps its existing `FORGEJO_USERNAME`, or defaults to `owner`.
 The receipt lists places actually written; a later failure does not roll them
@@ -29,7 +29,7 @@ the setter never changes that source. A missing or locked vault is never
 opened by Thyrsus.
 
 `cli.py thyrsus forge` reads `forge`, `token_present` and `reachable`, without
-exporting a key or writing a log. On HomeSI it also reports
+exporting a key or writing a log. On every profile but HomeServer it also reports
 `observed.token_present_by_plane` for `root` and `owner`; `token_present` uses
 the root place. A nonzero HTTP response still establishes
 reachability; it does not establish authentication or readiness to merge.
@@ -50,13 +50,13 @@ staff envelope on stdin. Payloads are respectively `{repo,message,branch?}`,
 The four writing bands are administrative; the read is not. Credentials are
 read within the privileged crossing; Git itself runs as the repository owner.
 
-HomeSI reads the root runtime place for Thyrsus operations; the owner place is
+Every profile but HomeServer reads the root runtime place for Thyrsus operations; the owner place is
 for owner-plane readers. Keyman carries the Forgejo token at birth, not as a
-HomeSI runtime copy. The Git helper consumes an inherited pipe for one Git call;
+runtime copy for those profiles. The Git helper consumes an inherited pipe for one Git call;
 no secret environment variable or authenticated URL is written. Each deed emits
 one metadata line to `/var/log/appliance/appliance.log`; replies go only home.
 
 `AGATHODAIMON_SCRATCH_ROOT` uses the staff's isolated config/profile coordinate
-for labelled scratch observations. HomeSI token writes and reads use only the
+for labelled scratch observations. Non-HomeServer token writes and reads use only the
 scratch-rooted runtime places. Real push, pull request, merge and live token
 storage require the real household and are not established by scratch proof.

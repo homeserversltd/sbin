@@ -85,7 +85,7 @@ def _configuration():
     if block.get("forge", FORGE) != FORGE:
         raise Refusal("thyrsus-forge-invalid")
     profile = _json_file("profile").get("profile")
-    if profile not in {"homeserver", "homesi"}:
+    if not isinstance(profile, str) or not profile:
         raise Refusal("thyrsus-profile-unsupported")
     return profile
 
@@ -174,7 +174,7 @@ def _plane_present(path):
 
 
 def _token_present(profile):
-    if profile == "homesi":
+    if profile != "homeserver":
         return _plane_present(ROOT_TOKEN)
     try:
         path = appliance_runtime_path("skeleton")
@@ -607,10 +607,10 @@ def _set_token(raw, payload, profile, receipt):
         raise Refusal("thyrsus-token-absent")
     if any(character in token for character in "\0\r\n\""):
         raise Refusal("thyrsus-token-invalid")
-    if profile == "homesi" and not re.fullmatch(r"[0-9a-fA-F]{40}", token):
+    if profile != "homeserver" and not re.fullmatch(r"[0-9a-fA-F]{40}", token):
         raise Refusal("thyrsus-token-invalid")
     secret = bytearray(token.encode("utf-8"))
-    if profile == "homesi":
+    if profile != "homeserver":
         try:
             _store_runtime_token(secret, receipt)
         finally:
@@ -743,7 +743,7 @@ def main_for(verb, arguments=None):
         if verb == "forge":
             receipt.update(token_present=_token_present(profile), reachable=_reachable())
             receipt["observed"] = {key: receipt[key] for key in ("forge", "token_present", "reachable")}
-            if profile == "homesi":
+            if profile != "homeserver":
                 receipt["observed"]["token_present_by_plane"] = {
                     "root": _plane_present(ROOT_TOKEN), "owner": _plane_present(OWNER_TOKEN),
                 }
