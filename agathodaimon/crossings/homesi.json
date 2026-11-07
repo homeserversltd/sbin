@@ -130,6 +130,7 @@
     "thyrsus/admit",
     "thyrsus/forge",
     "thyrsus/forge-token",
+    "thyrsus/new-tab",
     "thyrsus/propose",
     "unit/disable",
     "unit/enable",
@@ -335,6 +336,10 @@
     ],
     [
       "thyrsus",
+      "new-tab"
+    ],
+    [
+      "thyrsus",
       "propose"
     ],
     [
@@ -446,6 +451,7 @@
     "/api/v1/thyrsus/admit",
     "/api/v1/thyrsus/forge",
     "/api/v1/thyrsus/forge-token",
+    "/api/v1/thyrsus/new-tab",
     "/api/v1/thyrsus/propose",
     "/api/v1/update/check",
     "/api/v1/update/now",
@@ -499,6 +505,7 @@
       "storage/vault/policy/write",
       "thyrsus/admit",
       "thyrsus/forge-token",
+      "thyrsus/new-tab",
       "thyrsus/propose"
     ],
     "verbs": [
@@ -592,6 +599,10 @@
       ],
       [
         "thyrsus",
+        "new-tab"
+      ],
+      [
+        "thyrsus",
         "propose"
       ]
     ],
@@ -611,11 +622,14 @@
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/thyrsus/admit",
       "/api/v1/thyrsus/forge-token",
+      "/api/v1/thyrsus/new-tab",
       "/api/v1/thyrsus/propose",
+      "POST /api/v1/config/patch",
+      "POST /api/v1/config/set",
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
       "POST /api/v1/interactables/{id}/unsilence",
-      "PUT /api/v1/local-ai/slot/:slot"
+      "PUT /api/v1/local-ai/slot/{slot}"
     ]
   }
 }

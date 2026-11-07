@@ -141,6 +141,7 @@
     "thyrsus/admit",
     "thyrsus/forge",
     "thyrsus/forge-token",
+    "thyrsus/new-tab",
     "thyrsus/propose",
     "transmission/down",
     "transmission/keys",
@@ -337,6 +338,10 @@
     ],
     [
       "thyrsus",
+      "new-tab"
+    ],
+    [
+      "thyrsus",
       "propose"
     ],
     [
@@ -498,6 +503,7 @@
     "/api/v1/thyrsus/admit",
     "/api/v1/thyrsus/forge",
     "/api/v1/thyrsus/forge-token",
+    "/api/v1/thyrsus/new-tab",
     "/api/v1/thyrsus/propose",
     "/api/v1/transmission/down",
     "/api/v1/transmission/keys",
@@ -587,6 +593,7 @@
       "storage/vault/policy/write",
       "thyrsus/admit",
       "thyrsus/forge-token",
+      "thyrsus/new-tab",
       "thyrsus/propose",
       "transmission/down",
       "transmission/keys",
@@ -702,6 +709,10 @@
       ],
       [
         "thyrsus",
+        "new-tab"
+      ],
+      [
+        "thyrsus",
         "propose"
       ],
       [
@@ -754,6 +765,7 @@
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/thyrsus/admit",
       "/api/v1/thyrsus/forge-token",
+      "/api/v1/thyrsus/new-tab",
       "/api/v1/thyrsus/propose",
       "/api/v1/transmission/down",
       "/api/v1/transmission/keys/replace",

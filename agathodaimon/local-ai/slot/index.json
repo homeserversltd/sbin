@@ -31,7 +31,7 @@
             ]
           ],
           "routes": [
-            "PUT /api/v1/local-ai/slot/:slot"
+            "PUT /api/v1/local-ai/slot/{slot}"
           ]
         }
       }

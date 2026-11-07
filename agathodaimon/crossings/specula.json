@@ -177,6 +177,7 @@
     "thyrsus/admit",
     "thyrsus/forge",
     "thyrsus/forge-token",
+    "thyrsus/new-tab",
     "thyrsus/propose",
     "transmission/down",
     "transmission/keys",
@@ -489,6 +490,10 @@
     ],
     [
       "thyrsus",
+      "new-tab"
+    ],
+    [
+      "thyrsus",
       "propose"
     ],
     [
@@ -678,6 +683,7 @@
     "/api/v1/thyrsus/admit",
     "/api/v1/thyrsus/forge",
     "/api/v1/thyrsus/forge-token",
+    "/api/v1/thyrsus/new-tab",
     "/api/v1/thyrsus/propose",
     "/api/v1/transmission/down",
     "/api/v1/transmission/keys",
@@ -773,6 +779,7 @@
       "storage/vault/policy/write",
       "thyrsus/admit",
       "thyrsus/forge-token",
+      "thyrsus/new-tab",
       "thyrsus/propose",
       "transmission/down",
       "transmission/keys",
@@ -924,6 +931,10 @@
       ],
       [
         "thyrsus",
+        "new-tab"
+      ],
+      [
+        "thyrsus",
         "propose"
       ],
       [
@@ -985,6 +996,7 @@
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/thyrsus/admit",
       "/api/v1/thyrsus/forge-token",
+      "/api/v1/thyrsus/new-tab",
       "/api/v1/thyrsus/propose",
       "/api/v1/transmission/down",
       "/api/v1/transmission/keys/replace",
@@ -992,6 +1004,8 @@
       "/api/v1/transmission/up",
       "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
       "DELETE /api/v1/network/firewall/children/{mac}",
+      "POST /api/v1/config/patch",
+      "POST /api/v1/config/set",
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
       "POST /api/v1/interactables/{id}/unsilence",
@@ -1010,7 +1024,7 @@
       "POST /api/v1/storage/backup/forgejo/skip-check",
       "POST /api/v1/storage/nas/list",
       "POST /api/v1/transmission/vpn/settings",
-      "PUT /api/v1/local-ai/slot/:slot",
+      "PUT /api/v1/local-ai/slot/{slot}",
       "PUT /api/v1/network/dhcp/reservations/{reservation_id}",
       "PUT /api/v1/network/firewall/children/{mac}/whitelist"
     ]

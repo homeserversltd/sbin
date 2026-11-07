@@ -16,6 +16,16 @@
   ],
   "sclerite": {
     "name": "all",
-    "features": {}
+    "features": {
+      "desktop": {
+        "band": false,
+        "administrative": {
+          "routes": [
+            "POST /api/v1/config/patch",
+            "POST /api/v1/config/set"
+          ]
+        }
+      }
+    }
   }
 }
