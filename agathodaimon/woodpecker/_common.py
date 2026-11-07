@@ -122,7 +122,7 @@ def main_for(verb, arguments=None):
                "firstMissingSignal": "none", "mutationPerformed": False}
     try:
         if verb == "agent-token":
-            receipt.update(file=None, restart=None)
+            receipt.update(file=None, restart=None, restarted=False)
             token = _token(list(arguments or []))
             try:
                 _store(token, receipt)
@@ -135,6 +135,8 @@ def main_for(verb, arguments=None):
                 receipt["restart"] = result
                 if not result["ok"]:
                     raise Refusal("woodpecker-unit-restart-failed")
+                # The door and the face read this boolean; the restart object stays for the record.
+                receipt["restarted"] = True
         else:
             if arguments:
                 raise Refusal("woodpecker-arguments-invalid")

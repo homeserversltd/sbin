@@ -90,7 +90,7 @@ def _deed(receipt, started):
 def main(arguments=None):
     started = time.monotonic()
     receipt = {"schema": "caduceus.staff.v1", "ok": False, "firstMissingSignal": "none",
-               "mutationPerformed": False, "file": None, "restart": None, "argv": []}
+               "mutationPerformed": False, "file": None, "restart": None, "restarted": False, "argv": []}
     try:
         password = _password(list(arguments or []))
         root = _root()
@@ -125,6 +125,8 @@ def main(arguments=None):
             if (receipt["before"]["MainPID"] == receipt["after"]["MainPID"] or
                 receipt["before"]["ActiveEnterTimestamp"] == receipt["after"]["ActiveEnterTimestamp"]):
                 raise Refusal("hermes-unit-identity-unchanged")
+            # The door and the face read this boolean; the restart object stays for the record.
+            receipt["restarted"] = True
         receipt["ok"] = True
     except Refusal as error:
         receipt["firstMissingSignal"] = str(error)
