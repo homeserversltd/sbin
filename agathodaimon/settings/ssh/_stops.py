@@ -19,11 +19,12 @@ def config_read(payload, commands):
     return {'directives': ssh._directive_values(raw), 'raw': raw}
 
 
-def config_set(payload, commands):
+def config_set(payload, commands, witness):
     state = _state(payload.get('state'))
     desired = {'PasswordAuthentication': 'no',
                'PubkeyAuthentication': 'yes' if state == 'on' else 'no'}
     original, steps = ssh._read_config()
+    witness.update(original=original, changedFlag=False)
     commands.extend(steps)
     ssh._directive_values(original)
     updated = original
@@ -36,6 +37,7 @@ def config_set(payload, commands):
             changed.append(transition)
     commands.extend(ssh._validate())
     if updated != original:
+        witness['changedFlag'] = True
         commands.extend(ssh._write_config(updated))
         try:
             commands.extend(ssh._validate())
@@ -43,6 +45,7 @@ def config_set(payload, commands):
             try:
                 commands.extend(ssh._write_config(original))
                 commands.extend(ssh._validate())
+                witness['changedFlag'] = False
             except ssh.Refusal:
                 raise ssh.Refusal('agathodaimon-ssh-exposure-config-restore-refused')
             raise
@@ -93,6 +96,7 @@ def verify(payload, commands):
 def main(name, known_fields):
     schema = SCHEMAS[name]
     commands = []
+    witness = {}
     try:
         request = read(known_fields=known_fields)
         source = request.value.get('payload', {}) if request.envelope else request.value
@@ -101,11 +105,16 @@ def main(name, known_fields):
         unknown = next((field for field in source if field not in known_fields), None)
         if unknown is not None:
             raise ssh.Refusal('unknown-field:' + unknown)
-        result = globals()[name](request.payload, commands)
+        if name == 'config_set':
+            result = config_set(request.payload, commands, witness)
+        else:
+            result = globals()[name](request.payload, commands)
         result.update(schema=schema, ok=True, commands=commands, firstMissingSignal='none')
         result = attach(result, request)
     except (EnvelopeError, ssh.Refusal) as error:
         result = {'schema': schema, 'ok': False, 'commands': commands,
                   'firstMissingSignal': str(error)}
+        if name == 'config_set':
+            result.update(witness)
     print(json.dumps(result, sort_keys=True))
     return 0 if result['ok'] else 1
