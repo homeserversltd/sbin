@@ -7,11 +7,15 @@
       "all": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": [
+          "/api/v1/settings/ssh/service/enable"
+        ],
         "administrative": {
-          "band": false,
+          "band": true,
           "verbs": [],
-          "routes": []
+          "routes": [
+            "/api/v1/settings/ssh/service/enable"
+          ]
         }
       }
     }
