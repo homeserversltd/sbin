@@ -78,13 +78,11 @@
       "stage_id": "config-restore",
       "snake": "settings/ssh/config/restore",
       "on_refusal_of": [
+        "config-set",
         "unit-resolve",
         "unit-disable",
         "unit-stop",
         "verify"
-      ],
-      "depends_on": [
-        "config-set"
       ],
       "arguments": {
         "original": {
