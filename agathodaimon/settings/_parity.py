@@ -424,7 +424,7 @@ def _set_energy(field: str, value: Any, receipt: _shared.Receipt) -> str | None:
     if observed != value: raise ValueError("logind-power-key-shadowed")
 
 
-def _set(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
+def _set(kind: str, changes: dict[str, Any], schema: str | None = None) -> dict[str, Any]:
     if not changes:
         raise ValueError("no-fields-supplied")
     for field in changes:
@@ -432,7 +432,7 @@ def _set(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("unsupported:" + field)
         if kind == "energy" and field == "sleep_seconds":
             raise ValueError("energy-idle-consumer-absent")
-    receipt = _shared.Receipt(kind, list(changes))
+    receipt = _shared.Receipt(kind, list(changes), schema=schema)
     reload_attempted = False
     screen_attempted = False
     note = None

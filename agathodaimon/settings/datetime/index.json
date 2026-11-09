@@ -1,7 +1,9 @@
 {
   "children": [
     "household-time",
-    "zone-mode"
+    "zone-mode",
+    "read",
+    "set"
   ],
   "sclerite": {
     "name": "settings",

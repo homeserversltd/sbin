@@ -1,6 +1,8 @@
 {
   "children": [
-    "desktop-cache"
+    "desktop-cache",
+    "read",
+    "set"
   ],
   "sclerite": {
     "name": "desktop",
