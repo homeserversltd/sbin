@@ -33,6 +33,7 @@
     "network/cert/house-ca/ensure-root",
     "network/cert/house-ca/issue-leaf",
     "network/cert/house-ca/portal-admit",
+    "network/cert/house-ca/portal-retire",
     "network/cert/house-ca/rotate-ca",
     "network/cert/house-ca/sign-csr",
     "network/cert/house-ca/state-commit",

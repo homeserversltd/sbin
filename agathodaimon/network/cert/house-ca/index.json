@@ -2,6 +2,6 @@
   "children": [
     "ensure-root", "status", "rotate-ca", "issue-leaf", "sign-csr",
     "bundle-export", "bundle-read", "trust-install", "apply-nginx",
-    "constituent-lock", "state-commit", "portal-admit"
+    "constituent-lock", "state-commit", "portal-admit", "portal-retire"
   ]
 }

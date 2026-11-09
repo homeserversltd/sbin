@@ -14,6 +14,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -1092,6 +1093,12 @@ def state_commit(transition: dict[str, Any], *, dry_run: bool = False) -> dict[s
     if dry_run:
         return _receipt("state_commit", changed=False, dry_run=True, state_generation=old.get("generation", 0), next_generation=value["generation"], plan=["atomic-state-replace"])
     existing[SCHEMA] = value
+    _write_state(existing)
+    return _receipt("state_commit", changed=True, state_generation=value["generation"], proof="atomic-state-readback")
+
+
+def _write_state(existing: dict[str, Any]) -> None:
+    path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(dir=path.parent, prefix=".state.")
     try:
@@ -1101,12 +1108,26 @@ def state_commit(transition: dict[str, Any], *, dry_run: bool = False) -> dict[s
         os.replace(name, path)
     finally:
         Path(name).unlink(missing_ok=True)
-    return _receipt("state_commit", changed=True, state_generation=value["generation"], proof="atomic-state-readback")
 
 
-def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str] = (), *, dry_run: bool = False) -> dict[str, Any]:
+def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str] | None = None, *, owner_mac: str | None = None, origin: str | None = None, claim_tiles: Sequence[str] = (), dry_run: bool = False) -> dict[str, Any]:
     if _profile() != "homeserver":
         return _refusal("portal_admit", "agathodaimon-portal-admit-profile-refused", portal=portal, failed_child="profile-gate")
+    if owner_mac is not None and (not isinstance(owner_mac, str) or not re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", owner_mac)):
+        raise ValueError("agathodaimon-portal-owner-invalid")
+    if origin is not None and origin not in ("face", "tile"):
+        raise ValueError("agathodaimon-portal-origin-invalid")
+    existing = json.loads(state_path().read_text()).get(SCHEMA, {}) if state_path().is_file() else {}
+    rows = existing.get("portals", [])
+    prior = next((row for row in rows if row.get("fqdn") == portal), {})
+    if owner_mac and prior.get("owner_mac") and prior["owner_mac"] != owner_mac:
+        return _refusal("portal_admit", "agathodaimon-portal-owner-conflict", portal=portal)
+    claim_requested = origin == "face" and bool(owner_mac)
+    aliases = prior.get("aliases", []) if aliases is None else aliases
+    if owner_mac is None:
+        owner_mac = prior.get("owner_mac")
+    if origin is None:
+        origin = prior.get("origin")
     children: list[dict[str, Any]] = []
     failed = "constituent_lock"
     try:
@@ -1125,13 +1146,138 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
         if not applied.get("ok"):
             raise RuntimeError(applied["firstMissingSignal"])
         failed = "state_commit"
-        transition = {"root_fingerprint": leaf.get("ca_fingerprint"), "portals": [{"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip, "upstream": upstream}], "constituents": [{"identity": portal, "lan_ip": lan_ip}]}
+        row = {"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip, "upstream": upstream}
+        if owner_mac is not None:
+            row["owner_mac"] = owner_mac
+        if origin is not None:
+            row["origin"] = origin
+        claims = []
+        if claim_requested:
+            for old in rows:
+                if old.get("fqdn") != portal and old.get("lan_ip") == lan_ip and not old.get("owner_mac"):
+                    claimed = {**old, "owner_mac": owner_mac}
+                    if old.get("fqdn") in claim_tiles:
+                        claimed["origin"] = "tile"
+                    claims.append(claimed)
+        transition = {"root_fingerprint": leaf.get("ca_fingerprint"), "portals": [*claims, row], "constituents": [{"identity": portal, "lan_ip": lan_ip}]}
         committed = state_commit(transition, dry_run=dry_run)
         children.append(committed)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         return _receipt("portal_admit", changed=any(child.get("changed", False) for child in children), dry_run=dry_run, ok=False, firstMissingSignal="agathodaimon-portal-child-failed", portal=portal, failed_child=failed, child_signal=str(error), held_generation=_generation(), children=children)
     generation = committed.get("state_generation", _generation())
     return _receipt("portal_admit", changed=not dry_run, dry_run=dry_run, portal=portal, generation=generation, state_generation=generation, children=children, proof="four-child-composition")
+
+
+def portal_retire(portal: str, owner_mac: str, *, dry_run: bool = False) -> dict[str, Any]:
+    from agathodaimon.network.dns._manager import DnsManager
+
+    if _profile() != "homeserver":
+        return _refusal("portal_retire", "agathodaimon-portal-retire-refused", portal=portal, failed_child="profile-gate")
+    existing = json.loads(state_path().read_text()) if state_path().is_file() else {}
+    old = existing.get(SCHEMA, {})
+    row = next((item for item in old.get("portals", []) if item.get("fqdn") == portal), None)
+    if not row or not row.get("owner_mac") or not owner_mac or row["owner_mac"] != owner_mac or row.get("origin") != "tile":
+        return _refusal("portal_retire", "agathodaimon-portal-retire-refused", portal=portal)
+    names, ips = _split_sans([portal, *row.get("aliases", [])])
+    if ips or not names or names[0] != portal or not portal.endswith(".home.arpa"):
+        return _refusal("portal_retire", "agathodaimon-portal-retire-refused", portal=portal)
+    manager = DnsManager(
+        root_config=_path("CADUCEUS_UNBOUND_CONFIG", "/etc/unbound/unbound.conf"),
+        dropin_dir=_path("CADUCEUS_UNBOUND_DROPIN_DIR", "/etc/unbound/unbound.conf.d"),
+        include_path=_path("CADUCEUS_UNBOUND_INCLUDE", "/etc/unbound/unbound.conf.d/agathodaimon-local-names.conf"),
+    )
+    labels = [name.removesuffix(".home.arpa") for name in names if name.endswith(".home.arpa")]
+    for label in labels:
+        manager._alias_name(label)
+    plan = ["nginx_withdraw", "dns_withdraw", "leaf_delete", "state_retire"]
+    if dry_run:
+        return _receipt("portal_retire", changed=False, dry_run=True, portal=portal, plan=plan)
+    directory = _path("CADUCEUS_NGINX_DIR", "/etc/nginx/conf.d")
+    vhost = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
+    aside = directory / f".agathodaimon-{portal.replace('.', '-')}.retiring"
+    leaves = [cert_dir() / f"{portal}.pem", cert_dir() / f"{portal}.key.pem"]
+    children = []
+    removed_labels = []
+    leaf_preimages = {}
+    vhost_preimage = None
+    failed = "nginx_withdraw"
+    try:
+        if aside.exists():
+            raise RuntimeError("agathodaimon-portal-retire-staging-exists")
+        if vhost.exists():
+            vhost_preimage = (vhost.read_bytes(), vhost.stat().st_mode & 0o777)
+            os.replace(vhost, aside)
+        _run(["nginx", "-t"], timeout=30)
+        _run(["systemctl", "reload", "nginx"], timeout=30)
+        children.append({"child": failed, "ok": True})
+        failed = "dns_withdraw"
+        for label in labels:
+            # The shared DNS adapter also migrates gateway records and
+            # reprojects other aliases.  Do not let retirement change either.
+            records = manager._owned_records()
+            migrated = manager._migrate_gateway_records(records)
+            parts = manager._record_parts
+            if list(map(parts, records)) != list(map(parts, migrated)):
+                raise RuntimeError("agathodaimon-portal-dns-migration-required")
+            _, gateway_before, gateway_after = manager._gateway_file_candidate()
+            if gateway_before != gateway_after:
+                raise RuntimeError("agathodaimon-portal-dns-migration-required")
+            alias = manager._alias_name(label)
+            canonical = manager.canonical_name("home")
+            was_bound = manager._alias_bindings(records).get(alias) == canonical
+            retained = [line for line in records if not (was_bound and parts(line)[0] == alias)]
+            previous_targets = {parts(line)[0] for line in records if parts(line)[1] == "A" and parts(line)[3] is None} | manager._alias_bindings(records).keys()
+            current_targets = {parts(line)[0] for line in retained if parts(line)[1] == "A" and parts(line)[3] is None} | manager._alias_bindings(retained).keys()
+            projected = manager._project_aliases(retained, removed_targets=previous_targets - current_targets)
+            if manager._render_owned(projected) != manager._render_owned(retained):
+                raise RuntimeError("agathodaimon-portal-dns-reprojection-required")
+            result = manager.remove_alias(label, "home")
+            if result.get("state") not in ("applied", "noop"):
+                raise RuntimeError("agathodaimon-portal-dns-withdraw-failed")
+            if was_bound:
+                removed_labels.append(label)
+        children.append({"child": failed, "ok": True})
+        failed = "leaf_delete"
+        for path in leaves:
+            if path.exists():
+                leaf_preimages[path] = (path.read_bytes(), path.stat().st_mode & 0o777)
+                path.unlink()
+        children.append({"child": failed, "ok": True})
+        failed = "state_retire"
+        if vhost_preimage is not None:
+            aside.unlink()
+        value = {**old, "portals": [r for r in old.get("portals", []) if r.get("fqdn") != portal], "constituents": [r for r in old.get("constituents", []) if r.get("identity") != portal], "generation": int(old.get("generation", 0)) + 1}
+        existing[SCHEMA] = value
+        _write_state(existing)
+        children.append({"child": failed, "ok": True})
+    except Exception as error:
+        rollback_errors = []
+        for path, (payload, mode) in leaf_preimages.items():
+            try:
+                path.write_bytes(payload)
+                path.chmod(mode)
+            except OSError as rollback:
+                rollback_errors.append(str(rollback))
+        for label in reversed(removed_labels):
+            try:
+                result = manager.create_alias(label, "home")
+                if result.get("state") not in ("applied", "noop"):
+                    raise RuntimeError("agathodaimon-portal-dns-restore-failed")
+            except Exception as rollback:
+                rollback_errors.append(str(rollback))
+        if vhost_preimage is not None:
+            try:
+                if aside.exists():
+                    os.replace(aside, vhost)
+                else:
+                    vhost.write_bytes(vhost_preimage[0])
+                    vhost.chmod(vhost_preimage[1])
+                _run(["nginx", "-t"], timeout=30)
+                _run(["systemctl", "reload", "nginx"], timeout=30)
+            except Exception as rollback:
+                rollback_errors.append(str(rollback))
+        return _receipt("portal_retire", changed=bool(rollback_errors), ok=False, firstMissingSignal="agathodaimon-portal-retire-child-failed", portal=portal, failed_child=failed, child_signal=str(error), rollback_errors=rollback_errors, children=children)
+    return _receipt("portal_retire", changed=True, portal=portal, state_generation=value["generation"], children=children, proof="retirement-committed")
 
 
 def status() -> dict[str, Any]:
