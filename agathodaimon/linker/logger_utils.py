@@ -36,9 +36,8 @@ def record_deed(verb, ok, signal, started):
     if len(line) >= 1024:
         raise OSError("linker-ledger-line-too-large")
     from agathodaimon._deed import send
-    if not send("sbin", "linker-" + verb, ok, target="nas",
-                duration_ms=max(0, int((time.monotonic() - started) * 1000))):
-        raise OSError("linker-ledger-write-failed")
+    send("sbin", "linker-" + verb, ok, target="nas",
+         duration_ms=max(0, int((time.monotonic() - started) * 1000)))
 
 
 @contextmanager

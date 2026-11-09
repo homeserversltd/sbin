@@ -101,9 +101,8 @@ def _present():
 
 def _deed(receipt, started):
     from agathodaimon._deed import send
-    if not send("sbin", "woodpecker-agent-token", receipt["ok"], target="woodpecker-agent",
-                duration_ms=int((time.monotonic() - started) * 1000)):
-        raise OSError("ledger-write-failed")
+    send("sbin", "woodpecker-agent-token", receipt["ok"], target="woodpecker-agent",
+         duration_ms=int((time.monotonic() - started) * 1000))
 
 
 def main_for(verb, arguments=None):

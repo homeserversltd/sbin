@@ -71,9 +71,8 @@ def _unit_identity():
 
 def _deed(receipt, started):
     from agathodaimon._deed import send
-    if not send("sbin", "hermes-dashboard-login", receipt["ok"], target="hermes-dashboard",
-                duration_ms=int((time.monotonic() - started) * 1000)):
-        raise OSError("ledger-write-failed")
+    send("sbin", "hermes-dashboard-login", receipt["ok"], target="hermes-dashboard",
+         duration_ms=int((time.monotonic() - started) * 1000))
 
 
 def main(arguments=None):

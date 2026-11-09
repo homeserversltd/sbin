@@ -340,9 +340,8 @@ def safe_read(path: Path) -> bytes | None:
 
 def deed(verb, ident, ok, signal, started):
     from agathodaimon._deed import send
-    if not send("sbin", "xenia-" + verb, ok, target=ident,
-                duration_ms=int((time.monotonic() - started) * 1000)):
-        raise OSError("xenia-deed-write-failed")
+    send("sbin", "xenia-" + verb, ok, target=ident,
+         duration_ms=int((time.monotonic() - started) * 1000))
 
 def run(verb: str, ident: str, dry: bool):
     started = time.monotonic()

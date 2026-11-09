@@ -37,9 +37,8 @@ def record(verb: str, target: str, receipt: dict, started: float, *, request=Non
     if isinstance(request, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request):
         fields["request"] = request
     from agathodaimon._deed import send
-    if not send("sbin", verb, receipt.get("ok") is True, target=target,
-                duration_ms=fields["duration_ms"]):
-        raise OSError("nas-deed-write-failed")
+    send("sbin", verb, receipt.get("ok") is True, target=target,
+         duration_ms=fields["duration_ms"])
 
 
 def finish(verb: str, target: str, receipt: dict, started: float, *, request=None) -> None:

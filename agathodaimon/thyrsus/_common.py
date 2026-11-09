@@ -708,9 +708,8 @@ def _input(verb, arguments):
 def _deed(verb, receipt, started):
     # Only fixed metadata, never repository, message, or request body.
     from agathodaimon._deed import send
-    if not send("sbin", "thyrsus-" + verb, receipt["ok"], target="household-forge",
-                duration_ms=int((time.monotonic() - started) * 1000)):
-        raise OSError("ledger-write-failed")
+    send("sbin", "thyrsus-" + verb, receipt["ok"], target="household-forge",
+         duration_ms=int((time.monotonic() - started) * 1000))
 
 
 def main_for(verb, arguments=None):
