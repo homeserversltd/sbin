@@ -54,8 +54,8 @@ def state_path() -> Path:
 
 @contextlib.contextmanager
 def house_ca_lock():
-    """One house-ca mutation at a time, locked on the certs directory itself (no new file)."""
-    directory = cert_dir()
+    """One house-ca mutation at a time, locked on the state directory itself (no new file)."""
+    directory = state_path().parent
     directory.mkdir(parents=True, exist_ok=True)
     fd = os.open(directory, os.O_RDONLY)
     try:
