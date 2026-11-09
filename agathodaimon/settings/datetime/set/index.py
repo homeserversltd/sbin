@@ -6,7 +6,7 @@ from agathodaimon.settings import _shared
 
 def main(argv=None):
     try:
-        request = read(known_fields=('timezone', 'ntp_enabled', 'time_format', 'date_format', 'first_day_of_week'))
+        request = read(known_fields=('timezone', 'ntp_enabled'))
         source = request.value.get("payload", {}) if request.envelope else request.value
         if not isinstance(source, dict):
             source = {}

@@ -6,7 +6,7 @@ from agathodaimon.settings import _shared
 
 def main(argv=None):
     try:
-        request = read(known_fields=('browser', 'email', 'image_viewer', 'media_player', 'text_editor', 'terminal'))
+        request = read(known_fields=('browser', 'mail', 'calendar', 'music', 'video', 'photos', 'text_editor', 'terminal', 'file_manager'))
         source = request.value.get("payload", {}) if request.envelope else request.value
         if not isinstance(source, dict):
             source = {}
