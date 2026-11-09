@@ -14,12 +14,12 @@ def read_family(kind: str) -> dict[str, Any]:
     return _shared.get_values(kind)
 
 
-def set_family(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
+def set_family(kind: str, changes: dict[str, Any], schema: str | None = None) -> dict[str, Any]:
     if kind in _PARITY_FAMILIES:
-        return _parity._set(kind, changes)
+        return _parity._set(kind, changes, schema=schema)
     if not changes:
         return {"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}
-    receipt = _shared.Receipt(kind, list(changes))
+    receipt = _shared.Receipt(kind, list(changes), schema=schema)
     try:
         for field, value in changes.items():
             _shared.set_value(kind, field, value, receipt)

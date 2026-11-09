@@ -26,9 +26,7 @@ def run(request, fields, schema):
         else:
             selected = backends.select_backend()
             if selected is None:
-                result = _family.set_family("display", changes)
-                if isinstance(result.get("receipt"), dict):
-                    result["receipt"]["schema"] = schema
+                result = _family.set_family("display", changes, schema=schema)
             else:
                 result = display._apply(selected, "set", changes, display._display_settings(selected), schema=schema)
         display._log_mutation("set", result, started)
