@@ -534,8 +534,6 @@ def backup(bucket):
             os.close(config_lock)
         if not deed_written:
             deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts, ci_count, restic_error)
-        if not deed_ok:
-            outcome = "failed"
     print(json.dumps({"ok": outcome == "ok", "signal": failure, "deadline_seconds": deadline_seconds, "deed_ok": deed_ok, **byte_counts}, separators=(",", ":")))
     return 0 if outcome == "ok" else 1
 
