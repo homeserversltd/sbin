@@ -7,11 +7,6 @@ from agathodaimon.settings.ssh import index as ssh
 
 SCHEMAS = {name: 'caduceus.settings.ssh.' + name.replace('_', '.') + '.v1'
            for name in ('config_read', 'config_set', 'config_restore', 'unit_resolve', 'verify')}
-FIELDS = {'config_read': (), 'config_set': ('state',),
-          'config_restore': ('original', 'changed'), 'unit_resolve': (),
-          'verify': ('state', 'unit')}
-
-
 def _state(value):
     if value not in ('on', 'off'):
         raise ssh.Refusal('unsupported-operation')
@@ -95,15 +90,15 @@ def verify(payload, commands):
     return {'directives': directives, 'service': service}
 
 
-def main(name):
+def main(name, known_fields):
     schema = SCHEMAS[name]
     commands = []
     try:
-        request = read(known_fields=FIELDS[name])
+        request = read(known_fields=known_fields)
         source = request.value.get('payload', {}) if request.envelope else request.value
         if not isinstance(source, dict):
-            source = {}
-        unknown = next((field for field in source if field not in FIELDS[name]), None)
+            raise ssh.Refusal('payload-not-object')
+        unknown = next((field for field in source if field not in known_fields), None)
         if unknown is not None:
             raise ssh.Refusal('unknown-field:' + unknown)
         result = globals()[name](request.payload, commands)

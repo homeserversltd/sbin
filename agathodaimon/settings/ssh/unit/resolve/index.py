@@ -2,4 +2,4 @@
 from agathodaimon.settings.ssh import _stops
 
 def main(argv=None):
-    return _stops.main('unit_resolve')
+    return _stops.main('unit_resolve', known_fields=())
