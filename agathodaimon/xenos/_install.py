@@ -339,10 +339,10 @@ def safe_read(path: Path) -> bytes | None:
         raise Failure('xenia-file-unreadable') from exc
 
 def deed(verb, ident, ok, signal, started):
-    path = Path(setting('XENIA_LOG', '/var/log/appliance/appliance.log'))
-    line = f'actor=caduceus verb=xenia-{verb} target={ident} outcome={"ok" if ok else "failed"} signal={signal} duration_ms={int((time.monotonic()-started)*1000)}\n'
-    with path.open('a', encoding='utf-8') as stream:
-        stream.write(line)
+    from agathodaimon._deed import send
+    if not send("sbin", "xenia-" + verb, ok, target=ident,
+                duration_ms=int((time.monotonic() - started) * 1000)):
+        raise OSError("xenia-deed-write-failed")
 
 def run(verb: str, ident: str, dry: bool):
     started = time.monotonic()

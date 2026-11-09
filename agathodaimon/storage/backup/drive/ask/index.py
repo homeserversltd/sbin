@@ -14,6 +14,7 @@ import sys
 import time
 
 from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
+from agathodaimon.keyman.custody import call as custody_call
 from agathodaimon.storage.backup.mirror.pull.index import seat
 
 KEYMAN = "/vault/keyman/keyman"
@@ -90,7 +91,7 @@ def new_pair(mac, credential, context):
         session = (exchange_session(scratch_root=str(context[0]), exporter=keyman)
                    if context else exchange_session(native=True))
         with session:
-            result = subprocess.run([keyman, "newkey", "--stdin", "backup_pair", "--replace"],
+            result = custody_call("newkey", subprocess.run, [keyman, "newkey", "--stdin", "backup_pair", "--replace"],
                                     input=payload, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                     env=env, timeout=15, check=False, close_fds=True)
         if result.returncode != 0:

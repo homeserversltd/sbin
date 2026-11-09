@@ -36,17 +36,10 @@ def record(verb: str, target: str, receipt: dict, started: float, *, request=Non
         fields["transferred_bytes"] = transferred_bytes
     if isinstance(request, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request):
         fields["request"] = request
-    line = json.dumps(fields, separators=(",", ":")).encode("utf-8") + b"\n"
-    if len(line) >= 1024:
-        raise OSError("nas-deed-too-large")
-    path = runtime.runtime_path("/var/log/appliance/appliance.log")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
-    try:
-        if os.write(fd, line) != len(line):
-            raise OSError("nas-deed-write-failed")
-    finally:
-        os.close(fd)
+    from agathodaimon._deed import send
+    if not send("sbin", verb, receipt.get("ok") is True, target=target,
+                duration_ms=fields["duration_ms"]):
+        raise OSError("nas-deed-write-failed")
 
 
 def finish(verb: str, target: str, receipt: dict, started: float, *, request=None) -> None:

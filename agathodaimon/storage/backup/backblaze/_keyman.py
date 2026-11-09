@@ -1,5 +1,6 @@
 from __future__ import annotations
 from ._store import base64, hashlib, subprocess, json, urllib, KEYMAN, KeymanExportError, exchange_session, export_credential, Refusal, fail, skeleton_path, keyman_service
+from agathodaimon.keyman.custody import call as custody_call
 
 SEED_ATTEMPTED = False
 
@@ -36,7 +37,7 @@ def seed(bucket, key_id, application_key):
     try:
         with exchange_session(native=True):
             SEED_ATTEMPTED = True
-            proc = subprocess.run([KEYMAN, 'newkey', '--stdin', '--replace', service], input=bytes(material),
+            proc = custody_call('newkey', subprocess.run, [KEYMAN, 'newkey', '--stdin', '--replace', service], input=bytes(material),
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=12, check=False)
         result = json.loads(proc.stdout)
         if proc.returncode or not isinstance(result, dict) or result.get('ok') is not True or result.get('operation') != 'newkey' or result.get('service') != service or result.get('secret_free') is not True:

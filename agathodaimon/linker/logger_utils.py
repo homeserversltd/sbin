@@ -35,14 +35,10 @@ def record_deed(verb, ok, signal, started):
     }, separators=(",", ":")).encode("utf-8") + b"\n"
     if len(line) >= 1024:
         raise OSError("linker-ledger-line-too-large")
-    path = appliance_runtime_path("config").parents[2] / "var/log/appliance/appliance.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o640)
-    try:
-        if os.write(descriptor, line) != len(line):
-            raise OSError("linker-ledger-write-failed")
-    finally:
-        os.close(descriptor)
+    from agathodaimon._deed import send
+    if not send("sbin", "linker-" + verb, ok, target="nas",
+                duration_ms=max(0, int((time.monotonic() - started) * 1000))):
+        raise OSError("linker-ledger-write-failed")
 
 
 @contextmanager

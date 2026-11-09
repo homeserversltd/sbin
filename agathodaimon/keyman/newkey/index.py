@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 import warnings
 from typing import Any
 
@@ -729,8 +730,10 @@ def _backend_outcome(
 
 
 def main(argv=None):
+    started = time.monotonic()
     secrets: set[str] = set()
     service: str | None = None
+
     username: str | None = None
     replace: bool | None = None
     body: bytearray | None = None
@@ -750,6 +753,7 @@ def main(argv=None):
 
         service, username, password_stdin, replace = _parse_args(args, secrets)
         _validate_service(service)
+
         username_bytes = _field_bytes(username, "keyman-newkey-username-invalid")
 
         if os.geteuid() != 0:
@@ -788,7 +792,8 @@ def main(argv=None):
                 if replace:
                     child_argv.append("--replace")
                 dispatch_begun = True
-                child_result = _run_child(child_argv, body)
+                from agathodaimon.keyman.custody import call as custody_call
+                child_result = custody_call("newkey", _run_child, child_argv, body)
                 receipt = _backend_outcome(
                     child_result,
                     dispatched=child_result is not None,
@@ -852,4 +857,8 @@ def main(argv=None):
             _zero(output)
         return returncode
     assert receipt is not None
+    if not dispatch_begun:
+        # No backend invocation occurred to emit a deed for this refusal.
+        from agathodaimon._deed import send
+        send("keyman", "newkey", False, target="", duration_ms=int((time.monotonic() - started) * 1000))
     return _emit(receipt, None, secrets)

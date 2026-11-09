@@ -304,18 +304,10 @@ def _chord_deed(routine_id, envelope, rows, ok, failed, signal, started):
     request_id = envelope.get("intent_id")
     if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request_id):
         fields["request_id"] = request_id
-    line = json.dumps(fields, separators=(",", ":"), ensure_ascii=True).encode() + b"\n"
-    if len(line) >= 1024:
-        raise OSError("chord-deed-too-large")
-    from agathodaimon.storage.nas import runtime
-    target = runtime.runtime_path("/var/log/appliance/appliance.log")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
-    try:
-        if os.write(fd, line) != len(line):
-            raise OSError("chord-deed-write-failed")
-    finally:
-        os.close(fd)
+    from agathodaimon._deed import send
+    # The routine identifier may contain slashes; the door receives a fixed target.
+    if not send("sbin", "chord", ok, target="chord", duration_ms=fields["duration_ms"]):
+        raise OSError("chord-deed-write-failed")
 
 
 def _walk_chord(path: Path, envelope: dict) -> int:

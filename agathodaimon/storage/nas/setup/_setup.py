@@ -20,6 +20,7 @@ from typing import Any, Callable, Sequence
 
 from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
 from agathodaimon.lib.keyman_export.index import KEYMAN, KeymanExportError, exchange_session, export_credential
+from agathodaimon.keyman.custody import call as custody_call
 from agathodaimon.storage.nas.runtime import (
     Refusal,
     ROLE,
@@ -739,7 +740,7 @@ def _create_key(receipt: dict[str, Any], service_role: str, info: dict[str, Any]
                     # Rust crypto has no create-exclusive arm (main.rs:1920-1950).
                     # Native newkey without --replace uses O_EXCL, matching the old
                     # C encrypt_service_credentials(..., exclusive) path (:996-1012).
-                    result = _run([KEYMAN, "newkey", "--stdin", service_role],
+                    result = custody_call("newkey", _run, [KEYMAN, "newkey", "--stdin", service_role],
                                   input_data=bytes(input_data), step="key-create")
                 finally:
                     _zero(input_data)
@@ -1538,7 +1539,7 @@ def _cleanup_key(receipt: dict[str, Any], service_role: str, identity: dict[str,
                                               "rc": None,
                                               "reason": "rollback-incomplete" if not cleanup_certain else "key-identity-mismatch"}})
                 return
-            result = _run([KEYMAN, "delete", service_role], step="delete-created-key")
+            result = custody_call("delete", _run, [KEYMAN, "delete", service_role], step="delete-created-key")
             result_rc = result.returncode
             if result_rc == 0 and not _keyman_receipt(result, "delete", service_role):
                 failure_reason = "agathodaimon-nas-keyman-receipt-invalid"

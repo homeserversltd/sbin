@@ -208,12 +208,9 @@ def main(argv=None):
         signal = 'test-tab-operation-failed'
     receipt = {'ok': signal == 'none', 'changed': changed, 'firstMissingSignal': signal}
     if changed or signal != 'none':
-        line = f'actor=agathodaimon verb=xenos-test-tab target=test outcome={"ok" if signal == "none" else "failed"} changed={str(changed).lower()} duration_ms={int((time.monotonic()-started)*1000)} signal={signal}\n'
-        try:
-            path = Path(setting('XENIA_TEST_LOG', '/var/log/appliance/appliance.log'))
-            with path.open('a', encoding='utf-8') as stream:
-                stream.write(line)
-        except OSError:
+        from agathodaimon._deed import send
+        if not send('sbin', 'xenos-test-tab', signal == 'none', target='test',
+                    duration_ms=int((time.monotonic() - started) * 1000)):
             receipt['ok'] = False
             receipt['firstMissingSignal'] = 'test-tab-log-unavailable'
     print(json.dumps(attach(receipt, envelope), separators=(',', ':'), sort_keys=True))

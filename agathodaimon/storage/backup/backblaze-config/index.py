@@ -2,6 +2,7 @@ from __future__ import annotations
 import base64,json,os,re,stat,subprocess,sys,tempfile,urllib.error,urllib.request
 from pathlib import Path
 from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
+from agathodaimon.keyman.custody import call as custody_call
 SCHEMA="caduceus.backblaze.config.v1"; URL="https://api.backblazeb2.com/b2api/v2/b2_authorize_account"; KEYMAN="/vault/keyman/keyman"; CONFIG=Path("/etc/appliance/config.json")
 class Refusal(ValueError):
  def __init__(self,step,reason): self.step,self.reason=step,reason
@@ -64,7 +65,7 @@ def dispatch(e):
  try:
   with exchange_session(native=True):
    # Initial configuration historically replaced any bucket record already seated.
-   r=subprocess.run([KEYMAN,"newkey","--stdin","--replace",s],input=bytes(credential),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=False,timeout=30)
+   r=custody_call("newkey",subprocess.run,[KEYMAN,"newkey","--stdin","--replace",s],input=bytes(credential),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,check=False,timeout=30)
    if r.returncode: raise Refusal("seed_keyman","agathodaimon-keyman-seed-refused")
    try: seeded=json.loads(r.stdout)
    except (ValueError,UnicodeError): raise Refusal("seed_keyman","agathodaimon-keyman-receipt-invalid") from None

@@ -410,27 +410,9 @@ def capture_restic_error(stream, env, application_key, result):
 
 
 def log_deed(bucket, started, outcome, included, excluded, snapshot, failure, byte_counts, ci_count, restic_error):
-    record = {"who": "agathodaimon", "verb": ACTUATOR, "bucket": bucket, "outcome": outcome,
-              "duration_ms": int((time.monotonic() - started) * 1000), "included": included,
-              "excluded": excluded, "snapshot": snapshot, "signal": failure,
-              "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-              "excludedCiReleaseAttachments": ci_count, **byte_counts}
-    if outcome != "ok" and restic_error:
-        record["restic_error"] = restic_error
-    line = json.dumps(record, separators=(",", ":"), ensure_ascii=True)
-    while len(line.encode()) + 1 >= 1024 and record.get("restic_error"):
-        record["restic_error"] = record["restic_error"][1:]
-        line = json.dumps(record, separators=(",", ":"), ensure_ascii=True)
-    if len(line.encode()) + 1 >= 1024:
-        print("forgejo-backup-deed-too-large", file=sys.stderr)
-        return False
-    try:
-        with open("/var/log/appliance/appliance.log", "a", encoding="utf-8") as stream:
-            stream.write(line + "\n")
-        return True
-    except OSError:
-        print("forgejo-backup-deed-write-failed", file=sys.stderr)
-        return False
+    from agathodaimon._deed import send
+    return send("sbin", "forgejo-backup-b2", outcome == "ok", target="forgejo-backup",
+                duration_ms=int((time.monotonic() - started) * 1000))
 
 
 def backup(bucket):

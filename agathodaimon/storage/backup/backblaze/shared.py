@@ -5,12 +5,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
-from agathodaimon.storage.backup.backblaze._store import base64, datetime, timezone, errno, fcntl, hashlib, json, os, re, select, signal, socket, stat, struct, subprocess, tempfile, time, NoReturn, urllib, KeymanExportError, exchange_session, export_credential, NAME, SKIP, CONFIG, SKELETON, LOG, KEYMAN, Refusal, fail
+from agathodaimon.storage.backup.backblaze._store import base64, datetime, timezone, errno, fcntl, hashlib, json, os, re, select, signal, socket, stat, struct, subprocess, tempfile, time, NoReturn, urllib, KeymanExportError, exchange_session, export_credential, NAME, SKIP, CONFIG, SKELETON, KEYMAN, Refusal, fail
 
 ACTUATORS = {name: 'backblaze-' + name for name in ('bucket-add', 'bucket-credentials', 'bucket-verify', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run', 'status', 'snapshots')}
 
 from agathodaimon.storage.backup.backblaze import _keyman
-from agathodaimon.storage.backup.backblaze._store import scratch_root, config_path, config_lock_path, skeleton_path, log_path, restic_bin, repository, valid_bucket, bucket_name, keyman_service, normalize_skips, valid_items, load, rows, row_for, manager, normalized_row, store, deed
+from agathodaimon.storage.backup.backblaze._store import scratch_root, config_path, config_lock_path, skeleton_path, restic_bin, repository, valid_bucket, bucket_name, keyman_service, normalize_skips, valid_items, load, rows, row_for, manager, normalized_row, store, deed
 from agathodaimon.storage.backup.backblaze._keyman import derivation, skeleton_password, credentials, seed, authorize
 from agathodaimon.storage.backup.backblaze._restic import restic_environment, invoke_restic, summary_counts, add_counts, backup_files, _ensure_repository, ensure_repository, snapshot_list
 from agathodaimon.storage.backup.backblaze._units import scratch_unit_prefix, run_unit, release_result, unit_status, unit_running, launch, wait_for_run, run_files

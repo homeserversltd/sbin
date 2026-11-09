@@ -6,7 +6,7 @@
 
 SCRIPT_NAME="update-kea-dhcp"
 CONFIG_PATH="/etc/kea/kea-dhcp4.conf"
-LOG_FILE="/var/log/homeserver/homeserver.log"
+
 # TMP_DIR not needed - using /etc/kea/ directly
 ERRORS=0
 
@@ -14,31 +14,23 @@ ERRORS=0
 log_info() {
     local message="[${SCRIPT_NAME}] INFO: $*"
     echo "$message"
-    write_to_log "info" "$*"
+
 }
 
 log_warn() {
     local message="[${SCRIPT_NAME}] WARN: $*"
     echo "$message" >&2
-    write_to_log "warning" "$*"
+
     ERRORS=$((ERRORS+1))
 }
 
 log_error() {
     local message="[${SCRIPT_NAME}] ERROR: $*"
     echo "$message" >&2
-    write_to_log "error" "$*"
+
     ERRORS=$((ERRORS+1))
 }
 
-# Function to write to log file
-write_to_log() {
-    local level="$1"
-    local message="$2"
-    local timestamp=$(/usr/bin/date '+%Y-%m-%d %H:%M')
-    /usr/bin/mkdir -p "$(/usr/bin/dirname "$LOG_FILE")" 2>/dev/null || true
-    echo "[${timestamp}] [${SCRIPT_NAME}] [${level}] ${message}" | /usr/bin/tee -a "$LOG_FILE" >/dev/null 2>&1 || true
-}
 
 # Cleanup function
 cleanup() {
@@ -54,11 +46,17 @@ cleanup() {
             /usr/bin/rm -f "$BACKUP_FILE" 2>/dev/null || true
         fi
     fi
+    # The action is one deed, not a transcript of validation and progress.
+    local staff_root
+    staff_root=$(cd "$(dirname "$0")/../../.." && pwd -P)
+    PYTHONPATH="$staff_root" /usr/bin/python3 -c 'import sys; from agathodaimon._deed import send; send("sbin", "update-kea-dhcp", sys.argv[1] == "0", target="kea-dhcp")' "$exit_code"
     exit $exit_code
 }
 
 # Set trap for cleanup
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Check arguments
 if [ $# -ne 1 ]; then

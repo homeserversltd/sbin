@@ -313,7 +313,8 @@ def _create_and_readback(receipt: dict[str, Any], service: str,
         payload.extend(b"\n")
         command_step["finalState"] = {"outcome": "attempted"}
         try:
-            process_result = rt.run(
+            from agathodaimon.keyman.custody import call as custody_call
+            process_result = custody_call("crypto-create", rt.run,
                 [rt.KEYMAN, "crypto", "create", "/dev/stdin"],
                 input_data=payload, step="key-create",
             )

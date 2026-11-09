@@ -706,22 +706,11 @@ def _input(verb, arguments):
 
 
 def _deed(verb, receipt, started):
-    # Logs / Canonical Log Line: only static metadata, no repository/message/body.
-    line = json.dumps({"who": "agathodaimon", "verb": "thyrsus-" + verb, "target": "household-forge",
-                       "outcome": "ok" if receipt["ok"] else "failed",
-                       "duration_ms": int((time.monotonic() - started) * 1000),
-                       "id": uuid.uuid4().hex, "signal": receipt["firstMissingSignal"],
-                       "first_missing_field": None if receipt["ok"] else "thyrsus/" + verb},
-                      separators=(",", ":")) + "\n"
-    path = _rooted("/var/log/appliance/appliance.log")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o640)
-    try:
-        encoded = line.encode("utf-8")
-        if len(encoded) >= 1024 or os.write(descriptor, encoded) != len(encoded):
-            raise OSError("ledger-write-failed")
-    finally:
-        os.close(descriptor)
+    # Only fixed metadata, never repository, message, or request body.
+    from agathodaimon._deed import send
+    if not send("sbin", "thyrsus-" + verb, receipt["ok"], target="household-forge",
+                duration_ms=int((time.monotonic() - started) * 1000)):
+        raise OSError("ledger-write-failed")
 
 
 def main_for(verb, arguments=None):

@@ -21,8 +21,8 @@ class Refusal(Exception):
 def _paths():
     root = os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
     if root is None:
-        return Path("/mnt/nas/"), Path("/run/homeserver-nas-sync.lock"), Path("/var/log/appliance/appliance.log")
-    # Proof only: the scratch root and AGATHODAIMON_MIRROR_SOURCE isolate source, lock, and log.
+        return Path("/mnt/nas/"), Path("/run/homeserver-nas-sync.lock")
+    # Proof only: the scratch root and AGATHODAIMON_MIRROR_SOURCE isolate source and lock.
     base = Path(root)
     try:
         if not base.is_absolute():
@@ -34,38 +34,24 @@ def _paths():
         lock = Path(os.environ.get("CADUCEUS_NAS_LOCK", str(base / "run/homeserver-nas-sync.lock")))
         if any(not p.is_absolute() or not p.resolve(strict=False).is_relative_to(base) for p in (source, lock)):
             raise ValueError("outside scratch")
-        return source, lock, base / "var/log/appliance/appliance.log"
+        return source, lock
     except (OSError, RuntimeError, ValueError) as exc:
         raise Refusal("mirror-serve-scratch-invalid") from exc
 
 
-def _refuse(signal, started, log):
-    deed = {"who": "agathodaimon", "verb": "mirror-serve", "target": "nas-sync",
-            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "outcome": "refused", "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
-            "signal": signal, "first_missing_field": "mirror-serve"}
-    try:
-        log.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
-        try:
-            os.write(fd, (json.dumps(deed, separators=(",", ":")) + "\n").encode())
-        finally:
-            os.close(fd)
-    except OSError:
-        deed["deedLogSignal"] = "agathodaimon-nas-deed-log-unavailable"
+def _refuse(signal):
+    # This is a read-only sender; a refused read leaves no deed.
     print(json.dumps({"schema": "caduceus.nas.mirror-serve.v1", "ok": False,
-                      "firstMissingSignal": signal, **({"deedLogSignal": deed["deedLogSignal"]} if "deedLogSignal" in deed else {})}, separators=(",", ":")), file=sys.stderr, flush=True)
+                      "firstMissingSignal": signal}, separators=(",", ":")), file=sys.stderr, flush=True)
     return 1
 
 
 def main():
-    started = time.monotonic()
-    log = Path("/var/log/appliance/appliance.log")
     fd = None
     try:
         if os.geteuid() != 0:
             raise Refusal("mirror-serve-root-required")
-        source, lock, log = _paths()
+        source, lock = _paths()
         lock.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
         st = os.fstat(fd)
@@ -115,9 +101,9 @@ def main():
         os.chdir("/proc/self")
         os.execve("/usr/bin/rrsync", ["/usr/bin/rrsync", "-ro", str(source) + "/"], env)
     except Refusal as exc:
-        return _refuse(str(exc), started, log)
+        return _refuse(str(exc))
     except OSError:
-        return _refuse("mirror-serve-system-error", started, log)
+        return _refuse("mirror-serve-system-error")
     finally:
         if fd is not None:
             os.close(fd)

@@ -237,19 +237,9 @@ def main(argv=None) -> int:
         result = {"schema": SCHEMA, "ok": False, "relaunched": 0, "kept": 0,
                   "firstMissingSignal": "face-settings-relaunch-unexpected-failure", "_attempted": False}
     if result.pop("_attempted"):
-        deed = {"who": "agathodaimon", "verb": "face/settings-relaunch", "target": "owner-settings",
-                "outcome": "ok" if result["ok"] else "failed",
-                "duration_ms": int((time.monotonic() - started) * 1000),
-                "relaunched": result["relaunched"], "firstMissingSignal": result["firstMissingSignal"]}
-        line = (json.dumps(deed, separators=(",", ":")) + "\n").encode()
-        try:
-            fd = os.open("/var/log/appliance/appliance.log", os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
-            try:
-                if os.write(fd, line) != len(line):
-                    raise OSError("short deed")
-            finally:
-                os.close(fd)
-        except OSError:
+        from agathodaimon._deed import send
+        if not send("sbin", "face-settings-relaunch", result["ok"], target="owner-settings",
+                    duration_ms=int((time.monotonic() - started) * 1000)):
             result["ok"] = False
             if result["firstMissingSignal"] == "none":
                 result["firstMissingSignal"] = "face-settings-relaunch-deed-failed"

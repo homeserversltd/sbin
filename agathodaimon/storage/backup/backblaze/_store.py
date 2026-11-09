@@ -31,7 +31,7 @@ NAME = re.compile(r"[A-Za-z0-9-]{6,63}\Z")
 SKIP = re.compile(r"[A-Za-z0-9_.-]+\Z")
 CONFIG = Path('/etc/appliance/config.json')
 SKELETON = Path('/root/key/skeleton.key')
-LOG = Path('/var/log/appliance/appliance.log')
+
 KEYMAN = '/vault/keyman/keyman'
 
 class Refusal(Exception):
@@ -65,9 +65,6 @@ def skeleton_path():
     root = scratch_root()
     return root / 'skeleton.key' if root else SKELETON
 
-def log_path():
-    root = scratch_root()
-    return root / 'appliance.log' if root else LOG
 
 def restic_bin():
     root = scratch_root()
@@ -220,17 +217,8 @@ def store(data):
                 pass
 
 def deed(verb, bucket, outcome, started, error='none', byte_counts=None):
-    record = {'who':'agathodaimon', 'verb':verb, 'target':bucket, 'outcome':outcome,
-              'duration_ms':int((time.monotonic()-started)*1000), 'signal':error,
-              'at':datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
-    if byte_counts:
-        record.update(byte_counts)
-    line = json.dumps(record, separators=(',', ':'), ensure_ascii=True)
-    if len(line.encode()) + 1 >= 1024:
-        fail('deed', 'deed-too-large')
-    try:
-        with log_path().open('a', encoding='utf-8') as f:
-            f.write(line + '\n')
-    except OSError:
+    from agathodaimon._deed import send
+    if not send('sbin', verb, outcome == 'ok', target=bucket[:48],
+                duration_ms=int((time.monotonic() - started) * 1000)):
         fail('deed', 'deed-write-failed')
 

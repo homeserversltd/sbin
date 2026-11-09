@@ -70,21 +70,10 @@ def _unit_identity():
 
 
 def _deed(receipt, started):
-    line = json.dumps({"who": "agathodaimon", "verb": "hermes-dashboard-login",
-                       "target": "hermes-dashboard", "outcome": "ok" if receipt["ok"] else "failed",
-                       "duration_ms": int((time.monotonic() - started) * 1000), "id": uuid.uuid4().hex,
-                       "signal": receipt["firstMissingSignal"],
-                       "first_missing_field": None if receipt["ok"] else "hermes/dashboard-login"},
-                      separators=(",", ":")) + "\n"
-    path = _root() / "var/log/appliance/appliance.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o640)
-    try:
-        encoded = line.encode("utf-8")
-        if len(encoded) >= 1024 or os.write(fd, encoded) != len(encoded):
-            raise OSError("ledger-write-failed")
-    finally:
-        os.close(fd)
+    from agathodaimon._deed import send
+    if not send("sbin", "hermes-dashboard-login", receipt["ok"], target="hermes-dashboard",
+                duration_ms=int((time.monotonic() - started) * 1000)):
+        raise OSError("ledger-write-failed")
 
 
 def main(arguments=None):

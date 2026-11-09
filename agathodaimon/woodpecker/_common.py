@@ -100,20 +100,10 @@ def _present():
 
 
 def _deed(receipt, started):
-    path = _rooted("/var/log/appliance/appliance.log")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps({"who": "agathodaimon", "verb": "woodpecker-agent-token",
-                       "target": "woodpecker-agent", "outcome": "ok" if receipt["ok"] else "failed",
-                       "duration_ms": int((time.monotonic() - started) * 1000),
-                       "id": uuid.uuid4().hex, "signal": receipt["firstMissingSignal"]},
-                      separators=(",", ":")) + "\n"
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o640)
-    try:
-        data = line.encode()
-        if len(data) >= 1024 or os.write(fd, data) != len(data):
-            raise OSError("ledger-write-failed")
-    finally:
-        os.close(fd)
+    from agathodaimon._deed import send
+    if not send("sbin", "woodpecker-agent-token", receipt["ok"], target="woodpecker-agent",
+                duration_ms=int((time.monotonic() - started) * 1000)):
+        raise OSError("ledger-write-failed")
 
 
 def main_for(verb, arguments=None):

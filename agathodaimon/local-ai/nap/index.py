@@ -29,7 +29,7 @@ def dispatch(request=None, *, dry_run=False, user_id=None):
         dry_run = dry_run or requested_dry
         user_id = request.payload.get("user_id", user_id)
     started = time.monotonic()
-    log_fd = None
+
     value = {"ok": False, "firstMissingSignal": "nap-account-pass-unavailable", "judged": 0, "folded": 0, "stale": 0, "gist": 0}
     try:
         settings = json.loads((HERE.parent.parent / "defconfigs" / "local-ai-nap" / "profiles.json").read_text(encoding="utf-8"))
@@ -50,7 +50,7 @@ def dispatch(request=None, *, dry_run=False, user_id=None):
             if os.geteuid() != 0:
                 raise ValueError("account-switch-requires-root")
             command = ["/usr/sbin/runuser", "-u", account, "--", *command]
-        log_fd = os.open("/var/log/appliance/appliance.log", os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC)
+
         env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "MEM0_TELEMETRY": "false", "NO_PROXY": "*", "no_proxy": "*", "PYTHONDONTWRITEBYTECODE": "1"}
         result = subprocess.run(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
         reply = json.loads(result.stdout)
@@ -59,18 +59,12 @@ def dispatch(request=None, *, dry_run=False, user_id=None):
         value = reply
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    if log_fd is not None:
-        try:
-            if not dry_run and (value.get("ok") is not True or any(value.get(k, 0) for k in ("judged", "folded", "stale", "gist"))):
-                deed = {"who": "agathodaimon", "verb": "nap", "target": "memory", "outcome": "ok" if value.get("ok") else "failed", "duration_ms": int((time.monotonic() - started) * 1000), "signal": value.get("firstMissingSignal", "none")}
-                line = (json.dumps(deed, separators=(",", ":")) + "\n").encode()
-                if len(line) >= 1024 or os.write(log_fd, line) != len(line):
-                    raise OSError("deed-write-failed")
-        except OSError:
+    if not dry_run and (value.get("ok") is not True or any(value.get(k, 0) for k in ("judged", "folded", "stale", "gist"))):
+        from agathodaimon._deed import send
+        if not send("sbin", "nap", value.get("ok") is True, target="memory",
+                    duration_ms=int((time.monotonic() - started) * 1000)):
             value["ok"] = False
             value["firstMissingSignal"] = "nap-deed-log-unavailable"
-        finally:
-            os.close(log_fd)
     return _envelope.attach(value, request) if request is not None else value
 
 

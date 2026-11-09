@@ -1042,7 +1042,8 @@ def _export(service_name: str, scratch_root: str | os.PathLike[str] | None,
             if layout.child_root is not None:
                 child_environment["KEYMAN_ROOT"] = layout.child_root
             try:
-                result = subprocess.run([layout.keyman, "export", service_name],
+                from agathodaimon.keyman.custody import call as custody_call
+                result = custody_call("export", subprocess.run, [layout.keyman, "export", service_name],
                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.DEVNULL, env=child_environment,
                                         timeout=EXPORT_TIMEOUT_SECONDS, check=False, close_fds=True)
