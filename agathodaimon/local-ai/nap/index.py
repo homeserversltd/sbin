@@ -61,10 +61,8 @@ def dispatch(request=None, *, dry_run=False, user_id=None):
         pass
     if not dry_run and (value.get("ok") is not True or any(value.get(k, 0) for k in ("judged", "folded", "stale", "gist"))):
         from agathodaimon._deed import send
-        if not send("sbin", "nap", value.get("ok") is True, target="memory",
-                    duration_ms=int((time.monotonic() - started) * 1000)):
-            value["ok"] = False
-            value["firstMissingSignal"] = "nap-deed-log-unavailable"
+        send("sbin", "nap", value.get("ok") is True, target="memory",
+             duration_ms=int((time.monotonic() - started) * 1000))
     return _envelope.attach(value, request) if request is not None else value
 
 

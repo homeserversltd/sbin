@@ -209,9 +209,7 @@ def main(argv=None):
     receipt = {'ok': signal == 'none', 'changed': changed, 'firstMissingSignal': signal}
     if changed or signal != 'none':
         from agathodaimon._deed import send
-        if not send('sbin', 'xenos-test-tab', signal == 'none', target='test',
-                    duration_ms=int((time.monotonic() - started) * 1000)):
-            receipt['ok'] = False
-            receipt['firstMissingSignal'] = 'test-tab-log-unavailable'
+        send('sbin', 'xenos-test-tab', signal == 'none', target='test',
+             duration_ms=int((time.monotonic() - started) * 1000))
     print(json.dumps(attach(receipt, envelope), separators=(',', ':'), sort_keys=True))
     return 0 if receipt['ok'] else 1

@@ -218,7 +218,6 @@ def store(data):
 
 def deed(verb, bucket, outcome, started, error='none', byte_counts=None):
     from agathodaimon._deed import send
-    if not send('sbin', verb, outcome == 'ok', target=bucket[:48],
-                duration_ms=int((time.monotonic() - started) * 1000)):
-        fail('deed', 'deed-write-failed')
+    send('sbin', verb, outcome == 'ok', target=bucket[:48],
+         duration_ms=int((time.monotonic() - started) * 1000))
 

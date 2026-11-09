@@ -238,10 +238,7 @@ def main(argv=None) -> int:
                   "firstMissingSignal": "face-settings-relaunch-unexpected-failure", "_attempted": False}
     if result.pop("_attempted"):
         from agathodaimon._deed import send
-        if not send("sbin", "face-settings-relaunch", result["ok"], target="owner-settings",
-                    duration_ms=int((time.monotonic() - started) * 1000)):
-            result["ok"] = False
-            if result["firstMissingSignal"] == "none":
-                result["firstMissingSignal"] = "face-settings-relaunch-deed-failed"
+        send("sbin", "face-settings-relaunch", result["ok"], target="owner-settings",
+             duration_ms=int((time.monotonic() - started) * 1000))
     print(json.dumps(result, sort_keys=True))
     return 0
