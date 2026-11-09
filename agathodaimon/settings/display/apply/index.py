@@ -13,8 +13,9 @@ def main(argv=None):
         source = request.value.get("payload", {}) if request.envelope else request.value
         selected = backends.select_backend()
         started = time.monotonic()
-        if isinstance(source, dict) and source:
-            result = display._failure("apply-does-not-accept-payload", requested={field: source[field] for field in display.DISPLAY_FIELDS if field in source}, backend=selected)
+        if not isinstance(source, dict) or source:
+            supplied = {field: source[field] for field in display.DISPLAY_FIELDS if field in source} if isinstance(source, dict) else {}
+            result = display._failure("apply-does-not-accept-payload", requested=supplied, backend=selected)
         elif selected is None:
             result = {"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}
         else:
