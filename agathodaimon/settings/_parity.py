@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings import _shared, _options
+from agathodaimon.settings import _shared, _options, _sway_overrides
 from agathodaimon.settings.display import backends
 from agathodaimon.settings._sway import _sway_reload
 
@@ -30,7 +30,7 @@ def _etc() -> Path:
 
 
 def _keyboard_path() -> Path:
-    return _shared.home() / ".config/sway/input-overrides.conf"
+    return _sway_overrides.path()
 
 
 def _keyboard_values() -> dict[str, Any]:
@@ -138,24 +138,9 @@ def _set_keyboard(field: str, value: Any, receipt: _shared.Receipt) -> None:
         text, key = str(value), field
     if not backends.select_backend() and os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") != "1":
         raise ValueError("sway-session-unavailable")
-    path = _keyboard_path()
-    lines = _shared.ini_read(path)
     begin = f"# settings-keyboard-{key}-begin\n"
     end = f"# settings-keyboard-{key}-end\n"
-    if begin in lines and end in lines:
-        first, last = lines.index(begin), lines.index(end)
-        if last < first:
-            raise ValueError("keyboard-override-invalid")
-        del lines[first:last + 1]
-    elif begin in lines or end in lines:
-        raise ValueError("keyboard-override-invalid")
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    lines += [begin, f"input type:keyboard {key} {text}\n", end]
-    receipt.replace(path, "".join(lines).encode())
-    if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
-        owner = pwd.getpwnam(_shared.OWNER_USER)
-        os.chown(path, owner.pw_uid, owner.pw_gid)
+    _sway_overrides.replace_block(begin, end, [f"input type:keyboard {key} {text}\n"], receipt, "keyboard-override-invalid")
 
 
 def _input_scalar(field: str, raw: Any) -> Any:
@@ -240,14 +225,11 @@ def sway_input_values() -> tuple[dict[str, Any], dict[str, str]]:
 
 
 def sway_cursor_override() -> tuple[str, int] | None:
-    lines = _shared.ini_read(_keyboard_path())
     begin, end = "# settings-appearance-cursor-begin\n", "# settings-appearance-cursor-end\n"
-    if begin not in lines or end not in lines:
+    lines = _sway_overrides.read_block(begin, end)
+    if lines is None:
         return None
-    start, stop = lines.index(begin), lines.index(end)
-    if stop <= start:
-        return None
-    for line in lines[start + 1:stop]:
+    for line in lines:
         try:
             parts = shlex.split(line, comments=True)
             if len(parts) == 5 and parts[:3] == ["seat", "*", "xcursor_theme"]:
@@ -276,21 +258,8 @@ def _sway_cursor(theme: str, size: int, receipt: _shared.Receipt) -> None:
 def set_sway_cursor(theme: str, size: int, receipt: _shared.Receipt) -> None:
     if not theme or len(theme) > 256 or any(ord(c) < 32 for c in theme):
         raise ValueError("invalid:cursor_theme")
-    path = _keyboard_path()
-    lines = _shared.ini_read(path)
     begin, end = "# settings-appearance-cursor-begin\n", "# settings-appearance-cursor-end\n"
-    if begin in lines and end in lines:
-        start, stop = lines.index(begin), lines.index(end)
-        if stop <= start: raise ValueError("cursor-override-invalid")
-        del lines[start:stop + 1]
-    elif begin in lines or end in lines:
-        raise ValueError("cursor-override-invalid")
-    if lines and not lines[-1].endswith("\n"): lines[-1] += "\n"
-    lines += [begin, f"seat * xcursor_theme {json.dumps(theme)} {size}\n", end]
-    receipt.replace(path, "".join(lines).encode())
-    if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
-        owner = pwd.getpwnam(_shared.OWNER_USER)
-        os.chown(path, owner.pw_uid, owner.pw_gid)
+    _sway_overrides.replace_block(begin, end, [f"seat * xcursor_theme {json.dumps(theme)} {size}\n"], receipt, "cursor-override-invalid", strict_order=True)
     if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
         receipt.commands.append({"argv": ["swaymsg", "seat", "*", "xcursor_theme", theme, str(size)], "dryRun": True})
     else:
@@ -314,19 +283,8 @@ def _set_input(field: str, value: Any, receipt: _shared.Receipt) -> None:
         raise ValueError("unsupported:" + field)
     if not backends.select_backend() and os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") != "1":
         raise ValueError("sway-session-unavailable")
-    path = _keyboard_path()
-    lines = _shared.ini_read(path)
     begin, end = f"# settings-input-{field}-begin\n", f"# settings-input-{field}-end\n"
-    if begin in lines and end in lines:
-        start, stop = lines.index(begin), lines.index(end)
-        if stop < start: raise ValueError("input-override-invalid")
-        del lines[start:stop + 1]
-    elif begin in lines or end in lines: raise ValueError("input-override-invalid")
-    if lines and not lines[-1].endswith("\n"): lines[-1] += "\n"
-    lines += [begin, *(f"input type:{kind} {key} {val}\n" for kind, key, val in settings), end]
-    receipt.replace(path, "".join(lines).encode())
-    if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
-        owner = pwd.getpwnam(_shared.OWNER_USER); os.chown(path, owner.pw_uid, owner.pw_gid)
+    _sway_overrides.replace_block(begin, end, [f"input type:{kind} {key} {val}\n" for kind, key, val in settings], receipt, "input-override-invalid")
 
 
 def _set_region(field: str, value: Any, receipt: _shared.Receipt) -> None:
