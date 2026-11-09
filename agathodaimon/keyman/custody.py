@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import time
-import sys
 
 
 def call(operation, runner, *args, **kwargs):
@@ -19,6 +18,4 @@ def call(operation, runner, *args, **kwargs):
     finally:
         from agathodaimon._deed import send
         # Empty is deliberately used: even a valid service label could equal a secret.
-        posted = send("keyman", operation, ok, target="", duration_ms=int((time.monotonic() - started) * 1000))
-        if not posted and sys.exc_info()[0] is None:
-            raise OSError("keyman-deed-unavailable")
+        send("keyman", operation, ok, target="", duration_ms=int((time.monotonic() - started) * 1000))

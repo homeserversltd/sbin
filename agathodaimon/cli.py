@@ -306,8 +306,7 @@ def _chord_deed(routine_id, envelope, rows, ok, failed, signal, started):
         fields["request_id"] = request_id
     from agathodaimon._deed import send
     # The routine identifier may contain slashes; the door receives a fixed target.
-    if not send("sbin", "chord", ok, target="chord", duration_ms=fields["duration_ms"]):
-        raise OSError("chord-deed-write-failed")
+    send("sbin", "chord", ok, target="chord", duration_ms=fields["duration_ms"])
 
 
 def _walk_chord(path: Path, envelope: dict) -> int:
