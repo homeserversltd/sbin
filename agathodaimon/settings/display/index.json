@@ -1,5 +1,5 @@
 {
-  "children": [],
+  "children": ["read", "apply", "set", "hdr", "adaptive-sync"],
   "sclerite": {
     "name": "desktop",
     "features": {
