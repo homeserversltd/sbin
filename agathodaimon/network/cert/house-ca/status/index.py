@@ -16,8 +16,9 @@ def main(argv=None):
         request = _envelope.read_fields()
         p = request.payload
         receipt = ca.status()
-    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError):
-        receipt = ca._refusal("error", "agathodaimon-house-ca-refused")
+    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
+        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.cert.house-ca.status.v1"

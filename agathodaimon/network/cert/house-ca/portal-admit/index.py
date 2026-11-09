@@ -21,9 +21,11 @@ def main(argv=None):
         dry_run = p.get("dry-run", False)
         if type(dry_run) is not bool:
             raise ValueError("agathodaimon-house-ca-boolean-invalid")
-        receipt = ca.portal_admit(p.get("portal"), p.get("lan-ip"), p.get("upstream"), aliases, dry_run=dry_run)
-    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError):
-        receipt = ca._refusal("error", "agathodaimon-house-ca-refused")
+        with ca.house_ca_lock():
+            receipt = ca.portal_admit(p.get("portal"), p.get("lan-ip"), p.get("upstream"), aliases, dry_run=dry_run)
+    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
+        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.cert.house-ca.portal-admit.v1"

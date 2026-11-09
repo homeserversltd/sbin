@@ -21,9 +21,11 @@ def main(argv=None):
     try:
         request = _envelope.read_fields('i-understand-clients-reinstall')
         p = request.payload
-        receipt = ca.rotate_ca(boolean(p, "i-understand-clients-reinstall"))
-    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError):
-        receipt = ca._refusal("error", "agathodaimon-house-ca-refused")
+        with ca.house_ca_lock():
+            receipt = ca.rotate_ca(boolean(p, "i-understand-clients-reinstall"))
+    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
+        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.cert.house-ca.rotate-ca.v1"

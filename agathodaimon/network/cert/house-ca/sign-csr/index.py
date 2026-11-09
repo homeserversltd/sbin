@@ -17,9 +17,11 @@ def main(argv=None):
     try:
         request = _envelope.read_fields('csrPem')
         p = request.payload
-        receipt = ca.sign_csr(p.get("csrPem"))
-    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError):
-        receipt = ca._refusal("error", "agathodaimon-house-ca-refused")
+        with ca.house_ca_lock():
+            receipt = ca.sign_csr(p.get("csrPem"))
+    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
+        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        receipt = ca._refusal("error", signal)
     if request is not None:
         carried = copy.deepcopy(request.value)
         container = carried.get("payload") if request.envelope else carried

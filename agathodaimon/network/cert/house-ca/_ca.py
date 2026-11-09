@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -50,8 +52,24 @@ def state_path() -> Path:
     return _path("CADUCEUS_STATE_PATH", "/var/lib/caduceus/state.json")
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=True, text=True, capture_output=True)
+@contextlib.contextmanager
+def house_ca_lock():
+    """One house-ca mutation at a time, locked on the certs directory itself (no new file)."""
+    directory = cert_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("agathodaimon-house-ca-busy") from error
+        yield
+    finally:
+        os.close(fd)
+
+
+def _run(command: list[str], timeout=None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=True, text=True, capture_output=True, timeout=timeout)
 
 
 def _fingerprint(path: Path, encoding: str = "pem") -> str:
@@ -154,7 +172,7 @@ def _root_valid(ca: Path, key: Path) -> bool:
         key_pub = _run(["openssl", "pkey", "-in", str(key), "-pubout"]).stdout
         basic = _run(["openssl", "x509", "-in", str(ca), "-noout", "-text"]).stdout
         return ca_pub == key_pub and "CA:TRUE" in basic
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return False
 
 
@@ -307,7 +325,7 @@ def sign_csr(csr_pem: Any) -> dict[str, Any]:
         csr.write_text(csr_pem)
         try:
             verified = _run(["openssl", "req", "-in", str(csr), "-noout", "-verify", "-subject", "-text", "-nameopt", "RFC2253"]).stdout
-        except subprocess.CalledProcessError as error:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             raise ValueError("agathodaimon-cert-csr-invalid") from error
         subject = next((line.split("subject=", 1)[1] for line in verified.splitlines() if line.startswith("subject=")), "")
         if subject.lower() != f"cn={identity}":
@@ -562,7 +580,7 @@ def trust_install(
         )
     try:
         supplied = _assert_trust_install_ca_only(source, metadata["encoding"])
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         return _trust_refusal(
             str(error) or "agathodaimon-cert-bundle-invalid", platform=platform,
             reason="bundle-invalid", bundle_fingerprint=None, bundle_installed=False,
@@ -583,7 +601,7 @@ def trust_install(
     if ca.is_file():
         try:
             local_pin = _assert_ca_only(ca)
-        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             return _trust_refusal(
                 str(error) or "agathodaimon-house-ca-root-invalid", platform=platform,
                 reason="local-root-invalid", pin_decision="local-ca.pem",
@@ -671,7 +689,7 @@ def trust_install(
     target = store / "homeserver-house-ca.crt"
     try:
         anchor_fingerprint = _assert_ca_only(target) if target.is_file() else None
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         anchor_fingerprint = None
     anchor_current = anchor_fingerprint == root_fingerprint
     store_current = anchor_current and _trust_bundle_readback(system_bundle, target)
@@ -746,7 +764,7 @@ def trust_install(
                 anchor_changed = True
             finally:
                 temporary.unlink(missing_ok=True)
-        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             return _trust_refusal(
                 str(error) or "agathodaimon-cert-trust-store-write-failed",
                 changed=anchor_changed or (not store_existed and store.exists()), platform=platform, reason=reason,
@@ -785,7 +803,7 @@ def trust_install(
 
     try:
         installed_fingerprint = _assert_ca_only(target) if target.is_file() else None
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         installed_fingerprint = None
     verified = (
         installed_fingerprint == root_fingerprint
@@ -911,16 +929,16 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             replacement_written = True
         if target.read_bytes() != body_bytes:
             raise RuntimeError("agathodaimon-nginx-readback-failed")
+        stage = "validate-nginx"
+        validation = _run(["nginx", "-t"], timeout=30)
+        validation_output = (validation.stdout + validation.stderr).strip()
+        validated = True
         if legacy_present:
             legacy.unlink()
             legacy_retired = True
-        stage = "validate-nginx"
-        validation = _run(["nginx", "-t"])
-        validation_output = (validation.stdout + validation.stderr).strip()
-        validated = True
         stage = "activate-nginx"
-        reload = _run(["systemctl", "reload", "nginx"])
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        reload = _run(["systemctl", "reload", "nginx"], timeout=30)
+    except (OSError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         output = ((error.stdout or "") + (error.stderr or "")).strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
         restored = False
         restore_error = None
@@ -940,10 +958,10 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             # A failed activation is held at the previous configuration too.
             # A validation failure never enters this branch or reloads nginx.
             try:
-                _run(["nginx", "-t"])
-                _run(["systemctl", "reload", "nginx"])
+                _run(["nginx", "-t"], timeout=30)
+                _run(["systemctl", "reload", "nginx"], timeout=30)
                 rollback_reloaded = True
-            except (OSError, subprocess.CalledProcessError) as rollback:
+            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as rollback:
                 restore_error = str(rollback)
         return _receipt(
             "apply_nginx", changed=not restored or (validated and not rollback_reloaded), ok=False, portal=portal,
@@ -952,7 +970,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             rollback_reloaded=rollback_reloaded,
             failed_step=stage, command_output=output,
             validation_output=validation_output if validated else output,
-            firstMissingSignal=f"agathodaimon-nginx-{stage}-failed",
+            firstMissingSignal=f"agathodaimon-nginx-{stage}-{'timeout' if isinstance(error, subprocess.TimeoutExpired) else 'failed'}",
             legacy_path=str(legacy), legacy_present=legacy_present,
             legacy_retired=legacy_retired and not restored,
             legacy_remaining=legacy.is_file(), replacement_written=replacement_written,
@@ -1110,7 +1128,7 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
         transition = {"root_fingerprint": leaf.get("ca_fingerprint"), "portals": [{"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip, "upstream": upstream}], "constituents": [{"identity": portal, "lan_ip": lan_ip}]}
         committed = state_commit(transition, dry_run=dry_run)
         children.append(committed)
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         return _receipt("portal_admit", changed=any(child.get("changed", False) for child in children), dry_run=dry_run, ok=False, firstMissingSignal="agathodaimon-portal-child-failed", portal=portal, failed_child=failed, child_signal=str(error), held_generation=_generation(), children=children)
     generation = committed.get("state_generation", _generation())
     return _receipt("portal_admit", changed=not dry_run, dry_run=dry_run, portal=portal, generation=generation, state_generation=generation, children=children, proof="four-child-composition")
@@ -1138,7 +1156,7 @@ def status() -> dict[str, Any]:
         target = store / "homeserver-house-ca.crt"
         try:
             value["bundle_installed"] = target.is_file() and bool(_assert_ca_only(target))
-        except (OSError, ValueError, subprocess.CalledProcessError):
+        except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             value["bundle_installed"] = False
     return value
 
@@ -1146,7 +1164,7 @@ def status() -> dict[str, Any]:
 def _emit(call) -> int:
     try:
         value = call()
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError):
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         value = _refusal("error", "agathodaimon-house-ca-refused")
     print(json.dumps(value, sort_keys=True))
     return 0 if value.get("ok") else 1

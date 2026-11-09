@@ -21,9 +21,11 @@ def main(argv=None):
     try:
         request = _envelope.read_fields('bundle', 'platform', 'fingerprint', 'renew-ring', 'dry-run')
         p = request.payload
-        receipt = ca.trust_install(p.get("bundle"), p.get("platform", "linux"), dry_run=boolean(p, "dry-run"), fingerprint=p.get("fingerprint"), renew_ring=boolean(p, "renew-ring"))
-    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError):
-        receipt = ca._refusal("error", "agathodaimon-house-ca-refused")
+        with ca.house_ca_lock():
+            receipt = ca.trust_install(p.get("bundle"), p.get("platform", "linux"), dry_run=boolean(p, "dry-run"), fingerprint=p.get("fingerprint"), renew_ring=boolean(p, "renew-ring"))
+    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
+        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.cert.house-ca.trust-install.v1"

@@ -24,9 +24,11 @@ def main(argv=None):
         authority = p.get("renewal-authority")
         if authority is not None and not isinstance(authority, str):
             raise ValueError("agathodaimon-house-ca-renewal-authority-invalid")
-        receipt = ca.ensure_root(dry_run=boolean(p, "dry-run"), renewal_authority=authority)
-    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError):
-        receipt = ca._refusal("error", "agathodaimon-house-ca-refused")
+        with ca.house_ca_lock():
+            receipt = ca.ensure_root(dry_run=boolean(p, "dry-run"), renewal_authority=authority)
+    except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
+        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     receipt["schema"] = "caduceus.network.cert.house-ca.ensure-root.v1"
