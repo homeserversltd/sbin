@@ -133,14 +133,14 @@ def reload_hypr() -> dict[str, Any]:
     except (OSError, subprocess.SubprocessError) as error:
         return {"ok": False, "returncode": 127, "error": str(error)}
 
-def apply_changes(changes: dict[str, Any]) -> dict[str, Any]:
+def apply_changes(changes: dict[str, Any], schema: str | None = None) -> dict[str, Any]:
     if not changes: raise ValueError("no-fields-supplied")
     from agathodaimon.settings import _parity, _shared
     sway_fields = {"accel_profile", "left_handed", "disable_while_typing", "pointer_speed", "natural_scroll", "tap_to_click"}
     selected = _parity.backends.select_backend()
     if selected or (os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1" and any(field in {"accel_profile", "left_handed", "disable_while_typing"} for field in changes)):
         if not all(field in sway_fields for field in changes): raise ValueError("unsupported:sway-input-field")
-        receipt = _shared.Receipt("input", list(changes))
+        receipt = _shared.Receipt("input", list(changes), schema=schema)
         reload_attempted = False
         try:
             for field, value in changes.items(): _parity._set_input(field, value, receipt)
@@ -173,9 +173,9 @@ def apply_changes(changes: dict[str, Any]) -> dict[str, Any]:
     effective = dict(current["global"]); effective.update(current["touchpad"])
     effective.update({KEYS[field]: value for field, value in normalized.items()})
     payload = render(effective); previous = override.read_bytes() if override.exists() else None
-    if previous == payload: return persist_receipt({"schema": SCHEMA, "ok": True, "changed": False, "mutationPerformed": False, "readback": read_values()})
+    if previous == payload: return persist_receipt({"schema": SCHEMA if schema is None else schema, "ok": True, "changed": False, "mutationPerformed": False, "readback": read_values()})
     atomic_write(override, payload)
-    receipt = {"schema": SCHEMA, "ok": True, "changed": True, "fields": list(changes), "mutationPerformed": True, "reload": reload_hypr()}
+    receipt = {"schema": SCHEMA if schema is None else schema, "ok": True, "changed": True, "fields": list(changes), "mutationPerformed": True, "reload": reload_hypr()}
     if not receipt["reload"]["ok"]:
         if previous is None: override.unlink(missing_ok=True)
         else: atomic_write(override, previous)

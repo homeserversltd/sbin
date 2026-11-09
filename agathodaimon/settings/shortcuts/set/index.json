@@ -1,0 +1,16 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": true,
+  "sclerite": {
+    "name": "desktop",
+    "features": {
+      "desktop": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {"band": true, "verbs": [], "routes": []}
+      }
+    }
+  }
+}
