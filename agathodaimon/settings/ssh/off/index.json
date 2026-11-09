@@ -8,13 +8,13 @@
         "band": true,
         "verbs": [],
         "routes": [
-          "/api/v1/settings/ssh/service/disable"
+          "/api/v1/settings/ssh/off"
         ],
         "administrative": {
           "band": true,
           "verbs": [],
           "routes": [
-            "/api/v1/settings/ssh/service/disable"
+            "/api/v1/settings/ssh/off"
           ]
         }
       }
