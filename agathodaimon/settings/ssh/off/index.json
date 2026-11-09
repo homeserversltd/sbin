@@ -1,0 +1,100 @@
+{
+  "children": [],
+  "mutation_allowed": true,
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  },
+  "serve": [
+    {
+      "stage_id": "config-set",
+      "snake": "settings/ssh/config/set",
+      "arguments": {
+        "state": "off"
+      },
+      "receipt": "caduceus.settings.ssh.config.set.v1"
+    },
+    {
+      "stage_id": "unit-resolve",
+      "snake": "settings/ssh/unit/resolve",
+      "receipt": "caduceus.settings.ssh.unit.resolve.v1"
+    },
+    {
+      "stage_id": "unit-disable",
+      "snake": "unit/disable",
+      "arguments": {
+        "unit": {
+          "$ref": "stages.unit-resolve.receipt.unit"
+        },
+        "scope": "system",
+        "deadline_seconds": 180
+      },
+      "deadline_seconds": 180,
+      "receipt": "agathodaimon.unit.disable.v1"
+    },
+    {
+      "stage_id": "unit-stop",
+      "snake": "unit/stop",
+      "arguments": {
+        "unit": {
+          "$ref": "stages.unit-resolve.receipt.unit"
+        },
+        "scope": "system",
+        "deadline_seconds": 180
+      },
+      "deadline_seconds": 180,
+      "receipt": "agathodaimon.unit.stop.v1"
+    },
+    {
+      "stage_id": "verify",
+      "snake": "settings/ssh/verify",
+      "arguments": {
+        "state": "off",
+        "unit": {
+          "$ref": "stages.unit-resolve.receipt.unit"
+        }
+      },
+      "receipt": "caduceus.settings.ssh.verify.v1"
+    },
+    {
+      "stage_id": "status",
+      "snake": "settings/ssh/status",
+      "receipt": "caduceus.ssh.exposure.v1"
+    }
+  ],
+  "rescue": [
+    {
+      "stage_id": "config-restore",
+      "snake": "settings/ssh/config/restore",
+      "on_refusal_of": [
+        "unit-resolve",
+        "unit-disable",
+        "unit-stop",
+        "verify"
+      ],
+      "depends_on": [
+        "config-set"
+      ],
+      "arguments": {
+        "original": {
+          "$ref": "stages.config-set.receipt.original"
+        },
+        "changed": {
+          "$ref": "stages.config-set.receipt.changedFlag"
+        }
+      },
+      "receipt": "caduceus.settings.ssh.config.restore.v1"
+    }
+  ]
+}
