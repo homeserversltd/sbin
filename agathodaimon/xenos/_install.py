@@ -278,17 +278,24 @@ def render_unit(ident: str, seat: Path, binary: Path, owner: str, base: str) -> 
         raise Failure('xenia-unit-forbidden-directives')
     return text
 
-def systemctl(*args: str, check: bool = True) -> bool:
+def systemctl(*args: str, check: bool = True, absent_unit: str | None = None) -> bool:
     exe = setting('XENIA_SYSTEMCTL', '/usr/bin/systemctl')
+    environment = None
+    if absent_unit is not None:
+        environment = {**os.environ, 'LC_ALL': 'C'}
     try:
-        result = subprocess.run([exe, *args], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False)
+        result = subprocess.run([exe, *args], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30, check=False, env=environment)
     except (OSError, subprocess.SubprocessError) as exc:
         raise Failure('xenia-systemctl-unavailable') from exc
     if result.returncode:
         if not check and args[0] == 'is-active' and result.returncode in (3, 4) and not result.stderr:
             return False
-        if not check and args[0] == 'is-enabled' and result.returncode in (1, 4) and not result.stderr:
-            return False
+        if not check and args[0] == 'is-enabled' and result.returncode in (1, 4):
+            if not result.stderr:
+                return False
+            missing = f'Failed to get unit file state for {absent_unit}: No such file or directory'.encode()
+            if absent_unit is not None and args[-1] == absent_unit and result.stderr.strip() == missing:
+                return False
         raise Failure('xenia-systemctl-' + args[0] + '-failed')
     return True
 
@@ -380,7 +387,8 @@ def run(verb: str, ident: str, dry: bool):
             if old_unit is not None and ('X-Xenia-Id=' + ident).encode() not in old_unit.splitlines():
                 raise Failure('xenia-unit-not-managed')
             active = systemctl('is-active', '--quiet', unit, check=False)
-            enabled = systemctl('is-enabled', '--quiet', unit, check=False)
+            enabled = systemctl('is-enabled', '--quiet', unit, check=False,
+                                absent_unit=unit if old_unit is None and not active else None)
             if old_unit is None and (active or enabled):
                 raise Failure('xenia-unit-not-managed')
             receipt['active'] = active

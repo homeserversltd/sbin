@@ -845,7 +845,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit({"schema": _install.SCHEMA, "verb": args[0], "id": "", "ok": False, "road": "release", "source_sha": None, "sha256": None, "unit": None, "active": None, "health": None, "signal": "xenos-arguments-invalid", "changed": False})
             return 1
         _install.launcher.REGISTER_PATH = Path(_install.setting("XENIA_REGISTER", str(REGISTER_PATH)))
-        receipt, status = _install.run(args[0], rest[0], dry)
+        # Reserve stdout for the final receipt, including output inherited by helpers.
+        sys.stdout.flush()
+        receipt_fd = os.dup(1)
+        try:
+            os.dup2(2, 1)
+            receipt, status = _install.run(args[0], rest[0], dry)
+        finally:
+            sys.stdout.flush()
+            os.dup2(receipt_fd, 1)
+            os.close(receipt_fd)
         _emit(receipt)
         return status
     if args and args[0] in {"seat", "census"} and not legacy_verb_form:
