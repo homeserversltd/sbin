@@ -55,7 +55,7 @@ def _allowed_argv(argv: list[str]) -> bool:
     if not argv or argv[0] != _HARMONIA:
         return False
     args = argv[1:]
-    if args in (["update"], ["update", "--apply"]):
+    if args in (["update"], ["update", "--apply"], ["update", "--check"]):
         return True
     if args == ["interactable", "list", "--json"]:
         return True
