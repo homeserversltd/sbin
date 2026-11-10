@@ -905,12 +905,15 @@ def _route_options(upstream: Any, tailnet_port: Any, locations: Any) -> tuple[in
     if locations is not None:
         if not isinstance(locations, list):
             raise ValueError("agathodaimon-nginx-input-invalid")
+        paths = {"/"}
         for loc in locations:
             if (not isinstance(loc, dict) or not safe(loc.get("path"))
                     or not loc["path"].startswith("/") or not safe(loc.get("upstream"))
                     or not loc["upstream"].startswith(("http://", "https://"))
-                    or type(loc.get("strip_authorization", False)) is not bool):
+                    or type(loc.get("strip_authorization", False)) is not bool
+                    or loc["path"] in paths):
                 raise ValueError("agathodaimon-nginx-input-invalid")
+            paths.add(loc["path"])
     return tailnet_port, locations
 
 
