@@ -7,7 +7,7 @@ from agathodaimon.settings.input import _acts as input_settings
 
 def main(argv=None):
     try:
-        request = read(known_fields=('pointer_sensitivity', 'scroll_factor', 'natural_scroll', 'tap_to_click', 'middle_button_emulation', 'keyboard_layout', 'keyboard_variant', 'key_repeat', 'repeat_delay_ms', 'repeat_interval_ms', 'pointer_speed', 'accel_profile', 'left_handed', 'disable_while_typing'))
+        request = read(known_fields=('pointer_sensitivity', 'scroll_factor', 'natural_scroll', 'tap_to_click', 'middle_button_emulation', 'pointer_speed', 'accel_profile', 'left_handed', 'disable_while_typing'))
         source = request.value.get('payload', {}) if request.envelope else request.value
         if not isinstance(source, dict):
             source = {}
