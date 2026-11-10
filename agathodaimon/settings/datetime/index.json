@@ -9,7 +9,7 @@
     "name": "settings",
     "features": {
       "settings": {
-        "band": true,
+        "band": false,
         "verbs": [
           [
             "settings",
@@ -20,7 +20,7 @@
           "/api/v1/settings/datetime"
         ],
         "administrative": {
-          "band": true,
+          "band": false,
           "verbs": [
             [
               "settings",

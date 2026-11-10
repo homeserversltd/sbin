@@ -1,4 +1,4 @@
 {
   "children": ["read", "set"],
-  "sclerite": {"name": "desktop", "features": {"desktop": {"band": true, "verbs": [["settings", "energy"]], "routes": ["/api/v1/settings/energy"], "administrative": {"band": false, "verbs": [["settings", "energy"]], "routes": ["/api/v1/settings/energy"]}}}}
+  "sclerite": {"name": "desktop", "features": {"desktop": {"band": false, "verbs": [["settings", "energy"]], "routes": ["/api/v1/settings/energy"], "administrative": {"band": false, "verbs": [["settings", "energy"]], "routes": ["/api/v1/settings/energy"]}}}}
 }

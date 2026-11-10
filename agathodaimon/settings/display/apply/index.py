@@ -2,7 +2,7 @@
 import json
 import time
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings.display import backends, index as display
+from agathodaimon.settings.display import backends, _acts as display
 
 SCHEMA = "caduceus.settings.display.apply.v1"
 

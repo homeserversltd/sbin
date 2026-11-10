@@ -3,7 +3,7 @@ import json
 import time
 from agathodaimon._envelope import EnvelopeError, attach, read
 from agathodaimon.settings import _family
-from agathodaimon.settings.display import backends, index as display
+from agathodaimon.settings.display import backends, _acts as display
 
 FIELDS = ("output", "resolution", "refresh_rate", "scale", "orientation")
 SCHEMA = "caduceus.settings.display.set.v1"

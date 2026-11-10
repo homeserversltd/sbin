@@ -2,7 +2,7 @@
 import json
 
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings.ssh import index as ssh
+from agathodaimon.settings.ssh import _acts as ssh
 
 
 SCHEMAS = {name: 'caduceus.settings.ssh.' + name.replace('_', '.') + '.v1'

@@ -2,7 +2,7 @@
 import json
 from agathodaimon._envelope import EnvelopeError, attach, read
 from agathodaimon.settings import _shared
-from agathodaimon.settings.display import backends, index as display
+from agathodaimon.settings.display import backends, _acts as display
 
 
 def main(argv=None):

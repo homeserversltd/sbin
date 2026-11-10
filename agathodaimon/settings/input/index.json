@@ -4,7 +4,7 @@
     "name": "desktop",
     "features": {
       "desktop": {
-        "band": true,
+        "band": false,
         "verbs": [
           [
             "settings",
@@ -15,7 +15,7 @@
           "/api/v1/settings/input"
         ],
         "administrative": {
-          "band": true,
+          "band": false,
           "verbs": [],
           "routes": [
             "/api/v1/settings/input"

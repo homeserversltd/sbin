@@ -1,4 +1,4 @@
 {
   "children": ["read", "set"],
-  "sclerite": {"name": "settings", "features": {"settings": {"band": true, "verbs": [["settings", "region"]], "routes": ["/api/v1/settings/region"], "administrative": {"band": false, "verbs": [["settings", "region"]], "routes": ["/api/v1/settings/region"]}}}}
+  "sclerite": {"name": "settings", "features": {"settings": {"band": false, "verbs": [["settings", "region"]], "routes": ["/api/v1/settings/region"], "administrative": {"band": false, "verbs": [["settings", "region"]], "routes": ["/api/v1/settings/region"]}}}}
 }

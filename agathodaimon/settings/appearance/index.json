@@ -4,7 +4,7 @@
     "name": "desktop",
     "features": {
       "desktop": {
-        "band": true,
+        "band": false,
         "verbs": [
           [
             "settings",

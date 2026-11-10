@@ -1,7 +1,7 @@
 """Read shortcut settings."""
 import json
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings.shortcuts import index as shortcuts
+from agathodaimon.settings.shortcuts import _acts as shortcuts
 
 
 def main(argv=None):

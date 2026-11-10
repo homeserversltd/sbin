@@ -1,7 +1,7 @@
 """Read input settings."""
 import json
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings.input import index as input_settings
+from agathodaimon.settings.input import _acts as input_settings
 
 
 def main(argv=None):

@@ -2,7 +2,7 @@
 import json
 
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings.samba import index as samba
+from agathodaimon.settings.samba import _acts as samba
 
 
 def main(argv=None):

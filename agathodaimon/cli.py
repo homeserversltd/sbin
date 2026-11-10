@@ -1036,7 +1036,7 @@ def _display_startup_reapplication_without_pin(
     if not (flat_apply or split_apply) or envelope is not None:
         return False
     try:
-        module = _load(ROOT / "settings" / "display" / "index.py")
+        module = _load(ROOT / "settings" / "display" / "_acts.py")
         allowed = getattr(module, "startup_apply_allowed", None)
         return bool(callable(allowed) and allowed())
     except Exception:
@@ -1286,6 +1286,8 @@ def main(argv=None):
     children=_children(path); has_index=(path/"index.py").is_file()
     chord = not has_index and "serve" in _index(path)
     if not has_index and not chord:
+        if children and remainder == ["--help"]:
+            print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
         if remainder or (not sys.stdin.isatty() and sys.stdin.read()):
             print("agathodaimon-noun-has-no-act", file=sys.stderr); return 2
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
