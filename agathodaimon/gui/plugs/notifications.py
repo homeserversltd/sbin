@@ -567,7 +567,7 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             listing.remove(child)
             child = following
         trust = model.get("trust")
-        if trust is not None:
+        if trust is not None and trust["state"] in ("accept", "renew"):
             card = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             card.add_css_class("card")
             content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, hexpand=True)
@@ -584,7 +584,6 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             description = {
                 "accept": f"Let this {device} open your HomeServer's apps and pages securely, without browser security warnings.",
                 "renew": f"Let this {device} open your HomeServer's apps and pages securely, without browser security warnings.",
-                "trusted": f"This {device} opens your HomeServer's apps and pages securely.",
             }.get(trust["state"])
             if description:
                 label = Gtk.Label(label=description, xalign=0, wrap=True)
