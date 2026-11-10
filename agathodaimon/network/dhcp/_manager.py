@@ -18,6 +18,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 
 from agathodaimon import _deed, _load_trace
+from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
 
 
@@ -73,7 +74,7 @@ class DhcpManager:
 
     @staticmethod
     def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        return run(command)
 
     def _command(self, command: Sequence[str], *, required: bool = True) -> subprocess.CompletedProcess[str]:
         try:

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from agathodaimon import _load_trace
+from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.reload.index import reload_services
 
@@ -57,7 +58,7 @@ class DnsManager:
 
     @staticmethod
     def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        return run(command)
 
     def _command(self, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
         try:

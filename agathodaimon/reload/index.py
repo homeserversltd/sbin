@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from agathodaimon._nidus.run import run
+
 SCHEMA = "caduceus.staff.reload.v1"
 SystemctlRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
@@ -33,7 +35,7 @@ def _fingerprint(paths: Sequence[Path]) -> str:
 
 
 def _systemctl(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True, check=False)
+    return run(command, timeout=None)
 
 
 def reload_services(
