@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from importlib import import_module
 
 from agathodaimon._envelope import EnvelopeError, attach, read
@@ -21,23 +22,32 @@ def _run(argv, timeout):
 
 
 def _gateway():
-    try:
-        result = _run(["ip", "-4", "route", "show", "default", "dev", "wan0"], 2)
-        if result.returncode:
-            return None, "agathodaimon-time-upstream-wan-route-unavailable"
-        for line in result.stdout.splitlines():
-            fields = line.split()
-            if "via" in fields:
-                index = fields.index("via")
-                if index + 1 < len(fields):
-                    return str(ipaddress.IPv4Address(fields[index + 1])), "none"
-        return None, "agathodaimon-time-upstream-gateway-missing"
-    except (OSError, ValueError, subprocess.SubprocessError):
-        return None, "agathodaimon-time-upstream-wan-route-unavailable"
+    deadline = time.monotonic() + 90
+    signal = "agathodaimon-time-upstream-gateway-missing"
+    while (remaining := deadline - time.monotonic()) > 0:
+        started = time.monotonic()
+        try:
+            result = _run(["ip", "-4", "route", "show", "default", "dev", "wan0"], min(2, remaining))
+            if result.returncode:
+                signal = "agathodaimon-time-upstream-wan-route-unavailable"
+            else:
+                signal = "agathodaimon-time-upstream-gateway-missing"
+                for line in result.stdout.splitlines():
+                    fields = line.split()
+                    if "via" in fields:
+                        index = fields.index("via")
+                        if index + 1 < len(fields):
+                            return str(ipaddress.IPv4Address(fields[index + 1])), "none"
+        except (OSError, ValueError, subprocess.SubprocessError):
+            signal = "agathodaimon-time-upstream-wan-route-unavailable"
+        delay = min(1 - (time.monotonic() - started), deadline - time.monotonic())
+        if delay > 0:
+            time.sleep(delay)
+    return None, signal
 
 
 def _write_sources(content):
-    directory = Path(os.environ.get("AGATHODAIMON_TIME_UPSTREAM_DIR", "/run/chrony-household"))
+    directory = Path(os.environ.get("AGATHODAIMON_TIME_UPSTREAM_DIR", "/run/chrony-dhcp"))
     directory.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=".upstream.", dir=directory)
     try:
