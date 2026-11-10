@@ -805,7 +805,8 @@ class DnsManager:
             receipt["mutationPerformed"] = result["changed"]
             return receipt
         except WriteError as exc:
-            if not receipt["stagedValidation"] or previous == candidate:
+            restored = any(row["step"] == "restore" for row in exc.parts["attempt"]["steps"])
+            if not receipt["stagedValidation"] or previous == candidate or not restored:
                 raise exc.cause
             receipt["ok"] = False
             if exc.restore_errors:

@@ -31,9 +31,11 @@ def _digest(data: bytes | None) -> str | None:
     return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
-def _put(path: Path, data: bytes | None, mode: int, owner: tuple[int, int] | None) -> None:
+def _put(path: Path, data: bytes | None, mode: int, owner: tuple[int, int] | None, on_changed=None) -> None:
     if data is None:
         path.unlink(missing_ok=True)
+        if on_changed is not None:
+            on_changed()
         return
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -45,6 +47,8 @@ def _put(path: Path, data: bytes | None, mode: int, owner: tuple[int, int] | Non
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
         os.replace(name, path)
+        if on_changed is not None:
+            on_changed()
     finally:
         Path(name).unlink(missing_ok=True)
 
@@ -96,6 +100,10 @@ def write(edits, *, check=None, verify=None, reload=None, readback=None):
             callback()
             row["outcome"] = "ok"
 
+        def mark_touched():
+            nonlocal touched
+            touched = True
+
         run("check", check)
         if changed:
             for path, candidate, before, _old_mode, _old_owner, mode, owner in snapshots:
@@ -104,8 +112,7 @@ def write(edits, *, check=None, verify=None, reload=None, readback=None):
                 phase = "replace"
                 row = {"step": "replace", "path": str(path), "outcome": "failed"}
                 steps.append(row)
-                _put(path, candidate, mode, owner)
-                touched = True
+                _put(path, candidate, mode, owner, on_changed=mark_touched)
                 for observed in parts["observed"]:
                     if observed["path"] == str(path):
                         observed["after"] = _digest(candidate)
