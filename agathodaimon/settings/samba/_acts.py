@@ -20,7 +20,6 @@ ENABLED_STATES = {
     "masked", "masked-runtime", "static", "indirect", "disabled",
     "generated", "transient",
 }
-STATUS_VERBS = {"status", "read", "get"}
 
 
 class ObservationFailure(RuntimeError):

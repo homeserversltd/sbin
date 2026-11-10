@@ -7,13 +7,11 @@ import pwd
 import re
 import shlex
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Any
 
-from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings import _shared, _options, _sway_overrides
+from agathodaimon.settings import _shared, _sway_overrides
 from agathodaimon.settings.display import backends
 from agathodaimon.settings._sway import _sway_reload
 
@@ -431,45 +429,3 @@ def _set(kind: str, changes: dict[str, Any], schema: str | None = None) -> dict[
             uncertain = mutated or runtime_attempted
         failure = receipt.finish(False, error=signal)
         raise _shared.ReceiptFailure(signal, failure["receipt"], uncertain) from error
-
-
-def main(kind: str, argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    request = None
-    if not args:
-        try:
-            request = read(known_fields=tuple(_shared.FIELDS[kind]) + ("args",))
-            crossing = request.payload.get("args")
-            if isinstance(crossing, list):
-                args = crossing
-            elif request.verb in {"read", "get", "state"}:
-                args = ["get", "--json"]
-            else:
-                changes = {field: value for field, value in request.payload.items() if field in _shared.FIELDS[kind]}
-                reply = _set(kind, changes)
-                print(json.dumps(attach(reply, request), sort_keys=True))
-                return 0
-        except (EnvelopeError, ValueError, OSError) as error:
-            reply = error.reply() if isinstance(error, _shared.ReceiptFailure) else {"ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}
-            print(json.dumps(attach(reply, request) if request else reply, sort_keys=True))
-            return 1
-    try:
-        if args == ["get", "--json"]:
-            reply = {"ok": True, "values": get_values(kind), **({"options": _options.options(kind)} if kind in {"keyboard", "region"} else {}), "mutationPerformed": False}
-        elif args and args[0] == "set":
-            changes = {}
-            i = 1
-            while i < len(args):
-                if i + 3 >= len(args) or args[i] != "--field" or args[i + 2] != "--value-json":
-                    raise ValueError("cli-parse-failure")
-                changes[args[i + 1]] = json.loads(args[i + 3])
-                i += 4
-            reply = _set(kind, changes)
-        else:
-            raise ValueError("cli-parse-failure")
-        print(json.dumps(attach(reply, request) if request else reply, sort_keys=True))
-        return 0
-    except (ValueError, OSError, TypeError) as error:
-        reply = error.reply() if isinstance(error, _shared.ReceiptFailure) else {"ok": False, "changed": False, "mutationPerformed": False, "firstMissingSignal": str(error)}
-        print(json.dumps(attach(reply, request) if request else reply, sort_keys=True))
-        return 1

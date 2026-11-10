@@ -5,7 +5,6 @@ only a validated timezone and provenance cross the state membrane.
 """
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -13,7 +12,7 @@ import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 from urllib.request import Request, urlopen
 from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
@@ -306,30 +305,3 @@ def set_timezone(candidate: str) -> dict[str, Any]:
 def receipt(primitive: str, *, ok: bool, changed: bool, first_missing_signal: str = "none", **fields: Any) -> dict[str, Any]:
     return {"schema": RECEIPT_SCHEMA, "primitive": primitive, "ok": ok, "changed": changed,
             "firstMissingSignal": first_missing_signal, **fields}
-
-
-def _emit(call) -> int:
-    try:
-        value = call()
-    except (ValueError, OSError, subprocess.SubprocessError) as error:
-        value = receipt("invalid", ok=False, changed=False, first_missing_signal=str(error))
-    print(json.dumps(value, sort_keys=True))
-    return 0 if value.get("ok") else 1
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="agathodaimon-household-time")
-    sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("resolve")
-    sub.add_parser("state")
-    sub.add_parser("ensure-ntp")
-    timezone = sub.add_parser("set-timezone")
-    timezone.add_argument("timezone")
-    args = parser.parse_args(argv)
-    if args.command == "resolve":
-        return _emit(resolve)
-    if args.command == "state":
-        return _emit(lambda: receipt("state", ok=True, changed=False, state=sanitized_state()))
-    if args.command == "ensure-ntp":
-        return _emit(ensure_ntp)
-    return _emit(lambda: set_timezone(args.timezone))

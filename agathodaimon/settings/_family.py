@@ -8,12 +8,6 @@ from agathodaimon.settings import _parity, _shared
 _PARITY_FAMILIES = frozenset({"keyboard", "region", "energy"})
 
 
-def read_family(kind: str) -> dict[str, Any]:
-    if kind in _PARITY_FAMILIES:
-        return _parity.get_values(kind)
-    return _shared.get_values(kind)
-
-
 def set_family(kind: str, changes: dict[str, Any], schema: str | None = None) -> dict[str, Any]:
     if kind in _PARITY_FAMILIES:
         return _parity._set(kind, changes, schema=schema)
