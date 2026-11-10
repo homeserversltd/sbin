@@ -472,16 +472,15 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 if stage.get("deadline_seconds") is not None and elapsed > stage["deadline_seconds"]:
                     refusal = "chord-stage-deadline-exceeded"
                 if refusal is None and isinstance(receipt, dict):
+                    parts = band.split("/")
+                    matches = (not printed_stop or
+                               (isinstance(answered_stop, dict)
+                                and answered_stop.get("noun") == ("/".join(parts[:-1]) if len(parts) > 1 else parts[0])
+                                and answered_stop.get("verb") == (parts[-1] if len(parts) > 1 else "")))
                     if stage.get("receipt") == "caduceus.chord.receipt.v1":
-                        matches = answered_schema == stage["receipt"]
-                    else:
-                        parts = band.split("/")
-                        matches = (not printed_stop or
-                                   (isinstance(answered_stop, dict)
-                                    and answered_stop.get("noun") == ("/".join(parts[:-1]) if len(parts) > 1 else parts[0])
-                                    and answered_stop.get("verb") == (parts[-1] if len(parts) > 1 else "")))
-                        if matches and answered_schema != "caduceus.staff.receipt.v1":
-                            matches = stage.get("receipt") is None or answered_schema == stage["receipt"]
+                        matches = matches and answered_schema == stage["receipt"]
+                    elif matches and answered_schema != "caduceus.staff.receipt.v1":
+                        matches = stage.get("receipt") is None or answered_schema == stage["receipt"]
                     if not matches:
                         refusal = "chord-stage-receipt-schema-mismatch"
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
