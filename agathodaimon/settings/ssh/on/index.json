@@ -26,13 +26,11 @@
       "snake": "settings/ssh/config/set",
       "arguments": {
         "state": "on"
-      },
-      "receipt": "caduceus.settings.ssh.config.set.v1"
+      }
     },
     {
       "stage_id": "unit-resolve",
-      "snake": "settings/ssh/unit/resolve",
-      "receipt": "caduceus.settings.ssh.unit.resolve.v1"
+      "snake": "settings/ssh/unit/resolve"
     },
     {
       "stage_id": "unit-enable",
@@ -44,8 +42,7 @@
         "scope": "system",
         "deadline_seconds": 180
       },
-      "deadline_seconds": 180,
-      "receipt": "agathodaimon.unit.enable.v1"
+      "deadline_seconds": 180
     },
     {
       "stage_id": "unit-start",
@@ -57,8 +54,7 @@
         "scope": "system",
         "deadline_seconds": 180
       },
-      "deadline_seconds": 180,
-      "receipt": "agathodaimon.unit.start.v1"
+      "deadline_seconds": 180
     },
     {
       "stage_id": "verify",
@@ -68,13 +64,11 @@
         "unit": {
           "$ref": "stages.unit-resolve.receipt.unit"
         }
-      },
-      "receipt": "caduceus.settings.ssh.verify.v1"
+      }
     },
     {
       "stage_id": "status",
-      "snake": "settings/ssh/status",
-      "receipt": "caduceus.ssh.exposure.v1"
+      "snake": "settings/ssh/status"
     }
   ],
   "rescue": [
@@ -95,8 +89,7 @@
         "changed": {
           "$ref": "stages.config-set.receipt.changedFlag"
         }
-      },
-      "receipt": "caduceus.settings.ssh.config.restore.v1"
+      }
     }
   ]
 }

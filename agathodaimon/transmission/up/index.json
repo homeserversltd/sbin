@@ -25,15 +25,15 @@
     }
   },
   "serve": [
-    {"stage_id": "resolve", "snake": "transmission/vpn/resolve", "receipt": "caduceus.transmission.vpn.resolve.v1"},
-    {"stage_id": "hold-preflight", "snake": "unit/status", "arguments": {"unit": {"$ref": "stages.resolve.receipt.holdUnit"}, "scope": "system"}, "receipt": "agathodaimon.unit.status.v1"},
-    {"stage_id": "native-preflight", "snake": "unit/status", "arguments": {"unit": {"$ref": "stages.resolve.receipt.nativeUnit"}, "scope": "system"}, "receipt": "agathodaimon.unit.status.v1"},
-    {"stage_id": "native-start", "snake": "unit/start", "arguments": {"unit": {"$ref": "stages.resolve.receipt.nativeUnit"}, "scope": "system", "deadline_seconds": 180}, "deadline_seconds": 180, "receipt": "agathodaimon.unit.start.v1"},
-    {"stage_id": "hold-readback", "snake": "unit/status", "arguments": {"unit": {"$ref": "stages.resolve.receipt.holdUnit"}, "scope": "system"}, "receipt": "agathodaimon.unit.status.v1"},
-    {"stage_id": "onness", "snake": "transmission/onness", "arguments": {"provider": {"$ref": "stages.resolve.receipt.provider"}}, "deadline_seconds": 200, "receipt": "caduceus.transmission.onness.v1"}
+    {"stage_id": "resolve", "snake": "transmission/vpn/resolve"},
+    {"stage_id": "hold-preflight", "snake": "unit/status", "arguments": {"unit": {"$ref": "stages.resolve.receipt.holdUnit"}, "scope": "system"}},
+    {"stage_id": "native-preflight", "snake": "unit/status", "arguments": {"unit": {"$ref": "stages.resolve.receipt.nativeUnit"}, "scope": "system"}},
+    {"stage_id": "native-start", "snake": "unit/start", "arguments": {"unit": {"$ref": "stages.resolve.receipt.nativeUnit"}, "scope": "system", "deadline_seconds": 180}, "deadline_seconds": 180},
+    {"stage_id": "hold-readback", "snake": "unit/status", "arguments": {"unit": {"$ref": "stages.resolve.receipt.holdUnit"}, "scope": "system"}},
+    {"stage_id": "onness", "snake": "transmission/onness", "arguments": {"provider": {"$ref": "stages.resolve.receipt.provider"}}, "deadline_seconds": 200}
   ],
   "rescue": [
-    {"stage_id": "hold-failure-readback", "snake": "unit/status", "on_refusal_of": ["native-start"], "depends_on": ["resolve"], "arguments": {"unit": {"$ref": "stages.resolve.receipt.holdUnit"}, "scope": "system"}, "receipt": "agathodaimon.unit.status.v1", "required": false},
-    {"stage_id": "rollback-stop", "snake": "transmission/vpn/rollback-stop", "on_refusal_of": ["native-start", "hold-readback", "onness"], "depends_on": ["native-preflight"], "arguments": {"nativeActiveBefore": {"$ref": "stages.native-start.receipt.observed.active_state"}, "nativeStartAttempted": {"$ref": "stages.native-start.receipt.mutation_performed"}}, "receipt": "caduceus.transmission.vpn.rollback-stop.v1"}
+    {"stage_id": "hold-failure-readback", "snake": "unit/status", "on_refusal_of": ["native-start"], "depends_on": ["resolve"], "arguments": {"unit": {"$ref": "stages.resolve.receipt.holdUnit"}, "scope": "system"}, "required": false},
+    {"stage_id": "rollback-stop", "snake": "transmission/vpn/rollback-stop", "on_refusal_of": ["native-start", "hold-readback", "onness"], "depends_on": ["native-preflight"], "arguments": {"nativeActiveBefore": {"$ref": "stages.native-start.receipt.observed.active_state"}, "nativeStartAttempted": {"$ref": "stages.native-start.receipt.mutation_performed"}}}
   ]
 }

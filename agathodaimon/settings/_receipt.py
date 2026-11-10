@@ -94,6 +94,10 @@ class Receipt:
             metadata["schema"] = self.schema
         if ok:
             (self.run_dir / "run.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
-            return {"ok": True, "changed": bool(changed), "receiptPath": str(self.run_dir / "run.json"), "receipt": metadata}
-        self.run_dir.rmdir()
-        return {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
+            result = {"ok": True, "changed": bool(changed), "receiptPath": str(self.run_dir / "run.json"), "receipt": metadata}
+        else:
+            self.run_dir.rmdir()
+            result = {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
+        if self.schema is not None:
+            result["schema"] = self.schema
+        return result
