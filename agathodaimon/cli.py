@@ -423,6 +423,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 continue
             refusal = None
             stage_target = None
+            answered_stop = None
             try:
                 arguments = _resolve_arguments(stage.get("arguments", {}), envelope, completed, phase != "serve")
                 row["arguments"] = arguments
