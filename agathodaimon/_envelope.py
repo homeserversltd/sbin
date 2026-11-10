@@ -4,11 +4,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import copy, json, os, re, sys
 from pathlib import Path
+from threading import Lock
 from typing import Any, Mapping, Sequence
 
 from agathodaimon import _load_trace
 SCHEMA = "caduceus.staff.v1"
-KERNEL_KEYS = ("schema", "intent_id", "transition", "version", "timestamp")
+_seat_lock = Lock()
+_seat_loaded = False
+_seat_required: tuple[str, ...] = ()
+_seat_foreign: Any = None
 _RUNTIME_PATHS = {
     "config": (Path("/etc/appliance/config.json"), ("etc", "appliance", "config.json")),
     "factory": (Path("/etc/appliance/config.factory"), ("etc", "appliance", "config.factory")),
@@ -39,6 +43,32 @@ def appliance_runtime_path(coordinate: str) -> Path:
 
 
 class EnvelopeError(ValueError): pass
+
+
+def _envelope_kernel() -> tuple[str, ...]:
+    """Read the local seat once; an unavailable or malformed seat is primitive."""
+    global _seat_loaded, _seat_required, _seat_foreign
+    with _seat_lock:
+        if not _seat_loaded:
+            path = appliance_runtime_path("seats") / (SCHEMA + ".json")
+            try:
+                seat = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError, RecursionError):
+                seat = None
+            if isinstance(seat, dict):
+                if "schema" in seat and seat["schema"] != SCHEMA:
+                    _seat_foreign = repr(seat["schema"])
+                elif seat.get("schema") == SCHEMA:
+                    kernel = seat.get("kernel")
+                    required = kernel.get("required") if isinstance(kernel, dict) else None
+                    if isinstance(required, list) and all(isinstance(k, str) for k in required):
+                        _seat_required = tuple(required)
+            _seat_loaded = True
+        if _seat_foreign is not None:
+            raise EnvelopeError(f"foreign seat {SCHEMA}: {_seat_foreign}")
+        return _seat_required
+
+
 @dataclass(frozen=True)
 class Request:
     value: dict[str, Any]
@@ -74,7 +104,7 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
             load_context_present=load_context_present, load_context=load_context, secret_fields=tuple(secret),
         )
     if value.get("schema") != SCHEMA: raise EnvelopeError("foreign envelope schema")
-    missing = [k for k in KERNEL_KEYS if k not in value]
+    missing = [k for k in _envelope_kernel() if k not in value]
     if missing: raise EnvelopeError("missing envelope kernel keys: " + ",".join(missing))
     source = value.get("payload") if isinstance(value.get("payload"), Mapping) else {}
     payload = _selected(source, tuple(known_fields) + tuple(declared_flags) + tuple(rooms) + tuple(secret))
@@ -88,8 +118,8 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
                 candidates.append(nested)
         for candidate in candidates: payload.update(_selected(candidate, names))
     return Request(
-        value, True, payload, raw, value["intent_id"], value["transition"],
-        value["version"], value["timestamp"], load_context_present, load_context,
+        value, True, payload, raw, value.get("intent_id"), value.get("transition"),
+        value.get("version"), value.get("timestamp"), load_context_present, load_context,
         secret_fields=tuple(secret),
     )
 def _outcome(receipt: Mapping[str, Any]) -> str:
