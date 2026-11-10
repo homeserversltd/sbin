@@ -15,7 +15,7 @@ import stat
 import sys
 import warnings
 from pathlib import Path
-from io import BytesIO, StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 
 class _EnvelopeStdin(StringIO):
     @property
@@ -1192,6 +1192,62 @@ def _unplaced(words: list[str], kind: str) -> str:
     return " ".join(words) if all(echoable(word) for word in words) else f"<not-a-{kind}>"
 
 
+class _StampBytes(BytesIO):
+    def __init__(self):
+        super().__init__()
+        # The crossing daemon replaces StringIO with its bounded capture.
+        guard = StringIO()
+        self._guard = guard if hasattr(guard, "limit") else None
+
+    def write(self, data):
+        if self._guard is not None:
+            remaining = max(0, getattr(self._guard, "limit") - getattr(self._guard, "size"))
+            self._guard.write("x" * min(memoryview(data).nbytes, remaining + 1))
+        return super().write(data)
+
+
+class _StampOutput:
+    def __init__(self, destination):
+        self._destination = destination
+        self.buffer = _StampBytes()
+        self._text = TextIOWrapper(self.buffer, encoding=getattr(destination, "encoding", None) or "utf-8",
+                                   errors=getattr(destination, "errors", None) or "strict", write_through=True)
+
+    @property
+    def encoding(self):
+        return self._text.encoding
+
+    @property
+    def errors(self):
+        return self._text.errors
+
+    def write(self, text):
+        return self._text.write(text)
+
+    def flush(self):
+        self._text.flush()
+
+    def fileno(self):
+        return self._destination.fileno()
+
+    def isatty(self):
+        return self._destination.isatty()
+
+    def bytes(self):
+        self.flush()
+        return self.buffer.getvalue()
+
+
+def _emit_stamp_bytes(destination, data):
+    destination.flush()
+    view = memoryview(data)
+    while view:
+        written = destination.buffer.write(view)
+        if written is None or written <= 0:
+            raise OSError("stdout-write-failed")
+        view = view[written:]
+
+
 def main(argv=None):
     global _stamp_target, _stamp_seat
     folder = appliance_runtime_path("seats")
@@ -1214,24 +1270,19 @@ def main(argv=None):
         stream = False
     if stream:
         return _main(argv, folder, seats)
-    # This stop emits a plaintext credential; it never enters the capture.
-    try:
-        credential = _cli_target(args)[0] == "storage/backup/forgejo/credential"
-    except (OSError, ValueError, TypeError):
-        credential = False
-    if credential:
-        return _main(argv, folder, seats)
-    output = StringIO()
-    # Preserve stdout identity for stops that detect a journal or terminal.
-    output.fileno = getattr(sys.stdout, "fileno", output.fileno)
-    output.isatty = getattr(sys.stdout, "isatty", output.isatty)
+    destination = sys.stdout
+    output = _StampOutput(destination)
     try:
         with contextlib.redirect_stdout(output):
             result = _main(argv, folder, seats)
     except BaseException:
-        sys.stdout.write(output.getvalue())
+        _emit_stamp_bytes(destination, output.bytes())
         raise
-    raw = output.getvalue()
+    captured = output.bytes()
+    try:
+        raw = captured.decode("utf-8")
+    except UnicodeDecodeError:
+        raw = ""
     answer = None
     if _stamp_target and raw.lstrip().startswith("{") and len(raw.splitlines()) == 1:
         try:
@@ -1241,7 +1292,7 @@ def main(argv=None):
     if isinstance(answer, dict) and isinstance(answer.get("ok"), bool) and answer.get("schema") not in ("caduceus.chord.receipt.v1", "agathodaimon.front-door.v1"):
         sys.stdout.write(json.dumps(_stamp_receipt(answer, _stamp_target)) + "\n")
     else:
-        sys.stdout.write(raw)
+        _emit_stamp_bytes(destination, captured)
     return result
 
 
