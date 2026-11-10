@@ -1215,6 +1215,9 @@ def main(argv=None):
     if stream:
         return _main(argv, folder, seats)
     output = StringIO()
+    # Preserve stdout identity for stops that detect a journal or terminal.
+    output.fileno = getattr(sys.stdout, "fileno", output.fileno)
+    output.isatty = getattr(sys.stdout, "isatty", output.isatty)
     try:
         with contextlib.redirect_stdout(output):
             result = _main(argv, folder, seats)
