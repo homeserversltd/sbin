@@ -292,13 +292,16 @@ def _trust_fetch(server: str, renew: bool) -> str:
     return "Could not update HomeServer trust. Try again."
 
 
+def _profile() -> str:
+    try:
+        return json.loads(Path("/etc/appliance/profile.json").read_text(encoding="utf-8")).get("profile", "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
 def _is_gateway() -> bool:
     """Notification actions are answered only by the HomeServer's own Caduceus."""
-    try:
-        profile = json.loads(Path("/etc/appliance/profile.json").read_text(encoding="utf-8")).get("profile")
-    except (OSError, ValueError, AttributeError):
-        return False
-    return profile == "homeserver"
+    return _profile() == "homeserver"
 
 
 class _ActionGate:
@@ -577,9 +580,14 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             state_label = Gtk.Label(label=trust["message"], xalign=0, wrap=True)
             state_label.add_css_class("accent" if trust["state"] == "trusted" else "warning")
             content.append(state_label)
-            fingerprint = trust["gateway_fingerprint"] or trust["fingerprint"]
-            if fingerprint:
-                label = Gtk.Label(label="Fingerprint: " + fingerprint, xalign=0, wrap=True, selectable=True)
+            device = "TV" if _profile() == "tv" else "device"
+            description = {
+                "accept": f"Let this {device} open your HomeServer's apps and pages securely, without browser security warnings.",
+                "renew": f"Let this {device} open your HomeServer's apps and pages securely, without browser security warnings.",
+                "trusted": f"This {device} opens your HomeServer's apps and pages securely.",
+            }.get(trust["state"])
+            if description:
+                label = Gtk.Label(label=description, xalign=0, wrap=True)
                 label.add_css_class("dim-label")
                 content.append(label)
             column = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, valign=Gtk.Align.CENTER)

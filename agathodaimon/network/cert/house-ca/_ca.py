@@ -490,6 +490,23 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
     command = [executable]
     if rooted:
         command.extend(["--root", str(root)])
+    if module.is_symlink():
+        try:
+            owner = subprocess.run(
+                [*command, "--listpackage", logical],
+                check=False, text=True, capture_output=True,
+            )
+            if owner.returncode != 0 or owner.stdout.strip() != "homeserver-house-trust":
+                return owner.returncode or 1, False
+            temporary = module.with_name(f".{module.name}.{os.urandom(16).hex()}.new")
+            temporary.symlink_to("pkcs11/p11-kit-trust.so")
+            try:
+                os.replace(temporary, module)
+            finally:
+                temporary.unlink(missing_ok=True)
+            return 0, True
+        except OSError:
+            return None, False
     command.extend(["--package", "homeserver-house-trust", "--divert", logical + ".distrib", "--rename", logical])
     diverted = False
     try:
