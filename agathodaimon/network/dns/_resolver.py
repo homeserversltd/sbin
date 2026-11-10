@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
+from agathodaimon._nidus import unit
 from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.network.dns._manager import CommandRunner, DnsError, DnsManager
 
@@ -18,7 +19,6 @@ class ResolverControl:
     CONFIG = Path("/etc/unbound/unbound.conf")
     BLOCKLIST = Path("/etc/unbound/blocklist.conf")
     CHECKCONF = "/usr/sbin/unbound-checkconf"
-    SYSTEMCTL = "/usr/bin/systemctl"
     UPDATE = "/usr/local/lib/updates/modules/adblock/index.py"
     PRESETS = {
         "quad9": ["9.9.9.9", "149.112.112.112"],
@@ -77,7 +77,7 @@ class ResolverControl:
             calls += 1
             if not verified or calls > 1:
                 self._run([self.CHECKCONF, str(self.config)])
-            self._run([self.SYSTEMCTL, "reload", "unbound"])
+            unit.reload("unbound", runner=self._run)
 
         try:
             write([{"path": self.config, "candidate": after.encode("utf-8"), "mode": mode}],
@@ -120,7 +120,7 @@ class ResolverControl:
         except FileNotFoundError:
             pass
         try:
-            active = self.runner([self.SYSTEMCTL, "is-active", "--quiet", "unbound"]).returncode == 0
+            active = unit.systemctl("is-active", "--quiet", "unbound", runner=self.runner).returncode == 0
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise DnsError("resolver-service-status-unavailable") from exc
         return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "status", "adblockEnabled": matches[0].group("comment") is None, "upstreams": addresses, "dnsOverTls": dot, "blocklistDomainCount": count, "blocklistLastUpdate": updated, "unboundActive": active, "mutationPerformed": False, "firstMissingSignal": "none"}
@@ -140,7 +140,7 @@ class ResolverControl:
 
     def update_blocklist(self) -> dict[str, Any]:
         self._run([sys.executable, self.UPDATE])
-        self._run([self.SYSTEMCTL, "reload", "unbound"])
+        unit.reload("unbound", runner=self._run)
         status = self.status()
         return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "blocklist-update", "domainCount": status["blocklistDomainCount"], "mutationPerformed": True, "reload": "reloaded", "firstMissingSignal": "none"}
 

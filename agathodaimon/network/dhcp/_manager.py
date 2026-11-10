@@ -18,6 +18,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 
 from agathodaimon import _deed, _load_trace
+from agathodaimon._nidus import unit
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
 
@@ -87,8 +88,8 @@ class DhcpManager:
         return result
 
     def get_service_status(self) -> dict[str, Any]:
-        active_result = self._command(["systemctl", "is-active", self.SERVICE], required=False)
-        details_result = self._command(["systemctl", "status", self.SERVICE, "--no-pager"], required=False)
+        active_result = unit.is_active(self.SERVICE, runner=lambda command: self._command(command, required=False))
+        details_result = unit.status(self.SERVICE, runner=lambda command: self._command(command, required=False))
         active = active_result.returncode == 0 and active_result.stdout.strip() == "active"
         return {
             "active": active,
@@ -163,9 +164,9 @@ class DhcpManager:
                 self._command(["sudo", "-u", "_kea", "/usr/sbin/kea-dhcp4", "-t", str(self.config_path)])
 
             def reload() -> None:
-                self._command(["/usr/bin/systemctl", "restart", self.SERVICE])
+                unit.restart(self.SERVICE, runner=self._command)
                 time.sleep(1)
-                self._command(["/usr/bin/systemctl", "is-active", self.SERVICE])
+                unit.is_active(self.SERVICE, runner=self._command)
 
             def readback() -> None:
                 if self.get_config() != config:
@@ -463,7 +464,7 @@ class DhcpManager:
 
     def health(self) -> dict[str, Any]:
         self.get_config()
-        service = self._command(["systemctl", "is-active", self.SERVICE], required=False)
+        service = unit.is_active(self.SERVICE, runner=lambda command: self._command(command, required=False))
         if service.returncode != 0:
             raise DhcpError("Kea DHCP service is not active")
         return {"config_readable": True, "service_answering": True, "service": self.SERVICE}

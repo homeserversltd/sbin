@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from agathodaimon._nidus import unit
 from agathodaimon._nidus.run import run
 
 SCHEMA = "caduceus.staff.reload.v1"
@@ -82,9 +83,8 @@ def reload_services(
             entries.append(entry)
             continue
 
-        command = [os.environ.get("CADUCEUS_SYSTEMCTL_BIN", "systemctl"), "reload", service]
         try:
-            completed = runner(command)
+            completed = unit.reload(service, runner=runner)
         except (OSError, subprocess.SubprocessError) as exc:
             entry["reload_outcome"] = "failed"
             entries.append(entry)
