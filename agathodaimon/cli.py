@@ -1214,6 +1214,13 @@ def main(argv=None):
         stream = False
     if stream:
         return _main(argv, folder, seats)
+    # This stop emits a plaintext credential; it never enters the capture.
+    try:
+        credential = _cli_target(args)[0] == "storage/backup/forgejo/credential"
+    except (OSError, ValueError, TypeError):
+        credential = False
+    if credential:
+        return _main(argv, folder, seats)
     output = StringIO()
     # Preserve stdout identity for stops that detect a journal or terminal.
     output.fileno = getattr(sys.stdout, "fileno", output.fileno)
