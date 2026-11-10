@@ -887,8 +887,63 @@ def trust_install(
     )
 
 
-def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, aliases: Sequence[str] = (), *, dry_run: bool = False) -> dict[str, Any]:
-    if not portal or not upstream.startswith(("http://", "https://")):
+def _route_options(upstream: Any, tailnet_port: Any, locations: Any) -> tuple[int | None, list[dict[str, Any]] | None]:
+    def safe(value: Any) -> bool:
+        return isinstance(value, str) and bool(value) and not re.search(r'[\s;{}"\'\\]', value)
+
+    if not safe(upstream) or not upstream.startswith(("http://", "https://")):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+    if tailnet_port is not None:
+        if type(tailnet_port) is int:
+            pass
+        elif isinstance(tailnet_port, str) and re.fullmatch(r"[0-9]+", tailnet_port):
+            tailnet_port = int(tailnet_port)
+        else:
+            raise ValueError("agathodaimon-nginx-input-invalid")
+        if not 1 <= tailnet_port <= 65535:
+            raise ValueError("agathodaimon-nginx-input-invalid")
+    if locations is not None:
+        if not isinstance(locations, list):
+            raise ValueError("agathodaimon-nginx-input-invalid")
+        for loc in locations:
+            if (not isinstance(loc, dict) or not safe(loc.get("path"))
+                    or not loc["path"].startswith("/") or not safe(loc.get("upstream"))
+                    or not loc["upstream"].startswith(("http://", "https://"))
+                    or type(loc.get("strip_authorization", False)) is not bool):
+                raise ValueError("agathodaimon-nginx-input-invalid")
+    return tailnet_port, locations
+
+
+def _tailnet_name() -> str:
+    try:
+        executable = shutil.which("tailscale")
+        if not executable:
+            raise ValueError()
+        result = _run([executable, "status", "--json"], timeout=30)
+        name = json.loads(result.stdout)["Self"]["DNSName"]
+        if not isinstance(name, str):
+            raise ValueError()
+        name = name.rstrip(".")
+        dns, ips = _split_sans([name])
+        if not name or ips or dns != [name.lower()]:
+            raise ValueError()
+        return dns[0]
+    except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise ValueError("agathodaimon-portal-tailnet-name-unavailable") from None
+
+
+def _nginx_location(path: str, upstream: str, strip_authorization: bool = False) -> str:
+    strip = ' proxy_set_header Authorization "";' if strip_authorization else ''
+    return (f'location {path} {{ proxy_buffering off; proxy_http_version 1.1; '
+            f'proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; '
+            f'proxy_read_timeout 60s; proxy_set_header Host $host; '
+            f'proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; '
+            f'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;{strip} proxy_pass {upstream}; }}')
+
+
+def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, aliases: Sequence[str] = (), *, tailnet_port: int | str | None = None, locations: list[dict[str, Any]] | None = None, dry_run: bool = False) -> dict[str, Any]:
+    tailnet_port, locations = _route_options(upstream, tailnet_port, locations)
+    if not portal:
         raise ValueError("agathodaimon-nginx-input-invalid")
     names, ips = _split_sans([portal, *aliases])
     if ips or not names or names[0] != portal:
@@ -896,7 +951,10 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
     directory = _path("CADUCEUS_NGINX_DIR", "/etc/nginx/conf.d")
     target = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
     legacy = directory / f"caduceus-{portal.replace('.', '-')}.conf"
-    body = f"server {{ listen 443 ssl; server_name {' '.join(names)}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; location / {{ proxy_buffering off; proxy_http_version 1.1; proxy_read_timeout 60s; proxy_set_header Host $host; proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; proxy_pass {upstream}; }} }}\n"
+    rendered = ' '.join([*(_nginx_location(loc['path'], loc['upstream'], loc.get('strip_authorization', False)) for loc in locations or []), _nginx_location('/', upstream)])
+    body = f"server {{ listen 443 ssl; server_name {' '.join(names)}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {rendered} }}\n"
+    if tailnet_port is not None:
+        body += f"server {{ listen *:{tailnet_port} ssl; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {rendered} }}\n"
     body_bytes = body.encode("utf-8")
     same = target.is_file() and target.read_bytes() == body_bytes
     legacy_present = legacy.is_file()
@@ -1127,7 +1185,18 @@ def _write_state(existing: dict[str, Any]) -> None:
         Path(name).unlink(missing_ok=True)
 
 
-def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str] | None = None, *, owner_mac: str | None = None, origin: str | None = None, claim_tiles: Sequence[str] = (), dry_run: bool = False) -> dict[str, Any]:
+def _portal_route_preflight(portal: str, upstream: str, tailnet_port: Any, locations: Any) -> tuple[int | None, Any, str | None]:
+    existing = json.loads(state_path().read_text()).get(SCHEMA, {}) if state_path().is_file() else {}
+    prior = next((row for row in existing.get("portals", []) if row.get("fqdn") == portal), {})
+    if tailnet_port is None:
+        tailnet_port = prior.get("tailnet_port")
+    if locations is None:
+        locations = prior.get("locations")
+    tailnet_port, locations = _route_options(upstream, tailnet_port, locations)
+    return tailnet_port, locations, _tailnet_name() if tailnet_port is not None else None
+
+
+def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str] | None = None, *, owner_mac: str | None = None, origin: str | None = None, claim_tiles: Sequence[str] = (), tailnet_port: Any = None, locations: Any = None, dry_run: bool = False) -> dict[str, Any]:
     if _profile() != "homeserver":
         return _refusal("portal_admit", "agathodaimon-portal-admit-profile-refused", portal=portal, failed_child="profile-gate")
     if owner_mac is not None and (not isinstance(owner_mac, str) or not re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", owner_mac)):
@@ -1145,6 +1214,10 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
         owner_mac = prior.get("owner_mac")
     if origin is None:
         origin = prior.get("origin")
+    try:
+        tailnet_port, locations, tailnet_name = _portal_route_preflight(portal, upstream, tailnet_port, locations)
+    except ValueError as error:
+        return _refusal("portal_admit", str(error), portal=portal)
     children: list[dict[str, Any]] = []
     failed = "constituent_lock"
     try:
@@ -1153,17 +1226,21 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
         if not locked.get("ok"):
             raise RuntimeError(locked["firstMissingSignal"])
         failed = "issue_leaf"
-        leaf = issue_leaf(portal, aliases, [lan_ip], dry_run=dry_run)
+        leaf = issue_leaf(portal, [*aliases, *([tailnet_name] if tailnet_name else [])], [lan_ip], dry_run=dry_run)
         children.append(leaf)
         if not leaf.get("ok"):
             raise RuntimeError(leaf["firstMissingSignal"])
         failed = "apply_nginx"
-        applied = apply_nginx(portal, upstream, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), aliases, dry_run=dry_run)
+        applied = apply_nginx(portal, upstream, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), aliases, tailnet_port=tailnet_port, locations=locations, dry_run=dry_run)
         children.append(applied)
         if not applied.get("ok"):
             raise RuntimeError(applied["firstMissingSignal"])
         failed = "state_commit"
         row = {"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip, "upstream": upstream}
+        if tailnet_port is not None:
+            row["tailnet_port"] = tailnet_port
+        if locations is not None:
+            row["locations"] = locations
         if owner_mac is not None:
             row["owner_mac"] = owner_mac
         if origin is not None:

@@ -14,21 +14,28 @@ _spec.loader.exec_module(ca)
 def main(argv=None):
     request = None
     try:
-        request = _envelope.read_fields('portal', 'lan-ip', 'upstream', 'aliases', 'owner-mac', 'origin', 'claim-tiles', 'dry-run')
+        request = _envelope.read_fields('portal', 'lan-ip', 'upstream', 'aliases', 'owner-mac', 'origin', 'claim-tiles', 'tailnet-port', 'locations', 'dry-run')
         p = request.payload
         aliases = p.get("aliases")
         aliases = aliases.split(",") if isinstance(aliases, str) else aliases
         claim_tiles = p.get("claim-tiles")
         claim_tiles = claim_tiles.split(",") if isinstance(claim_tiles, str) and claim_tiles else claim_tiles or ()
+        locations = p.get("locations")
+        if isinstance(locations, str):
+            try:
+                locations = json.loads(locations)
+            except json.JSONDecodeError:
+                raise ValueError("agathodaimon-nginx-input-invalid") from None
         dry_run = p.get("dry-run", False)
         if type(dry_run) is not bool:
             raise ValueError("agathodaimon-house-ca-boolean-invalid")
         if dry_run and not ca.state_path().parent.is_dir():
             raise ValueError("agathodaimon-house-ca-state-directory-absent")
+        ca._portal_route_preflight(p.get("portal"), p.get("upstream"), p.get("tailnet-port"), locations)
         with ca.house_ca_lock():
-            receipt = ca.portal_admit(p.get("portal"), p.get("lan-ip"), p.get("upstream"), aliases, owner_mac=p.get("owner-mac"), origin=p.get("origin"), claim_tiles=claim_tiles, dry_run=dry_run)
+            receipt = ca.portal_admit(p.get("portal"), p.get("lan-ip"), p.get("upstream"), aliases, owner_mac=p.get("owner-mac"), origin=p.get("origin"), claim_tiles=claim_tiles, tailnet_port=p.get("tailnet-port"), locations=locations, dry_run=dry_run)
     except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
-        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        signal = str(error) if str(error) in ("agathodaimon-house-ca-busy", "agathodaimon-nginx-input-invalid", "agathodaimon-portal-tailnet-name-unavailable") else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
         receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)
