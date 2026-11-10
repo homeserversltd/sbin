@@ -56,7 +56,7 @@ def _envelope_kernel() -> tuple[str, ...]:
             except (OSError, UnicodeError, ValueError, RecursionError):
                 seat = None
             if isinstance(seat, dict):
-                if "schema" in seat and seat["schema"] != SCHEMA:
+                if isinstance(seat.get("schema"), str) and seat["schema"] != SCHEMA:
                     _seat_foreign = repr(seat["schema"])
                 elif seat.get("schema") == SCHEMA:
                     kernel = seat.get("kernel")
