@@ -1159,6 +1159,18 @@ def _trace_operation(target: str | None, remainder: list[str]) -> str:
     return "agathodaimon.staff.cli.operation"
 
 
+def _unplaced(words: list[str], kind: str) -> str:
+    def noun(segment: str) -> bool:
+        return 1 <= len(segment) <= 128 and all(
+            char.isalpha() or char.isdigit() or char in "-_" for char in segment
+        )
+
+    def echoable(word: str) -> bool:
+        return all(noun(segment) for segment in word.split("/")) if kind != "noun" else noun(word)
+
+    return " ".join(words) if all(echoable(word) for word in words) else f"<not-a-{kind}>"
+
+
 def main(argv=None):
     folder = appliance_runtime_path("seats")
     try:
@@ -1243,7 +1255,7 @@ def main(argv=None):
             raw_envelope = json.dumps(envelope, separators=(",", ":"))
         target = _slash_target(args[0])
         if target is None:
-            print(f"unknown path: {args[0]}", file=sys.stderr)
+            print(f"unknown path: {_unplaced([args[0]], 'path')}", file=sys.stderr)
             return 2
         cli_target, remainder = _cli_target(args)
         if not _dry_run_admits(target, envelope):
@@ -1271,7 +1283,7 @@ def main(argv=None):
         raw_envelope = args[1]
         target = _slash_target(args[0])
         if target is None:
-            print(f"unknown path: {args[0]}", file=sys.stderr)
+            print(f"unknown path: {_unplaced([args[0]], 'path')}", file=sys.stderr)
             return 2
         cli_target, remainder = _cli_target(args)
         if not _dry_run_admits(target, envelope):
@@ -1295,7 +1307,7 @@ def main(argv=None):
             path/=part
         while remainder and remainder[0] in _children(path): path/=remainder.pop(0)
     except (ValueError,OSError,json.JSONDecodeError):
-        print(f"unknown noun: {args[0]}",file=sys.stderr); return 2
+        print(f"unknown noun: {_unplaced([args[0]], 'noun')}",file=sys.stderr); return 2
     children=_children(path); has_index=(path/"index.py").is_file()
     chord = not has_index and "serve" in _index(path)
     if not has_index and not chord:
@@ -1305,7 +1317,7 @@ def main(argv=None):
             print("agathodaimon-noun-has-no-act", file=sys.stderr); return 2
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
     if children and not has_index and not chord and remainder and remainder[0] != "--help":
-        print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
+        print(f"unknown verb: {_unplaced(original, 'verb')}",file=sys.stderr); return 2
     if not chord and ((remainder==["--help"] and (children or not has_index)) or (not remainder and children and not has_index)):
         print(json.dumps({"noun":original[0],"verbs":children},indent=2))
         if has_index:
@@ -1314,7 +1326,7 @@ def main(argv=None):
     if not has_index and not chord:
         if not remainder:
             print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
-        print(f"unknown verb: {' '.join(original)}",file=sys.stderr); return 2
+        print(f"unknown verb: {_unplaced(original, 'verb')}",file=sys.stderr); return 2
     if remainder == ["--help"]: _help(path); return 0
     envelope, pin_present, pin = _capture_piped_envelope()
     if children and has_index and not remainder and (not isinstance(sys.stdin, _EnvelopeStdin) or not sys.stdin.getvalue()):
