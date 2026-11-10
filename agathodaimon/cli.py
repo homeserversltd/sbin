@@ -1377,6 +1377,7 @@ def main(argv=None):
 def _main(argv, folder, seats):
     global _stamp_target
     args=list(sys.argv[1:] if argv is None else argv)
+    wrapped_argv_pin = False
     if len(args) == 2 and "/" in args[0]:
         try:
             argv_envelope = json.loads(args[1])
@@ -1389,9 +1390,8 @@ def _main(argv, folder, seats):
                 _front_answer("receipt-carries-no-request", "unwrap-receipt")
                 return 2
             if unwrapped:
-                pin_present, _pin = _take_envelope_pin(argv_envelope)
-                if pin_present:
-                    return _refuse_administrative("agathodaimon-administrative-pin-required")
+                wrapped_argv_pin, _pin = _take_envelope_pin(argv_envelope)
+                _pin = None
                 args[1] = json.dumps(argv_envelope, separators=(",", ":"))
         if isinstance(argv_envelope, dict) and _contains_secret_name(argv_envelope.get("payload")):
             _front_answer("invalid-or-forbidden-long-option", "options")
@@ -1415,7 +1415,7 @@ def _main(argv, folder, seats):
             preflight_target = None
         if preflight_target is not None and not _dry_run_admits(preflight_target, preflight_envelope):
             return 2
-    if _argv_envelope_has_pin(args):
+    if wrapped_argv_pin or _argv_envelope_has_pin(args):
         return _refuse_administrative("agathodaimon-administrative-pin-required")
     if not args or args == ["--help"]:
         census = {"folder": str(folder),
