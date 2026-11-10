@@ -28,6 +28,26 @@ if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon import _load_trace
 from agathodaimon._seat import ForeignSeat, read_seats
+_stamp_target = None
+_stamp_seat = None
+
+def _stamp_receipt(receipt, target):
+    if (not target or not isinstance(receipt, dict)
+            or not isinstance(receipt.get("ok"), bool)
+            or receipt.get("schema") in ("caduceus.chord.receipt.v1", "agathodaimon.front-door.v1")):
+        return receipt
+    parts = target.split("/")
+    receipt.setdefault("stop", {"noun": "/".join(parts[:-1]) if len(parts) > 1 else parts[0],
+                                "verb": parts[-1] if len(parts) > 1 else ""})
+    receipt.setdefault("observed", None)
+    receipt.setdefault("could_change_to", None)
+    receipt.setdefault("attempt", {"attempted": True})
+    receipt.setdefault("final_receipt", {"ok": receipt["ok"],
+                                         "firstMissingSignal": receipt.get("firstMissingSignal")})
+    if _stamp_seat is not None:
+        receipt.setdefault("seat", _stamp_seat)
+    return receipt
+
 ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "upload": ("storage", "upload"), "nas": ("storage", "nas"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime")}
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
@@ -420,6 +440,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                     receipt = json.loads(stdout.getvalue())
                     if not isinstance(receipt, dict):
                         raise ValueError("not an object")
+                    receipt = _stamp_receipt(receipt, band)
                     row["receipt"] = receipt
                 except (ValueError, json.JSONDecodeError):
                     receipt = None
@@ -1172,6 +1193,7 @@ def _unplaced(words: list[str], kind: str) -> str:
 
 
 def main(argv=None):
+    global _stamp_target, _stamp_seat
     folder = appliance_runtime_path("seats")
     try:
         seats = read_seats(folder)
@@ -1180,6 +1202,41 @@ def main(argv=None):
                           "firstMissingSignal": "agathodaimon-seat-foreign",
                           "seat": {"id": exc.seat_id, "found": exc.found}}))
         return 2
+    _stamp_target = None
+    absent = [seat_id for seat_id, seat in seats.items() if seat["state"] == "absent"]
+    _stamp_seat = {"folder": str(folder), "absent": absent} if absent else None
+    args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        stream_target = _slash_target(args[0]) if len(args) == 1 and "/" in args[0] else None
+        stream = (stream_target is not None and stream_target.is_file()
+                  and _index(stream_target.parent).get("envelope", {}).get("stdin") == "stream")
+    except (OSError, ValueError, TypeError):
+        stream = False
+    if stream:
+        return _main(argv, folder, seats)
+    output = StringIO()
+    try:
+        with contextlib.redirect_stdout(output):
+            result = _main(argv, folder, seats)
+    except BaseException:
+        sys.stdout.write(output.getvalue())
+        raise
+    raw = output.getvalue()
+    answer = None
+    if _stamp_target and raw.lstrip().startswith("{") and len(raw.splitlines()) == 1:
+        try:
+            answer = json.loads(raw)
+        except (ValueError, TypeError):
+            pass
+    if isinstance(answer, dict) and isinstance(answer.get("ok"), bool) and answer.get("schema") not in ("caduceus.chord.receipt.v1", "agathodaimon.front-door.v1"):
+        sys.stdout.write(json.dumps(_stamp_receipt(answer, _stamp_target)) + "\n")
+    else:
+        sys.stdout.write(raw)
+    return result
+
+
+def _main(argv, folder, seats):
+    global _stamp_target
     args=list(sys.argv[1:] if argv is None else argv)
     if len(args) == 2 and "/" in args[0]:
         try:
@@ -1267,6 +1324,7 @@ def main(argv=None):
         pin = None
         if not admitted:
             return 1
+        _stamp_target = cli_target
         return _load_trace.run_cli(
             envelope, _trace_operation(cli_target, remainder),
             lambda: _invoke_envelope(target, envelope, raw_envelope),
@@ -1293,6 +1351,7 @@ def main(argv=None):
             False, None, publication,
         ):
             return 1
+        _stamp_target = cli_target
         return _load_trace.run_cli(
             envelope, _trace_operation(cli_target, remainder),
             lambda: _invoke_envelope(target, envelope, raw_envelope),
@@ -1369,6 +1428,7 @@ def main(argv=None):
         pin = None
         if not admitted:
             return 1
+        _stamp_target = cli_target
         return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), lambda: _invoke_envelope(target, envelope, argv=remainder or None))
     if not _dry_run_admits(path / "index.py", envelope, remainder):
         return 2
@@ -1377,6 +1437,7 @@ def main(argv=None):
             envelope = _fresh_envelope(cli_target)
         if not _administrative_pin_admits(cli_target, [], envelope, pin_required, caduceus_root, pin_present, pin, publication):
             return 1
+        _stamp_target = cli_target
         return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), lambda: _invoke_envelope(path / "index.py", envelope))
     remainder = _dry_run_argv(envelope, remainder) or []
     trace_present, _ = _load_trace.extract_load_context(envelope)
@@ -1413,6 +1474,7 @@ def main(argv=None):
                 raise
             return int(fn() or 0)
 
+    _stamp_target = cli_target
     return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), invoke_module)
 
 if __name__ == "__main__": raise SystemExit(main())
