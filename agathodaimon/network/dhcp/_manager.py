@@ -19,11 +19,12 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from agathodaimon import _deed, _load_trace
 from agathodaimon._nidus import unit
+from agathodaimon._nidus.refusal import Refusal
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
 
 
-class DhcpError(RuntimeError):
+class DhcpError(Refusal):
     """A bounded, operator-readable DHCP actuator failure."""
 
 

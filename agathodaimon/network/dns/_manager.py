@@ -14,12 +14,13 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from agathodaimon import _load_trace
+from agathodaimon._nidus.refusal import Refusal
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.reload.index import reload_services
 
 # Managed drop-in lineage carried from sbin 0851389; direct-file lineage remains above.
-class DnsError(RuntimeError):
+class DnsError(Refusal):
     """A bounded, operator-readable Unbound managed-drop-in failure."""
 
 
