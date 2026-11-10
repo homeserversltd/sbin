@@ -822,8 +822,25 @@ def _crossing_resolved_target(args: list[str]) -> str | None:
 
 
 def _refuse_crossing(profile: str, requested: str) -> int:
+    resolved = False
+    try:
+        parts = requested.split()
+        if len(parts) == 2:
+            resolved = _crossing_resolved_target(parts) is not None
+        elif len(parts) == 1:
+            cursor = ROOT
+            segments = parts[0].split("/")
+            if all(segments):
+                for segment in segments:
+                    if segment not in _children(cursor):
+                        break
+                    cursor /= segment
+                else:
+                    resolved = True
+    except (OSError, ValueError, TypeError, RecursionError):
+        pass
     _front_answer("agathodaimon-band-not-published", "crossing",
-                  profile=profile, requested=_unplaced([requested], "path"))
+                  profile=profile, requested=requested if resolved else "<not-a-path>")
     return 1
 
 
@@ -1189,20 +1206,6 @@ def _front_answer(signal: str, step: str, path: Path | None = None,
                   word: str | None = None, observed_extra=None,
                   sensitive: bool = False, **extra) -> None:
     """Answer a front-door miss without copying payload or option values."""
-    words = []
-    option_value = False
-    for index, item in enumerate(_front_args):
-        if not isinstance(item, str):
-            words.append("<not-a-word>")
-            continue
-        kind = "path" if index == 0 and "/" in item else "noun"
-        if item.startswith("--") or option_value:
-            words.append("<not-a-option>" if item.startswith("--") else "<not-a-value>")
-            option_value = item.startswith("--") and "=" not in item
-        else:
-            words.append(_unplaced([item], kind))
-            option_value = False
-
     walked = []
     cursor = ROOT
     stopped = word
@@ -1212,7 +1215,7 @@ def _front_answer(signal: str, step: str, path: Path | None = None,
             walked = list(cursor.relative_to(ROOT).parts)
         elif _front_args:
             first = _front_args[0]
-            parts = (first.split("/") if "/" in first and _unplaced([first], "path") == first else
+            parts = (first.split("/") if "/" in first else
                      list(ALIASES.get(first, (first,))) + _front_args[1:])
             for part in parts:
                 if part not in _children(cursor):
@@ -1225,21 +1228,38 @@ def _front_answer(signal: str, step: str, path: Path | None = None,
         fields = _help_result(cursor)["payload_fields"] if resolved else None
     except (OSError, ValueError, TypeError, SyntaxError, RecursionError):
         children, fields, resolved = [], None, False
-    if sensitive:
-        # An administrative refusal cannot disclose an unplaced argv value.
-        for i, item in enumerate(_front_args):
-            if i >= len(walked) or item != walked[i]:
-                words[i] = "<not-a-value>"
-        stopped = None
-    safe_stopped = (_unplaced([stopped], "path" if "/" in stopped else "noun")
-                    if isinstance(stopped, str) else None)
+    words = []
+    depth = 0
+    aligned = True
+    option_value = False
+    for index, item in enumerate(_front_args):
+        if not isinstance(item, str):
+            words.append("<not-a-word>")
+            aligned = False
+            continue
+        if item.startswith("--") or option_value:
+            words.append("<not-a-option>" if item.startswith("--") else "<not-a-value>")
+            option_value = item.startswith("--") and "=" not in item
+            aligned = False
+            continue
+        kind = "path" if index == 0 and "/" in item else "noun"
+        segments = item.split("/") if kind == "path" else [item]
+        placed = (aligned and all(segments) and
+                  walked[depth:depth + len(segments)] == segments)
+        if placed:
+            words.append(item)
+            depth += len(segments)
+        else:
+            words.append(f"<not-a-{kind}>")
+            aligned = False
+        option_value = False
     nearest = None
-    if isinstance(stopped, str) and safe_stopped == stopped:
+    if isinstance(stopped, str):
         matches = difflib.get_close_matches(stopped, children, n=1)
         nearest = matches[0] if matches else None
     noun = "/".join(walked[:-1] if resolved and len(walked) > 1 else walked)
     verb = walked[-1] if resolved and len(walked) > 1 else ""
-    observed = {"words": words, "walked": walked, "stopped_at": safe_stopped or step}
+    observed = {"words": words, "walked": walked, "stopped_at": step}
     if observed_extra:
         observed.update(observed_extra)
     choices = {"children": children, "nearest": nearest}
@@ -1521,7 +1541,8 @@ def _main(argv, folder, seats):
             path/=part
         while remainder and remainder[0] in _children(path): path/=remainder.pop(0)
     except (ValueError,OSError,json.JSONDecodeError):
-        print(f"unknown noun: {_unplaced([args[0]], 'noun')}",file=sys.stderr)
+        display = args[0] if args[0] == "__caduceus_crossing_probe_nonexistent__" else "<not-a-noun>"
+        print(f"unknown noun: {display}",file=sys.stderr)
         _front_answer("unknown-noun", "walk-noun")
         return 2
     children=_children(path); has_index=(path/"index.py").is_file()
