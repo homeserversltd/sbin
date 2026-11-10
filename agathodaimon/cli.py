@@ -2,6 +2,7 @@
 from __future__ import annotations
 import ast
 import copy
+import difflib
 import importlib.util
 import getpass
 import contextlib
@@ -30,6 +31,7 @@ from agathodaimon import _load_trace
 from agathodaimon._seat import ForeignSeat, read_seats
 _stamp_target = None
 _stamp_seat = None
+_front_args = []
 
 def _stamp_receipt(receipt, target):
     if (not target or not isinstance(receipt, dict)
@@ -79,7 +81,7 @@ def _load(path: Path):
     if spec is None or spec.loader is None: raise ImportError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec); module.__package__ = "agathodaimon"; sys.modules[safe] = module; spec.loader.exec_module(module); return module
 
-def _help(path: Path) -> None:
+def _help_result(path: Path) -> dict:
     declaration = _index(path)
     source = path / "index.py"
     kind = "chord" if "serve" in declaration and not source.is_file() else "stop"
@@ -123,7 +125,11 @@ def _help(path: Path) -> None:
         result["stages"] = [stage.get("stage_id") for stage in declaration.get("serve", []) + declaration.get("rescue", []) + declaration.get("finally", [])]
         if declaration.get("children"):
             result["children"] = declaration["children"]
-    print(json.dumps(result))
+    return result
+
+
+def _help(path: Path) -> None:
+    print(json.dumps(_help_result(path)))
 
 def _slash_target(raw_path: str) -> Path | None:
     parts = tuple(part for part in raw_path.split("/") if part)
@@ -508,9 +514,7 @@ def _dry_run_admits(path: Path, envelope: dict | None, argv: list[str] | None = 
             return True
         signal = ("agathodaimon-dry-run-invalid" if declaration.get("dry-run") is True
                   else "agathodaimon-dry-run-undeclared")
-        print(json.dumps({"schema": "agathodaimon.front-door.v1", "ok": False,
-                          "error": signal, "firstMissingSignal": signal,
-                          "mutationPerformed": False}, separators=(",", ":")))
+        _front_answer(signal, "dry-run", path, error=signal)
         return False
     declaration = _index(path if path.is_dir() else path.parent)
     if path.is_dir() and "serve" in declaration and payload["dry-run"] is True:
@@ -521,9 +525,7 @@ def _dry_run_admits(path: Path, envelope: dict | None, argv: list[str] | None = 
         signal = "agathodaimon-dry-run-invalid"
     else:
         return True
-    print(json.dumps({"schema": "agathodaimon.front-door.v1", "ok": False,
-                      "error": signal, "firstMissingSignal": signal,
-                      "mutationPerformed": False}, separators=(",", ":")))
+    _front_answer(signal, "dry-run", path, error=signal)
     return False
 
 
@@ -820,13 +822,8 @@ def _crossing_resolved_target(args: list[str]) -> str | None:
 
 
 def _refuse_crossing(profile: str, requested: str) -> int:
-    print(json.dumps({
-        "schema": "agathodaimon.front-door.v1",
-        "ok": False,
-        "firstMissingSignal": "agathodaimon-band-not-published",
-        "profile": profile,
-        "requested": requested,
-    }, separators=(",", ":")))
+    _front_answer("agathodaimon-band-not-published", "crossing",
+                  profile=profile, requested=_unplaced([requested], "path"))
     return 1
 
 
@@ -881,7 +878,7 @@ def _take_envelope_pin(value: object) -> tuple[bool, object]:
         exousia = flags.get("exousia") if isinstance(flags, dict) else None
         if isinstance(exousia, dict) and "pin" in exousia:
             candidate = exousia.pop("pin")
-            if not found:
+            if not found and candidate != "[REDACTED]":
                 found, pin = True, candidate
     return found, pin
 
@@ -916,9 +913,9 @@ def _capture_piped_envelope() -> tuple[dict | None, bool, object]:
     except (TypeError, json.JSONDecodeError):
         parsed = None
     if isinstance(parsed, dict):
-        envelope = parsed
+        envelope, unwrapped = _unwrap_receipt(parsed)
         pin_present, pin = _take_envelope_pin(envelope)
-        if pin_present:
+        if pin_present or unwrapped:
             raw = json.dumps(envelope, separators=(",", ":"))
     sys.stdin = _EnvelopeStdin(raw)
     return envelope, pin_present, pin
@@ -1128,11 +1125,7 @@ def _verify_administrative_pin(pin: object) -> bool:
 
 
 def _refuse_administrative(signal: str) -> int:
-    print(json.dumps({
-        "schema": "agathodaimon.front-door.v1",
-        "ok": False,
-        "firstMissingSignal": signal,
-    }, separators=(",", ":")))
+    _front_answer(signal, "administrative-pin", sensitive=True)
     return 1
 
 
@@ -1192,6 +1185,86 @@ def _unplaced(words: list[str], kind: str) -> str:
     return " ".join(words) if all(echoable(word) for word in words) else f"<not-a-{kind}>"
 
 
+def _front_answer(signal: str, step: str, path: Path | None = None,
+                  word: str | None = None, observed_extra=None,
+                  sensitive: bool = False, **extra) -> None:
+    """Answer a front-door miss without copying payload or option values."""
+    words = []
+    option_value = False
+    for index, item in enumerate(_front_args):
+        if not isinstance(item, str):
+            words.append("<not-a-word>")
+            continue
+        kind = "path" if index == 0 and "/" in item else "noun"
+        if item.startswith("--") or option_value:
+            words.append("<not-a-option>" if item.startswith("--") else "<not-a-value>")
+            option_value = item.startswith("--") and "=" not in item
+        else:
+            words.append(_unplaced([item], kind))
+            option_value = False
+
+    walked = []
+    cursor = ROOT
+    stopped = word
+    try:
+        if path is not None:
+            cursor = path.parent if path.is_file() else path
+            walked = list(cursor.relative_to(ROOT).parts)
+        elif _front_args:
+            first = _front_args[0]
+            parts = (first.split("/") if "/" in first and _unplaced([first], "path") == first else
+                     list(ALIASES.get(first, (first,))) + _front_args[1:])
+            for part in parts:
+                if part not in _children(cursor):
+                    stopped = part
+                    break
+                cursor /= part
+                walked.append(part)
+        children = _children(cursor)
+        resolved = (cursor / "index.py").is_file() or "serve" in _index(cursor)
+        fields = _help_result(cursor)["payload_fields"] if resolved else None
+    except (OSError, ValueError, TypeError, SyntaxError, RecursionError):
+        children, fields, resolved = [], None, False
+    if sensitive:
+        # An administrative refusal cannot disclose an unplaced argv value.
+        for i, item in enumerate(_front_args):
+            if i >= len(walked) or item != walked[i]:
+                words[i] = "<not-a-value>"
+        stopped = None
+    safe_stopped = (_unplaced([stopped], "path" if "/" in stopped else "noun")
+                    if isinstance(stopped, str) else None)
+    nearest = None
+    if isinstance(stopped, str) and safe_stopped == stopped:
+        matches = difflib.get_close_matches(stopped, children, n=1)
+        nearest = matches[0] if matches else None
+    noun = "/".join(walked[:-1] if resolved and len(walked) > 1 else walked)
+    verb = walked[-1] if resolved and len(walked) > 1 else ""
+    observed = {"words": words, "walked": walked, "stopped_at": safe_stopped or step}
+    if observed_extra:
+        observed.update(observed_extra)
+    choices = {"children": children, "nearest": nearest}
+    if fields is not None:
+        choices["payload_fields"] = fields
+    result = {"schema": "caduceus.staff.receipt.v1", "ok": False,
+              "firstMissingSignal": signal, "mutationPerformed": False,
+              "stop": {"noun": noun, "verb": verb}, "observed": observed,
+              "could_change_to": choices, "attempt": {"attempted": False, "step": step},
+              "final_receipt": {"ok": False, "firstMissingSignal": signal}}
+    result.update(extra)
+    if _stamp_seat is not None:
+        result["seat"] = _stamp_seat
+    print(json.dumps(result, separators=(",", ":")))
+
+
+def _unwrap_receipt(value):
+    if isinstance(value, dict) and value.get("schema") == "caduceus.staff.receipt.v1":
+        carried = value.get("envelope")
+        if not isinstance(carried, dict) or carried.get("schema") != "caduceus.staff.v1":
+            raise ValueError("receipt-carries-no-request")
+        return carried, True
+    return value, False
+
+
 class _StampBytes(BytesIO):
     def __init__(self):
         super().__init__()
@@ -1249,14 +1322,19 @@ def _emit_stamp_bytes(destination, data):
 
 
 def main(argv=None):
-    global _stamp_target, _stamp_seat
-    folder = appliance_runtime_path("seats")
+    global _stamp_target, _stamp_seat, _front_args
+    _front_args = list(sys.argv[1:] if argv is None else argv)
+    _stamp_target = None
+    _stamp_seat = None
     try:
+        folder = appliance_runtime_path("seats")
         seats = read_seats(folder)
     except ForeignSeat as exc:
-        print(json.dumps({"schema": "agathodaimon.front-door.v1", "ok": False,
-                          "firstMissingSignal": "agathodaimon-seat-foreign",
-                          "seat": {"id": exc.seat_id, "found": exc.found}}))
+        _front_answer("agathodaimon-seat-foreign", "seat-read",
+                      observed_extra={"id": exc.seat_id, "found": exc.found})
+        return 2
+    except (OSError, ValueError, UnicodeError, RecursionError):
+        _front_answer("agathodaimon-seat-read-failed", "seat-read")
         return 2
     _stamp_target = None
     absent = [seat_id for seat_id, seat in seats.items() if seat["state"] == "absent"]
@@ -1304,8 +1382,19 @@ def _main(argv, folder, seats):
             argv_envelope = json.loads(args[1])
         except (TypeError, ValueError):
             argv_envelope = None
+        if isinstance(argv_envelope, dict):
+            try:
+                argv_envelope, unwrapped = _unwrap_receipt(argv_envelope)
+            except ValueError:
+                _front_answer("receipt-carries-no-request", "unwrap-receipt")
+                return 2
+            if unwrapped:
+                pin_present, _pin = _take_envelope_pin(argv_envelope)
+                if pin_present:
+                    return _refuse_administrative("agathodaimon-administrative-pin-required")
+                args[1] = json.dumps(argv_envelope, separators=(",", ":"))
         if isinstance(argv_envelope, dict) and _contains_secret_name(argv_envelope.get("payload")):
-            print("invalid or forbidden long option", file=sys.stderr)
+            _front_answer("invalid-or-forbidden-long-option", "options")
             return 2
     if _transmission_keys_json_argv(args):
         return _refuse_administrative("transmission-keys-stdin-required")
@@ -1348,7 +1437,7 @@ def _main(argv, folder, seats):
                 and _index(stream_target.parent).get("envelope", {}).get("stdin") == "stream"):
             cli_target, remainder = _cli_target(args)
             if cli_target is None:
-                print("invalid stream path", file=sys.stderr)
+                _front_answer("invalid-stream-path", "stream-path")
                 return 2
             # A stream is not inspected here, so it cannot prove the absence
             # of input required for the display startup exception.
@@ -1363,17 +1452,22 @@ def _main(argv, folder, seats):
         try:
             envelope = json.loads(raw_envelope)
         except (TypeError, json.JSONDecodeError):
-            print("invalid envelope JSON", file=sys.stderr)
+            _front_answer("invalid-envelope-json", "parse-envelope")
             return 2
         if not isinstance(envelope, dict):
-            print("envelope must be a JSON object", file=sys.stderr)
+            _front_answer("envelope-must-be-a-json-object", "parse-envelope")
+            return 2
+        try:
+            envelope, unwrapped = _unwrap_receipt(envelope)
+        except ValueError:
+            _front_answer("receipt-carries-no-request", "unwrap-receipt")
             return 2
         pin_present, pin = _take_envelope_pin(envelope)
-        if pin_present:
+        if pin_present or unwrapped:
             raw_envelope = json.dumps(envelope, separators=(",", ":"))
         target = _slash_target(args[0])
         if target is None:
-            print(f"unknown path: {_unplaced([args[0]], 'path')}", file=sys.stderr)
+            _front_answer("unknown-path", "walk-path")
             return 2
         cli_target, remainder = _cli_target(args)
         if not _dry_run_admits(target, envelope):
@@ -1394,15 +1488,15 @@ def _main(argv, folder, seats):
         try:
             envelope = json.loads(args[1])
         except (TypeError, json.JSONDecodeError):
-            print("invalid envelope JSON", file=sys.stderr)
+            _front_answer("invalid-envelope-json", "parse-envelope")
             return 2
         if not isinstance(envelope, dict):
-            print("envelope must be a JSON object", file=sys.stderr)
+            _front_answer("envelope-must-be-a-json-object", "parse-envelope")
             return 2
         raw_envelope = args[1]
         target = _slash_target(args[0])
         if target is None:
-            print(f"unknown path: {_unplaced([args[0]], 'path')}", file=sys.stderr)
+            _front_answer("unknown-path", "walk-path")
             return 2
         cli_target, remainder = _cli_target(args)
         if not _dry_run_admits(target, envelope):
@@ -1427,17 +1521,19 @@ def _main(argv, folder, seats):
             path/=part
         while remainder and remainder[0] in _children(path): path/=remainder.pop(0)
     except (ValueError,OSError,json.JSONDecodeError):
-        print(f"unknown noun: {_unplaced([args[0]], 'noun')}",file=sys.stderr); return 2
+        print(f"unknown noun: {_unplaced([args[0]], 'noun')}",file=sys.stderr)
+        _front_answer("unknown-noun", "walk-noun")
+        return 2
     children=_children(path); has_index=(path/"index.py").is_file()
     chord = not has_index and "serve" in _index(path)
     if not has_index and not chord:
         if children and remainder == ["--help"]:
             print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
         if remainder or (not sys.stdin.isatty() and sys.stdin.read()):
-            print("agathodaimon-noun-has-no-act", file=sys.stderr); return 2
+            _front_answer("agathodaimon-noun-has-no-act", "walk-noun", path, remainder[0] if remainder else None); return 2
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
     if children and not has_index and not chord and remainder and remainder[0] != "--help":
-        print(f"unknown verb: {_unplaced(original, 'verb')}",file=sys.stderr); return 2
+        _front_answer("unknown-verb", "walk-verb", path, remainder[0]); return 2
     if not chord and ((remainder==["--help"] and (children or not has_index)) or (not remainder and children and not has_index)):
         print(json.dumps({"noun":original[0],"verbs":children},indent=2))
         if has_index:
@@ -1446,9 +1542,13 @@ def _main(argv, folder, seats):
     if not has_index and not chord:
         if not remainder:
             print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
-        print(f"unknown verb: {_unplaced(original, 'verb')}",file=sys.stderr); return 2
+        _front_answer("unknown-verb", "walk-verb", path, remainder[0]); return 2
     if remainder == ["--help"]: _help(path); return 0
-    envelope, pin_present, pin = _capture_piped_envelope()
+    try:
+        envelope, pin_present, pin = _capture_piped_envelope()
+    except ValueError:
+        _front_answer("receipt-carries-no-request", "unwrap-receipt", path)
+        return 2
     if children and has_index and not remainder and (not isinstance(sys.stdin, _EnvelopeStdin) or not sys.stdin.getvalue()):
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
     cli_target = path.relative_to(ROOT).as_posix()
@@ -1461,7 +1561,13 @@ def _main(argv, folder, seats):
         if envelope is None:
             raw = sys.stdin.getvalue() if isinstance(sys.stdin, _EnvelopeStdin) else ""
             if raw.strip():
-                print("invalid envelope JSON", file=sys.stderr); return 2
+                try:
+                    json.loads(raw)
+                except (ValueError, TypeError):
+                    _front_answer("invalid-envelope-json", "parse-envelope", path)
+                else:
+                    _front_answer("envelope-must-be-a-json-object", "parse-envelope", path)
+                return 2
             envelope = _fresh_envelope(cli_target)
         elif "schema" not in envelope:
             stub = envelope
@@ -1472,13 +1578,13 @@ def _main(argv, folder, seats):
         try:
             options = _hand_options(remainder)
         except ValueError as exc:
-            print(str(exc), file=sys.stderr); return 2
+            _front_answer(str(exc).replace(" ", "-"), "options", path); return 2
         from agathodaimon._envelope import _pin_bearing_exousia
         if _pin_bearing_exousia({"payload": options}):
             return _refuse_administrative("agathodaimon-administrative-pin-stdin-required")
         payload = envelope.get("payload")
         if payload is not None and not isinstance(payload, dict):
-            print("envelope payload must be an object", file=sys.stderr); return 2
+            _front_answer("envelope-payload-must-be-an-object", "payload", path); return 2
         envelope["payload"] = {**(payload or {}), **options}
         target = path if chord else path / "index.py"
         if not _dry_run_admits(target, envelope, remainder or None):
@@ -1494,6 +1600,9 @@ def _main(argv, folder, seats):
     if not _dry_run_admits(path / "index.py", envelope, remainder):
         return 2
     if _index(path).get("hand") == "envelope":
+        if remainder:
+            _front_answer("unexpected-word", "walk-remainder", path, remainder[0])
+            return 2
         if envelope is None:
             envelope = _fresh_envelope(cli_target)
         if not _administrative_pin_admits(cli_target, [], envelope, pin_required, caduceus_root, pin_present, pin, publication):
