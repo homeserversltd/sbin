@@ -9,7 +9,8 @@
     "linker",
     "cert",
     "wifi",
-    "tailscale"
+    "tailscale",
+    "time-upstream"
   ],
   "sclerite": {
     "name": "all",

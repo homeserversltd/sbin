@@ -1,0 +1,21 @@
+{
+  "description": "Select the WAN time upstream. AGATHODAIMON_TIME_UPSTREAM_DIR overrides the runtime directory for proof only.",
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": true,
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}
