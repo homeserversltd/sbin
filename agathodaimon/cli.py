@@ -454,6 +454,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                     receipt = json.loads(stdout.getvalue())
                     if not isinstance(receipt, dict):
                         raise ValueError("not an object")
+                    answered_stop = receipt.get("stop")
                     receipt = _stamp_receipt(receipt, band)
                     row["receipt"] = receipt
                 except (ValueError, json.JSONDecodeError):
@@ -461,12 +462,15 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                     refusal = "chord-stage-receipt-invalid"
                 if stage.get("deadline_seconds") is not None and elapsed > stage["deadline_seconds"]:
                     refusal = "chord-stage-deadline-exceeded"
-                if refusal is None and isinstance(receipt, dict) and stage.get("receipt") is not None and receipt.get("schema") != stage["receipt"]:
-                    parts = band.split("/")
-                    stop = receipt.get("stop")
-                    if not (receipt.get("schema") == "caduceus.staff.receipt.v1" and isinstance(stop, dict)
-                            and stop.get("noun") == ("/".join(parts[:-1]) if len(parts) > 1 else parts[0])
-                            and stop.get("verb") == (parts[-1] if len(parts) > 1 else "")):
+                if refusal is None and isinstance(receipt, dict) and stage.get("receipt") is not None:
+                    if receipt.get("schema") == "caduceus.staff.receipt.v1":
+                        parts = band.split("/")
+                        matches = (isinstance(answered_stop, dict)
+                                   and answered_stop.get("noun") == ("/".join(parts[:-1]) if len(parts) > 1 else parts[0])
+                                   and answered_stop.get("verb") == (parts[-1] if len(parts) > 1 else ""))
+                    else:
+                        matches = receipt.get("schema") == stage["receipt"]
+                    if not matches:
                         refusal = "chord-stage-receipt-schema-mismatch"
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
                     refusal = receipt.get("firstMissingSignal") or "chord-stage-refused"
