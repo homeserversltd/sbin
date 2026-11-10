@@ -320,6 +320,14 @@ def _resolve_arguments(value, request, completed, allow_unrun=False):
     return value
 
 
+def _stage_changed(receipt):
+    for key in ("changed", "mutationPerformed", "mutation_performed"):
+        value = receipt.get(key)
+        if isinstance(value, bool):
+            return value
+    return False
+
+
 def _chord_deed(routine_id, envelope, rows, ok, failed, signal, started):
     def token(value):
         return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,128}", value) else "invalid"
@@ -454,10 +462,15 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 if stage.get("deadline_seconds") is not None and elapsed > stage["deadline_seconds"]:
                     refusal = "chord-stage-deadline-exceeded"
                 if refusal is None and isinstance(receipt, dict) and stage.get("receipt") is not None and receipt.get("schema") != stage["receipt"]:
-                    refusal = "chord-stage-receipt-schema-mismatch"
+                    parts = band.split("/")
+                    stop = receipt.get("stop")
+                    if not (receipt.get("schema") == "caduceus.staff.receipt.v1" and isinstance(stop, dict)
+                            and stop.get("noun") == ("/".join(parts[:-1]) if len(parts) > 1 else parts[0])
+                            and stop.get("verb") == (parts[-1] if len(parts) > 1 else "")):
+                        refusal = "chord-stage-receipt-schema-mismatch"
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
                     refusal = receipt.get("firstMissingSignal") or "chord-stage-refused"
-                if receipt is not None and any(receipt.get(key) is True for key in ("mutation_performed", "mutationPerformed", "changed")):
+                if receipt is not None and _stage_changed(receipt) is True:
                     changed = True
             except _ChordError as exc:
                 refusal = str(exc)
