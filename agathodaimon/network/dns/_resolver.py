@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
+from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.network.dns._manager import CommandRunner, DnsError, DnsManager
 
 class ResolverControl:
@@ -47,37 +48,44 @@ class ResolverControl:
             raise DnsError("resolver-config-unreadable") from exc
 
     def _install(self, before: str, after: str) -> None:
-        if before == after:
-            self._run([self.CHECKCONF, str(self.config)])
-            return
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.config.parent, prefix=".agathodaimon-resolver-", delete=False) as handle:
-            staged = Path(handle.name)
-            handle.write(after)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.chmod(staged, self.config.stat().st_mode & 0o777)
-            self._run([self.CHECKCONF, str(staged)])
-            os.replace(staged, self.config)
-            try:
+        mode = self.config.stat().st_mode & 0o777
+        verified = False
+
+        def check() -> None:
+            if before == after:
                 self._run([self.CHECKCONF, str(self.config)])
-                self._run([self.SYSTEMCTL, "reload", "unbound"])
-            except DnsError:
-                with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.config.parent, prefix=".agathodaimon-resolver-rollback-", delete=False) as rollback:
-                    restored = Path(rollback.name)
-                    rollback.write(before)
-                    rollback.flush()
-                    os.fsync(rollback.fileno())
+                return
+            with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.config.parent, prefix=".agathodaimon-resolver-", delete=False) as handle:
+                staged = Path(handle.name)
                 try:
-                    os.chmod(restored, self.config.stat().st_mode & 0o777)
-                    os.replace(restored, self.config)
-                    self._run([self.CHECKCONF, str(self.config)])
-                    self._run([self.SYSTEMCTL, "reload", "unbound"])
+                    handle.write(after)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    os.chmod(staged, mode)
+                    self._run([self.CHECKCONF, str(staged)])
                 finally:
-                    restored.unlink(missing_ok=True)
-                raise
-        finally:
-            staged.unlink(missing_ok=True)
+                    staged.unlink(missing_ok=True)
+
+        def verify() -> None:
+            nonlocal verified
+            self._run([self.CHECKCONF, str(self.config)])
+            verified = True
+
+        calls = 0
+        def reload() -> None:
+            nonlocal calls
+            calls += 1
+            if not verified or calls > 1:
+                self._run([self.CHECKCONF, str(self.config)])
+            self._run([self.SYSTEMCTL, "reload", "unbound"])
+
+        try:
+            write([{"path": self.config, "candidate": after.encode("utf-8"), "mode": mode}],
+                  check=check, verify=verify, reload=reload)
+        except WriteError as exc:
+            if exc.restore_errors:
+                raise exc.restore_errors[0]
+            raise exc.cause
 
     @staticmethod
     def _forward_section(text: str) -> tuple[int, int]:

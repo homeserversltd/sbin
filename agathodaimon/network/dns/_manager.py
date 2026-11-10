@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from agathodaimon import _load_trace
+from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.reload.index import reload_services
 
 # Managed drop-in lineage carried from sbin 0851389; direct-file lineage remains above.
@@ -177,24 +178,17 @@ class DnsManager:
     def _validate_live(self) -> None:
         self._command([self.CHECKCONF, str(self.root_config)])
 
-    def _replace_bytes(self, target: Path, payload: bytes, mode: int = 0o644) -> None:
+    def _replace_bytes(self, target: Path, payload: bytes | None, mode: int = 0o644) -> None:
         self.dropin_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
         if self.dropin_dir.is_symlink():
             raise DnsError("dns-target-symlink-refused")
-        with tempfile.NamedTemporaryFile(dir=self.dropin_dir, prefix=f".{target.name}.", delete=False) as handle:
-            temporary = Path(handle.name)
-            handle.write(payload)
         try:
-            temporary.chmod(mode)
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
+            write([{"path": target, "candidate": payload, "mode": mode}])
+        except WriteError as exc:
+            raise exc.cause
 
     def _restore(self, previous: bytes | None, mode: int) -> None:
-        if previous is None:
-            self.target.unlink(missing_ok=True)
-        else:
-            self._replace_bytes(self.target, previous, mode)
+        self._replace_bytes(self.target, previous, mode)
         self._validate_live()
         self._reload_service()
 
@@ -630,20 +624,23 @@ class DnsManager:
         gateway_mode = gateway_path.stat().st_mode & 0o777 if gateway_previous is not None else 0o644
         changed = candidate != previous or gateway_candidate != gateway_previous
         receipt: dict[str, Any] = {"config_valid": False, "reload_outcome": "not-run", "live_query_readback": [], "mutationPerformed": False}
-        gateway_written = include_written = False
-        try:
+        def check() -> None:
             self._validate_owned_staged(candidate, gateway_candidate)
             receipt["config_valid"] = True
-            if changed:
-                if gateway_candidate != gateway_previous and gateway_candidate is not None:
-                    self._replace_bytes(gateway_path, gateway_candidate, gateway_mode)
-                    gateway_written = True
-                if candidate != previous:
-                    self._replace_bytes(self.read_include, candidate, mode)
-                    include_written = True
-                self._reload_service()
+
+        reload_attempted = False
+
+        def reload() -> None:
+            nonlocal reload_attempted
+            candidate_live = (self.read_include.read_bytes() if self.read_include.exists() else None) == candidate
+            first_candidate_reload = not reload_attempted and candidate_live
+            reload_attempted = True
+            self._reload_service()
+            if first_candidate_reload:
                 receipt["reload_outcome"] = "reloaded"
-            else:
+
+        def readback() -> None:
+            if not changed:
                 receipt["reload_outcome"] = "not-needed-idempotent"
             for record_type, owner in sorted(queries):
                 wanted = values.get((record_type, owner), set())
@@ -657,24 +654,22 @@ class DnsManager:
                     raise DnsError(f"dns-live-query-mismatch: {record_type} {owner}")
                 if diagnostic:
                     raise DnsError(f"dns-live-query-unavailable: {record_type} {owner}")
-            receipt["mutationPerformed"] = changed
+
+        edits = [{"path": self.read_include, "candidate": candidate, "mode": mode}]
+        if gateway_candidate is not None:
+            edits.insert(0, {"path": gateway_path, "candidate": gateway_candidate, "mode": gateway_mode})
+        try:
+            result = write(edits, check=check, reload=reload, readback=readback)
+            receipt["mutationPerformed"] = result["changed"]
             return receipt
-        except (DnsError, OSError) as exc:
-            receipt["first_failing_boundary"] = str(exc)
-            try:
-                if include_written and previous is None:
-                    self.read_include.unlink(missing_ok=True)
-                elif include_written and previous is not None:
-                    self._replace_bytes(self.read_include, previous, mode)
-                if gateway_written and gateway_previous is not None:
-                    self._replace_bytes(gateway_path, gateway_previous, gateway_mode)
-                if gateway_written or include_written:
-                    self._reload_service()
-                receipt["candidate"] = "restored"
-            except (DnsError, OSError) as rollback:
+        except WriteError as exc:
+            receipt["first_failing_boundary"] = str(exc.cause)
+            if exc.restore_errors:
                 receipt["candidate"] = "restore-failed"
-                receipt["rollback_error"] = str(rollback)
+                receipt["rollback_error"] = str(exc.restore_errors[0])
                 self._incomplete_owned_restore = True
+            else:
+                receipt["candidate"] = "restored"
             raise DnsError(json.dumps(receipt, sort_keys=True)) from exc
 
     def owned_preimage(self) -> bytes | None:
@@ -682,10 +677,7 @@ class DnsManager:
 
     def restore_owned_preimage(self, previous: bytes | None) -> dict[str, Any]:
         mode = self.read_include.stat().st_mode & 0o777 if self.read_include.exists() else 0o644
-        if previous is None:
-            self.read_include.unlink(missing_ok=True)
-        else:
-            self._replace_bytes(self.read_include, previous, mode)
+        self._replace_bytes(self.read_include, previous, mode)
         self._validate_live()
         self._reload_service()
         restored = self.read_include.read_bytes() if self.read_include.exists() else None
@@ -776,36 +768,52 @@ class DnsManager:
             "ok": True,
             "firstMissingSignal": "none",
         }
-        self._validate_staged(candidate)
-        receipt["stagedValidation"] = True
         if dry_run:
+            self._validate_staged(candidate)
+            receipt["stagedValidation"] = True
             receipt["action"] = "plan-managed-drop-in"
             return receipt
-        if previous == candidate:
-            self._validate_live()
-            receipt["liveValidation"] = True
-            receipt["reload"] = "not-needed-idempotent"
-            return receipt
         mode = target.stat().st_mode & 0o777 if target.exists() else 0o644
-        try:
-            self._replace_bytes(target, candidate, mode)
+        reload_calls = 0
+
+        def check() -> None:
+            self._validate_staged(candidate)
+            receipt["stagedValidation"] = True
+
+        def verify() -> None:
             self._validate_live()
             receipt["liveValidation"] = True
+
+        def reload() -> None:
+            nonlocal reload_calls
+            reload_calls += 1
+            normal_reload = receipt["liveValidation"] and reload_calls == 1
+            if not normal_reload:
+                self._validate_live()
             self._reload_service()
-            receipt["reload"] = "reloaded"
-            receipt["mutationPerformed"] = True
+            if normal_reload:
+                receipt["reload"] = "reloaded"
+
+        def readback() -> None:
+            if previous == candidate:
+                verify()
+                receipt["reload"] = "not-needed-idempotent"
+
+        try:
+            result = write([{"path": target, "candidate": candidate, "mode": mode}],
+                           check=check, verify=verify, reload=reload, readback=readback)
+            receipt["mutationPerformed"] = result["changed"]
             return receipt
-        except DnsError as exc:
-            try:
-                self._restore(previous, mode)
-                receipt["rollback"] = "restored-and-revalidated"
-            except DnsError as rollback:
-                receipt["rollback"] = "failed"
-                receipt["ok"] = False
-                receipt["firstMissingSignal"] = f"{exc}; dns-rollback-failed: {rollback}"
-                return receipt
+        except WriteError as exc:
+            if not receipt["stagedValidation"] or previous == candidate:
+                raise exc.cause
             receipt["ok"] = False
-            receipt["firstMissingSignal"] = str(exc)
+            if exc.restore_errors:
+                receipt["rollback"] = "failed"
+                receipt["firstMissingSignal"] = f"{exc.cause}; dns-rollback-failed: {exc.restore_errors[0]}"
+            else:
+                receipt["rollback"] = "restored-and-revalidated"
+                receipt["firstMissingSignal"] = str(exc.cause)
             return receipt
 
 

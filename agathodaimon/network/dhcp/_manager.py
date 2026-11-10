@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import ipaddress
 import json
 import os
+import pwd
 import re
 import shutil
 import subprocess
@@ -15,7 +17,8 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest, urlopen
 
 
-from agathodaimon import _load_trace
+from agathodaimon import _deed, _load_trace
+from agathodaimon._nidus.write import WriteError, write
 
 
 class DhcpError(RuntimeError):
@@ -52,7 +55,6 @@ class DhcpManager:
     CONFIG_PATH = Path("/etc/kea/kea-dhcp4.conf")
     APPLIANCE_CONFIG_PATH = Path("/etc/appliance/config.json")
     LEASES_PATH = "/api/v1/network/dhcp/leases"
-    UPDATE_SCRIPT = Path("/usr/local/sbin/agathodaimon/network/dhcp/update-kea-dhcp.sh")
     SERVICE = "kea-dhcp4-server"
 
     def __init__(
@@ -65,7 +67,7 @@ class DhcpManager:
     ) -> None:
         self.config_path = Path(config_path or os.environ.get("CADUCEUS_DHCP_CONFIG", self.CONFIG_PATH))
         self.appliance_config_path = Path(os.environ.get("CADUCEUS_APPLIANCE_CONFIG", self.APPLIANCE_CONFIG_PATH))
-        self.update_script = Path(update_script or os.environ.get("CADUCEUS_DHCP_UPDATE_SCRIPT", self.UPDATE_SCRIPT))
+        # Kept as a constructor compatibility argument; updates no longer invoke a script.
         self._command_runner = command_runner or self._run
         self._now = now
 
@@ -137,21 +139,50 @@ class DhcpManager:
         )
 
     def update_config(self, config: dict[str, Any]) -> dict[str, Any]:
-        if not self._validate_config_structure(config):
-            raise DhcpError("invalid DHCP configuration structure")
-        if not self.update_script.is_file():
-            raise DhcpError(f"atomic update script is missing: {self.update_script}")
-        payload = json.dumps(config, indent=4) + "\n"
-        temporary: str | None = None
+        ok = False
         try:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json", delete=False) as handle:
-                handle.write(payload)
-                temporary = handle.name
-            self._command([str(self.update_script), temporary])
+            if not self._validate_config_structure(config):
+                raise DhcpError("invalid DHCP configuration structure")
+            payload = (json.dumps(config, indent=4) + "\n").encode("utf-8")
+
+            def check() -> None:
+                fd, name = tempfile.mkstemp(prefix=".kea-candidate-", dir=self.config_path.parent)
+                try:
+                    with os.fdopen(fd, "wb") as handle:
+                        handle.write(payload)
+                        handle.flush()
+                        os.fchown(handle.fileno(), pwd.getpwnam("_kea").pw_uid, grp.getgrnam("_kea").gr_gid)
+                        os.fchmod(handle.fileno(), 0o640)
+                        os.fsync(handle.fileno())
+                    self._command(["sudo", "-u", "_kea", "/usr/sbin/kea-dhcp4", "-t", name])
+                finally:
+                    Path(name).unlink(missing_ok=True)
+
+            def verify() -> None:
+                self._command(["sudo", "-u", "_kea", "/usr/sbin/kea-dhcp4", "-t", str(self.config_path)])
+
+            def reload() -> None:
+                self._command(["/usr/bin/systemctl", "restart", self.SERVICE])
+                time.sleep(1)
+                self._command(["/usr/bin/systemctl", "is-active", self.SERVICE])
+
+            def readback() -> None:
+                if self.get_config() != config:
+                    raise DhcpError("dhcp-readback-mismatch")
+
+            try:
+                write([{"path": self.config_path, "candidate": payload, "mode": 0o640,
+                        "owner": ("_kea", "_kea")}], check=check, verify=verify,
+                      reload=reload, readback=readback)
+            except WriteError as exc:
+                if isinstance(exc.cause, DhcpError) and not exc.restore_errors:
+                    raise exc.cause
+                raise DhcpError(str(exc)) from exc
+            result = self.get_config()
+            ok = True
+            return result
         finally:
-            if temporary:
-                Path(temporary).unlink(missing_ok=True)
-        return self.get_config()
+            _deed.send("sbin", "update-kea-dhcp", ok, target="kea-dhcp")
 
     def validate_config(self) -> bool:
         executable = resolve_kea_executable("kea-dhcp4")
