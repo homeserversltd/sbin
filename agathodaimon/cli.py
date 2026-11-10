@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon import _load_trace
+from agathodaimon._seat import ForeignSeat, read_seats
 ALIASES = {"cert": ("network", "cert"), "vault": ("storage", "vault"), "upload": ("storage", "upload"), "nas": ("storage", "nas"), "backup": ("storage", "backup"), "forgejo": ("storage", "backup", "forgejo"), "time": ("settings", "datetime")}
 SERVICE_ALIASES = {
     "service-control": ("portals", "service-control"),
@@ -1159,6 +1160,14 @@ def _trace_operation(target: str | None, remainder: list[str]) -> str:
 
 
 def main(argv=None):
+    folder = appliance_runtime_path("seats")
+    try:
+        seats = read_seats(folder)
+    except ForeignSeat as exc:
+        print(json.dumps({"schema": "agathodaimon.front-door.v1", "ok": False,
+                          "firstMissingSignal": "agathodaimon-seat-foreign",
+                          "seat": {"id": exc.seat_id, "found": exc.found}}))
+        return 2
     args=list(sys.argv[1:] if argv is None else argv)
     if len(args) == 2 and "/" in args[0]:
         try:
@@ -1190,7 +1199,11 @@ def main(argv=None):
     if _argv_envelope_has_pin(args):
         return _refuse_administrative("agathodaimon-administrative-pin-required")
     if not args or args == ["--help"]:
-        print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT)},indent=2)); return 0
+        census = {"folder": str(folder),
+                  "loaded": [{"id": seat_id, "schema_version": seat["schema_version"]}
+                             for seat_id, seat in seats.items() if seat["state"] == "loaded"],
+                  "absent": [seat_id for seat_id, seat in seats.items() if seat["state"] == "absent"]}
+        print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT),"seats":census},indent=2)); return 0
     if args == ["--version"]:
         print(_shelf_version()); return 0
     original=args[:]
