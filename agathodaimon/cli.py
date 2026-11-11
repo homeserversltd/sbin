@@ -36,18 +36,15 @@ _front_args = []
 def _stamp_receipt(receipt, target):
     if (not target or not isinstance(receipt, dict)
             or not isinstance(receipt.get("ok"), bool)
-            or receipt.get("schema") in ("caduceus.chord.receipt.v1", "agathodaimon.front-door.v1")):
+            or receipt.get("schema") == "caduceus.chord.receipt.v1"):
         return receipt
-    schema = receipt.get("schema")
-    if isinstance(schema, str) and schema != "caduceus.staff.receipt.v1":
-        receipt.setdefault("seat_was", schema)
-        receipt["schema"] = "caduceus.staff.receipt.v1"
+    receipt["schema"] = "caduceus.staff.receipt.v1"
     parts = target.split("/")
     receipt.setdefault("stop", {"noun": "/".join(parts[:-1]) if len(parts) > 1 else parts[0],
                                 "verb": parts[-1] if len(parts) > 1 else ""})
     receipt.setdefault("observed", None)
     receipt.setdefault("could_change_to", None)
-    receipt.setdefault("attempt", {"attempted": True})
+    receipt.setdefault("attempt", None)
     receipt.setdefault("final_receipt", {"ok": receipt["ok"],
                                          "firstMissingSignal": receipt.get("firstMissingSignal")})
     if _stamp_seat is not None:
