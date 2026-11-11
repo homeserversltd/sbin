@@ -14,7 +14,7 @@ _spec.loader.exec_module(ca)
 def main(argv=None):
     request = None
     try:
-        request = _envelope.read_fields('portal', 'lan-ip', 'upstream', 'aliases', 'owner-mac', 'origin', 'claim-tiles', 'tailnet-port', 'locations', 'dry-run')
+        request = _envelope.read_fields('portal', 'lan-ip', 'upstream', 'aliases', 'owner-mac', 'origin', 'claim-tiles', 'tailnet-port', 'locations', 'max-body-size', 'read-timeout', 'dry-run')
         p = request.payload
         aliases = p.get("aliases")
         aliases = aliases.split(",") if isinstance(aliases, str) else aliases
@@ -31,9 +31,10 @@ def main(argv=None):
             raise ValueError("agathodaimon-house-ca-boolean-invalid")
         if dry_run and not ca.state_path().parent.is_dir():
             raise ValueError("agathodaimon-house-ca-state-directory-absent")
-        ca._portal_route_preflight(p.get("portal"), p.get("upstream"), p.get("tailnet-port"), locations)
+        policy = {"max_body_size": p.get("max-body-size"), "read_timeout": p.get("read-timeout")}
+        ca._portal_route_preflight(p.get("portal"), p.get("upstream"), p.get("tailnet-port"), locations, **policy)
         with ca.house_ca_lock():
-            receipt = ca.portal_admit(p.get("portal"), p.get("lan-ip"), p.get("upstream"), aliases, owner_mac=p.get("owner-mac"), origin=p.get("origin"), claim_tiles=claim_tiles, tailnet_port=p.get("tailnet-port"), locations=locations, dry_run=dry_run)
+            receipt = ca.portal_admit(p.get("portal"), p.get("lan-ip"), p.get("upstream"), aliases, owner_mac=p.get("owner-mac"), origin=p.get("origin"), claim_tiles=claim_tiles, tailnet_port=p.get("tailnet-port"), locations=locations, dry_run=dry_run, **policy)
     except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
         signal = str(error) if str(error) in ("agathodaimon-house-ca-busy", "agathodaimon-nginx-input-invalid", "agathodaimon-portal-tailnet-name-unavailable") else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
         receipt = ca._refusal("error", signal)

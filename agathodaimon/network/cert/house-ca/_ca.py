@@ -935,29 +935,62 @@ def _tailnet_name() -> str:
         raise ValueError("agathodaimon-portal-tailnet-name-unavailable") from None
 
 
-def _nginx_location(path: str, upstream: str, strip_authorization: bool = False) -> str:
+HESTIA_HTTP = """ssl_protocols TLSv1.2 TLSv1.3;
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+ssl_prefer_server_ciphers off;
+ssl_session_cache shared:HestiaSSL:10m;
+ssl_session_timeout 10m;
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+"""
+HESTIA_PROXY = """proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection $connection_upgrade;
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header X-Forwarded-Host $host;
+proxy_hide_header X-Powered-By;
+"""
+
+
+def _policy_options(max_body_size: Any, read_timeout: Any) -> dict[str, Any]:
+    if not isinstance(max_body_size, str) or not re.fullmatch(r"[0-9]+[kKmMgG]?", max_body_size):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+
+    def decimal(value: Any, lower: int, upper: int) -> int:
+        if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+            value = int(value)
+        if type(value) is not int or not lower <= value <= upper:
+            raise ValueError("agathodaimon-nginx-input-invalid")
+        return value
+
+    return {"max_body_size": max_body_size, "read_timeout": decimal(read_timeout, 1, 86400)}
+
+
+def _nginx_location(path: str, upstream: str, proxy_include: Path, read_timeout: int, strip_authorization: bool = False) -> str:
     strip = ' proxy_set_header Authorization "";' if strip_authorization else ''
-    return (f'location {path} {{ proxy_buffering off; proxy_http_version 1.1; '
-            f'proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade"; '
-            f'proxy_read_timeout 60s; proxy_set_header Host $host; '
-            f'proxy_set_header X-Forwarded-Proto $scheme; proxy_set_header X-Forwarded-Host $host; '
-            f'proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;{strip} proxy_pass {upstream}; }}')
+    return (f'location {path} {{ include "{proxy_include}"; proxy_buffering off; '
+            f'proxy_read_timeout {read_timeout}s;{strip} proxy_pass {upstream}; }}')
 
 
-def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, aliases: Sequence[str] = (), *, tailnet_port: int | str | None = None, locations: list[dict[str, Any]] | None = None, dry_run: bool = False) -> dict[str, Any]:
+def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, aliases: Sequence[str] = (), *, tailnet_port: int | str | None = None, locations: list[dict[str, Any]] | None = None, max_body_size: Any = "1m", read_timeout: Any = 60, dry_run: bool = False) -> dict[str, Any]:
     tailnet_port, locations = _route_options(upstream, tailnet_port, locations)
+    policy = _policy_options(max_body_size, read_timeout)
     if not portal:
         raise ValueError("agathodaimon-nginx-input-invalid")
     names, ips = _split_sans([portal, *aliases])
     if ips or not names or names[0] != portal:
         raise ValueError("agathodaimon-nginx-input-invalid")
     directory = _path("CADUCEUS_NGINX_DIR", "/etc/nginx/conf.d")
+    snippets = _path("CADUCEUS_NGINX_SNIPPETS_DIR", "/etc/nginx/snippets/hestia")
     target = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
     legacy = directory / f"caduceus-{portal.replace('.', '-')}.conf"
-    rendered = ' '.join([*(_nginx_location(loc['path'], loc['upstream'], loc.get('strip_authorization', False)) for loc in locations or []), _nginx_location('/', upstream)])
-    body = f"server {{ listen 443 ssl; server_name {' '.join(names)}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {rendered} }}\n"
+    rendered = ' '.join([*(_nginx_location(loc['path'], loc['upstream'], snippets / 'proxy.conf', policy['read_timeout'], loc.get('strip_authorization', False)) for loc in locations or []), _nginx_location('/', upstream, snippets / 'proxy.conf', policy['read_timeout'])])
+    shared = f'client_max_body_size {policy["max_body_size"]};'
+    body = f"server {{ listen 443 ssl; server_name {' '.join(names)}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered} }}\n"
     if tailnet_port is not None:
-        body += f"server {{ listen *:{tailnet_port} ssl; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {rendered} }}\n"
+        body += f"server {{ listen *:{tailnet_port} ssl; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered} }}\n"
     body_bytes = body.encode("utf-8")
     same = target.is_file() and target.read_bytes() == body_bytes
     legacy_present = legacy.is_file()
@@ -986,6 +1019,10 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
     previous_mode = target.stat().st_mode & 0o777 if previous is not None else 0o644
     legacy_bytes = legacy.read_bytes() if legacy_present else None
     legacy_mode = legacy.stat().st_mode & 0o777 if legacy_present else 0o644
+    central = [(directory / "00-hestia-http.conf", HESTIA_HTTP.encode()),
+               (snippets / "proxy.conf", HESTIA_PROXY.encode())]
+    central_before = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.is_file() else (None, 0o644)
+                      for path, _ in central}
 
     def replace_config(path: Path, payload: bytes, mode: int) -> None:
         temporary = path.with_suffix(".tmp")
@@ -997,11 +1034,20 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             temporary.unlink(missing_ok=True)
 
     replacement_written = False
+    central_written: list[Path] = []
     legacy_retired = False
     validated = False
     validation_output = ""
     stage = "stage-nginx"
     try:
+        for path, payload in central:
+            old, mode = central_before[path]
+            if old != payload:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                replace_config(path, payload, mode)
+                central_written.append(path)
+            if path.read_bytes() != payload:
+                raise RuntimeError("agathodaimon-nginx-readback-failed")
         if not same:
             directory.mkdir(parents=True, exist_ok=True)
             replace_config(target, body_bytes, previous_mode)
@@ -1029,6 +1075,12 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
                     replace_config(target, previous, previous_mode)
             if legacy_retired and legacy_bytes is not None:
                 replace_config(legacy, legacy_bytes, legacy_mode)
+            for path in reversed(central_written):
+                old, mode = central_before[path]
+                if old is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    replace_config(path, old, mode)
             restored = True
         except OSError as rollback:
             restore_error = str(rollback)
@@ -1053,12 +1105,13 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             legacy_path=str(legacy), legacy_present=legacy_present,
             legacy_retired=legacy_retired and not restored,
             legacy_remaining=legacy.is_file(), replacement_written=replacement_written,
+            central_written=[str(path) for path in central_written],
             proof="nginx-activation-refused",
         )
     legacy_remaining = legacy.is_file()
     return _receipt(
         "apply_nginx",
-        changed=replacement_written or legacy_retired,
+        changed=replacement_written or legacy_retired or bool(central_written),
         portal=portal,
         aliases=names[1:],
         server_names=names,
@@ -1071,6 +1124,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
         legacy_retired=legacy_retired,
         legacy_remaining=legacy_remaining,
         replacement_written=replacement_written,
+        central_written=[str(path) for path in central_written],
         proof="nginx-validated-and-reloaded",
     )
 
@@ -1188,7 +1242,7 @@ def _write_state(existing: dict[str, Any]) -> None:
         Path(name).unlink(missing_ok=True)
 
 
-def _portal_route_preflight(portal: str, upstream: str, tailnet_port: Any, locations: Any) -> tuple[int | None, Any, str | None]:
+def _portal_route_preflight(portal: str, upstream: str, tailnet_port: Any, locations: Any, max_body_size: Any = None, read_timeout: Any = None) -> tuple[int | None, Any, str | None, dict[str, Any]]:
     existing = json.loads(state_path().read_text()).get(SCHEMA, {}) if state_path().is_file() else {}
     prior = next((row for row in existing.get("portals", []) if row.get("fqdn") == portal), {})
     if tailnet_port is None:
@@ -1196,10 +1250,14 @@ def _portal_route_preflight(portal: str, upstream: str, tailnet_port: Any, locat
     if locations is None:
         locations = prior.get("locations")
     tailnet_port, locations = _route_options(upstream, tailnet_port, locations)
-    return tailnet_port, locations, _tailnet_name() if tailnet_port is not None else None
+    supplied = {"max_body_size": max_body_size, "read_timeout": read_timeout}
+    defaults = {"max_body_size": "1m", "read_timeout": 60}
+    selected = {key: value if value is not None else prior.get(key, defaults[key]) for key, value in supplied.items()}
+    policy = _policy_options(**selected)
+    return tailnet_port, locations, _tailnet_name() if tailnet_port is not None else None, policy
 
 
-def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str] | None = None, *, owner_mac: str | None = None, origin: str | None = None, claim_tiles: Sequence[str] = (), tailnet_port: Any = None, locations: Any = None, dry_run: bool = False) -> dict[str, Any]:
+def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str] | None = None, *, owner_mac: str | None = None, origin: str | None = None, claim_tiles: Sequence[str] = (), tailnet_port: Any = None, locations: Any = None, max_body_size: Any = None, read_timeout: Any = None, dry_run: bool = False) -> dict[str, Any]:
     if _profile() != "homeserver":
         return _refusal("portal_admit", "agathodaimon-portal-admit-profile-refused", portal=portal, failed_child="profile-gate")
     if owner_mac is not None and (not isinstance(owner_mac, str) or not re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", owner_mac)):
@@ -1218,7 +1276,7 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
     if origin is None:
         origin = prior.get("origin")
     try:
-        tailnet_port, locations, tailnet_name = _portal_route_preflight(portal, upstream, tailnet_port, locations)
+        tailnet_port, locations, tailnet_name, policy = _portal_route_preflight(portal, upstream, tailnet_port, locations, max_body_size, read_timeout)
     except ValueError as error:
         return _refusal("portal_admit", str(error), portal=portal)
     children: list[dict[str, Any]] = []
@@ -1234,12 +1292,13 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
         if not leaf.get("ok"):
             raise RuntimeError(leaf["firstMissingSignal"])
         failed = "apply_nginx"
-        applied = apply_nginx(portal, upstream, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), aliases, tailnet_port=tailnet_port, locations=locations, dry_run=dry_run)
+        applied = apply_nginx(portal, upstream, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), aliases, tailnet_port=tailnet_port, locations=locations, dry_run=dry_run, **policy)
         children.append(applied)
         if not applied.get("ok"):
             raise RuntimeError(applied["firstMissingSignal"])
         failed = "state_commit"
         row = {"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip, "upstream": upstream}
+        row.update(policy)
         if tailnet_port is not None:
             row["tailnet_port"] = tailnet_port
         if locations is not None:
