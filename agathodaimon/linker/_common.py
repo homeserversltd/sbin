@@ -11,12 +11,12 @@ import stat
 import time
 from typing import Any, Mapping
 
+from agathodaimon._envelope import EnvelopeError, _envelope_kernel
 from agathodaimon.linker import core, link_index
 from agathodaimon.linker.logger_utils import MUTATIONS, quiet_mutations, record_deed
 
 SCHEMA = "caduceus.staff.v1"
 BACKEND = "linker-staff-core"
-KERNEL_KEYS = ("schema", "intent_id", "transition", "version", "timestamp")
 MAX_INPUT = 1024 * 1024
 REDACTED = "[REDACTED]"
 _SECRET_NAMES = {
@@ -109,7 +109,13 @@ def _read_request() -> tuple[dict[str, Any], dict[str, Any], bool]:
     if is_envelope:
         if value.get("schema") != SCHEMA:
             raise RequestError("linker-envelope-schema-foreign")
-        if any(key not in value for key in KERNEL_KEYS):
+        try:
+            kernel = _envelope_kernel()
+        except EnvelopeError:
+            raise RequestError("agathodaimon-seat-foreign") from None
+        except ValueError:
+            raise StaffError("linker-scratch-root-invalid") from None
+        if any(key not in value for key in kernel):
             raise RequestError("linker-envelope-kernel-missing")
         source = value.get("payload")
         payload = dict(source) if isinstance(source, Mapping) else {}
