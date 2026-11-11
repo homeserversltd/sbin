@@ -972,14 +972,15 @@ def _policy_options(max_body_size: Any, read_timeout: Any) -> dict[str, Any]:
     return {"max_body_size": max_body_size, "read_timeout": decimal(read_timeout, 1, 86400)}
 
 
-def _nginx_location(path: str, upstream: str, proxy_include: Path, read_timeout: int, strip_authorization: bool = False) -> str:
+def _nginx_location(path: str, upstream: str, proxy_include: Path, read_timeout: int, strip_authorization: bool = False, error_page: bool = False) -> str:
     strip = ' proxy_set_header Authorization "";' if strip_authorization else ''
+    intercept = ' error_page 502 503 504 = @fallback; proxy_intercept_errors on;' if error_page else ''
     if path.startswith("^~"):
         path = "^~ " + path[2:]
     elif path.startswith("="):
         path = "= " + path[1:]
     return (f'location {path} {{ include "{proxy_include}"; proxy_buffering off; '
-            f'proxy_read_timeout {read_timeout}s;{strip} proxy_pass {upstream}; }}')
+            f'proxy_read_timeout {read_timeout}s;{strip}{intercept} proxy_pass {upstream}; }}')
 
 
 def _hestia_seat() -> dict[str, Any] | None:
@@ -1010,7 +1011,7 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
         template = template or seat.get("fields", {}).get("template", {}).get("default")
         spec = templates.get(template)
         if not isinstance(spec, dict):
-            raise ValueError("agathodaimon-hestia-template-hole-unfilled:template")
+            raise ValueError("agathodaimon-hestia-template-unknown:" + str(template))
     else:
         spec = {"primitive": True}
     primitive = bool(spec.get("primitive"))
@@ -1023,12 +1024,13 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
     if ips or not names or names[0] != row.get("fqdn"):
         raise ValueError("agathodaimon-nginx-input-invalid")
     includes = []
+    error_pages = []
     aliases = []
     exact_locations = {loc["path"][1:] for loc in locations or [] if loc["path"].startswith("=")}
     for note, definition in (seat.get("notes", {}) if seat else {}).items():
         field = definition.get("row_field", note.replace("-", "_"))
         value = row.get(field)
-        if value is None or value is False or value == []:
+        if value is None or (definition.get("kind") != "error-page" and (value is False or value == [])):
             continue
         if definition.get("templates") and template not in definition["templates"]:
             raise ValueError("agathodaimon-hestia-note-refused:" + note)
@@ -1037,6 +1039,13 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
             if not key or key not in files:
                 raise ValueError("agathodaimon-hestia-note-refused:" + note)
             includes.append(f'include "{files[key][0]}";')
+        elif definition.get("kind") == "error-page":
+            if not _nginx_safe(value) or not value.startswith("/"):
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            error_pages.append('error_page 404 500 502 503 504 = @fallback; '
+                               f'location @fallback {{ try_files {value} =503; '
+                               'add_header Cache-Control "no-cache, no-store, must-revalidate" always; '
+                               'add_header Pragma "no-cache" always; add_header Expires "0" always; }')
         elif definition.get("kind") == "location" and field != "locations":
             if not isinstance(value, list):
                 raise ValueError("agathodaimon-nginx-input-invalid")
@@ -1050,7 +1059,7 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
                     raise ValueError("agathodaimon-nginx-input-invalid")
                 exact_locations.add(path)
                 aliases.append(f'location = {path} {{ alias {file}; add_header Cache-Control no-store; }}')
-    locations_text = [_nginx_location(loc["path"], loc["upstream"], snippets / "proxy.conf", policy["read_timeout"], loc.get("strip_authorization", False)) for loc in locations or []]
+    locations_text = [_nginx_location(loc["path"], loc["upstream"], snippets / "proxy.conf", policy["read_timeout"], loc.get("strip_authorization", False), bool(error_pages)) for loc in locations or []]
     if primitive:
         template_body = _nginx_location('/', row["upstream"], snippets / "proxy.conf", policy["read_timeout"])
     else:
@@ -1079,7 +1088,7 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
         if missing:
             raise ValueError("agathodaimon-hestia-template-hole-unfilled:" + missing.group(1))
         template_body = template_body.rstrip()
-    rendered = ' '.join([*includes, *aliases, *locations_text, template_body])
+    rendered = ' '.join([*includes, *error_pages, *aliases, *locations_text, template_body])
     shared = f'include "{snippets / "tls.conf"}"; client_max_body_size {policy["max_body_size"]};'
     common = f'ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered}'
     result = f"server {{ listen 443 ssl; server_name {' '.join(names)}; {common} }}\n"
@@ -1094,7 +1103,9 @@ def _hestia_inputs(row: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str
         return None, {}
     default = seat.get("fields", {}).get("template", {}).get("default")
     selected = row.get("template") or default
-    spec = seat.get("templates", {}).get(selected, {})
+    spec = seat.get("templates", {}).get(selected)
+    if not isinstance(spec, dict):
+        raise ValueError("agathodaimon-hestia-template-unknown:" + str(selected))
     keys = [spec["file"]] if "file" in spec else []
     for name, note in seat.get("notes", {}).items():
         value = row.get(note.get("row_field", name.replace("-", "_")))
