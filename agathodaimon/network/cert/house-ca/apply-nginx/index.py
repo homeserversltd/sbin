@@ -4,46 +4,60 @@ import json
 from pathlib import Path
 from agathodaimon import _envelope
 
-_spec = importlib.util.spec_from_file_location("_house_ca", Path(__file__).parents[1] / "_ca.py")
+_spec = importlib.util.spec_from_file_location('_house_ca', Path(__file__).parents[1] / '_ca.py')
 if _spec is None or _spec.loader is None:
-    raise ImportError("cannot load house-ca primitives")
+    raise ImportError('cannot load house-ca primitives')
 ca = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ca)
 
+
 def names(value):
-    return value.split(",") if isinstance(value, str) and value else value or ()
+    return value.split(',') if isinstance(value, str) and value else value or ()
+
 
 def boolean(payload, name):
     value = payload.get(name, False)
     if type(value) is not bool:
-        raise ValueError("agathodaimon-house-ca-boolean-invalid")
+        raise ValueError('agathodaimon-house-ca-boolean-invalid')
     return value
+
 
 def main(argv=None):
     request = None
+    fields = ('portal', 'upstream', 'certificate', 'key-path', 'aliases', 'tailnet-port', 'locations', 'max-body-size', 'read-timeout', 'dry-run')
+    served = list(fields) + ['template']
     try:
-        request = _envelope.read_fields('portal', 'upstream', 'certificate', 'key-path', 'aliases', 'tailnet-port', 'locations', 'max-body-size', 'read-timeout', 'dry-run')
+        request = _envelope.read_fields(*fields)
+        raw = request.value.get('payload', {}) if request.envelope else request.value
+        seat = ca._hestia_seat()
+        if seat:
+            served.extend(seat.get('notes', {}))
+        extras = [key for key in raw if key not in served]
+        if extras:
+            raise ValueError(('unknown-field:' + extras[0]) if seat else 'agathodaimon-hestia-seat-absent')
+        notes = {key: raw[key] for key in served if key not in fields and key in raw}
         p = request.payload
+        locations = p.get('locations')
+        if isinstance(locations, str):
+            locations = json.loads(locations)
+        aliases = names(p.get('aliases')) if p.get('aliases') is not None else None
+        portal = p.get('portal')
+        dry_run = boolean(p, 'dry-run')
+        def preflight():
+            return ca._portal_route_preflight(portal, p.get('upstream'), p.get('tailnet-port'), locations, p.get('max-body-size'), p.get('read-timeout'), notes, aliases, require_tailnet_name=False)[0]
+        preflight()
         with ca.house_ca_lock():
-            portal = p.get("portal")
-            state = json.loads(ca.state_path().read_text()).get(ca.SCHEMA, {}) if ca.state_path().is_file() else {}
-            prior = next((row for row in state.get("portals", []) if row.get("fqdn") == portal), {})
-            upstream = p.get("upstream") if p.get("upstream") is not None else prior.get("upstream")
-            aliases = p.get("aliases") if p.get("aliases") is not None else prior.get("aliases", [])
-            locations = p.get("locations") if p.get("locations") is not None else prior.get("locations")
-            if isinstance(locations, str):
-                locations = json.loads(locations)
-            port = p.get("tailnet-port") if p.get("tailnet-port") is not None else prior.get("tailnet_port")
-            size = p.get("max-body-size") if p.get("max-body-size") is not None else prior.get("max_body_size", "1m")
-            timeout = p.get("read-timeout") if p.get("read-timeout") is not None else prior.get("read_timeout", 60)
-            certificate = p.get("certificate") or str(ca.cert_dir() / f"{portal}.pem")
-            key_path = p.get("key-path") or str(ca.cert_dir() / f"{portal}.key.pem")
-            receipt = ca.apply_nginx(portal, upstream, certificate, key_path, names(aliases), tailnet_port=port, locations=locations, max_body_size=size, read_timeout=timeout, dry_run=boolean(p, "dry-run"))
+            row = preflight()
+            certificate = p.get('certificate') or str(ca.cert_dir() / f'{portal}.pem')
+            key_path = p.get('key-path') or str(ca.cert_dir() / f'{portal}.key.pem')
+            receipt = ca.apply_nginx(portal, row.get('upstream'), certificate, key_path, row.get('aliases', []), tailnet_port=row.get('tailnet_port'), locations=row.get('locations'), max_body_size=row['max_body_size'], read_timeout=row['read_timeout'], row=row, dry_run=dry_run)
     except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
-        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
-        receipt = ca._refusal("error", signal)
+        text = str(error)
+        signal = text if text.startswith(('agathodaimon-hestia-', 'unknown-field:')) or text in ('agathodaimon-house-ca-busy', 'agathodaimon-nginx-input-invalid', 'agathodaimon-portal-tailnet-name-unavailable') else ('agathodaimon-house-ca-timeout' if isinstance(error, ca.subprocess.TimeoutExpired) else 'agathodaimon-house-ca-refused')
+        receipt = ca._refusal('error', signal)
+        receipt['served_fields'] = served
     if request is not None:
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.cert.house-ca.apply-nginx.v1"
-    print(json.dumps(receipt, separators=(",", ":")))
-    return 0 if receipt.get("ok") else 1
+    receipt['schema'] = 'caduceus.network.cert.house-ca.apply-nginx.v1'
+    print(json.dumps(receipt, separators=(',', ':')))
+    return 0 if receipt.get('ok') else 1

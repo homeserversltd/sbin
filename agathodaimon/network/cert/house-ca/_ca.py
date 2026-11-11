@@ -887,11 +887,14 @@ def trust_install(
     )
 
 
-def _route_options(upstream: Any, tailnet_port: Any, locations: Any) -> tuple[int | None, list[dict[str, Any]] | None]:
-    def safe(value: Any) -> bool:
-        return isinstance(value, str) and bool(value) and not re.search(r'[\s;{}"\'\\]', value)
+def _nginx_safe(value: Any) -> bool:
+    return isinstance(value, str) and bool(value) and not re.search(r'[\s;{}"\'\\]', value)
 
-    if not safe(upstream) or not upstream.startswith(("http://", "https://")):
+
+def _route_options(upstream: Any, tailnet_port: Any, locations: Any, *, primitive: bool = True) -> tuple[int | None, list[dict[str, Any]] | None]:
+    if primitive and (not _nginx_safe(upstream) or not upstream.startswith(("http://", "https://"))):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+    if not primitive and upstream is not None:
         raise ValueError("agathodaimon-nginx-input-invalid")
     if tailnet_port is not None:
         if type(tailnet_port) is int:
@@ -907,8 +910,8 @@ def _route_options(upstream: Any, tailnet_port: Any, locations: Any) -> tuple[in
             raise ValueError("agathodaimon-nginx-input-invalid")
         paths = {"/"}
         for loc in locations:
-            if (not isinstance(loc, dict) or not safe(loc.get("path"))
-                    or not loc["path"].startswith("/") or not safe(loc.get("upstream"))
+            if (not isinstance(loc, dict) or not _nginx_safe(loc.get("path"))
+                    or not re.match(r"^(?:=|\^~)?/", loc["path"]) or not _nginx_safe(loc.get("upstream"))
                     or not loc["upstream"].startswith(("http://", "https://"))
                     or type(loc.get("strip_authorization", False)) is not bool
                     or loc["path"] in paths):
@@ -971,12 +974,184 @@ def _policy_options(max_body_size: Any, read_timeout: Any) -> dict[str, Any]:
 
 def _nginx_location(path: str, upstream: str, proxy_include: Path, read_timeout: int, strip_authorization: bool = False) -> str:
     strip = ' proxy_set_header Authorization "";' if strip_authorization else ''
+    if path.startswith("^~"):
+        path = "^~ " + path[2:]
+    elif path.startswith("="):
+        path = "= " + path[1:]
     return (f'location {path} {{ include "{proxy_include}"; proxy_buffering off; '
             f'proxy_read_timeout {read_timeout}s;{strip} proxy_pass {upstream}; }}')
 
 
-def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, aliases: Sequence[str] = (), *, tailnet_port: int | str | None = None, locations: list[dict[str, Any]] | None = None, max_body_size: Any = "1m", read_timeout: Any = 60, dry_run: bool = False) -> dict[str, Any]:
-    tailnet_port, locations = _route_options(upstream, tailnet_port, locations)
+def _hestia_seat() -> dict[str, Any] | None:
+    from agathodaimon._nidus.path import appliance_runtime_path
+    seat_id = "hestia.portal.v1"
+    try:
+        data = json.loads((appliance_runtime_path("seats") / (seat_id + ".json")).read_text())
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != seat_id:
+        raise ValueError("agathodaimon-hestia-seat-foreign")
+    return data
+
+
+def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
+                   files: dict[str, tuple[str, str]], snippets: Path,
+                   certificate: str, key_path: str) -> str:
+    """Compose one complete route from already-read inputs, with no effects."""
+    if not _nginx_safe(certificate) or not _nginx_safe(key_path):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+    templates = seat.get("templates", {}) if seat else {}
+    template = row.get("template")
+    if seat is None and template is not None:
+        raise ValueError("agathodaimon-hestia-seat-absent")
+    if seat is not None:
+        template = template or seat.get("fields", {}).get("template", {}).get("default")
+        spec = templates.get(template)
+        if not isinstance(spec, dict):
+            raise ValueError("agathodaimon-hestia-template-hole-unfilled:template")
+    else:
+        spec = {"primitive": True}
+    primitive = bool(spec.get("primitive"))
+    port, locations = _route_options(row.get("upstream"), row.get("tailnet_port"), row.get("locations"), primitive=primitive)
+    policy = _policy_options(row.get("max_body_size", "1m"), row.get("read_timeout", 60))
+    fqdn = row.get("fqdn")
+    if not isinstance(fqdn, str):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+    names, ips = _split_sans([fqdn, *row.get("aliases", [])])
+    if ips or not names or names[0] != row.get("fqdn"):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+    includes = []
+    aliases = []
+    for note, definition in (seat.get("notes", {}) if seat else {}).items():
+        field = definition.get("row_field", note.replace("-", "_"))
+        value = row.get(field)
+        if value is None or value is False or value == []:
+            continue
+        if definition.get("templates") and template not in definition["templates"]:
+            raise ValueError("agathodaimon-hestia-note-refused:" + note)
+        if definition.get("kind") == "include":
+            key = definition.get("choices", {}).get(value) if definition.get("choices") else definition.get("file")
+            if not key or key not in files:
+                raise ValueError("agathodaimon-hestia-note-refused:" + note)
+            includes.append(f'include "{files[key][0]}";')
+        elif definition.get("kind") == "location" and field != "locations":
+            if not isinstance(value, list):
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            for item in value:
+                if not isinstance(item, dict):
+                    raise ValueError("agathodaimon-nginx-input-invalid")
+                path, file = item.get("path"), item.get("file")
+                if not _nginx_safe(path) or not path.startswith("/") or not _nginx_safe(file) or not file.startswith("/"):
+                    raise ValueError("agathodaimon-nginx-input-invalid")
+                aliases.append(f'location = {path} {{ alias {file}; add_header Cache-Control no-store; }}')
+    locations_text = [_nginx_location(loc["path"], loc["upstream"], snippets / "proxy.conf", policy["read_timeout"], loc.get("strip_authorization", False)) for loc in locations or []]
+    if primitive:
+        template_body = _nginx_location('/', row["upstream"], snippets / "proxy.conf", policy["read_timeout"])
+    else:
+        key = spec.get("file")
+        if key not in files:
+            raise ValueError("agathodaimon-hestia-file-absent:" + str(key))
+        template_body = files[key][1]
+        for required in spec.get("requires", []):
+            if row.get(required) is None or row.get(required) == "":
+                raise ValueError("agathodaimon-hestia-template-hole-unfilled:" + required)
+        for hole in spec.get("holes", []):
+            value = row.get(hole, policy.get(hole))
+            if value is None or value == "":
+                raise ValueError("agathodaimon-hestia-template-hole-unfilled:" + hole)
+            text = str(value)
+            if not _nginx_safe(text):
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            if hole == "root" and not text.startswith("/"):
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            if hole == "fpm" and not re.fullmatch(r'(?:unix:/[^\s;{}"\'\\]+|[^/:\s;{}"\'\\]+:[0-9]+)', text):
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            template_body = template_body.replace("{{" + hole + "}}", text)
+        missing = re.search(r"\{\{([^{}]+)\}\}", template_body)
+        if missing:
+            raise ValueError("agathodaimon-hestia-template-hole-unfilled:" + missing.group(1))
+        template_body = template_body.rstrip()
+    rendered = ' '.join([*includes, *aliases, *locations_text, template_body])
+    shared = f'include "{snippets / "tls.conf"}"; client_max_body_size {policy["max_body_size"]};'
+    common = f'ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered}'
+    result = f"server {{ listen 443 ssl; server_name {' '.join(names)}; {common} }}\n"
+    if port is not None:
+        result += f"server {{ listen *:{port} ssl; {common} }}\n"
+    return result
+
+
+def _hestia_inputs(row: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, tuple[str, str]]]:
+    seat = _hestia_seat()
+    if seat is None:
+        return None, {}
+    default = seat.get("fields", {}).get("template", {}).get("default")
+    selected = row.get("template") or default
+    spec = seat.get("templates", {}).get(selected, {})
+    keys = [spec["file"]] if "file" in spec else []
+    for name, note in seat.get("notes", {}).items():
+        value = row.get(note.get("row_field", name.replace("-", "_")))
+        if value is not None and value is not False and value != [] and note.get("templates") and selected not in note["templates"]:
+            raise ValueError("agathodaimon-hestia-note-refused:" + name)
+        if note.get("kind") == "include" and value is not None and value is not False:
+            chosen = note.get("choices", {}).get(value) if note.get("choices") else note.get("file")
+            if chosen:
+                keys.append(chosen)
+    root = seat.get("files_root")
+    if not isinstance(root, str) or not _nginx_safe(root) or not root.startswith("/"):
+        raise ValueError("agathodaimon-nginx-input-invalid")
+    files = {}
+    for name in keys:
+        if not _nginx_safe(name) or name.startswith("/") or ".." in Path(name).parts:
+            raise ValueError("agathodaimon-nginx-input-invalid")
+        path = _root() / root.lstrip("/") / name
+        try:
+            files[name] = (str(path), path.read_text())
+        except OSError:
+            raise ValueError("agathodaimon-hestia-file-absent:" + str(path)) from None
+    return seat, files
+
+
+def _hestia_row(prior: dict[str, Any], supplied: dict[str, Any], seat: dict[str, Any] | None) -> dict[str, Any]:
+    """Carry the whole row and lower seat-declared note values into it."""
+    row = dict(prior)
+    notes = seat.get("notes", {}) if seat else {}
+    if not seat and any(value is not None for value in supplied.values()):
+        raise ValueError("agathodaimon-hestia-seat-absent")
+    for name, value in supplied.items():
+        if value is None:
+            continue
+        if name == "template":
+            row[name] = value
+            continue
+        spec = notes.get(name)
+        if not isinstance(spec, dict):
+            raise ValueError("unknown-field:" + name)
+        if row.get("template") is None:
+            row["template"] = seat.get("fields", {}).get("template", {}).get("default")
+        field = spec.get("row_field", name.replace("-", "_"))
+        if spec.get("kind") != "location":
+            if seat.get("fields", {}).get(field, {}).get("type") == "boolean" and type(value) is not bool:
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            row[field] = value
+            continue
+        values = value if isinstance(value, list) else [value]
+        previous = list(row.get(field) or []) if field == "locations" else []
+        for entry in values:
+            if isinstance(entry, dict):
+                previous.append(entry)
+                continue
+            if not isinstance(entry, str):
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            at = entry.find("=", 1 if entry.startswith("=") else 0)
+            if at < 1:
+                raise ValueError("agathodaimon-nginx-input-invalid")
+            left, right = entry[:at], entry[at + 1:]
+            previous.append({"path": left, ("upstream" if field == "locations" else "file"): right})
+        row[field] = previous
+    return row
+
+
+def apply_nginx(portal: str, upstream: str | None, certificate: str, key_path: str, aliases: Sequence[str] = (), *, tailnet_port: int | str | None = None, locations: list[dict[str, Any]] | None = None, max_body_size: Any = "1m", read_timeout: Any = 60, dry_run: bool = False, row: dict[str, Any] | None = None) -> dict[str, Any]:
     policy = _policy_options(max_body_size, read_timeout)
     if not portal:
         raise ValueError("agathodaimon-nginx-input-invalid")
@@ -987,11 +1162,11 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
     snippets = _path("CADUCEUS_NGINX_SNIPPETS_DIR", "/etc/nginx/snippets/hestia")
     target = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
     legacy = directory / f"caduceus-{portal.replace('.', '-')}.conf"
-    rendered = ' '.join([*(_nginx_location(loc['path'], loc['upstream'], snippets / 'proxy.conf', policy['read_timeout'], loc.get('strip_authorization', False)) for loc in locations or []), _nginx_location('/', upstream, snippets / 'proxy.conf', policy['read_timeout'])])
-    shared = f'include "{snippets / "tls.conf"}"; client_max_body_size {policy["max_body_size"]};'
-    body = f"server {{ listen 443 ssl; server_name {' '.join(names)}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered} }}\n"
-    if tailnet_port is not None:
-        body += f"server {{ listen *:{tailnet_port} ssl; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered} }}\n"
+    route_row = {**(row or {}), "fqdn": portal, "aliases": list(aliases), "upstream": upstream,
+                 "tailnet_port": tailnet_port, "locations": locations, **policy}
+    seat, files = _hestia_inputs(route_row)
+    body = _hestia_render(route_row, seat, files, snippets, certificate, key_path)
+    skipped_fields = sorted(set(route_row) - set(seat.get("fields", {}))) if seat else []
     body_bytes = body.encode("utf-8")
     same = target.is_file() and target.read_bytes() == body_bytes
     legacy_present = legacy.is_file()
@@ -1012,6 +1187,8 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             replacement_written=False,
             plan=["stage-nginx", "validate-nginx", "activate-nginx"],
             commands=[["nginx", "-t"], ["systemctl", "reload", "nginx"]],
+            hestia_seat="present" if seat else "absent",
+            skipped_fields=skipped_fields,
         )
 
     from agathodaimon._nidus import write as nidus_write
@@ -1097,6 +1274,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             legacy_retired=legacy_present and not legacy.is_file(),
             legacy_remaining=legacy.is_file(), replacement_written=replacement_written,
             central_written=central_written,
+            hestia_seat="present" if seat else "absent", skipped_fields=skipped_fields,
             proof="nginx-activation-refused",
         )
     legacy_remaining = legacy.is_file()
@@ -1116,6 +1294,8 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
         legacy_remaining=legacy_remaining,
         replacement_written=replacement_written,
         central_written=central_written,
+        hestia_seat="present" if seat else "absent",
+        skipped_fields=skipped_fields,
         proof="nginx-validated-and-reloaded",
     )
 
@@ -1233,22 +1413,30 @@ def _write_state(existing: dict[str, Any]) -> None:
         Path(name).unlink(missing_ok=True)
 
 
-def _portal_route_preflight(portal: str, upstream: str, tailnet_port: Any, locations: Any, max_body_size: Any = None, read_timeout: Any = None) -> tuple[int | None, Any, str | None, dict[str, Any]]:
+def _portal_route_preflight(portal: str, upstream: str | None, tailnet_port: Any, locations: Any, max_body_size: Any = None, read_timeout: Any = None, notes: dict[str, Any] | None = None, aliases: Sequence[str] | None = None, require_tailnet_name: bool = True) -> tuple[dict[str, Any], str | None]:
     existing = json.loads(state_path().read_text()).get(SCHEMA, {}) if state_path().is_file() else {}
     prior = next((row for row in existing.get("portals", []) if row.get("fqdn") == portal), {})
-    if tailnet_port is None:
-        tailnet_port = prior.get("tailnet_port")
-    if locations is None:
-        locations = prior.get("locations")
-    tailnet_port, locations = _route_options(upstream, tailnet_port, locations)
+    row = dict(prior)
+    row["fqdn"] = portal
+    row["upstream"] = upstream if upstream is not None else prior.get("upstream")
+    row["aliases"] = aliases if aliases is not None else prior.get("aliases", [])
+    row["tailnet_port"] = tailnet_port if tailnet_port is not None else prior.get("tailnet_port")
+    row["locations"] = locations if locations is not None else prior.get("locations")
     supplied = {"max_body_size": max_body_size, "read_timeout": read_timeout}
     defaults = {"max_body_size": "1m", "read_timeout": 60}
     selected = {key: value if value is not None else prior.get(key, defaults[key]) for key, value in supplied.items()}
-    policy = _policy_options(**selected)
-    return tailnet_port, locations, _tailnet_name() if tailnet_port is not None else None, policy
+    row.update(_policy_options(**selected))
+    seat = _hestia_seat()
+    row = _hestia_row(row, notes or {}, seat)
+    seat, files = _hestia_inputs(row)
+    snippets = _path("CADUCEUS_NGINX_SNIPPETS_DIR", "/etc/nginx/snippets/hestia")
+    _hestia_render(row, seat, files, snippets, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"))
+    if isinstance(row.get("tailnet_port"), str):
+        row["tailnet_port"] = int(row["tailnet_port"])
+    return row, _tailnet_name() if require_tailnet_name and row.get("tailnet_port") is not None else None
 
 
-def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str] | None = None, *, owner_mac: str | None = None, origin: str | None = None, claim_tiles: Sequence[str] = (), tailnet_port: Any = None, locations: Any = None, max_body_size: Any = None, read_timeout: Any = None, dry_run: bool = False) -> dict[str, Any]:
+def portal_admit(portal: str, lan_ip: str, upstream: str | None, aliases: Sequence[str] | None = None, *, owner_mac: str | None = None, origin: str | None = None, claim_tiles: Sequence[str] = (), tailnet_port: Any = None, locations: Any = None, max_body_size: Any = None, read_timeout: Any = None, dry_run: bool = False, notes: dict[str, Any] | None = None) -> dict[str, Any]:
     if _profile() != "homeserver":
         return _refusal("portal_admit", "agathodaimon-portal-admit-profile-refused", portal=portal, failed_child="profile-gate")
     if owner_mac is not None and (not isinstance(owner_mac, str) or not re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", owner_mac)):
@@ -1267,7 +1455,7 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
     if origin is None:
         origin = prior.get("origin")
     try:
-        tailnet_port, locations, tailnet_name, policy = _portal_route_preflight(portal, upstream, tailnet_port, locations, max_body_size, read_timeout)
+        row, tailnet_name = _portal_route_preflight(portal, upstream, tailnet_port, locations, max_body_size, read_timeout, notes, aliases)
     except ValueError as error:
         return _refusal("portal_admit", str(error), portal=portal)
     children: list[dict[str, Any]] = []
@@ -1283,17 +1471,18 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
         if not leaf.get("ok"):
             raise RuntimeError(leaf["firstMissingSignal"])
         failed = "apply_nginx"
-        applied = apply_nginx(portal, upstream, str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), aliases, tailnet_port=tailnet_port, locations=locations, dry_run=dry_run, **policy)
+        applied = apply_nginx(portal, row.get("upstream"), str(cert_dir() / f"{portal}.pem"), str(cert_dir() / f"{portal}.key.pem"), aliases, tailnet_port=row.get("tailnet_port"), locations=row.get("locations"), dry_run=dry_run, max_body_size=row["max_body_size"], read_timeout=row["read_timeout"], row=row)
         children.append(applied)
         if not applied.get("ok"):
             raise RuntimeError(applied["firstMissingSignal"])
         failed = "state_commit"
-        row = {"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip, "upstream": upstream}
-        row.update(policy)
-        if tailnet_port is not None:
-            row["tailnet_port"] = tailnet_port
-        if locations is not None:
-            row["locations"] = locations
+        row.update({"fqdn": portal, "aliases": applied["aliases"], "lan_ip": lan_ip})
+        if row.get("upstream") is None:
+            row.pop("upstream", None)
+        if row.get("tailnet_port") is None:
+            row.pop("tailnet_port", None)
+        if row.get("locations") is None:
+            row.pop("locations", None)
         if owner_mac is not None:
             row["owner_mac"] = owner_mac
         if origin is not None:
@@ -1312,7 +1501,7 @@ def portal_admit(portal: str, lan_ip: str, upstream: str, aliases: Sequence[str]
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         return _receipt("portal_admit", changed=any(child.get("changed", False) for child in children), dry_run=dry_run, ok=False, firstMissingSignal="agathodaimon-portal-child-failed", portal=portal, failed_child=failed, child_signal=str(error), held_generation=_generation(), children=children)
     generation = committed.get("state_generation", _generation())
-    return _receipt("portal_admit", changed=not dry_run, dry_run=dry_run, portal=portal, generation=generation, state_generation=generation, children=children, proof="four-child-composition")
+    return _receipt("portal_admit", changed=not dry_run, dry_run=dry_run, portal=portal, generation=generation, state_generation=generation, children=children, hestia_seat=applied.get("hestia_seat"), skipped_fields=applied.get("skipped_fields", []), proof="four-child-composition")
 
 
 def portal_retire(portal: str, owner_mac: str, *, dry_run: bool = False) -> dict[str, Any]:
