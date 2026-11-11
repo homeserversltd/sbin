@@ -347,24 +347,30 @@ class DnsManager:
         ):
             return self._read_local_data()
 
-    def _shipped_records(self) -> tuple[str | None, set[tuple[str, str, str]]]:
+    def _shipped_records(self, *, require_complete: bool = False) -> tuple[str | None, set[tuple[str, str, str]]]:
         """Read the worn profile's staged Unbound records afresh."""
         profile_path = appliance_runtime_path("profile")
         try:
             data = json.loads(profile_path.read_text(encoding="utf-8"))
             profile = data["kernel"]["profile"]
             if not isinstance(profile, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", profile):
-                return None, set()
-        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+                raise ValueError("invalid profile")
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+            if require_complete:
+                raise DnsError("dns-adopt-shipped-inventory-unavailable") from exc
             return None, set()
         modules = profile_path.parent.parent / "harmonia" / "profiles" / profile / "modules"
         shipped: set[tuple[str, str, str]] = set()
         paths = list(modules.glob("*/files_root/etc/unbound/unbound.conf"))
         paths += list(modules.glob("*/files_root/etc/unbound/unbound.conf.d/*.conf"))
+        if require_complete and (not modules.is_dir() or not paths):
+            raise DnsError("dns-adopt-shipped-inventory-unavailable")
         for path in paths:
             try:
                 lines = path.read_text(encoding="utf-8").splitlines()
-            except (OSError, UnicodeError):
+            except (OSError, UnicodeError) as exc:
+                if require_complete:
+                    raise DnsError("dns-adopt-shipped-inventory-unavailable") from exc
                 continue
             for line in lines:
                 match = None if line.lstrip().startswith("#") else self._LOCAL_DATA.search(line)
@@ -408,7 +414,12 @@ class DnsManager:
         """Read every configured local-data identity; ownership only governs writes."""
         devices: dict[str, dict[str, Any]] = {}
         aliases: list[dict[str, Any]] = []
-        profile, shipped = self._shipped_records()
+        try:
+            profile, shipped = self._shipped_records(require_complete=True)
+            inventory_available = True
+        except DnsError:
+            profile, shipped = self._shipped_records()
+            inventory_available = False
         records = self._all_local_records()
         for record in records:
             name, record_type, target, provenance = record["name"], record["type"], record["target"], record["provenance"]
@@ -430,7 +441,7 @@ class DnsManager:
                     device["ptr"].append(name)
                 device["ptr_records"].append({"name": name, **details})
         for device in devices.values():
-            device["adoptable"] = self._adoption_rows(device["name"], records, shipped)[0] is None
+            device["adoptable"] = inventory_available and self._adoption_rows(device["name"], records, shipped)[0] is None
             device["a"].sort()
             device["ptr"].sort()
             device["a_records"].sort(key=lambda item: (item["address"], item["provenance"]))
@@ -817,7 +828,7 @@ class DnsManager:
 
     def _adopt_device_name(self, canonical: str, address: str | None) -> dict[str, Any]:
         records = self._all_local_records()
-        _, shipped = self._shipped_records()
+        _, shipped = self._shipped_records(require_complete=True)
         error, rows, actual = self._adoption_rows(canonical.rstrip("."), records, shipped)
         if error:
             raise DnsError(error)
@@ -875,6 +886,10 @@ class DnsManager:
             raise DnsError("dns-device-projection-incomplete")
         if addresses and addresses != {address} and not move:
             raise DnsError("dns-name-owned-elsewhere")
+        if addresses == {address}:
+            return {"action": "device-name-create", "state": "noop", "canonical_name": canonical,
+                    "mutationPerformed": False, "verification": {"config_valid": None,
+                    "reload_outcome": "not-needed-idempotent", "live_query_readback": [], "mutationPerformed": False}}
         retained = [line for line in lines if not (self._record_parts(line)[0] == canonical and self._record_parts(line)[1] == "A" or self._record_parts(line)[1:3] == ("PTR", canonical))]
         additions = [f"{canonical} IN A {address}", f"{reverse} IN PTR {canonical}"]
         verification = self._candidate_apply(retained + additions, [("A", canonical), ("PTR", reverse)] + [("PTR", old) for old in reverses])
