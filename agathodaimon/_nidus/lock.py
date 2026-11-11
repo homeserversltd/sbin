@@ -46,6 +46,7 @@ def held(name: str, *, path: str | Path | None = None):
     with _guard:
         mutex = _locks.setdefault(name, threading.RLock())
     with mutex:
+        owner_pid = os.getpid()
         target = (Path(path) if path is not None else Path('/var/lib/caduceus') / f'{name}.lock').resolve()
         if _depth.get(name, 0):
             if target != _paths[name]:
@@ -54,7 +55,8 @@ def held(name: str, *, path: str | Path | None = None):
             try:
                 yield
             finally:
-                _depth[name] -= 1
+                if os.getpid() == owner_pid:
+                    _depth[name] -= 1
             return
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(target, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
@@ -65,6 +67,7 @@ def held(name: str, *, path: str | Path | None = None):
             try:
                 yield
             finally:
-                del _depth[name]
-                del _paths[name]
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                if os.getpid() == owner_pid:
+                    del _depth[name]
+                    del _paths[name]
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
