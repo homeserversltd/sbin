@@ -105,7 +105,7 @@ def verify_derived(pin: str, expected_public_key: str | None = None) -> dict[str
             "operation": "verify",
             "posture": "DERIVED_BOUND",
             "verified": verified,
-            "firstMissingSignal": "none" if verified else "agathodaimon-staff-derived-key-mismatch",
+            "firstMissingSignal": "none" if verified else "exousia-pin-wrong",
         }
     finally:
         candidate.close()
@@ -118,7 +118,7 @@ def atomic_change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
             "ok": False,
             "operation": "atomic-change-pin",
             "posture": "DERIVED_BOUND" if _BOUND else "UNBOUND",
-            "firstMissingSignal": "agathodaimon-staff-new-pin-missing",
+            "firstMissingSignal": "exousia-pin-new-missing",
         }
     try:
         sacred_credential.change_caduceus_pin(old_pin, new_pin)

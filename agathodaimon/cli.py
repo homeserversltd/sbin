@@ -1195,11 +1195,11 @@ def _administrative_pin_admits(
     if not pin_present:
         tty_available, pin = _prompt_administrative_pin()
         if not tty_available:
-            _refuse_administrative("agathodaimon-administrative-pin-required")
+            _refuse_administrative("exousia-pin-required")
             return False
     if not _verify_administrative_pin(pin):
         pin = None
-        _refuse_administrative("agathodaimon-administrative-pin-wrong")
+        _refuse_administrative("exousia-pin-wrong")
         return False
     pin = None
     return True
@@ -1474,7 +1474,7 @@ def _main(argv, folder, seats):
         if preflight_target is not None and not _dry_run_admits(preflight_target, preflight_envelope):
             return 2
     if wrapped_argv_pin or _argv_envelope_has_pin(args):
-        return _refuse_administrative("agathodaimon-administrative-pin-required")
+        return _refuse_administrative("exousia-pin-required")
     if not args or args == ["--help"]:
         census = {"folder": str(folder),
                   "loaded": [{"id": seat_id, "schema_version": seat["schema_version"]}
@@ -1645,7 +1645,7 @@ def _main(argv, folder, seats):
             _front_answer(str(exc).replace(" ", "-"), "options", path); return 2
         from agathodaimon._envelope import _pin_bearing_exousia
         if _pin_bearing_exousia({"payload": options}):
-            return _refuse_administrative("agathodaimon-administrative-pin-stdin-required")
+            return _refuse_administrative("exousia-pin-stdin-required")
         payload = envelope.get("payload")
         if payload is not None and not isinstance(payload, dict):
             _front_answer("envelope-payload-must-be-an-object", "payload", path); return 2

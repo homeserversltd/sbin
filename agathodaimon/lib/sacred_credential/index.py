@@ -47,14 +47,14 @@ def _require_root() -> None:
 
 def _pin_bytes(pin: str) -> bytearray:
     if not isinstance(pin, str) or len(pin) > _MAX_PIN_LENGTH:
-        raise CaduceusAccessRefused("agathodaimon-pin-invalid")
+        raise CaduceusAccessRefused("exousia-pin-invalid")
     try:
         value = bytearray(pin.encode("utf-8"))
     except UnicodeEncodeError as exc:
-        raise CaduceusAccessRefused("agathodaimon-pin-invalid") from exc
+        raise CaduceusAccessRefused("exousia-pin-invalid") from exc
     if not value:
         _wipe(value)
-        raise CaduceusAccessRefused("agathodaimon-pin-invalid")
+        raise CaduceusAccessRefused("exousia-pin-invalid")
     return value
 
 
@@ -178,24 +178,23 @@ def _read_document(coordinate: str, *, label: str) -> dict[str, object]:
 
 
 def _pin_from_document(document: dict[str, object], *, label: str) -> str:
-    prefix = "agathodaimon-config-factory" if label == "config-factory" else "agathodaimon-config"
     if "global" not in document:
-        raise CaduceusAccessRefused(f"{prefix}-pin-absent")
+        raise CaduceusAccessRefused("exousia-pin-absent")
     global_config = document["global"]
     if not isinstance(global_config, dict):
-        raise CaduceusAccessRefused(f"{prefix}-pin-malformed")
+        raise CaduceusAccessRefused("exousia-pin-malformed")
     if "admin" not in global_config:
-        raise CaduceusAccessRefused(f"{prefix}-pin-absent")
+        raise CaduceusAccessRefused("exousia-pin-absent")
     admin_config = global_config["admin"]
     if not isinstance(admin_config, dict):
-        raise CaduceusAccessRefused(f"{prefix}-pin-malformed")
+        raise CaduceusAccessRefused("exousia-pin-malformed")
     if "pin" not in admin_config:
-        raise CaduceusAccessRefused(f"{prefix}-pin-absent")
+        raise CaduceusAccessRefused("exousia-pin-absent")
     pin = admin_config["pin"]
     try:
         checked = _pin_bytes(pin)
     except CaduceusAccessRefused as exc:
-        raise CaduceusAccessRefused(f"{prefix}-pin-malformed") from exc
+        raise CaduceusAccessRefused("exousia-pin-malformed") from exc
     _wipe(checked)
     return pin
 
@@ -267,20 +266,20 @@ def _update_config_pin(
         document = _parse_document(original_raw, malformed="agathodaimon-config-malformed")
         global_config = document.get("global")
         if not isinstance(global_config, dict):
-            signal = "agathodaimon-config-pin-absent" if "global" not in document else "agathodaimon-config-pin-malformed"
+            signal = "exousia-pin-absent" if "global" not in document else "exousia-pin-malformed"
             raise CaduceusAccessRefused(signal)
         admin_config = global_config.get("admin")
         if not isinstance(admin_config, dict):
-            signal = "agathodaimon-config-pin-absent" if "admin" not in global_config else "agathodaimon-config-pin-malformed"
+            signal = "exousia-pin-absent" if "admin" not in global_config else "exousia-pin-malformed"
             raise CaduceusAccessRefused(signal)
         if require_absent and "pin" in admin_config:
-            raise CaduceusAccessRefused("agathodaimon-config-pin-already-provisioned")
+            raise CaduceusAccessRefused("exousia-pin-already-provisioned")
         if expected is not None:
             current_pin = _pin_from_document(document, label="config")
             current = _pin_bytes(current_pin)
             try:
                 if not hmac.compare_digest(bytes(current), bytes(expected)):
-                    raise CaduceusAccessRefused("agathodaimon-pin-refused")
+                    raise CaduceusAccessRefused("exousia-pin-wrong")
             finally:
                 _wipe(current)
         admin_config["pin"] = new_pin
@@ -523,7 +522,7 @@ def verify_and_derive_caduceus(pin: str) -> DerivedCaduceusSigner:
         stored_pin = _runtime_pin()
         stored = _pin_bytes(stored_pin)
         if not hmac.compare_digest(bytes(stored), bytes(presented)):
-            raise CaduceusAccessRefused("agathodaimon-pin-refused")
+            raise CaduceusAccessRefused("exousia-pin-wrong")
         seed = bytearray(hashlib.sha256(identity.encode("ascii") + b"\x00" + bytes(presented)).digest())
         return DerivedCaduceusSigner(seed, identity)
     finally:
