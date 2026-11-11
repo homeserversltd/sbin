@@ -987,8 +987,10 @@ def _hestia_seat() -> dict[str, Any] | None:
     seat_id = "hestia.portal.v1"
     try:
         data = json.loads((appliance_runtime_path("seats") / (seat_id + ".json")).read_text())
-    except (OSError, UnicodeError, ValueError):
+    except FileNotFoundError:
         return None
+    except (OSError, UnicodeError, ValueError) as error:
+        raise ValueError("agathodaimon-hestia-seat-invalid") from error
     if not isinstance(data, dict) or data.get("schema") != seat_id:
         raise ValueError("agathodaimon-hestia-seat-foreign")
     return data
@@ -1022,6 +1024,7 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
         raise ValueError("agathodaimon-nginx-input-invalid")
     includes = []
     aliases = []
+    exact_locations = {loc["path"][1:] for loc in locations or [] if loc["path"].startswith("=")}
     for note, definition in (seat.get("notes", {}) if seat else {}).items():
         field = definition.get("row_field", note.replace("-", "_"))
         value = row.get(field)
@@ -1043,6 +1046,9 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
                 path, file = item.get("path"), item.get("file")
                 if not _nginx_safe(path) or not path.startswith("/") or not _nginx_safe(file) or not file.startswith("/"):
                     raise ValueError("agathodaimon-nginx-input-invalid")
+                if path in exact_locations:
+                    raise ValueError("agathodaimon-nginx-input-invalid")
+                exact_locations.add(path)
                 aliases.append(f'location = {path} {{ alias {file}; add_header Cache-Control no-store; }}')
     locations_text = [_nginx_location(loc["path"], loc["upstream"], snippets / "proxy.conf", policy["read_timeout"], loc.get("strip_authorization", False)) for loc in locations or []]
     if primitive:
@@ -1064,8 +1070,10 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
                 raise ValueError("agathodaimon-nginx-input-invalid")
             if hole == "root" and not text.startswith("/"):
                 raise ValueError("agathodaimon-nginx-input-invalid")
-            if hole == "fpm" and not re.fullmatch(r'(?:unix:/[^\s;{}"\'\\]+|[^/:\s;{}"\'\\]+:[0-9]+)', text):
-                raise ValueError("agathodaimon-nginx-input-invalid")
+            if hole == "fpm" and not text.startswith("unix:/"):
+                match = re.fullmatch(r'(?:[A-Za-z0-9_.-]+|\[[A-Fa-f0-9:.]+\]):([0-9]{1,5})', text)
+                if not match or not 1 <= int(match.group(1)) <= 65535:
+                    raise ValueError("agathodaimon-nginx-input-invalid")
             template_body = template_body.replace("{{" + hole + "}}", text)
         missing = re.search(r"\{\{([^{}]+)\}\}", template_body)
         if missing:
