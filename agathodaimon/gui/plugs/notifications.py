@@ -24,7 +24,8 @@ APPLIANCE_CONFIG_PATH = "/etc/appliance/config.json"
 GUEST_INSTRUCTION = "Accept this from your HomeServer in Admin Mode"
 GATEWAY_INSTRUCTION = "Act on this from your HomeServer in Admin Mode"
 ADMIN_SIGNALS = {"link-up-admin-required", "caduceus-administrative-pin-required",
-                 "caduceus-administrative-pin-wrong"}
+                 "caduceus-administrative-pin-wrong", "agathodaimon-administrative-pin-required",
+                 "agathodaimon-administrative-pin-wrong", "exousia-pin-required", "exousia-pin-wrong"}
 SPECS = [
     {"field": "enabled", "title": "Notifications enabled", "kind": "switch"},
     {"field": "do_not_disturb", "title": "Do not disturb", "kind": "switch"},

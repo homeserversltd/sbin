@@ -13,6 +13,7 @@ def _is_pin_refusal(signal):
     return "pin-refused" in normalized or normalized in {
         "agathodaimon-staff-derived-key-mismatch",
         "caduceus-staff-derived-key-mismatch",
+        "exousia-pin-wrong",
     }
 
 

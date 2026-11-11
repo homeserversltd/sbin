@@ -99,7 +99,11 @@ class _InteractableGate:
                 signal = _signal(receipt)
                 if (attempt == 0 and not _receipt_ok(receipt)
                         and signal in {"caduceus-administrative-pin-required",
-                                       "caduceus-administrative-pin-wrong"}):
+                                       "caduceus-administrative-pin-wrong",
+                                       "agathodaimon-administrative-pin-required",
+                                       "agathodaimon-administrative-pin-wrong",
+                                       "exousia-pin-required",
+                                       "exousia-pin-wrong"}):
                     self.attendance = ""
                     self._open(prompt)
                     continue
@@ -1002,10 +1006,10 @@ def build_widget() -> Any:
             data["timer_message"] = error
         elif not isinstance(receipt, dict) or not _receipt_ok(receipt):
             data["timer_message"] = _receipt_error(receipt, "Automatic-update status read refused.")
-        elif type(receipt.get("enabled")) is not bool:
+        elif type(receipt.get("enabledBool")) is not bool and type(receipt.get("enabled")) is not bool:
             data["timer_message"] = _receipt_error(receipt, "Automatic-update status unavailable: enabled is not a boolean.")
         else:
-            enabled = receipt["enabled"]
+            enabled = receipt["enabledBool"] if type(receipt.get("enabledBool")) is bool else receipt["enabled"]
             pending = data["timer_pending"]
             data["timer_enabled"] = enabled
             data["timer_known"] = True
