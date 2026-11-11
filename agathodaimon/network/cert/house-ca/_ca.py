@@ -1042,7 +1042,7 @@ def _hestia_render(row: dict[str, Any], seat: dict[str, Any] | None,
         elif definition.get("kind") == "error-page":
             if not _nginx_safe(value) or not value.startswith("/"):
                 raise ValueError("agathodaimon-nginx-input-invalid")
-            error_pages.append('error_page 404 500 502 503 504 = @fallback; '
+            error_pages.append('error_page 403 404 500 502 503 504 = @fallback; '
                                f'location @fallback {{ try_files {value} =503; '
                                'add_header Cache-Control "no-cache, no-store, must-revalidate" always; '
                                'add_header Pragma "no-cache" always; add_header Expires "0" always; }')
@@ -1327,7 +1327,7 @@ def constituent_lock(portal: str, lan_ip: str, aliases: Sequence[str] = (), *, d
 
     ip = str(ipaddress.ip_address(lan_ip))
     names, ips = _split_sans([portal, *aliases])
-    if ips or not names or names[0] != portal or not portal.endswith(".home.arpa"):
+    if ips or not names or names[0] != portal or (portal != "home.arpa" and not portal.endswith(".home.arpa")):
         raise ValueError("agathodaimon-constituent-portal-invalid")
     manager = DnsManager(
         root_config=_path("CADUCEUS_UNBOUND_CONFIG", "/etc/unbound/unbound.conf"),
@@ -1366,9 +1366,9 @@ def constituent_lock(portal: str, lan_ip: str, aliases: Sequence[str] = (), *, d
         dry_run=dry_run, portal=portal, aliases=names[1:], lan_ip=ip,
         dns_target="home.arpa", dns_names=dns_names,
         names_bound=names_bound, dns_aliases=results,
-        dhcp_dns_applied=not dry_run and not failure, dhcp_reservation_applied=False,
-        dhcp_reservation="declared-only", plan=["reserve-dhcp-declared-only", "bind-dns"],
-        proof="declared-constituent-plan" if dry_run else "dns-alias-refused" if failure else "dns-alias-live-readback",
+        dhcp_dns_applied=bool(dns_names) and not dry_run and not failure, dhcp_reservation_applied=False,
+        dhcp_reservation="declared-only", plan=["reserve-dhcp-declared-only", *(["bind-dns"] if dns_names else [])],
+        proof="declared-constituent-plan" if dry_run else "dns-alias-refused" if failure else "dns-alias-live-readback" if dns_names else "no-dns-alias-to-bind",
         **failure,
     )
 
