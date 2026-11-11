@@ -19,6 +19,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from agathodaimon import _deed, _load_trace
 from agathodaimon._nidus import unit
+from agathodaimon._nidus.lock import identity_locked
 from agathodaimon._nidus.refusal import Refusal
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
@@ -143,6 +144,7 @@ class DhcpManager:
             and isinstance(config["Dhcp4"].get("subnet4"), list)
         )
 
+    @identity_locked
     def update_config(self, config: dict[str, Any]) -> dict[str, Any]:
         ok = False
         try:
@@ -304,6 +306,7 @@ class DhcpManager:
                 return candidate
         raise DhcpError("dhcp-no-free-reserved-address")
 
+    @identity_locked
     def add_reservation(self, hw_address: str, ip_address: str | None = None, hostname: str | None = None) -> dict[str, Any]:
         hw_address = normalize_mac(hw_address)
         self.changed = False
@@ -342,6 +345,7 @@ class DhcpManager:
             return {**reservation, "created": hw_address}
         return reservation
 
+    @identity_locked
     def remove_reservation(self, identifier: str) -> bool:
         self.changed = False
         self.mutation_performed = False
@@ -356,6 +360,7 @@ class DhcpManager:
             self.update_config(config)
         return removed
 
+    @identity_locked
     def update_reservation_ip(self, identifier: str, new_ip: str) -> dict[str, Any]:
         if not self._validate_ip_in_reserved_range(new_ip):
             start, end = self._get_reserved_range()
@@ -530,6 +535,7 @@ class DhcpManager:
         host_macs = {item["hw-address"].lower() for item in reservations + leases}
         return {"homeserver_ip": homeserver_ip, "reservations_count": len(reservations), "reservations_total": self.get_current_boundary(), "leases_count": len(active), "leases_total": total, "host_count": len(host_macs), "lease_ratio": len(active) / total if total else 0.0, "pool_boundary": self.boundary()}
 
+    @identity_locked
     def update_pool_boundary(self, max_reservations: int) -> bool:
         if not 0 <= max_reservations <= 249:
             raise DhcpError("max reservations must be between 0 and 249")

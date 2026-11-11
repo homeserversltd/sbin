@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import fcntl
 import hashlib
 import ipaddress
 import json
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agathodaimon import _load_trace
+from agathodaimon._nidus.lock import IDENTITY_LOCK, IDENTITY_LOCK_PATH, held, identity_lock_path
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager, normalize_mac
 from agathodaimon.network.dns._manager import DnsError, DnsManager
 from agathodaimon.lib.receipts import emit
@@ -24,14 +24,14 @@ class IdentityError(RuntimeError):
 class IdentityClaimCoordinator:
     """Lock-held, compensating composition of existing DHCP and DNS membranes."""
 
-    LOCK_PATH = Path("/var/lib/caduceus/network-identity-claim.lock")
+    LOCK_PATH = IDENTITY_LOCK_PATH
     JOURNAL_DIR = Path("/var/lib/caduceus/journals/network-identity")
     RESOLVER_GATEWAY_ADDRESS = "192.168.123.1"
 
     def __init__(self, dhcp: DhcpManager | None = None, dns: DnsManager | None = None, *, lock_path: str | Path | None = None, journal_dir: str | Path | None = None) -> None:
         self.dhcp = dhcp or DhcpManager()
         self.dns = dns or DnsManager()
-        self.lock_path = Path(lock_path or os.environ.get("CADUCEUS_IDENTITY_LOCK", self.LOCK_PATH))
+        self.lock_path = identity_lock_path(lock_path)
         self.journal_dir = Path(journal_dir or os.environ.get("CADUCEUS_IDENTITY_JOURNAL", self.JOURNAL_DIR))
 
     def _fresh_state(self) -> dict[str, Any]:
@@ -96,9 +96,7 @@ class IdentityClaimCoordinator:
         except (DhcpError, DnsError) as exc:
             return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "blocked", "first_failing_boundary": str(exc), "mutationPerformed": False}
         request_key = hashlib.sha256(f"{mac}|{ip or 'auto'}|{canonical}".encode()).hexdigest()
-        self.lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with self.lock_path.open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        with held(IDENTITY_LOCK, path=self.lock_path):
             mutated = False
             dhcp_preimage: dict[str, Any] | None = None
             dns_preimage: bytes | None = None
@@ -130,5 +128,3 @@ class IdentityClaimCoordinator:
                     return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "rolled_back", "request_id": request_key, "first_failing_boundary": str(exc), "restoration": restored, "mutationPerformed": True}
                 except IdentityError as rollback:
                     return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "rollback_failed", "request_id": request_key, "first_failing_boundary": str(exc), "rollback_error": str(rollback), "mutationPerformed": True}
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)

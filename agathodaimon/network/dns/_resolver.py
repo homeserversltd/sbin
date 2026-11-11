@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agathodaimon._nidus import unit
+from agathodaimon._nidus.lock import identity_locked
 from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.network.dns._manager import CommandRunner, DnsError, DnsManager
 
@@ -47,6 +48,7 @@ class ResolverControl:
         except (OSError, UnicodeDecodeError) as exc:
             raise DnsError("resolver-config-unreadable") from exc
 
+    @identity_locked
     def _install(self, before: str, after: str) -> None:
         mode = self.config.stat().st_mode & 0o777
         verified = False
@@ -125,6 +127,7 @@ class ResolverControl:
             raise DnsError("resolver-service-status-unavailable") from exc
         return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "status", "adblockEnabled": matches[0].group("comment") is None, "upstreams": addresses, "dnsOverTls": dot, "blocklistDomainCount": count, "blocklistLastUpdate": updated, "unboundActive": active, "mutationPerformed": False, "firstMissingSignal": "none"}
 
+    @identity_locked
     def adblock(self, enabled: Any) -> dict[str, Any]:
         if not isinstance(enabled, bool):
             raise DnsError("resolver-adblock-enabled-invalid")
@@ -138,12 +141,14 @@ class ResolverControl:
         self._install(before, after)
         return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "adblock", "enabled": enabled, "mutationPerformed": before != after, "reload": "reloaded", "firstMissingSignal": "none"}
 
+    @identity_locked
     def update_blocklist(self) -> dict[str, Any]:
         self._run([sys.executable, self.UPDATE])
         unit.reload("unbound", runner=self._run)
         status = self.status()
         return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "blocklist-update", "domainCount": status["blocklistDomainCount"], "mutationPerformed": True, "reload": "reloaded", "firstMissingSignal": "none"}
 
+    @identity_locked
     def upstream(self, metadata: Any) -> dict[str, Any]:
         if not isinstance(metadata, dict) or set(metadata) - {"preset", "custom", "dot"}:
             raise DnsError("resolver-upstream-input-invalid")

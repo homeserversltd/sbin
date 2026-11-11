@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from agathodaimon import _load_trace
+from agathodaimon._nidus.lock import identity_locked
 from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon._nidus.refusal import Refusal
 from agathodaimon._nidus.run import run
@@ -219,6 +220,7 @@ class DnsManager:
     def _validate_live(self) -> None:
         self._command([self.CHECKCONF, str(self.root_config)])
 
+    @identity_locked
     def _replace_bytes(self, target: Path, payload: bytes | None, mode: int = 0o644) -> None:
         self.dropin_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
         if self.dropin_dir.is_symlink():
@@ -709,6 +711,7 @@ class DnsManager:
             time.sleep(1)
         raise AssertionError("unreachable readback retry")
 
+    @identity_locked
     def _candidate_apply(self, lines: list[str], expected: list[tuple[str, str]], *,
                          sources: dict[Path, tuple[bytes, bytes]] | None = None,
                          lifted: set[tuple[str, int]] | None = None) -> dict[str, Any]:
@@ -814,6 +817,7 @@ class DnsManager:
     def owned_preimage(self) -> bytes | None:
         return self.read_include.read_bytes() if self.read_include.exists() else None
 
+    @identity_locked
     def restore_owned_preimage(self, previous: bytes | None) -> dict[str, Any]:
         mode = self.read_include.stat().st_mode & 0o777 if self.read_include.exists() else 0o644
         self._replace_bytes(self.read_include, previous, mode)
@@ -826,6 +830,7 @@ class DnsManager:
             raise DnsError("dns-gateway-preimage-restoration-unproven")
         return {"config_valid": True, "reload_outcome": "reloaded", "restoration_verified": True}
 
+    @identity_locked
     def _adopt_device_name(self, canonical: str, address: str | None) -> dict[str, Any]:
         records = self._all_local_records()
         _, shipped = self._shipped_records(require_complete=True)
@@ -859,6 +864,7 @@ class DnsManager:
         return {"action": "device-name-adopt", "state": "adopted", "canonical_name": canonical,
                 "files": files, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
 
+    @identity_locked
     def create_device_name(self, hostname: str, address: str | None = None, *, move: bool = False, adopt: bool = False) -> dict[str, Any]:
         if not isinstance(move, bool) or not isinstance(adopt, bool):
             raise DnsError("dns-input-invalid")
@@ -895,6 +901,7 @@ class DnsManager:
         verification = self._candidate_apply(retained + additions, [("A", canonical), ("PTR", reverse)] + [("PTR", old) for old in reverses])
         return {"action": "device-name-create", "state": "applied" if verification["mutationPerformed"] else "noop", "canonical_name": canonical, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
 
+    @identity_locked
     def remove_device_name(self, hostname: str, address: str) -> dict[str, Any]:
         canonical, reverse = self.canonical_name(hostname), self._reverse_name(address)
         if canonical == "home.arpa.":
@@ -910,6 +917,7 @@ class DnsManager:
         verification = self._candidate_apply([line for line in lines if self._record_parts(line) not in removals], [("A", canonical), ("PTR", reverse)] if present else [])
         return {"action": "device-name-remove", "state": "applied" if verification["mutationPerformed"] else "noop", "canonical_name": canonical, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
 
+    @identity_locked
     def create_alias(self, alias_label: str, hostname: str) -> dict[str, Any]:
         alias, canonical = self._alias_name(alias_label), self.canonical_name(hostname)
         lines = self._migrate_gateway_records(self._owned_records())
@@ -920,6 +928,7 @@ class DnsManager:
         verification = self._candidate_apply(retained + [f"{alias} IN CNAME {canonical}"], [("A", alias)])
         return {"action": "alias-create", "state": "applied" if verification["mutationPerformed"] else "noop", "alias": alias, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
 
+    @identity_locked
     def remove_alias(self, alias_label: str, hostname: str) -> dict[str, Any]:
         alias, canonical = self._alias_name(alias_label), self.canonical_name(hostname)
         lines = self._migrate_gateway_records(self._owned_records())
@@ -928,6 +937,7 @@ class DnsManager:
         verification = self._candidate_apply(retained, [("A", alias)] if matches else [])
         return {"action": "alias-remove", "state": "applied" if verification["mutationPerformed"] else "noop", "alias": alias, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
 
+    @identity_locked
     def apply(self, metadata: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(metadata, dict):
             raise DnsError("dns-metadata-invalid")
