@@ -7,7 +7,7 @@ from agathodaimon.settings import _shared
 def main(argv=None):
     try:
         request = read(known_fields=())
-        receipt = _shared.Receipt("sound", ["test_tone"], schema="caduceus.settings.sound.test-tone.play.v1")
+        receipt = _shared.Receipt("sound", ["test_tone"])
         try:
             _shared.set_value("sound", "test_tone", True, receipt)
             result = receipt.finish(True, receipt.changed)

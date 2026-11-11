@@ -142,7 +142,7 @@ def values() -> dict:
     return {'bindings': bindings, 'override_path': str(path), 'include_present': included}
 
 
-def set_shortcut(source, target, schema=None):
+def set_shortcut(source, target):
     current = values()
     rows = [row for row in current['bindings'] if row['default_keys'] == source and row['editable']]
     if len(rows) != 1:
@@ -234,12 +234,10 @@ def set_shortcut(source, target, schema=None):
     payload = (remaining + ''.join(ordered)).encode()
     if (path.exists() and path.read_bytes() == payload) or (not path.exists() and not payload):
         result = {'ok': True, 'changed': False, 'mutationPerformed': False}
-        if schema is not None:
-            result['schema'] = schema
         return result
     if not backends.select_backend() and os.environ.get('CADUCEUS_SETTINGS_DRY_RUN') != '1':
         raise ValueError('sway-session-unavailable')
-    receipt = _shared.Receipt('shortcuts', ['from', 'to'], schema=schema)
+    receipt = _shared.Receipt('shortcuts', ['from', 'to'])
     attempted = False
     try:
         receipt.replace(path, payload)

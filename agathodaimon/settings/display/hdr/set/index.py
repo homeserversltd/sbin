@@ -10,4 +10,4 @@ def main(argv=None):
     except (EnvelopeError, ValueError) as error:
         print(json.dumps({"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}, sort_keys=True))
         return 1
-    return run(request, ("hdr",), "caduceus.settings.display.hdr.set.v1")
+    return run(request, ("hdr",))

@@ -17,7 +17,7 @@ def main(argv=None):
         elif not changes:
             result = {"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}
         else:
-            receipt = _shared.Receipt("default-apps", list(changes), schema="caduceus.settings.default-apps.set.v1")
+            receipt = _shared.Receipt("default-apps", list(changes))
             try:
                 for field, value in changes.items():
                     _shared.set_value("default-apps", field, value, receipt)

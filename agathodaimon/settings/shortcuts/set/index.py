@@ -18,7 +18,7 @@ def main(argv=None):
             result = {'ok': False, 'firstMissingSignal': 'invalid:request', 'mutationPerformed': False}
         else:
             try:
-                result = shortcuts.set_shortcut(request.payload['from'], request.payload['to'], schema='caduceus.settings.shortcuts.set.v1')
+                result = shortcuts.set_shortcut(request.payload['from'], request.payload['to'])
             except (ValueError, OSError, TypeError) as error:
                 result = error.reply() if isinstance(error, _shared.ReceiptFailure) else {'ok': False, 'firstMissingSignal': str(error), 'mutationPerformed': False}
         result = attach(result, request)

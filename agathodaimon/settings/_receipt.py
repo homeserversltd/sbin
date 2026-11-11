@@ -10,13 +10,12 @@ from typing import Any
 
 
 class Receipt:
-    def __init__(self, kind: str, fields: list[str], schema: str | None = None) -> None:
+    def __init__(self, kind: str, fields: list[str]) -> None:
         root = Path(os.environ.get("CADUCEUS_RECEIPT_ROOT", "/var/lib/caduceus/receipts"))
         self.run_dir = root / str(uuid.uuid4())
         self.run_dir.mkdir(parents=True, exist_ok=False)
         self.kind = kind
         self.fields = fields
-        self.schema = schema
         self.backups: list[dict[str, Any]] = []
         self._saved: dict[Path, bytes | None] = {}
         self.commands: list[dict[str, Any]] = []
@@ -90,14 +89,10 @@ class Receipt:
     def finish(self, ok: bool, changed: bool = False, error: str | None = None) -> dict[str, Any]:
         metadata = {"ok": ok, "changed": bool(changed), "kind": self.kind, "fields": self.fields,
                     "backups": self.backups, "commands": self.commands}
-        if self.schema is not None:
-            metadata["schema"] = self.schema
         if ok:
             (self.run_dir / "run.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
             result = {"ok": True, "changed": bool(changed), "receiptPath": str(self.run_dir / "run.json"), "receipt": metadata}
         else:
             self.run_dir.rmdir()
             result = {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
-        if self.schema is not None:
-            result["schema"] = self.schema
         return result

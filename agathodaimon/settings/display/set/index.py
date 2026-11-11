@@ -6,10 +6,9 @@ from agathodaimon.settings import _family
 from agathodaimon.settings.display import backends, _acts as display
 
 FIELDS = ("output", "resolution", "refresh_rate", "scale", "orientation")
-SCHEMA = "caduceus.settings.display.set.v1"
 
 
-def run(request, fields, schema):
+def run(request, fields):
     try:
         source = request.value.get("payload", {}) if request.envelope else request.value
         if not isinstance(source, dict):
@@ -26,9 +25,9 @@ def run(request, fields, schema):
         else:
             selected = backends.select_backend()
             if selected is None:
-                result = _family.set_family("display", changes, schema=schema)
+                result = _family.set_family("display", changes)
             else:
-                result = display._apply(selected, "set", changes, display._display_settings(selected), schema=schema)
+                result = display._apply(selected, "set", changes, display._display_settings(selected))
         display._log_mutation("set", result, started)
         result = attach(result, request)
     except (EnvelopeError, ValueError, OSError, TypeError) as error:
@@ -43,4 +42,4 @@ def main(argv=None):
     except (EnvelopeError, ValueError) as error:
         print(json.dumps({"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}, sort_keys=True))
         return 1
-    return run(request, FIELDS, SCHEMA)
+    return run(request, FIELDS)

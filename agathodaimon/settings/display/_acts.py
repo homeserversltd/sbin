@@ -437,7 +437,7 @@ def _get_reply(settings: Mapping[str, Any], selected: Mapping[str, Any]) -> dict
         return _failure(str(error), settings=settings, backend=selected)
 
 
-def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, Any], settings: Mapping[str, Any], schema: str | None = None) -> dict[str, Any]:
+def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, Any], settings: Mapping[str, Any]) -> dict[str, Any]:
     if selected.get("kind") != "sway":
         return _failure("display-backend-unavailable", settings=settings, backend=selected)
     path = _table_path()
@@ -449,7 +449,7 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
     receipt = None
     try:
         try:
-            receipt = _shared.Receipt("display", ["apply" if operation == "apply" else next(iter(supplied), "apply")], schema=schema)
+            receipt = _shared.Receipt("display", ["apply" if operation == "apply" else next(iter(supplied), "apply")])
         except OSError:
             if operation != "apply":
                 raise
@@ -471,8 +471,6 @@ def _apply(selected: Mapping[str, Any], operation: str, supplied: Mapping[str, A
             _arrange(selected, receipt)
             if receipt is None:
                 answer: dict[str, Any] = {"ok": True, "changed": True, "mutationPerformed": True}
-                if schema is not None:
-                    answer["schema"] = schema
                 return answer
             answer = receipt.finish(True, True)
             answer["mutationPerformed"] = True

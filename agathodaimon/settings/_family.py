@@ -8,12 +8,12 @@ from agathodaimon.settings import _parity, _shared
 _PARITY_FAMILIES = frozenset({"keyboard", "region", "energy"})
 
 
-def set_family(kind: str, changes: dict[str, Any], schema: str | None = None) -> dict[str, Any]:
+def set_family(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
     if kind in _PARITY_FAMILIES:
-        return _parity._set(kind, changes, schema=schema)
+        return _parity._set(kind, changes)
     if not changes:
         return {"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}
-    receipt = _shared.Receipt(kind, list(changes), schema=schema)
+    receipt = _shared.Receipt(kind, list(changes))
     try:
         for field, value in changes.items():
             _shared.set_value(kind, field, value, receipt)

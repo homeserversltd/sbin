@@ -18,7 +18,7 @@ def main(argv=None):
             result = {"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}
         else:
             try:
-                result = _parity._set("energy", changes, schema="caduceus.settings.energy.set.v1")
+                result = _parity._set("energy", changes)
             except (ValueError, OSError, TypeError) as error:
                 result = error.reply() if isinstance(error, _shared.ReceiptFailure) else {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}
         result = attach(result, request)

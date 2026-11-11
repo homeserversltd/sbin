@@ -17,7 +17,7 @@ def main(argv=None):
         elif not changes:
             result = {"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}
         else:
-            receipt = _shared.Receipt("notifications", list(changes), schema="caduceus.settings.notifications.set.v1")
+            receipt = _shared.Receipt("notifications", list(changes))
             try:
                 for field, value in changes.items():
                     _shared.set_value("notifications", field, value, receipt)
