@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
-SCHEMA = "caduceus.child-device.v1"
+REGISTRY_SCHEMA = "caduceus.child-device.v1"
 DEFAULT_STATE = Path("/var/lib/caduceus/child-devices.json")
 DEFAULT_KEA_CONFIG = Path("/etc/kea/kea-dhcp4.conf")
 MAC = re.compile(r"^[0-9a-f]{2}(?::[0-9a-f]{2}){5}$")
@@ -24,7 +24,7 @@ class Refused(ValueError):
 
 
 def receipt(action: str, ok: bool = True, **extra: Any) -> dict[str, Any]:
-    return {"schema": SCHEMA, "ok": ok, "action": action,
+    return {"ok": ok, "action": action,
             "message": extra.pop("message", "Child-device request completed." if ok else "Child-device request refused."),
             "firstMissingSignal": "none" if ok else extra.pop("error", "child-device-refused"), **extra}
 
@@ -52,13 +52,13 @@ def hosts(value: str) -> list[str]:
 
 def load_state(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"schema": SCHEMA, "devices": {}}
+        return {"schema": REGISTRY_SCHEMA, "devices": {}}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Refused("child-device-registry-unreadable") from exc
     devices = value.get("devices") if isinstance(value, dict) else None
-    if value.get("schema") != SCHEMA or not isinstance(devices, dict):
+    if value.get("schema") != REGISTRY_SCHEMA or not isinstance(devices, dict):
         raise Refused("child-device-registry-invalid")
     normalized: dict[str, Any] = {}
     for raw_mac, device in devices.items():
@@ -70,7 +70,7 @@ def load_state(path: Path) -> dict[str, Any]:
             raise Refused("child-device-registry-invalid")
         listed = hosts(",".join(device["whitelist"])) if device["whitelist"] else []
         normalized[device_mac] = {"name": name, "whitelist": listed}
-    return {"schema": SCHEMA, "devices": normalized}
+    return {"schema": REGISTRY_SCHEMA, "devices": normalized}
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:

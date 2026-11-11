@@ -32,6 +32,5 @@ def main(argv=None):
         receipt["firstMissingSignal"] = "claim-failed"
     if request is not None:
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.identity.claim.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

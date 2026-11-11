@@ -27,7 +27,6 @@ from urllib.parse import urlsplit, urlunsplit
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
 
 NOUN = "tailscale"
-SCHEMA = "caduceus.staff.v1"
 TAILSCALE = "/usr/bin/tailscale"
 KEA_CONFIG = Path("/etc/kea/kea-dhcp4.conf")
 NGINX = "/usr/sbin/nginx"
@@ -80,7 +79,6 @@ def _receipt(action: str, ok: bool, signal_name: str = "none", *, observed: Any 
              could_change: Sequence[str] = (), attempt: Any = None, final: Any = None,
              mutation: bool = False, **fields: Any) -> dict[str, Any]:
     result = {
-        "schema": SCHEMA,
         "ok": ok,
         "action": action,
         "firstMissingSignal": signal_name,

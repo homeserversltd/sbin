@@ -89,12 +89,12 @@ class IdentityClaimCoordinator:
 
     def claim(self, mac_value: str, hostname: str, *, ip: str | None = None, auto_ip: bool = False) -> dict[str, Any]:
         if (ip is None and not auto_ip) or (ip is not None and auto_ip):
-            return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "blocked", "first_failing_boundary": "claim-requires-exactly-one-ip-mode", "mutationPerformed": False}
+            return {"actuator": "network.identity.claim", "state": "blocked", "first_failing_boundary": "claim-requires-exactly-one-ip-mode", "mutationPerformed": False}
         try:
             mac = normalize_mac(mac_value)
             canonical = self.dns.canonical_name(hostname)
         except (DhcpError, DnsError) as exc:
-            return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "blocked", "first_failing_boundary": str(exc), "mutationPerformed": False}
+            return {"actuator": "network.identity.claim", "state": "blocked", "first_failing_boundary": str(exc), "mutationPerformed": False}
         request_key = hashlib.sha256(f"{mac}|{ip or 'auto'}|{canonical}".encode()).hexdigest()
         with held(IDENTITY_LOCK, path=self.lock_path):
             mutated = False
@@ -104,7 +104,7 @@ class IdentityClaimCoordinator:
                 fresh = self._fresh_state()
                 existing = next((item for item in fresh["reservations"] if item["mac"] == mac), None)
                 if existing and existing["hostname"].lower() == hostname.lower() and any(record["name"] == canonical.rstrip(".") and existing["ip"] in record["a"] for record in fresh["dns"]["devices"]):
-                    return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "noop", "request_id": request_key, "first_failing_boundary": "none", "mutationPerformed": False}
+                    return {"actuator": "network.identity.claim", "state": "noop", "request_id": request_key, "first_failing_boundary": "none", "mutationPerformed": False}
                 address = self._resolve_ip(ip, fresh, exempt_name=canonical)
                 self._validate_candidates(mac, address, hostname, fresh)
                 dhcp_preimage, dns_preimage = self.dhcp.get_config(), self.dns.owned_preimage()
@@ -117,14 +117,14 @@ class IdentityClaimCoordinator:
                 dns_result = self.dns.create_device_name(hostname, address)
                 if dns_result["state"] not in {"applied", "noop"}:
                     raise IdentityError("dns-verification-failed")
-                return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "applied", "request_id": request_key, "address": address, "canonical_name": canonical, "journal": str(journal), "dhcp_verified": {"reservation": dhcp_verified, "receipt": dhcp_result}, "dns_verified": dns_result, "first_failing_boundary": "none", "mutationPerformed": True}
+                return {"actuator": "network.identity.claim", "state": "applied", "request_id": request_key, "address": address, "canonical_name": canonical, "journal": str(journal), "dhcp_verified": {"reservation": dhcp_verified, "receipt": dhcp_result}, "dns_verified": dns_result, "first_failing_boundary": "none", "mutationPerformed": True}
             except (DhcpError, DnsError, IdentityError) as exc:
                 if not mutated:
-                    return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "blocked", "request_id": request_key, "first_failing_boundary": str(exc), "mutationPerformed": False}
+                    return {"actuator": "network.identity.claim", "state": "blocked", "request_id": request_key, "first_failing_boundary": str(exc), "mutationPerformed": False}
                 try:
                     if dhcp_preimage is None:
                         raise IdentityError("preimage-missing-after-mutation")
                     restored = self._rollback(dhcp_preimage, dns_preimage)
-                    return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "rolled_back", "request_id": request_key, "first_failing_boundary": str(exc), "restoration": restored, "mutationPerformed": True}
+                    return {"actuator": "network.identity.claim", "state": "rolled_back", "request_id": request_key, "first_failing_boundary": str(exc), "restoration": restored, "mutationPerformed": True}
                 except IdentityError as rollback:
-                    return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "rollback_failed", "request_id": request_key, "first_failing_boundary": str(exc), "rollback_error": str(rollback), "mutationPerformed": True}
+                    return {"actuator": "network.identity.claim", "state": "rollback_failed", "request_id": request_key, "first_failing_boundary": str(exc), "rollback_error": str(rollback), "mutationPerformed": True}

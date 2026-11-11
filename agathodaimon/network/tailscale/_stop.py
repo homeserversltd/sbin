@@ -43,7 +43,6 @@ def finish(action, operation, request, *args):
                        "tailnet": "tailscale-tailnet-failed"}
             receipt = _core._receipt(action, False, signals[action], attempt="bounded-operation")
         receipt = _envelope.attach(receipt, _safe_request(action, request))
-    receipt["schema"] = f"caduceus.network.tailscale.{action}.v1"
     receipt = _core._scrub(receipt)
     print(json.dumps(receipt, sort_keys=True, ensure_ascii=False))
     return 0 if receipt.get("ok") is True else 1

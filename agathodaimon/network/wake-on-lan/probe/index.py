@@ -25,6 +25,5 @@ def main(argv=None):
         else:
             receipt["firstMissingSignal"] = "wake-probe-failed"
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.wake-on-lan.probe.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

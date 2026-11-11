@@ -18,6 +18,5 @@ def main(argv=None):
         except _registry.Refused as error:
             result = _registry.receipt('observed', False, error=str(error))
         result = _envelope.attach(result, request)
-    result["schema"] = 'caduceus.network.child-device.observed.v1'
     print(json.dumps(result, separators=(",", ":")))
     return 0 if result["ok"] else 1
