@@ -73,6 +73,8 @@ class DhcpManager:
         # Kept as a constructor compatibility argument; updates no longer invoke a script.
         self._command_runner = command_runner or self._run
         self._now = now
+        self.changed = False
+        self.mutation_performed = False
 
     @staticmethod
     def _run(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -174,12 +176,13 @@ class DhcpManager:
                     raise DhcpError("dhcp-readback-mismatch")
 
             try:
-                write([{"path": self.config_path, "candidate": payload, "mode": 0o640,
+                parts = write([{"path": self.config_path, "candidate": payload, "mode": 0o640,
                         "owner": ("_kea", "_kea")}], check=check, verify=verify,
                       reload=reload, readback=readback)
+                self.changed = parts["changed"]
+                self.mutation_performed = parts["changed"]
             except WriteError as exc:
-                if isinstance(exc.cause, DhcpError) and not exc.restore_errors:
-                    raise exc.cause
+                self.mutation_performed = any(row.get("before") != row.get("after") for row in exc.parts["observed"])
                 raise DhcpError(str(exc)) from exc
             result = self.get_config()
             ok = True
@@ -264,31 +267,61 @@ class DhcpManager:
         start, end = self._get_reserved_range()
         return value is not None and int(ipaddress.IPv4Address(start)) <= value <= int(ipaddress.IPv4Address(end))
 
-    def _get_next_available_reserved_ip(self) -> str | None:
+    def taken_addresses(self, dns=None) -> set[str]:
+        from agathodaimon.network.dns._manager import DnsError, DnsManager
+
+        config = self.get_config()
+        taken = {item["ip-address"] for item in self.get_reservations()}
+        taken.update(item["ip-address"] for item in self.get_leases())
+        dhcp = config["Dhcp4"]
+        for subnet in self._subnets(config):
+            network = ipaddress.IPv4Network(str(subnet["subnet"]), strict=False)
+            taken.add(str(network.network_address + 1))
+        def options(value):
+            if isinstance(value, dict):
+                if value.get("name") in {"routers", "domain-name-servers"}:
+                    taken.update(part.strip() for part in str(value.get("data", "")).split(",") if part.strip())
+                for child in value.values():
+                    options(child)
+            elif isinstance(value, list):
+                for child in value:
+                    options(child)
+        options(dhcp)
+        try:
+            taken.update(row["target"] for row in (dns or DnsManager())._all_local_records() if row["type"] == "A")
+        except (DnsError, OSError) as exc:
+            raise DhcpError(str(exc)) from exc
+        return taken
+
+    def _get_next_available_reserved_ip(self, dns=None) -> str:
         start, end = self._get_reserved_range()
-        used = {item["ip-address"] for item in self.get_reservations()}
+        used = self.taken_addresses(dns)
         for value in range(int(ipaddress.IPv4Address(start)), int(ipaddress.IPv4Address(end)) + 1):
             candidate = str(ipaddress.IPv4Address(value))
             if candidate not in used:
                 return candidate
-        return None
+        raise DhcpError("dhcp-no-free-reserved-address")
 
     def add_reservation(self, hw_address: str, ip_address: str | None = None, hostname: str | None = None) -> dict[str, Any]:
-        if not self._validate_mac_address(hw_address):
-            raise DhcpError(f"invalid MAC address: {hw_address}")
+        hw_address = normalize_mac(hw_address)
+        self.changed = False
+        self.mutation_performed = False
         config = self.get_config()
         existing = self.get_reservations()
-        if any(item["hw-address"].lower() == hw_address.lower() for item in existing):
+        match = next((item for item in existing if item["hw-address"].strip().lower().replace("-", ":") == hw_address), None)
+        if ip_address is not None and self._validate_ip_in_pool(ip_address):
+            raise DhcpError("dhcp-ip-inside-pool")
+        if match is not None:
+            if ip_address is None or ip_address == match["ip-address"]:
+                return {**match, "hw-address": hw_address}
             raise DhcpError("reservation with this MAC address already exists")
-        if ip_address is None or self._validate_ip_in_pool(ip_address):
+        if ip_address is None:
             ip_address = self._get_next_available_reserved_ip()
         elif not self._validate_ip_address(ip_address) or not self._validate_ip_in_reserved_range(ip_address):
             start, end = self._get_reserved_range()
             raise DhcpError(f"IP address is outside the reserved range ({start} - {end})")
-        if ip_address is None:
-            raise DhcpError("no available IP address in reserved range")
-        if any(item["ip-address"] == ip_address for item in existing):
-            raise DhcpError("IP address is already assigned")
+        elif ip_address in self.taken_addresses():
+            raise DhcpError("dhcp-ip-taken")
         subnets = self._subnets(config)
         if not subnets:
             raise DhcpError("no subnet4 configuration found")
@@ -297,9 +330,13 @@ class DhcpManager:
             reservation["hostname"] = hostname
         subnets[0].setdefault("reservations", []).append(reservation)
         self.update_config(config)
+        if self.changed:
+            return {**reservation, "created": hw_address}
         return reservation
 
     def remove_reservation(self, identifier: str) -> bool:
+        self.changed = False
+        self.mutation_performed = False
         config = self.get_config()
         removed = False
         for subnet in self._subnets(config):
@@ -449,7 +486,7 @@ class DhcpManager:
                     continue
                 ranges.append((int(start), int(end)))
             if ranges:
-                low, high = int(network.network_address) + 1, min(start for start, _ in ranges) - 1
+                low, high = int(network.network_address) + 2, min(start for start, _ in ranges) - 1
                 if low <= high:
                     values.append({"subnet": str(network), "start": str(ipaddress.ip_address(low)), "end": str(ipaddress.ip_address(high)), "discovery": "loaded-kea-pool-boundary"})
         return values

@@ -42,23 +42,8 @@ class IdentityClaimCoordinator:
         candidate = ipaddress.IPv4Address(address)
         return any(ipaddress.IPv4Address(boundary["start"]) <= candidate <= ipaddress.IPv4Address(boundary["end"]) for boundary in boundaries)
 
-    @staticmethod
-    def _infrastructure_addresses(config: dict[str, Any]) -> set[str]:
-        result = {IdentityClaimCoordinator.RESOLVER_GATEWAY_ADDRESS}
-        for subnet in config.get("Dhcp4", {}).get("subnet4", []):
-            for option in subnet.get("option-data", []):
-                if isinstance(option, dict) and option.get("name") == "routers":
-                    result.update(value.strip() for value in str(option.get("data", "")).split(","))
-        return result
-
-    def _taken_addresses(self, fresh: dict[str, Any]) -> set[str]:
-        taken = {item["ip"] for item in fresh["reservations"]} | {item["ip"] for item in fresh["leases"]}
-        taken |= self._infrastructure_addresses(self.dhcp.get_config())
-        taken |= {address for record in fresh["dns"]["devices"] for address in record["a"]}
-        return taken
-
     def _resolve_ip(self, explicit: str | None, fresh: dict[str, Any]) -> str:
-        boundaries, taken = fresh["boundary"], self._taken_addresses(fresh)
+        boundaries = fresh["boundary"]
         if not boundaries:
             raise IdentityError("current-kea-boundary-unavailable")
         if explicit is not None:
@@ -68,16 +53,10 @@ class IdentityClaimCoordinator:
                 raise IdentityError("claim-ip-malformed") from exc
             if not self._in_boundaries(explicit, boundaries):
                 raise IdentityError("claim-ip-outside-current-kea-boundary")
-            if explicit in taken:
+            if explicit in self.dhcp.taken_addresses(self.dns):
                 raise IdentityError("claim-ip-taken")
             return explicit
-        for boundary in boundaries:
-            start, end = ipaddress.IPv4Address(boundary["start"]), ipaddress.IPv4Address(boundary["end"])
-            for value in range(int(start), int(end) + 1):
-                candidate = str(ipaddress.IPv4Address(value))
-                if candidate not in taken:
-                    return candidate
-        raise IdentityError("current-kea-boundary-exhausted")
+        return self.dhcp._get_next_available_reserved_ip(self.dns)
 
     def _validate_candidates(self, mac: str, address: str, hostname: str, fresh: dict[str, Any]) -> str:
         canonical = self.dns.canonical_name(hostname)
