@@ -24,10 +24,12 @@ def main(argv=None):
     try:
         request = _envelope.read_fields('identity', 'sans', 'ips', 'dry-run')
         p = request.payload
+        if not isinstance(p.get("identity"), str) or not p["identity"].strip():
+            raise ValueError("agathodaimon-house-ca-identity-required")
         with ca.house_ca_lock():
-            receipt = ca.issue_leaf(p.get("identity", "home.arpa"), names(p.get("sans")), names(p.get("ips")), dry_run=boolean(p, "dry-run"))
+            receipt = ca.issue_leaf(p["identity"], names(p.get("sans")), names(p.get("ips")), dry_run=boolean(p, "dry-run"))
     except (_envelope.EnvelopeError, OSError, ValueError, TypeError, AttributeError, RuntimeError, ca.subprocess.CalledProcessError, ca.subprocess.TimeoutExpired) as error:
-        signal = "agathodaimon-house-ca-busy" if str(error) == "agathodaimon-house-ca-busy" else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
+        signal = str(error) if str(error) in ("agathodaimon-house-ca-busy", "agathodaimon-house-ca-identity-required") else ("agathodaimon-house-ca-timeout" if isinstance(error, ca.subprocess.TimeoutExpired) else "agathodaimon-house-ca-refused")
         receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)

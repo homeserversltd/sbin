@@ -262,16 +262,55 @@ def _bundle_fingerprint_if_present() -> str | None:
     return _fingerprint(bundle)
 
 
-def issue_leaf(identity: str = "home.arpa", dns_names: Sequence[str] = (), ip_addresses: Sequence[str] = (), *, dry_run: bool = False) -> dict[str, Any]:
+def _standing_leaf(leaf: Path, key: Path, ca: Path, dns: list[str], ips: list[str], *, exact: bool) -> list[str] | None:
+    """Read and validate a leaf without changing any certificate material."""
+    try:
+        if not leaf.is_file() or not key.is_file():
+            return None
+        _run(["openssl", "verify", "-CAfile", str(ca), str(leaf)])
+        _run(["openssl", "x509", "-in", str(leaf), "-noout", "-checkend", "2592000"])
+        leaf_pub = _run(["openssl", "x509", "-in", str(leaf), "-pubkey", "-noout"]).stdout
+        key_pub = _run(["openssl", "pkey", "-in", str(key), "-pubout"]).stdout
+        if not leaf_pub or leaf_pub != key_pub:
+            return None
+        extension = _run(["openssl", "x509", "-in", str(leaf), "-noout", "-ext", "subjectAltName"]).stdout
+        lines = extension.splitlines()
+        if len(lines) < 2 or not lines[0].startswith("X509v3 Subject Alternative Name:"):
+            return None
+        found_dns, found_ips = [], []
+        for item in " ".join(lines[1:]).split(","):
+            item = item.strip()
+            if item.startswith("DNS:") and item[4:]:
+                found_dns.append(item[4:])
+            elif item.startswith("IP Address:"):
+                found_ips.append(str(ipaddress.ip_address(item[11:])))
+            else:
+                return None
+        found = ({name.lower() for name in found_dns}, {ipaddress.ip_address(ip) for ip in found_ips})
+        asked = (set(dns), {ipaddress.ip_address(ip) for ip in ips})
+        if any(not wanted.issubset(actual) or (exact and wanted != actual) for wanted, actual in zip(asked, found)):
+            return None
+        return found_dns + found_ips
+    except (OSError, ValueError, UnicodeError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+
+
+def issue_leaf(identity: str = "home.arpa", dns_names: Sequence[str] = (), ip_addresses: Sequence[str] = (), *, dry_run: bool = False, exact: bool = False) -> dict[str, Any]:
     root = ensure_root(dry_run=dry_run)
     dns, ips = _split_sans([identity, *dns_names, *ip_addresses])
     bundle_before = _bundle_fingerprint_if_present()
-    if dry_run:
-        return _receipt("issue_leaf", changed=False, dry_run=True, identity=identity, sans=dns + ips, ca_fingerprint=root.get("ca_fingerprint"), bundle_fingerprint=bundle_before, plan=["ensure_root", "issue-leaf"])
     directory = cert_dir()
     safe = identity.replace("*", "wildcard").replace("/", "_")
     leaf = directory / f"{safe}.pem"
     key = directory / f"{safe}.key.pem"
+    standing_sans = _standing_leaf(leaf, key, directory / "ca.pem", dns, ips, exact=exact)
+    if standing_sans is not None:
+        fields = dict(identity=identity, sans=standing_sans, ca_fingerprint=root.get("ca_fingerprint"), leaf_fingerprint=_fingerprint(leaf), leaf_not_after=_not_after(leaf), bundle_fingerprint=bundle_before, bundle_preserved=True, proof="leaf-standing")
+        if dry_run:
+            fields["plan"] = ["ensure_root"]
+        return _receipt("issue_leaf", changed=False, dry_run=dry_run, **fields)
+    if dry_run:
+        return _receipt("issue_leaf", changed=False, dry_run=True, identity=identity, sans=dns + ips, ca_fingerprint=root.get("ca_fingerprint"), bundle_fingerprint=bundle_before, plan=["ensure_root", "issue-leaf"])
     csr = directory / f"{safe}.csr.pem"
     alt = [*(f"DNS.{index}={value}" for index, value in enumerate(dns, 1)), *(f"IP.{index}={value}" for index, value in enumerate(ips, 1))]
     config = directory / f".{safe}.cnf"
@@ -1488,7 +1527,7 @@ def portal_admit(portal: str, lan_ip: str, upstream: str | None, aliases: Sequen
         if not locked.get("ok"):
             raise RuntimeError(locked["firstMissingSignal"])
         failed = "issue_leaf"
-        leaf = issue_leaf(portal, [*aliases, *([tailnet_name] if tailnet_name else [])], [lan_ip], dry_run=dry_run)
+        leaf = issue_leaf(portal, [*aliases, *([tailnet_name] if tailnet_name else [])], [lan_ip], dry_run=dry_run, exact=True)
         children.append(leaf)
         if not leaf.get("ok"):
             raise RuntimeError(leaf["firstMissingSignal"])
