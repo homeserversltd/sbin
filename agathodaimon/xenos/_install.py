@@ -346,9 +346,13 @@ def safe_read(path: Path) -> bytes | None:
         raise Failure('xenia-file-unreadable') from exc
 
 def deed(verb, ident, ok, signal, started):
-    from agathodaimon._deed import send
-    send("sbin", "xenia-" + verb, ok, target=ident,
-         duration_ms=int((time.monotonic() - started) * 1000))
+    try:
+        from agathodaimon._deed import send
+        send("sbin", "xenia-" + verb, ok, target=ident,
+             duration_ms=int((time.monotonic() - started) * 1000))
+    except Exception:
+        # Deed transport is best effort; it must not change the operation's answer.
+        pass
 
 def run(verb: str, ident: str, dry: bool):
     started = time.monotonic()

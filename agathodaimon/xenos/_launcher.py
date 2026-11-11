@@ -838,6 +838,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit({"ok": False, "firstMissingSignal": "xenos-run-root-required"})
         return 1
     if args and args[0] in {"install", "uninstall"} and not legacy_verb_form:
+        # The launcher is executed by path, so the package parent is not on sys.path.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
         import _install
         dry = "--dry-run" in args[1:]
         rest = [arg for arg in args[1:] if arg != "--dry-run"]
