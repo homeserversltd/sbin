@@ -272,9 +272,6 @@ def _validate_chord(declaration: dict):
                 raise _ChordError("chord-stage-invalid")
             if not isinstance(stage.get("arguments", {}), dict) or not isinstance(stage.get("required", True), bool):
                 raise _ChordError("chord-stage-invalid")
-            expected_receipt = stage.get("receipt")
-            if expected_receipt is not None and (not isinstance(expected_receipt, str) or not expected_receipt):
-                raise _ChordError("chord-stage-invalid")
             deps = stage.get("depends_on", [])
             if not isinstance(deps, list) or any(not isinstance(dep, str) or dep not in (serve_ids if phase == "finally" else seen) for dep in deps):
                 raise _ChordError("chord-stage-invalid")
@@ -426,7 +423,6 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             stage_target = None
             answered_stop = None
             printed_stop = False
-            answered_schema = None
             try:
                 arguments = _resolve_arguments(stage.get("arguments", {}), envelope, completed, phase != "serve")
                 row["arguments"] = arguments
@@ -460,7 +456,6 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                         raise ValueError("not an object")
                     answered_stop = receipt.get("stop")
                     printed_stop = "stop" in receipt
-                    answered_schema = receipt.get("schema")
                     receipt = _stamp_receipt(receipt, band)
                     row["receipt"] = receipt
                 except (ValueError, json.JSONDecodeError):
@@ -474,10 +469,6 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                                (isinstance(answered_stop, dict)
                                 and answered_stop.get("noun") == ("/".join(parts[:-1]) if len(parts) > 1 else parts[0])
                                 and answered_stop.get("verb") == (parts[-1] if len(parts) > 1 else "")))
-                    if stage.get("receipt") == "caduceus.chord.receipt.v1":
-                        matches = matches and answered_schema == stage["receipt"]
-                    elif matches and answered_schema != "caduceus.staff.receipt.v1":
-                        matches = stage.get("receipt") is None or answered_schema == stage["receipt"]
                     if not matches:
                         refusal = "chord-stage-receipt-schema-mismatch"
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
