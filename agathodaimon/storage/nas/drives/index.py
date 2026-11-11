@@ -8,7 +8,6 @@ import re
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.nas import runtime
 
-SCHEMA = "caduceus.nas.drives.v1"
 LSBLK = "/usr/bin/lsblk"
 SMARTCTL = "/usr/sbin/smartctl"
 
@@ -41,7 +40,7 @@ def _errors(disk):
 
 
 def observe():
-    receipt = {"schema": SCHEMA, "ok": False, "drives": [], "firstMissingSignal": "agathodaimon-nas-not-complete"}
+    receipt = {"ok": False, "drives": [], "firstMissingSignal": "agathodaimon-nas-not-complete"}
     try:
         runtime._require_root({})
         result = runtime._run([LSBLK, "--json", "--tree", "--bytes", "--paths", "--output", "PATH,TYPE,PARTLABEL,MAJ:MIN,MODEL,SIZE,TRAN"], timeout=15, step="drive-census")
@@ -117,7 +116,7 @@ def main(argv=None):
         request = read(known_fields=())
         receipt = observe()
     except (EnvelopeError, ValueError, UnicodeError):
-        receipt = {"schema": SCHEMA, "ok": False, "drives": [], "firstMissingSignal": "agathodaimon-nas-request-invalid"}
+        receipt = {"ok": False, "drives": [], "firstMissingSignal": "agathodaimon-nas-request-invalid"}
     if request is not None:
         receipt = attach(receipt, request)
     print(json.dumps(receipt, separators=(",", ":")))

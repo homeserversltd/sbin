@@ -5,7 +5,6 @@ from agathodaimon import _envelope
 from agathodaimon.storage.nas import deed
 from agathodaimon.storage.nas.setup import _setup
 
-SCHEMA = "caduceus.storage.nas.setup.rollback.v1"
 FIELDS = ("device", "role", "createdKeyIdentity", "formatOk", "diskMutationAttempted",
           "createdPartitionIdentity", "deviceIdentity", "diskCleanVerified",
           "seatMutationAttempted", "seatRolledBack")
@@ -19,7 +18,7 @@ def main(argv=None):
         request.update({field: envelope.payload.get(field) for field in FIELDS[2:]})
     except (_envelope.EnvelopeError, _setup.Refusal) as error:
         failure = _setup._envelope_refusal(error) if isinstance(error, _envelope.EnvelopeError) else error
-        receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": failure.signal_name,
+        receipt = {"ok": False, "firstMissingSignal": failure.signal_name,
                    "role": None, "device": None, "steps": [{"step": failure.step, "ok": False,
                    "readback": {"rc": failure.return_code}}], "rollbackSteps": []}
         if 'envelope' in locals():

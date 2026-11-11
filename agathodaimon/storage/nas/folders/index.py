@@ -18,11 +18,10 @@ from agathodaimon.storage.nas.runtime import (
 )
 from agathodaimon.storage.nas.setup._setup import PORTAL_FOLDER_LAYOUT, _open_directory_nofollow, _read_regular_nofollow
 
-SCHEMA = "caduceus.nas.folders.v1"
 
 
 def _failure(signal: str, step: str, role: str | None = None) -> dict[str, Any]:
-    return {"schema": SCHEMA, "ok": False, "firstMissingSignal": signal, "role": role,
+    return {"ok": False, "firstMissingSignal": signal, "role": role,
             "partition": None, "mapper": None, "mountpoint": None, "applications": 0,
             "steps": [], "failedStep": step, "mutationPerformed": False,
             "paths": [], "differences": [], "absent": []}

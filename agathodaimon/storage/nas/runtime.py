@@ -1368,9 +1368,9 @@ def _attach_failure(receipt: dict[str, Any], failure: Refusal) -> Refusal:
     return failure
 
 
-def _receipt(schema: str, role: str | None) -> dict[str, Any]:
+def _receipt(role: str | None) -> dict[str, Any]:
     return {
-        "schema": schema, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
+        "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
         "role": role, "partlabel": None, "partition": None, "mapper": None,
         "mountpoint": None, "steps": [], "unitsStarted": [], "unitStatesBefore": {},
         "services": [], "servicesStarted": [], "servicesNotRunning": [],
@@ -1428,7 +1428,7 @@ def _observed_holder_info(receipt: dict[str, Any], info: dict[str, str]) -> dict
 def attach_role(role: str, *, start_services: bool = True,
                 after_mount_verified: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     """Attach one fixed role; a correct existing mount is a strict no-op."""
-    receipt = _receipt("caduceus.nas.attach.v1", role if isinstance(role, str) else None)
+    receipt = _receipt(role if isinstance(role, str) else None)
     try:
         _require_root(receipt)
         info = _role_info(role)
@@ -1557,7 +1557,7 @@ def _export_for_role(role: str, scratch: Path | None) -> bytearray:
 @guarded_drive
 def open_role(role: str) -> dict[str, Any]:
     """Open only the canonical mapper; never attach, mount, or start dependents."""
-    receipt = _receipt("caduceus.nas.open.v1", role if isinstance(role, str) else None)
+    receipt = _receipt(role if isinstance(role, str) else None)
     material: bytearray | None = None
     try:
         _require_root(receipt)
@@ -1696,7 +1696,7 @@ def _stop_fixed_unit(receipt: dict[str, Any], unit: str, step: str,
 @guarded_drive
 def detach_role(role: str) -> dict[str, Any]:
     """Stop dependent services and unmount and close the observed mapper."""
-    receipt = _receipt("caduceus.nas.detach.v1", role if isinstance(role, str) else None)
+    receipt = _receipt(role if isinstance(role, str) else None)
     receipt["servicesStopped"] = []
     receipt["unitsStopped"] = []
     try:

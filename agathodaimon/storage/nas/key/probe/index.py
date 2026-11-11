@@ -7,11 +7,10 @@ from _envelope import EnvelopeError, attach, read
 from agathodaimon.lib.keyman_export.index import KeymanExportError
 from agathodaimon.storage.nas import labels, runtime
 
-SCHEMA = "caduceus.nas.key.probe.v1"
 
 
 def perform(key_role, partition):
-    receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
+    receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
                "key_role": key_role, "partition": partition, "steps": []}
     material = None
     guard = None
@@ -64,7 +63,7 @@ def main(argv=None):
         request = read(known_fields=("key_role", "partition"))
         receipt = perform(request.payload.get("key_role"), request.payload.get("partition"))
     except (EnvelopeError, ValueError, UnicodeError):
-        receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
+        receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
     if request is not None:
         receipt = attach(receipt, request)
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))

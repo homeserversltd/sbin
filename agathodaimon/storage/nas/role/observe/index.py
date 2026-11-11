@@ -10,12 +10,11 @@ from pathlib import Path
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.nas import runtime
 
-SCHEMA = "caduceus.nas.role.observe.v1"
 LSBLK = "/usr/bin/lsblk"
 
 
 def observe(role):
-    receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
+    receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
                "role": role, "partlabel": None, "partition": None, "steps": []}
     try:
         runtime._require_root(receipt)
@@ -104,7 +103,7 @@ def main(argv=None):
         request = read(known_fields=("role",))
         receipt = observe(request.payload.get("role"))
     except (EnvelopeError, ValueError, UnicodeError):
-        receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid",
+        receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid",
                    "failedStep": "request", "steps": [], "role": None, "partlabel": None, "partition": None}
     if request is not None:
         receipt = attach(receipt, request)

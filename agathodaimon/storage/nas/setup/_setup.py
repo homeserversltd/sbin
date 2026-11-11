@@ -40,7 +40,6 @@ from agathodaimon.storage.nas.runtime import (
     runtime_path,
 )
 
-SCHEMA = "caduceus.nas.setup.v1"
 MAX_INPUT = 65536
 LOCK_PATH = "/run/lock/agathodaimon-nas-setup.lock"
 CONFIG_PATHS = ("/etc/appliance/config.json", "/etc/appliance/config.factory")
@@ -2236,7 +2235,7 @@ def _rollback_receipt(receipt: dict[str, Any], info: dict[str, Any], key_identit
 
 
 def _perform(request: dict[str, Any]) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
+    receipt: dict[str, Any] = {"ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
                                "role": request.get("role"), "device": request.get("device"), "partition": None,
                                "partlabel": None, "mapper": None, "mountpoint": None, "steps": [],
                                "servicesStarted": [], "servicesNotRunning": [],
@@ -2350,7 +2349,7 @@ def _envelope_refusal(error: EnvelopeError) -> Refusal:
 
 
 def key_create(request: dict[str, Any]) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.key-create.v1", "ok": False,
+    receipt: dict[str, Any] = {"ok": False,
                                "firstMissingSignal": "agathodaimon-nas-not-complete",
                                "role": request.get("role"), "device": request.get("device"),
                                "partition": None, "partlabel": None, "mapper": None, "mountpoint": None,
@@ -2413,7 +2412,7 @@ def key_create(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def format(request: dict[str, Any]) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.format.v1", "ok": False,
+    receipt: dict[str, Any] = {"ok": False,
                                "firstMissingSignal": "agathodaimon-nas-not-complete",
                                "role": request.get("role"), "device": request.get("device"),
                                "partition": None, "partlabel": None, "mapper": None, "mountpoint": None,
@@ -2532,7 +2531,7 @@ def _seat_info(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any
 
 
 def seat(request: dict[str, Any]) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.seat.v1", "ok": False,
+    receipt: dict[str, Any] = {"ok": False,
                                "firstMissingSignal": "agathodaimon-nas-not-complete",
                                "role": request.get("role"), "device": request.get("device"),
                                "partition": None, "partlabel": None, "mapper": None, "mountpoint": None,
@@ -2609,7 +2608,7 @@ def rollback(request: dict[str, Any]) -> dict[str, Any]:
         "createdPartitionIdentity": request.get("createdPartitionIdentity"),
         "services": [], "unitsStarted": [], "servicesStarted": [], "directMountStarted": False,
     }
-    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.rollback.v1", "ok": False,
+    receipt: dict[str, Any] = {"ok": False,
         "firstMissingSignal": "agathodaimon-nas-not-complete", "role": role, "device": device,
         "steps": [], "rollbackSteps": [], "servicesStarted": [], "servicesNotRunning": [],
         "diskRetained": None, "keyRetained": None}
@@ -2719,7 +2718,7 @@ def rollback(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def plan(request: dict[str, Any]) -> dict[str, Any]:
-    receipt: dict[str, Any] = {"schema": "caduceus.storage.nas.setup.plan.v1", "ok": False,
+    receipt: dict[str, Any] = {"ok": False,
                                "firstMissingSignal": "agathodaimon-nas-not-complete",
                                "role": request.get("role"), "device": request.get("device"),
                                "partition": None, "partlabel": None, "mapper": None, "mountpoint": None,

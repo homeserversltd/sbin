@@ -9,12 +9,11 @@ import stat
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.nas import runtime
 
-SCHEMA = "caduceus.nas.list.v1"
 FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 
 
 def listing(path):
-    result = {"schema": SCHEMA, "ok": False, "path": path if isinstance(path, str) else None,
+    result = {"ok": False, "path": path if isinstance(path, str) else None,
               "folders": [], "truncated": False, "firstMissingSignal": "agathodaimon-nas-list-not-complete"}
     fd = None
     try:
@@ -87,7 +86,7 @@ def main(argv=None):
         request = read(known_fields=("path",))
         result = listing(request.payload.get("path", ""))
     except (EnvelopeError, ValueError, UnicodeError):
-        result = {"schema": SCHEMA, "ok": False, "path": None, "folders": [], "truncated": False,
+        result = {"ok": False, "path": None, "folders": [], "truncated": False,
                   "firstMissingSignal": "agathodaimon-nas-request-invalid"}
     if request is not None:
         result = attach(result, request)

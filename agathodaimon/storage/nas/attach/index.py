@@ -11,12 +11,11 @@ from _envelope import EnvelopeError, attach as attach_envelope, read as read_env
 from agathodaimon.storage.nas import deed
 from agathodaimon.storage.nas.runtime import MAX_INPUT, Refusal, attach_role
 
-SCHEMA = "caduceus.nas.attach.v1"
 
 
 def _failure(signal_name: str, step: str, role: str | None = None) -> dict[str, Any]:
     return {
-        "schema": SCHEMA, "ok": False, "firstMissingSignal": signal_name,
+        "ok": False, "firstMissingSignal": signal_name,
         "role": role, "partlabel": None, "partition": None, "mapper": None,
         "mountpoint": None, "alreadyMounted": False, "steps": [],
         "unitsStarted": [], "unitStatesBefore": {}, "services": [],

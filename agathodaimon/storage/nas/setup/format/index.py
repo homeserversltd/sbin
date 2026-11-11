@@ -5,7 +5,6 @@ from agathodaimon import _envelope
 from agathodaimon.storage.nas import deed
 from agathodaimon.storage.nas.setup import _setup
 
-SCHEMA = "caduceus.storage.nas.setup.format.v1"
 
 
 def main(argv=None):
@@ -15,7 +14,7 @@ def main(argv=None):
         request = _setup._request(envelope)
     except (_envelope.EnvelopeError, _setup.Refusal) as error:
         failure = _setup._envelope_refusal(error) if isinstance(error, _envelope.EnvelopeError) else error
-        receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": failure.signal_name,
+        receipt = {"ok": False, "firstMissingSignal": failure.signal_name,
                    "role": None, "device": None, "partition": None, "partlabel": None,
                    "mapper": None, "mountpoint": None, "createdPartitionIdentity": None,
                    "diskMutationAttempted": False, "deviceIdentity": None, "diskCleanVerified": False,

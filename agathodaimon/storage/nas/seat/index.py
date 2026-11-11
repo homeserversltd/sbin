@@ -11,11 +11,10 @@ from agathodaimon.storage.nas.folders.index import _attached_info, _observe_layo
 from agathodaimon.storage.nas.runtime import Refusal, _role_info, guarded_drive
 from agathodaimon.storage.nas.setup._setup import _apply_permissions, _load_config, _seed_portal_layout
 
-SCHEMA = "caduceus.nas.seat.v1"
 
 
 def _failure(signal: str, step: str, role: str | None = None) -> dict[str, Any]:
-    return {"schema": SCHEMA, "ok": False, "firstMissingSignal": signal, "role": role,
+    return {"ok": False, "firstMissingSignal": signal, "role": role,
             "partition": None, "mapper": None, "mountpoint": None, "applications": 0,
             "steps": [], "failedStep": step, "mutationPerformed": False,
             "paths": [], "differences": [], "absent": [], "changedPaths": []}
