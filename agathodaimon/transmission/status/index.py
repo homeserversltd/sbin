@@ -18,7 +18,7 @@ def dispatch(request: Any) -> dict[str, Any]:
         except Exception:
             providers = []
         value = {
-            "schema": rt.SCHEMA_STATUS, "ok": False, "on": False,
+            "ok": False, "on": False,
             "provider": None, "providers": providers,
             "conditions": {"namespace": False, "tunnel": False, "forward": False,
                            "daemon": False, "peerPort": False},
@@ -51,7 +51,7 @@ def main(argv=None) -> int:
         result = dispatch(request)
     except Exception as failure:
         result = {
-            "schema": rt.SCHEMA_STATUS, "ok": False, "on": False,
+            "ok": False, "on": False,
             "provider": None,
             "conditions": {"namespace": False, "tunnel": False, "forward": False,
                            "daemon": False, "peerPort": False},
@@ -63,7 +63,7 @@ def main(argv=None) -> int:
             result["firstMissingSignal"] = failure.signal_name
             result["failedStep"] = failure.step
         result = rt.finish(result, request)
-    return rt.print_receipt(result)
+    return rt.print_receipt(result, "transmission/status")
 
 
 if __name__ == "__main__":

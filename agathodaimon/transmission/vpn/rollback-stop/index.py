@@ -1,7 +1,6 @@
 """Rollback using unit/start's own witness, never an earlier snapshot."""
 from agathodaimon.transmission import runtime as rt
 
-SCHEMA = "caduceus.transmission.vpn.rollback-stop.v1"
 
 
 def main(argv=None):
@@ -12,7 +11,7 @@ def main(argv=None):
         request = rt.read_request(known_fields=("nativeActiveBefore", "nativeStartAttempted"))
         before = request.payload.get("nativeActiveBefore")
         attempted = request.payload.get("nativeStartAttempted")
-        result = rt.receipt(SCHEMA)
+        result = rt.receipt()
         result.update(nativeUnit=rt.NATIVE_UNIT, nativeActiveBefore=before, mutationPerformed=False)
         if isinstance(before, bool):
             raise rt.TransmissionError("transmission-native-before-unavailable", "rollback-stop")
@@ -34,8 +33,8 @@ def main(argv=None):
         else:
             raise rt.TransmissionError("transmission-native-before-unavailable", "rollback-stop")
     except Exception as failure:
-        result = rt.failure_receipt(SCHEMA, failure)
+        result = rt.failure_receipt(failure)
         if mutation_attempted:
             result["mutationPerformed"] = True
             result["mutationOutcome"] = "unknown"
-    return rt.print_receipt(rt.finish(result, request))
+    return rt.print_receipt(rt.finish(result, request), "transmission/vpn/rollback-stop")

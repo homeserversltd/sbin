@@ -22,7 +22,7 @@ def _tunnel_present(interface: str) -> tuple[bool, bool]:
 
 
 def dispatch(request: Any) -> dict[str, Any]:
-    result = rt.receipt(rt.SCHEMA_DOWN)
+    result = rt.receipt()
     result["rpcPort"] = None
     rung = "provider"
     try:
@@ -116,8 +116,8 @@ def main(argv=None) -> int:
         request = rt.read_request()
         result = dispatch(request)
     except Exception as failure:
-        result = rt.finish(rt.failure_receipt(rt.SCHEMA_DOWN, failure), request)
-    return rt.print_receipt(result)
+        result = rt.finish(rt.failure_receipt(failure), request)
+    return rt.print_receipt(result, "transmission/down")
 
 
 if __name__ == "__main__":

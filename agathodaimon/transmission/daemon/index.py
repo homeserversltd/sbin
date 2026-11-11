@@ -15,7 +15,6 @@ def _scratch_attempt(request: Any, provider: str, rpc_port: int,
                      logical_argv: list[str], root: Any,
                      seed_metadata: dict[str, Any]) -> dict[str, Any]:
     return rt.finish({
-        "schema": rt.SCHEMA_DAEMON,
         "ok": True,
         "provider": provider,
         "nativeUnit": rt.NATIVE_UNIT,
@@ -99,18 +98,18 @@ def main(argv=None) -> int:
             attempt = _scratch_attempt(
                 request, provider, rpc_port, logical_argv, root, seed_metadata,
             )
-            rt.print_receipt(attempt)
+            rt.print_receipt(attempt, "transmission/daemon")
         try:
             os.execvpe(command[0], command, environment)
         except OSError:
             raise rt.TransmissionError("transmission-daemon-exec-failed", "daemon-exec") from None
     except Exception as failure:
-        failed = rt.failure_receipt(rt.SCHEMA_DAEMON, failure, provider)
+        failed = rt.failure_receipt(failure, provider)
         failed["credentialSeed"] = dict(seed_metadata)
         failed["interimDebt"] = "staff-writes-daemon-rpc-credential-seat"
         if isinstance(failure, rt.TransmissionError):
             failed["failedRung"] = failure.step
-        return rt.print_receipt(rt.finish(failed, request))
+        return rt.print_receipt(rt.finish(failed, request), "transmission/daemon")
     return 0
 
 

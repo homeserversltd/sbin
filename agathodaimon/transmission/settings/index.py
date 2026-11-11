@@ -11,7 +11,7 @@ _RPC_READY_TIMEOUT = 60
 
 def dispatch(request: Any) -> dict[str, Any]:
     provider: str | None = None
-    result = rt.receipt(rt.SCHEMA_SETTINGS)
+    result = rt.receipt()
     try:
         options, _providers = rt.resolve_bound_vpn(request)
         provider = options["provider"]
@@ -85,8 +85,8 @@ def main(argv=None) -> int:
         request = rt.read_request(known_fields=("provider", "flags"), declared_flags=("vpn",))
         result = dispatch(request)
     except Exception as failure:
-        result = rt.finish(rt.failure_receipt(rt.SCHEMA_SETTINGS, failure), request)
-    return rt.print_receipt(result)
+        result = rt.finish(rt.failure_receipt(failure), request)
+    return rt.print_receipt(result, "transmission/settings")
 
 
 if __name__ == "__main__":

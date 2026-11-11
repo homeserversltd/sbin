@@ -2,7 +2,6 @@
 import time
 from agathodaimon.transmission import runtime as rt
 
-SCHEMA = "caduceus.transmission.onness.v1"
 
 
 def main(argv=None):
@@ -15,7 +14,7 @@ def main(argv=None):
             raise rt.TransmissionError("transmission-onness-deadline-invalid", "onness")
         options, providers = rt.resolve_vpn(request)
         provider = options["provider"]
-        result = rt.receipt(SCHEMA, provider)
+        result = rt.receipt(provider)
         deadline = time.monotonic() + seconds
         while True:
             latest = rt.status_read(provider, providers)
@@ -29,8 +28,8 @@ def main(argv=None):
                 break
             time.sleep(min(1, remaining))
     except Exception as failure:
-        result = rt.failure_receipt(SCHEMA, failure)
+        result = rt.failure_receipt(failure)
     result = rt.finish(result, request)
     if rt._journal_stdout():
         return 0 if result.get("ok") is True else 1
-    return rt.print_receipt(result)
+    return rt.print_receipt(result, "transmission/onness")

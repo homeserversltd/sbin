@@ -26,13 +26,6 @@ from agathodaimon.lib.keyman_export.index import (
     _export as _keyman_export, export_credential,
 )
 
-SCHEMA_UP = "caduceus.transmission.up.v1"
-SCHEMA_DOWN = "caduceus.transmission.down.v1"
-SCHEMA_STATUS = "caduceus.transmission.status.v1"
-SCHEMA_HOLD = "caduceus.transmission.vpn.hold.v1"
-SCHEMA_NAMESPACE = "caduceus.transmission.namespace.v1"
-SCHEMA_DAEMON = "caduceus.transmission.daemon.v1"
-SCHEMA_SETTINGS = "caduceus.transmission.settings.v1"
 MAX_INPUT = 65536
 VPN_NAMESPACE = "vpn"
 HOST_VETH = "veth0"
@@ -600,9 +593,8 @@ def _stamp(receipt: dict[str, Any], step: str, observed: Any, could_change: Any,
         steps.append(value)
 
 
-def receipt(schema: str, provider: str | None = None) -> dict[str, Any]:
+def receipt(provider: str | None = None) -> dict[str, Any]:
     return {
-        "schema": schema,
         "ok": False,
         "firstMissingSignal": "transmission-not-complete",
         "provider": provider,
@@ -645,18 +637,17 @@ def _log_token(value: Any, maximum: int = 80) -> str | None:
     return clean or None
 
 
-def print_receipt(value: dict[str, Any]) -> int:
+def print_receipt(value: dict[str, Any], band: str) -> int:
     if _journal_stdout():
-        if value.get("schema") in {SCHEMA_STATUS, "caduceus.transmission.vpn.v1"}:
+        if band in {"transmission/status", "transmission/vpn"}:
             return 0 if value.get("ok") is True else 1
         steps = value.get("steps")
         latest = steps[-1] if isinstance(steps, list) and steps else {}
         if not isinstance(latest, Mapping):
             latest = {}
-        schema = _log_token(value.get("schema"), 96)
         line = {
             "kind": "transmission",
-            "verb": schema.rsplit(".", 2)[-2] if schema and schema.count(".") >= 2 else "unknown",
+            "verb": band.rsplit("/", 1)[-1],
             "target": "transmission",
             "outcome": "ok" if value.get("ok") is True else "failed",
             "durationMs": max(0, int((time.monotonic() - _CALL_STARTED) * 1000)),
@@ -2038,7 +2029,6 @@ def _freshness_deadline(timestamp: str, interval: int) -> float | int:
 def status_read(provider: str, provider_names: list[str],
                 options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     result: dict[str, Any] = {
-        "schema": SCHEMA_STATUS,
         "ok": False,
         "on": False,
         "provider": provider,
@@ -2144,8 +2134,8 @@ def status_read(provider: str, provider_names: list[str],
     return result
 
 
-def failure_receipt(schema: str, failure: Exception, provider: str | None = None) -> dict[str, Any]:
-    value = receipt(schema, provider)
+def failure_receipt(failure: Exception, provider: str | None = None) -> dict[str, Any]:
+    value = receipt(provider)
     if isinstance(failure, TransmissionError):
         value["firstMissingSignal"] = failure.signal_name
         value["failedRung"] = "request"

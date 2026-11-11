@@ -88,7 +88,7 @@ def _failure(value: dict[str, Any], failure: Exception, rung: str) -> None:
 
 
 def dispatch(request: Any) -> dict[str, Any]:
-    result = rt.receipt(rt.SCHEMA_HOLD)
+    result = rt.receipt()
     stop = threading.Event()
     signal_seen: list[str | None] = [None]
     previous_handlers: dict[int, Any] = {}
@@ -259,8 +259,8 @@ def main(argv=None) -> int:
         request = rt.read_request()
         result = dispatch(request)
     except Exception as failure:
-        result = rt.finish(rt.failure_receipt(rt.SCHEMA_HOLD, failure), request)
-    return rt.print_receipt(result)
+        result = rt.finish(rt.failure_receipt(failure), request)
+    return rt.print_receipt(result, "transmission/vpn/hold")
 
 
 if __name__ == "__main__":

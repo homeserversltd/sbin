@@ -8,7 +8,6 @@ from typing import Any, Mapping
 
 from agathodaimon.transmission import runtime as rt
 
-SCHEMA = "caduceus.transmission.vpn.v1"
 
 
 def _hold_transition(request: Any) -> bool:
@@ -50,13 +49,12 @@ def main(argv=None) -> int:
                               declared_flags=("vpn",))
     if _hold_transition(request):
         result = _dispatch_hold(request)
-        return rt.print_receipt(rt.finish(result, request))
+        return rt.print_receipt(rt.finish(result, request), "transmission/vpn/hold")
 
     providers, default = rt._provider_metadata()
     result = {
-        "schema": SCHEMA,
         "ok": True,
         "providers": providers,
         "defaultProvider": default,
     }
-    return rt.print_receipt(rt.finish(result, request, successful_read=True))
+    return rt.print_receipt(rt.finish(result, request, successful_read=True), "transmission/vpn")

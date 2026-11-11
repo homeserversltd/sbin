@@ -5,6 +5,6 @@ import json
 
 def main(argv=None):
     del argv
-    print(json.dumps({"schema": "agathodaimon.transmission.v1", "ok": True,
+    print(json.dumps({"ok": True,
                       "verbs": ["up", "down", "status", "vpn"]}, separators=(",", ":")))
     return 0

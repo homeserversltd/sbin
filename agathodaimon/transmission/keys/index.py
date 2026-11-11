@@ -12,7 +12,6 @@ from typing import Any
 from agathodaimon.transmission import runtime as rt
 from agathodaimon.lib.keyman_export.index import _mount_rows
 
-SCHEMA = "caduceus.transmission.keys.v1"
 _KEY_DIRECTORY = "/vault/.keys"
 _ACTIONS = frozenset(("status", "replace", "rotate"))
 _ACTION_FIELDS = ("action", "op", "operation", "verb")
@@ -74,7 +73,6 @@ def select_action(request: Any = None, argv: Any = None, *, envelope: Any = None
 
 def _receipt(action: str | None, service: str | None = None) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "ok": False,
         "action": action,
         "service": service,
@@ -673,7 +671,7 @@ def main(argv: Any = None) -> int:
         service_value = None
         username_value = None
         password_value = None
-    return rt.print_receipt(rt.finish(receipt, request, successful_read=successful_read))
+    return rt.print_receipt(rt.finish(receipt, request, successful_read=successful_read), "transmission/keys")
 
 
 if __name__ == "__main__":
