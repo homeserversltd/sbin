@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from agathodaimon import _load_trace
+from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon._nidus.refusal import Refusal
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
@@ -270,7 +271,7 @@ class DnsManager:
             text = path.read_text(encoding="utf-8")
             owned = False
             inside_markers = False
-            for line in text.splitlines():
+            for line_number, line in enumerate(text.splitlines(), 1):
                 if self.BEGIN in line:
                     inside_markers = True
                     owned = path == self.read_include
@@ -289,6 +290,8 @@ class DnsManager:
                     "provenance": "owned" if owned else "legacy",
                     "source": str(path),
                     "inside_markers": inside_markers,
+                    "line_number": line_number,
+                    "whole_line": bool(re.fullmatch(r'\s*local-data\s*:\s*"[^"\s]+\s+(?:IN\s+)?(?:A|PTR|CNAME)\s+[^"\s]+"\s*(?:#.*)?', line, re.I)),
                 })
                 marker = self._ALIAS_MARKER.search(line)
                 if owned and match.group(2).upper() == "A" and marker:
@@ -304,27 +307,74 @@ class DnsManager:
         ):
             return self._read_local_data()
 
+    def _shipped_records(self) -> tuple[str | None, set[tuple[str, str, str]]]:
+        """Read the worn profile's staged Unbound records afresh."""
+        profile_path = appliance_runtime_path("profile")
+        try:
+            data = json.loads(profile_path.read_text(encoding="utf-8"))
+            profile = data["kernel"]["profile"]
+            if not isinstance(profile, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", profile):
+                return None, set()
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            return None, set()
+        modules = profile_path.parent.parent / "harmonia" / "profiles" / profile / "modules"
+        shipped: set[tuple[str, str, str]] = set()
+        paths = list(modules.glob("*/files_root/etc/unbound/unbound.conf"))
+        paths += list(modules.glob("*/files_root/etc/unbound/unbound.conf.d/*.conf"))
+        for path in paths:
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeError):
+                continue
+            for line in lines:
+                match = None if line.lstrip().startswith("#") else self._LOCAL_DATA.search(line)
+                if match:
+                    shipped.add((match.group(1).rstrip(".").lower(), match.group(2).upper(), match.group(3).rstrip(".").lower()))
+        return profile, shipped
+
     def _read_local_data(self) -> dict[str, Any]:
         """Read every configured local-data identity; ownership only governs writes."""
         devices: dict[str, dict[str, Any]] = {}
-        aliases: list[dict[str, str]] = []
-        for record in self._all_local_records():
+        aliases: list[dict[str, Any]] = []
+        profile, shipped = self._shipped_records()
+        records = self._all_local_records()
+        owned_names = {row["name"] for row in records if row["provenance"] == "owned"}
+        owned_names.update(row["target"] for row in records if row["provenance"] == "owned" and row["type"] == "PTR")
+        owned_addresses = {row["target"] for row in records if row["provenance"] == "owned" and row["type"] == "A"}
+        for record in records:
             name, record_type, target, provenance = record["name"], record["type"], record["target"], record["provenance"]
+            if provenance == "owned":
+                where = "alias" if record_type == "CNAME" or "alias_target" in record else "owned"
+            elif (name, record_type, target) in shipped:
+                where = "known-good"
+            elif record["source"] == str(self.dropin_dir / "caduceus-local-names.conf"):
+                where = "old-staff-file"
+            else:
+                where = "hand-written"
+            details = {"provenance": provenance, "where": where, "source": record["source"], "line_number": record["line_number"]}
             if record_type == "CNAME" or "alias_target" in record:
-                alias = {"name": name, "target": record.get("alias_target", target), "provenance": provenance}
+                alias = {"name": name, "target": record.get("alias_target", target), **details}
                 if alias not in aliases:
                     aliases.append(alias)
                 continue
             if record_type == "A":
-                device = devices.setdefault(name, {"name": name, "a": [], "ptr": [], "a_records": [], "ptr_records": [], "provenance": []})
+                device = devices.setdefault(name, {"name": name, "a": [], "ptr": [], "a_records": [], "ptr_records": [], "provenance": [], "adoptable": False})
                 if target not in device["a"]:
                     device["a"].append(target)
-                device["a_records"].append({"address": target, "provenance": provenance})
+                device["a_records"].append({"address": target, **details})
+                try:
+                    ipaddress.IPv4Address(target)
+                    valid_ipv4 = True
+                except ipaddress.AddressValueError:
+                    valid_ipv4 = False
+                if (where in {"hand-written", "old-staff-file"} and name.endswith(".home.arpa")
+                        and record["whole_line"] and valid_ipv4 and name not in owned_names and target not in owned_addresses):
+                    device["adoptable"] = True
             else:
-                device = devices.setdefault(target, {"name": target, "a": [], "ptr": [], "a_records": [], "ptr_records": [], "provenance": []})
+                device = devices.setdefault(target, {"name": target, "a": [], "ptr": [], "a_records": [], "ptr_records": [], "provenance": [], "adoptable": False})
                 if name not in device["ptr"]:
                     device["ptr"].append(name)
-                device["ptr_records"].append({"name": name, "provenance": provenance})
+                device["ptr_records"].append({"name": name, **details})
         for device in devices.values():
             device["a"].sort()
             device["ptr"].sort()
@@ -332,7 +382,7 @@ class DnsManager:
             device["ptr_records"].sort(key=lambda item: (item["name"], item["provenance"]))
             records_with_provenance = device["a_records"] + device["ptr_records"]
             device["provenance"] = sorted({item["provenance"] for item in records_with_provenance})
-        return {"include": str(self.read_include), "exists": self.read_include.is_file(), "devices": [devices[key] for key in sorted(devices)], "aliases": sorted(aliases, key=lambda item: (item["name"], item["target"], item["provenance"])), "mutationPerformed": False, "firstMissingSignal": "none"}
+        return {"include": str(self.read_include), "exists": self.read_include.is_file(), "devices": [devices[key] for key in sorted(devices)], "aliases": sorted(aliases, key=lambda item: (item["name"], item["target"], item["provenance"])), "shipped_profile": profile, "mutationPerformed": False, "firstMissingSignal": "none"}
 
     @staticmethod
     def canonical_name(hostname: str) -> str:
