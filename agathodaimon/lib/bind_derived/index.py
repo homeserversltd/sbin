@@ -41,7 +41,6 @@ def _unbound_signal(exc: Exception) -> str:
 
 def _project(signer: sacred_credential.DerivedCaduceusSigner, *, operation: str) -> dict[str, Any]:
     return {
-        "schema": "caduceus.staff.sacred-credential.v1",
         "ok": True,
         "operation": operation,
         "posture": "DERIVED_BOUND",
@@ -63,7 +62,6 @@ def bind_derived() -> dict[str, Any]:
             _BOUND.close()
             _BOUND = None
         return {
-            "schema": "caduceus.staff.sacred-credential.v1",
             "ok": False,
             "operation": "bind",
             "posture": "UNBOUND",
@@ -84,7 +82,6 @@ def verify_derived(pin: str, expected_public_key: str | None = None) -> dict[str
     expected = expected_public_key or (_BOUND.public_key_hex if _BOUND else None)
     if not expected:
         return {
-            "schema": "caduceus.staff.sacred-credential.v1",
             "ok": False,
             "operation": "verify",
             "posture": "UNBOUND",
@@ -95,7 +92,6 @@ def verify_derived(pin: str, expected_public_key: str | None = None) -> dict[str
         candidate = sacred_credential.verify_and_derive_caduceus(pin)
     except sacred_credential.CaduceusAccessRefused as exc:
         return {
-            "schema": "caduceus.staff.sacred-credential.v1",
             "ok": False,
             "operation": "verify",
             "posture": "DERIVED_BOUND",
@@ -105,7 +101,6 @@ def verify_derived(pin: str, expected_public_key: str | None = None) -> dict[str
     try:
         verified = hmac.compare_digest(candidate.public_key_hex, expected)
         return {
-            "schema": "caduceus.staff.sacred-credential.v1",
             "ok": verified,
             "operation": "verify",
             "posture": "DERIVED_BOUND",
@@ -120,7 +115,6 @@ def atomic_change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
     """Compare the live config PIN, atomically change it, then rebind."""
     if not new_pin:
         return {
-            "schema": "caduceus.staff.sacred-credential.v1",
             "ok": False,
             "operation": "atomic-change-pin",
             "posture": "DERIVED_BOUND" if _BOUND else "UNBOUND",
@@ -130,7 +124,6 @@ def atomic_change_pin(old_pin: str, new_pin: str) -> dict[str, Any]:
         sacred_credential.change_caduceus_pin(old_pin, new_pin)
     except sacred_credential.CaduceusAccessRefused as exc:
         return {
-            "schema": "caduceus.staff.sacred-credential.v1",
             "ok": False,
             "operation": "atomic-change-pin",
             "posture": "DERIVED_BOUND" if _BOUND else "UNBOUND",
@@ -149,7 +142,6 @@ def reset_default_pin() -> dict[str, Any]:
         sacred_credential.reset_caduceus_pin_to_provisioned_default()
     except sacred_credential.CaduceusAccessRefused as exc:
         return {
-            "schema": "caduceus.staff.sacred-credential.v1",
             "ok": False,
             "operation": "reset-default-pin",
             "posture": "DERIVED_BOUND" if _BOUND else "UNBOUND",

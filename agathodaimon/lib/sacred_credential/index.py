@@ -552,7 +552,6 @@ def reset_caduceus_pin_to_provisioned_default() -> dict[str, object]:
     )
     _update_config_pin(factory_pin)
     return {
-        "schema": "caduceus.staff.sacred-credential.v1",
         "ok": True,
         "operation": "pin-reset-default",
         "private_material": "[REDACTED]",
@@ -564,7 +563,6 @@ def provision_caduceus(initial_pin: str) -> dict[str, object]:
     _require_root()
     _update_config_pin(initial_pin, require_absent=True)
     return {
-        "schema": "caduceus.staff.sacred-credential.v1",
         "ok": True,
         "operation": "pin-provisioned",
         "private_material": "[REDACTED]",
@@ -576,7 +574,6 @@ def change_caduceus_pin(old_pin: str, new_pin: str) -> dict[str, object]:
     _require_root()
     _update_config_pin(new_pin, expected_old_pin=old_pin)
     return {
-        "schema": "caduceus.staff.sacred-credential.v1",
         "ok": True,
         "operation": "pin-changed",
         "private_material": "[REDACTED]",

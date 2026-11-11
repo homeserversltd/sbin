@@ -231,7 +231,6 @@ def splice_sources(raw: str, sources: dict[str, Any]) -> tuple[str, bool, bool]:
 
 def _receipt(*, ok: bool, changed: bool, signal: str, **fields: Any) -> dict[str, Any]:
     return {
-        "schema": "caduceus.profile.sources.reseed.v1",
         "ok": ok,
         "changed": changed,
         "certificatePath": CERTIFICATE_PATH,
