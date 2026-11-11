@@ -1019,7 +1019,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
     central = [(directory / "00-hestia-http.conf", HESTIA_HTTP.encode()),
                (snippets / "tls.conf", HESTIA_TLS.encode()),
                (snippets / "proxy.conf", HESTIA_PROXY.encode())]
-    desired = [*central, (target, body_bytes)]
+    desired: list[tuple[Path, bytes | None]] = [*central, (target, body_bytes)]
     if legacy_present:
         desired.append((legacy, None))
     before = {path: path.read_bytes() if path.is_file() else None for path, _ in desired}
