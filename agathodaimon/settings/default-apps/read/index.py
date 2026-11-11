@@ -7,7 +7,7 @@ from agathodaimon.settings import _options, _shared
 def main(argv=None):
     try:
         request = read(known_fields=())
-        result = {"schema": "caduceus.settings.default-apps.read.v1", "ok": True, "values": _shared.get_values("default-apps"), "options": _options.options("default-apps"), "mutationPerformed": False}
+        result = {"ok": True, "values": _shared.get_values("default-apps"), "options": _options.options("default-apps"), "mutationPerformed": False}
         result = attach(result, request)
     except (EnvelopeError, ValueError) as error:
         result = {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}

@@ -13,7 +13,6 @@ def main(argv=None):
             result = {"ok": True, "values": _shared.get_values("display"), "mutationPerformed": False}
         else:
             result = display._get_reply(display._display_settings(selected), selected)
-        result["schema"] = "caduceus.settings.display.read.v1"
         result = attach(result, request)
     except (EnvelopeError, ValueError, OSError, TypeError) as error:
         result = {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}

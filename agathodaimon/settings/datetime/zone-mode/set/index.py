@@ -10,9 +10,9 @@ def main(argv=None):
         try:
             mode = request.payload.get("zoneMode")
             changed = _zone_mode.set_mode(mode)
-            value = {"schema": "caduceus.settings.datetime.zone-mode.set.v1", "ok": True, "changed": changed, "mode": mode, "firstMissingSignal": "none"}
+            value = {"ok": True, "changed": changed, "mode": mode, "firstMissingSignal": "none"}
         except (OSError, UnicodeError, ValueError) as error:
-            value = {"schema": "caduceus.settings.datetime.zone-mode.set.v1", "ok": False, "changed": False, "firstMissingSignal": str(error)}
+            value = {"ok": False, "changed": False, "firstMissingSignal": str(error)}
         value = attach(value, request)
     except EnvelopeError as error:
         value = {"ok": False, "changed": False, "firstMissingSignal": str(error)}

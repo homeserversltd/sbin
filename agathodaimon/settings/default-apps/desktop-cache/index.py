@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any, Sequence
 
 SCHEMA = "caduceus.desktop-cache.v1"
-RECEIPT_SCHEMA = "caduceus.desktop-cache.receipt.v1"
 DOMAINS = ("desktop-entry-database", "kde-kservice", "wofi-drun")
 
 
@@ -28,7 +27,6 @@ def receipt(
     **fields: Any,
 ) -> dict[str, Any]:
     return {
-        "schema": RECEIPT_SCHEMA,
         "primitive": primitive,
         "ok": ok,
         "changed": changed,
