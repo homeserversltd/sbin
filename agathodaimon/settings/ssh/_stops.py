@@ -5,8 +5,6 @@ from agathodaimon._envelope import EnvelopeError, attach, read
 from agathodaimon.settings.ssh import _acts as ssh
 
 
-SCHEMAS = {name: 'caduceus.settings.ssh.' + name.replace('_', '.') + '.v1'
-           for name in ('config_read', 'config_set', 'config_restore', 'unit_resolve', 'verify')}
 def _state(value):
     if value not in ('on', 'off'):
         raise ssh.Refusal('unsupported-operation')
@@ -94,7 +92,6 @@ def verify(payload, commands):
 
 
 def main(name, known_fields):
-    schema = SCHEMAS[name]
     commands = []
     witness = {}
     try:
@@ -109,10 +106,10 @@ def main(name, known_fields):
             result = config_set(request.payload, commands, witness)
         else:
             result = globals()[name](request.payload, commands)
-        result.update(schema=schema, ok=True, commands=commands, firstMissingSignal='none')
+        result.update(ok=True, commands=commands, firstMissingSignal='none')
         result = attach(result, request)
     except (EnvelopeError, ssh.Refusal) as error:
-        result = {'schema': schema, 'ok': False, 'commands': commands,
+        result = {'ok': False, 'commands': commands,
                   'firstMissingSignal': str(error)}
         if name == 'config_set':
             result.update(witness)

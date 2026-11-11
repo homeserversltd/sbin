@@ -16,7 +16,6 @@ import sys
 from typing import Any, Sequence
 from agathodaimon._envelope import EnvelopeError, attach, read
 
-SCHEMA = "caduceus.ssh.exposure.v1"
 SYSTEMCTL = "/usr/bin/systemctl"
 SSHD = "/usr/sbin/sshd"
 TEE = "/usr/bin/tee"
@@ -50,7 +49,7 @@ def _must(result: subprocess.CompletedProcess[str], signal: str) -> None:
 
 
 def _receipt(state: str, *, ok: bool, changed: list[dict[str, str]], unchanged: list[dict[str, str]], readback: dict[str, Any] | None, commands: list[list[str]], signal: str = "none") -> dict[str, Any]:
-    return {"schema": SCHEMA, "ok": ok, "state": state, "changed": changed, "unchanged": unchanged, "readback": readback, "commands": commands, "firstMissingSignal": signal}
+    return {"ok": ok, "state": state, "changed": changed, "unchanged": unchanged, "readback": readback, "commands": commands, "firstMissingSignal": signal}
 
 
 def _read_config() -> tuple[str, list[list[str]]]:

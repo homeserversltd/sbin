@@ -7,7 +7,7 @@ from agathodaimon.settings.shortcuts import _acts as shortcuts
 def main(argv=None):
     try:
         request = read(known_fields=())
-        result = {'schema': 'caduceus.settings.shortcuts.read.v1', 'ok': True, 'values': shortcuts.values(), 'mutationPerformed': False}
+        result = {'ok': True, 'values': shortcuts.values(), 'mutationPerformed': False}
         result = attach(result, request)
     except (EnvelopeError, ValueError, OSError, TypeError) as error:
         result = {'ok': False, 'firstMissingSignal': str(error), 'mutationPerformed': False}

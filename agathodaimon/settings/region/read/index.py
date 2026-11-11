@@ -7,7 +7,7 @@ from agathodaimon.settings import _options, _parity
 def main(argv=None):
     try:
         request = read(known_fields=())
-        result = {"schema": "caduceus.settings.region.read.v1", "ok": True, "values": _parity.get_values("region"), "options": _options.options("region"), "mutationPerformed": False}
+        result = {"ok": True, "values": _parity.get_values("region"), "options": _options.options("region"), "mutationPerformed": False}
         result = attach(result, request)
     except (EnvelopeError, ValueError) as error:
         result = {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}

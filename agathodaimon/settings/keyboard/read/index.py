@@ -7,7 +7,7 @@ from agathodaimon.settings import _options, _parity
 def main(argv=None):
     try:
         request = read(known_fields=())
-        result = {"schema": "caduceus.settings.keyboard.read.v1", "ok": True, "values": _parity.get_values("keyboard"), "options": _options.options("keyboard"), "mutationPerformed": False}
+        result = {"ok": True, "values": _parity.get_values("keyboard"), "options": _options.options("keyboard"), "mutationPerformed": False}
         result = attach(result, request)
     except (EnvelopeError, ValueError) as error:
         result = {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}
