@@ -1014,117 +1014,108 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
             commands=[["nginx", "-t"], ["systemctl", "reload", "nginx"]],
         )
 
-    # Keep preimages in this transaction only, including a legacy vhost retired
-    # by the replacement. Never reload a generation that failed validation.
-    previous = target.read_bytes() if target.is_file() else None
-    previous_mode = target.stat().st_mode & 0o777 if previous is not None else 0o644
-    legacy_bytes = legacy.read_bytes() if legacy_present else None
-    legacy_mode = legacy.stat().st_mode & 0o777 if legacy_present else 0o644
+    from agathodaimon._nidus import write as nidus_write
+
     central = [(directory / "00-hestia-http.conf", HESTIA_HTTP.encode()),
                (snippets / "tls.conf", HESTIA_TLS.encode()),
                (snippets / "proxy.conf", HESTIA_PROXY.encode())]
-    central_before = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.is_file() else (None, 0o644)
-                      for path, _ in central}
+    desired = [*central, (target, body_bytes)]
+    if legacy_present:
+        desired.append((legacy, None))
+    before = {path: path.read_bytes() if path.is_file() else None for path, _ in desired}
+    directory.mkdir(parents=True, exist_ok=True)
+    snippets.mkdir(parents=True, exist_ok=True)
+    state: dict[str, Any] = {"validated": False, "rollback": False, "rollback_reloaded": False,
+                             "validation_output": "", "reload_output": ""}
 
-    def replace_config(path: Path, payload: bytes, mode: int) -> None:
-        temporary = path.with_suffix(".tmp")
+    def validate() -> None:
         try:
-            temporary.write_bytes(payload)
-            temporary.chmod(mode)
-            os.replace(temporary, path)
-        finally:
-            temporary.unlink(missing_ok=True)
+            result = _run(["nginx", "-t"], timeout=30)
+            state["validation_output"] = (result.stdout + result.stderr).strip()
+            state["validated"] = True
+        except Exception:
+            state["rollback"] = True
+            raise
 
-    replacement_written = False
-    central_written: list[Path] = []
-    legacy_retired = False
-    validated = False
-    validation_output = ""
-    stage = "stage-nginx"
-    try:
-        for path, payload in central:
-            old, mode = central_before[path]
-            if old != payload:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                replace_config(path, payload, mode)
-                central_written.append(path)
-            if path.read_bytes() != payload:
+    def activate() -> None:
+        rollback = state["rollback"] or not state["validated"]
+        if rollback:
+            # The shared writer calls reload even when a restore failed. Never
+            # reload a mixture: first require every previous file byte back.
+            if any((path.read_bytes() if path.is_file() else None) != old for path, old in before.items()):
+                raise RuntimeError("agathodaimon-nginx-rollback-incomplete")
+            if not state["validated"]:
+                return
+            _run(["nginx", "-t"], timeout=30)
+        try:
+            result = _run(["systemctl", "reload", "nginx"], timeout=30)
+            if rollback:
+                state["rollback_reloaded"] = True
+            else:
+                state["reload_output"] = (result.stdout + result.stderr).strip()
+        except Exception:
+            state["rollback"] = True
+            raise
+
+    def readback() -> None:
+        try:
+            if any((path.read_bytes() if path.is_file() else None) != payload for path, payload in desired):
                 raise RuntimeError("agathodaimon-nginx-readback-failed")
-        if not same:
-            directory.mkdir(parents=True, exist_ok=True)
-            replace_config(target, body_bytes, previous_mode)
-            replacement_written = True
-        if target.read_bytes() != body_bytes:
-            raise RuntimeError("agathodaimon-nginx-readback-failed")
-        stage = "validate-nginx"
-        validation = _run(["nginx", "-t"], timeout=30)
-        validation_output = (validation.stdout + validation.stderr).strip()
-        validated = True
-        if legacy_present:
-            legacy.unlink()
-            legacy_retired = True
-        stage = "activate-nginx"
-        reload = _run(["systemctl", "reload", "nginx"], timeout=30)
-    except (OSError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        output = ((error.stdout or "") + (error.stderr or "")).strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
-        preimages = []
-        if replacement_written:
-            preimages.append((target, previous, previous_mode))
-        if legacy_retired and legacy_bytes is not None:
-            preimages.append((legacy, legacy_bytes, legacy_mode))
-        preimages.extend((path, *central_before[path]) for path in reversed(central_written))
-        failures = []
-        for path, old, mode in preimages:
-            try:
-                if old is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    replace_config(path, old, mode)
-            except OSError as rollback:
-                failures.append(f"{path}: {rollback}")
+            # Nidus does not run verify/reload for an unchanged edit.
+            if not state["validated"]:
+                validate()
+                activate()
+        except Exception:
+            state["rollback"] = True
+            raise
+
+    replacement_written = not same
+    central_written = [str(path) for path, payload in central if before[path] != payload]
+    try:
+        nidus_write.write([{"path": path, "candidate": payload} for path, payload in desired],
+                          verify=validate, reload=activate, readback=readback)
+    except nidus_write.WriteError as error:
+        steps = error.parts["attempt"]["steps"]
+        failures = [f'{row["path"]}: {row.get("error_type", "error")}' for row in steps
+                    if row.get("step") == "restore" and row.get("outcome") == "failed"]
         restored = not failures
-        restore_error = "; ".join(failures) if failures else None
-        rollback_reloaded = False
-        if validated and restored:
-            # A failed activation is held at the previous configuration too.
-            # A validation failure never enters this branch or reloads nginx.
-            try:
-                _run(["nginx", "-t"], timeout=30)
-                _run(["systemctl", "reload", "nginx"], timeout=30)
-                rollback_reloaded = True
-            except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as rollback:
-                restore_error = str(rollback)
+        rollback_errors = [str(item) for item in error.restore_errors]
+        restore_error = "; ".join([*failures, *rollback_errors]) or None
+        failed_phase = error.parts["final_receipt"]["firstMissingSignal"].removesuffix("-failed")
+        stage = {"verify": "validate-nginx", "reload": "activate-nginx", "readback": "stage-nginx"}.get(failed_phase, "stage-nginx")
+        cause = error.cause
+        output = ((cause.stdout or "") + (cause.stderr or "")).strip() if isinstance(cause, subprocess.CalledProcessError) else str(cause)
         return _receipt(
-            "apply_nginx", changed=not restored or (validated and not rollback_reloaded), ok=False, portal=portal,
-            aliases=names[1:], server_names=names, validated=validated,
+            "apply_nginx", changed=not restored or (state["validated"] and not state["rollback_reloaded"]), ok=False, portal=portal,
+            aliases=names[1:], server_names=names, validated=state["validated"],
             reloaded=False, restored=restored, restore_error=restore_error,
-            rollback_reloaded=rollback_reloaded,
+            rollback_reloaded=state["rollback_reloaded"],
             failed_step=stage, command_output=output,
-            validation_output=validation_output if validated else output,
-            firstMissingSignal=f"agathodaimon-nginx-{stage}-{'timeout' if isinstance(error, subprocess.TimeoutExpired) else 'failed'}",
+            validation_output=state["validation_output"] if state["validated"] else output,
+            firstMissingSignal=f"agathodaimon-nginx-{stage}-{'timeout' if isinstance(cause, subprocess.TimeoutExpired) else 'failed'}",
             legacy_path=str(legacy), legacy_present=legacy_present,
-            legacy_retired=legacy_retired and not restored,
+            legacy_retired=legacy_present and not legacy.is_file(),
             legacy_remaining=legacy.is_file(), replacement_written=replacement_written,
-            central_written=[str(path) for path in central_written],
+            central_written=central_written,
             proof="nginx-activation-refused",
         )
     legacy_remaining = legacy.is_file()
     return _receipt(
         "apply_nginx",
-        changed=replacement_written or legacy_retired or bool(central_written),
+        changed=replacement_written or legacy_present or bool(central_written),
         portal=portal,
         aliases=names[1:],
         server_names=names,
         validated=True,
         reloaded=True,
-        validation_output=validation_output,
-        reload_output=(reload.stdout + reload.stderr).strip(),
+        validation_output=state["validation_output"],
+        reload_output=state["reload_output"],
         legacy_path=str(legacy),
         legacy_present=legacy_present,
-        legacy_retired=legacy_retired,
+        legacy_retired=legacy_present and not legacy_remaining,
         legacy_remaining=legacy_remaining,
         replacement_written=replacement_written,
-        central_written=[str(path) for path in central_written],
+        central_written=central_written,
         proof="nginx-validated-and-reloaded",
     )
 
