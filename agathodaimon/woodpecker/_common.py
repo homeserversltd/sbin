@@ -107,7 +107,7 @@ def _deed(receipt, started):
 
 def main_for(verb, arguments=None):
     started = time.monotonic()
-    receipt = {"schema": "caduceus.staff.v1", "ok": False,
+    receipt = {"ok": False,
                "firstMissingSignal": "none", "mutationPerformed": False}
     try:
         if verb == "agent-token":

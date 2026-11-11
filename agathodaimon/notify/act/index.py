@@ -2,7 +2,6 @@
 import json
 import sys
 
-SCHEMA = "caduceus.staff.notify-act.v1"
 
 
 def _pending():
@@ -27,7 +26,7 @@ def main(argv=None):
         request = request.get("payload") if isinstance(request.get("payload"), dict) else {}
     row = request.get("row") if isinstance(request.get("row"), dict) else {}
     kind, verb = row.get("kind"), request.get("verb")
-    receipt = {"schema": SCHEMA, "id": request.get("id"), "verb": verb, "kind": kind}
+    receipt = {"id": request.get("id"), "verb": verb, "kind": kind}
     if verb == "dismiss":
         result = {"ok": True, "state_after": "dismissed"}
     else:

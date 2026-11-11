@@ -8,11 +8,9 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from agathodaimon._load_trace import _caduceus_base_url
 
-SCHEMA = "caduceus.staff.notify-post.v1"
 
 
 def _emit(value):
-    value["schema"] = SCHEMA
     print(json.dumps(value))
     return 0 if value.get("ok") is True else 1
 

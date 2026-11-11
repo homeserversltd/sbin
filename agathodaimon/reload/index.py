@@ -11,7 +11,6 @@ from typing import Callable, Mapping, Sequence
 from agathodaimon._nidus import unit
 from agathodaimon._nidus.run import run
 
-SCHEMA = "caduceus.staff.reload.v1"
 SystemctlRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
@@ -112,7 +111,6 @@ def reload_services(
         entries.append(entry)
 
     return {
-        "schema": SCHEMA,
         "ok": first_missing_signal == "none",
         "services": entries,
         "firstMissingSignal": first_missing_signal,

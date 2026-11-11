@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-SCHEMA = "caduceus.service.door.v1"
 MAX_INPUT_BYTES = 64 * 1024
 SYSTEMCTL = "/usr/bin/systemctl"
 SYSTEMD_RUN = "/usr/bin/systemd-run"
@@ -32,7 +31,6 @@ class Refusal(ValueError):
 
 def _receipt(action: str, ok: bool, *, planned: bool, commands: list[list[str]], signal: str = "none", mutation_performed: bool | None = None, **extra: Any) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "ok": ok,
         "action": action,
         "planned": planned,

@@ -16,8 +16,6 @@ from typing import Any
 from urllib.request import Request, urlopen
 from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
-SCHEMA = "caduceus.household-time.state.v1"
-RECEIPT_SCHEMA = "caduceus.household-time.receipt.v1"
 PROVIDER = "ip-api.com"
 PROVIDER_URL = "http://ip-api.com/json/"
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
@@ -303,5 +301,5 @@ def set_timezone(candidate: str) -> dict[str, Any]:
 
 
 def receipt(primitive: str, *, ok: bool, changed: bool, first_missing_signal: str = "none", **fields: Any) -> dict[str, Any]:
-    return {"schema": RECEIPT_SCHEMA, "primitive": primitive, "ok": ok, "changed": changed,
+    return {"primitive": primitive, "ok": ok, "changed": changed,
             "firstMissingSignal": first_missing_signal, **fields}

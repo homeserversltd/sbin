@@ -715,7 +715,7 @@ def _deed(verb, receipt, started):
 def main_for(verb, arguments=None):
     started = time.monotonic()
     request = _primitive_request(verb, {})
-    receipt = {"schema": "caduceus.staff.v1", "ok": False, "firstMissingSignal": "none",
+    receipt = {"ok": False, "firstMissingSignal": "none",
                "mutationPerformed": False, "observed": None, "could-change": [], "attempt": []}
     if verb == "propose":
         receipt.update(branch=None, pr_url=None)

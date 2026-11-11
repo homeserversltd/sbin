@@ -14,7 +14,6 @@ from typing import Sequence
 
 from agathodaimon.reload import FingerprintGate, reload_services
 
-SCHEMA = "caduceus.matrix.converge.v1"
 FLOOR = ("matrix-synapse-py3", "nginx", "postgresql-client", "logrotate", "openssl", "unbound", "ca-certificates", "curl", "tar", "python3")
 
 
@@ -85,7 +84,7 @@ def update_portals(config_url: str) -> dict:
 def converge(plan: bool, config_url: str, state_root: Path) -> dict:
     paths = {"secret": Path("/etc/matrix-synapse/conf.d/90-birth-secrets.yaml"), "nginx": (Path("/etc/nginx/sites-available/matrix.home.arpa"), Path("/etc/nginx/sites-enabled/matrix.home.arpa"), Path("/etc/nginx/sites-available/agora.home.arpa"), Path("/etc/nginx/sites-enabled/agora.home.arpa")), "unbound": (Path("/etc/unbound/unbound.conf"), Path("/etc/unbound/unbound.conf.d/matrix.conf"))}
     planned = {"floor": list(FLOOR), "secret": str(paths["secret"]), "validate": [["nginx", "-t"], ["unbound-checkconf"], ["logrotate", "--debug", "/etc/logrotate.d/matrix-synapse"]], "config": config_url, "fingerprintState": str(state_root)}
-    if plan: return {"schema": SCHEMA, "ok": True, "planned": True, "changed": None, "plan": planned, "firstMissingSignal": "none"}
+    if plan: return {"ok": True, "planned": True, "changed": None, "plan": planned, "firstMissingSignal": "none"}
     try:
         require_floor()
         secret_created = ensure_secret(paths["secret"])
@@ -94,9 +93,9 @@ def converge(plan: bool, config_url: str, state_root: Path) -> dict:
         portals = update_portals(config_url)
         nginx = reload_if_material_changed("nginx", paths["nginx"], state_root, False)
         unbound = reload_if_material_changed("unbound", paths["unbound"], state_root, False)
-        return {"schema": SCHEMA, "ok": True, "planned": False, "changed": secret_created or nginx["changed"] or unbound["changed"], "secretCreated": secret_created, "validations": validations, **portals, "fingerprints": [nginx, unbound], "firstMissingSignal": "none"}
+        return {"ok": True, "planned": False, "changed": secret_created or nginx["changed"] or unbound["changed"], "secretCreated": secret_created, "validations": validations, **portals, "fingerprints": [nginx, unbound], "firstMissingSignal": "none"}
     except RuntimeError as error:
-        return {"schema": SCHEMA, "ok": False, "planned": False, "changed": False, "firstMissingSignal": str(error)}
+        return {"ok": False, "planned": False, "changed": False, "firstMissingSignal": str(error)}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

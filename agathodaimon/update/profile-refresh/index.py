@@ -4,7 +4,6 @@ import argparse, fcntl, json, os, shutil, subprocess, tempfile
 from pathlib import Path
 from typing import Sequence
 
-SCHEMA = "caduceus.harmonia.profile-refresh.v1"
 PROFILES = ("chia-farmer-01", "chia-harvester-01", "chia-harvester-02")
 SERVICE = """[Unit]
 Description=Refresh the Chia Harmonia profile after its possessed source advances
@@ -49,7 +48,7 @@ def unit_paths(unit_dir: Path) -> dict[str, Path]:
 
 def install(unit_dir: Path, plan: bool) -> dict:
     paths = unit_paths(unit_dir)
-    output = {"schema": SCHEMA, "ok": True, "operation": "install", "planned": plan, "units": {kind: str(path) for kind, path in paths.items()}, "commands": [["systemctl", "daemon-reload"], ["systemctl", "enable", "--now", "agathodaimon-harmonia-profile-refresh.path"]], "firstMissingSignal": "none"}
+    output = {"ok": True, "operation": "install", "planned": plan, "units": {kind: str(path) for kind, path in paths.items()}, "commands": [["systemctl", "daemon-reload"], ["systemctl", "enable", "--now", "agathodaimon-harmonia-profile-refresh.path"]], "firstMissingSignal": "none"}
     if plan: return output
     atomic(paths["service"], SERVICE); atomic(paths["path"], PATH_UNIT)
     steps = [run(command) for command in output["commands"]]
@@ -60,7 +59,7 @@ def install(unit_dir: Path, plan: bool) -> dict:
 def uninstall(unit_dir: Path, plan: bool) -> dict:
     paths = unit_paths(unit_dir)
     commands = [["systemctl", "disable", "--now", "agathodaimon-harmonia-profile-refresh.path"], ["systemctl", "daemon-reload"]]
-    output = {"schema": SCHEMA, "ok": True, "operation": "uninstall", "planned": plan, "units": {kind: str(path) for kind, path in paths.items()}, "commands": commands, "firstMissingSignal": "none"}
+    output = {"ok": True, "operation": "uninstall", "planned": plan, "units": {kind: str(path) for kind, path in paths.items()}, "commands": commands, "firstMissingSignal": "none"}
     if plan: return output
     first = run(commands[0]);
     if first["exit"] != 0 and "not loaded" not in first["stderr"]: output.update(ok=False, firstMissingSignal="harmonia-profile-refresh-unit-uninstall-failed", results=[first]); return output
@@ -72,7 +71,7 @@ def uninstall(unit_dir: Path, plan: bool) -> dict:
 def refresh(profile: str, plan: bool, source: Path, harmonia: str, config: Path, state: Path) -> dict:
     root = state / "receipts" / "profile-refresh"; capsule = Path(tempfile.gettempdir()) / f"agathodaimon-profile-refresh-{profile}"
     commands = [[harmonia, "capsule", "pack", profile, "--out", str(capsule), "--harmonia-root", str(source)], [harmonia, "capsule", "install", str(capsule), "--config-dir", str(config), "--apply"], [harmonia, "run-profile", str(config / "profiles" / profile / "index.json"), "--apply", "--receipt-dir", str(root / "applied-profile")]]
-    answer = {"schema": SCHEMA, "ok": True, "operation": "refresh", "profile": profile, "planned": plan, "commands": commands, "receiptRoot": str(root), "firstMissingSignal": "none"}
+    answer = {"ok": True, "operation": "refresh", "profile": profile, "planned": plan, "commands": commands, "receiptRoot": str(root), "firstMissingSignal": "none"}
     if plan: return answer
     if not (source / "profiles" / profile / "index.json").is_file(): return {**answer, "ok": False, "firstMissingSignal": "harmonia-profile-refresh-profile-missing"}
     state.mkdir(parents=True, exist_ok=True); lock = state / "profile-refresh.lock"
@@ -93,6 +92,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         value = install(args.unit_dir, args.plan) if args.install else uninstall(args.unit_dir, args.plan) if args.uninstall else refresh(selected(args.profile), args.plan, args.source, args.harmonia, args.config, args.state)
-    except ValueError as error: value = {"schema": SCHEMA, "ok": False, "firstMissingSignal": str(error)}
+    except ValueError as error: value = {"ok": False, "firstMissingSignal": str(error)}
     print(json.dumps(value, sort_keys=True)); return 0 if value["ok"] else 1
 if __name__ == "__main__": raise SystemExit(main())

@@ -20,7 +20,7 @@ def main(argv=None):
             sys.stdin = io.StringIO(raw)
             request = _envelope.read(known_fields=("action",))
         except _envelope.EnvelopeError as error:
-            print(json.dumps({"schema": "caduceus.staff.screen-supervisor.v1", "ok": False, "firstMissingSignal": str(error)}))
+            print(json.dumps({"ok": False, "firstMissingSignal": str(error)}))
             return 1
         finally:
             sys.stdin = original_stdin
@@ -31,7 +31,7 @@ def main(argv=None):
     else:
         action = None
     if action != "run":
-        receipt = {"schema": "caduceus.staff.screen-supervisor.v1", "ok": False, "firstMissingSignal": "screen-supervisor-action-invalid"}
+        receipt = {"ok": False, "firstMissingSignal": "screen-supervisor-action-invalid"}
         print(json.dumps(_envelope.attach(receipt, request) if request else receipt))
         return 1
     path = str(Path(__file__).with_name("sway-seat-screen-supervisor"))
@@ -45,14 +45,14 @@ def main(argv=None):
         with contextlib.redirect_stdout(sys.stderr):
             module.main()
     except (OSError, RuntimeError) as error:
-        receipt = {"schema": "caduceus.staff.screen-supervisor.v1", "ok": False, "firstMissingSignal": str(error)}
+        receipt = {"ok": False, "firstMissingSignal": str(error)}
         print(json.dumps(_envelope.attach(receipt, request) if request else receipt))
         return 1
     except SystemExit as error:
         if error.code not in (None, 0):
-            receipt = {"schema": "caduceus.staff.screen-supervisor.v1", "ok": False, "firstMissingSignal": str(error.code)}
+            receipt = {"ok": False, "firstMissingSignal": str(error.code)}
             print(json.dumps(_envelope.attach(receipt, request) if request else receipt))
             return 1
-    receipt = {"schema": "caduceus.staff.screen-supervisor.v1", "ok": True, "firstMissingSignal": "none"}
+    receipt = {"ok": True, "firstMissingSignal": "none"}
     print(json.dumps(_envelope.attach(receipt, request) if request else receipt))
     return 0

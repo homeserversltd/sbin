@@ -6,7 +6,6 @@ import subprocess
 import sys
 from typing import Any
 
-SCHEMA = "caduceus.staff.update-service.v1"
 TIMER_UNIT = "harmonia.timer"
 
 
@@ -39,7 +38,6 @@ def _receipt(
     first_missing_signal: str = "none",
 ) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "ok": ok,
         "timer": timer,
         "enabled": enabled,

@@ -20,7 +20,7 @@ def main(argv=None):
             sys.stdin = io.StringIO(raw)
             request = _envelope.read(known_fields=("action",))
         except _envelope.EnvelopeError as error:
-            print(json.dumps({"schema": "caduceus.staff.owner-group.v1", "ok": False, "firstMissingSignal": str(error)}))
+            print(json.dumps({"ok": False, "firstMissingSignal": str(error)}))
             return 1
         finally:
             sys.stdin = original_stdin
@@ -33,7 +33,7 @@ def main(argv=None):
     if action == "observe":
         action = "check"
     if action not in ("check", "apply"):
-        receipt = {"schema": "caduceus.staff.owner-group.v1", "ok": False, "firstMissingSignal": "owner-group-action-invalid"}
+        receipt = {"ok": False, "firstMissingSignal": "owner-group-action-invalid"}
         print(json.dumps(_envelope.attach(receipt, request) if request else receipt))
         return 1
     spec = importlib.util.spec_from_file_location("owner_group_actuator", Path(__file__).with_name("owner-group.py"))
@@ -56,6 +56,6 @@ def main(argv=None):
         sys.stderr.write(error_text)
     signal = re.search(r"(?:^| )signal=([^\s]+)", error_text)
     missing = (observed or (signal.group(1) if signal else "owner-group-failed")) if status else "none"
-    receipt = {"schema": "caduceus.staff.owner-group.v1", "ok": status == 0, "action": action, "observed": observed, "firstMissingSignal": missing}
+    receipt = {"ok": status == 0, "action": action, "observed": observed, "firstMissingSignal": missing}
     print(json.dumps(_envelope.attach(receipt, request) if request else receipt))
     return status
