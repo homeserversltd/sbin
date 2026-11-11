@@ -15,7 +15,6 @@ from agathodaimon.face._shared import (
     _sway_command, _sway_json, owner_session_environment,
 )
 
-SCHEMA = "agathodaimon.face.settings-relaunch.v1"
 CLI = "/usr/local/sbin/agathodaimon/cli.py"
 GUI = Path("/usr/local/sbin/agathodaimon/gui")
 LAUNCH = CLI + " gui settings"
@@ -151,7 +150,7 @@ def _wait_for_window(environment: dict[str, str], previous: set[int], uid: int) 
 
 
 def relaunch() -> dict:
-    receipt = {"schema": SCHEMA, "ok": True, "relaunched": 0, "kept": 0, "firstMissingSignal": "none", "_attempted": False}
+    receipt = {"ok": True, "relaunched": 0, "kept": 0, "firstMissingSignal": "none", "_attempted": False}
     def failure(name: str) -> None:
         receipt["ok"] = False
         if receipt["firstMissingSignal"] == "none":
@@ -234,7 +233,7 @@ def main(argv=None) -> int:
     try:
         result = relaunch()
     except Exception:
-        result = {"schema": SCHEMA, "ok": False, "relaunched": 0, "kept": 0,
+        result = {"ok": False, "relaunched": 0, "kept": 0,
                   "firstMissingSignal": "face-settings-relaunch-unexpected-failure", "_attempted": False}
     if result.pop("_attempted"):
         from agathodaimon._deed import send

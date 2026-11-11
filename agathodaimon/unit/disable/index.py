@@ -12,6 +12,5 @@ def main(argv=None):
     else:
         receipt = _control.control("disable", request.payload.get("unit"), request.payload.get("scope"), request.payload.get("deadline_seconds", 30))
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "agathodaimon.unit.disable.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

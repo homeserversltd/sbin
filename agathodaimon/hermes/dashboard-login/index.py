@@ -77,7 +77,7 @@ def _deed(receipt, started):
 
 def main(arguments=None):
     started = time.monotonic()
-    receipt = {"schema": "caduceus.staff.v1", "ok": False, "firstMissingSignal": "none",
+    receipt = {"ok": False, "firstMissingSignal": "none",
                "mutationPerformed": False, "file": None, "restart": None, "restarted": False, "argv": []}
     try:
         password = _password(list(arguments or []))

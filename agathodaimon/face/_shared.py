@@ -42,7 +42,6 @@ class FaceError(ValueError):
         self.fields = fields
 
 
-_BENCHMARK_SCHEMA = "caduceus.benchmark.v1"
 _SWAY_IPC_MAGIC = b"i3-ipc"
 _SWAY_IPC_HEADER_SIZE = 14
 _SWAY_IPC_MAX_REPLY_BYTES = 16 * 1024 * 1024

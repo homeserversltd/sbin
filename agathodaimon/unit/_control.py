@@ -5,7 +5,6 @@ import re
 import subprocess
 
 
-SCHEMA = "agathodaimon.unit.control.v1"
 OWNER = "owner"  # Same owner identity as console/restart.
 ACTIONS = frozenset({"start", "stop", "restart", "enable", "disable", "status"})
 UNIT = re.compile(r"[A-Za-z0-9_:][A-Za-z0-9_.:-]*(?:@[A-Za-z0-9_:][A-Za-z0-9_.:-]*)?\.(?:service|target|mount|path)\Z")
@@ -31,7 +30,7 @@ def _show(prefix, unit):
 
 
 def control(action, unit, scope, deadline_seconds=30, *, planned=False):
-    receipt = {"schema": SCHEMA, "ok": False, "action": action, "unit": unit, "scope": scope,
+    receipt = {"ok": False, "action": action, "unit": unit, "scope": scope,
                "command": None, "returncode": None,
                "observed": {name: None for name in PROPERTIES.values()},
                "readback": {name: None for name in PROPERTIES.values()},

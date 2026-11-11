@@ -11,7 +11,6 @@ from typing import Sequence
 
 from agathodaimon._envelope import EnvelopeError, attach, read
 
-_SCHEMA = "agathodaimon.appliance.sudo-passwordless.v1"
 _DIRECTORY = "/etc/sudoers.d"
 _TARGET = "owner-nopasswd"
 _PATH = f"{_DIRECTORY}/{_TARGET}"
@@ -125,7 +124,6 @@ def _emit(
     request,
 ) -> int:
     receipt = {
-        "schema": _SCHEMA,
         "ok": ok,
         "passwordless": passwordless,
         "fragment_present": fragment_present,

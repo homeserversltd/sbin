@@ -11,7 +11,6 @@ import time
 from decimal import Decimal, InvalidOperation
 from typing import Sequence
 
-_SCHEMA = "agathodaimon.appliance.journal-vacuum.v1"
 _MAX_REQUEST = 65536
 _MAX_LINE_BYTES = 8192
 _TIMEOUT_SECONDS = 30
@@ -105,7 +104,7 @@ def _run_vacuum() -> tuple[int, int]:
 
 
 def _receipt(ok: bool, signal: str, freed_bytes: int = 0) -> dict[str, object]:
-    return {"schema": _SCHEMA, "ok": ok, "firstMissingSignal": signal, "freed_bytes": freed_bytes}
+    return {"ok": ok, "firstMissingSignal": signal, "freed_bytes": freed_bytes}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

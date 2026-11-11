@@ -16,7 +16,6 @@ from agathodaimon.keyman._common import (
     BACKEND,
     MAX_OUTPUT,
     PREFIX,
-    SCHEMA,
     _collect_secret_values,
     _emit,
     _scrub,
@@ -47,7 +46,6 @@ def _receipt(
     backend_receipt: Any = None,
 ) -> dict[str, Any]:
     receipt: dict[str, Any] = {
-        "schema": SCHEMA,
         "ok": signal_name == "none",
         "firstMissingSignal": signal_name,
         "mutationPerformed": mutation,

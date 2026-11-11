@@ -8,7 +8,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-SCHEMA = "caduceus.staff.v1"
 BACKEND = "keyman-rust-crown"
 PREFIX = ["/usr/bin/sudo", "-n", "/vault/keyman/keyman"]
 MAX_OUTPUT = 1024 * 1024

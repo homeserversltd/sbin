@@ -278,7 +278,6 @@ def _apply() -> int:
     final_blocker = final is None
     converged = final is True
     receipt = {
-        "schema": "agathodaimon.forgejo-credential.apply.v1",
         "kernel": "caduceus.staff.v1",
         "routine": "agathodaimon.exousia.forgejo-credential",
         "target": {

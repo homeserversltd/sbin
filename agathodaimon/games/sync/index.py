@@ -321,7 +321,7 @@ def _sync_main():
          'artwork_cache': ensure_cached_artwork(game)}
         for game in games
     ]
-    receipt = {'ok': True, 'schema': 'arch_game_sync.local.receipt.v2', 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'artwork': artwork, 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
+    receipt = {'ok': True, 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'artwork': artwork, 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
     print(json.dumps(receipt, sort_keys=True))
 
 

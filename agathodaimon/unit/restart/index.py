@@ -17,6 +17,5 @@ def main(argv=None):
         else:
             receipt = _control.control("restart", request.payload.get("unit"), request.payload.get("scope"), request.payload.get("deadline_seconds", 30), planned=planned)
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "agathodaimon.unit.restart.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

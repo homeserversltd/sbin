@@ -6,7 +6,6 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-SCHEMA = "caduceus.staff.appliance-service.v1"
 CONFIG_PATH = Path("/etc/appliance/config.json")
 ACTIONS = {"start", "stop", "restart", "reload", "enable", "disable", "status"}
 CERT_DEPENDENTS = {"forgejo.service": "restart", "nginx.service": "reload"}
@@ -60,7 +59,6 @@ def _receipt(
     first_missing_signal: str,
 ) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "ok": ok,
         "active": active,
         "enabled": enabled,

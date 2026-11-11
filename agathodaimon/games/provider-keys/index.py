@@ -45,7 +45,6 @@ def _read() -> dict[str, str]:
 def _status() -> dict[str, Any]:
     values = _read()
     return {
-        "schema": "arch_game_sync.provider_keys.status.v1",
         "ok": True,
         "path": str(provider_path()),
         "configured": {key: bool(values.get(key)) for key in SUPPORTED_KEYS},
@@ -96,7 +95,7 @@ def _save(values: Mapping[str, Any]) -> dict[str, Any]:
             os.close(dirfd)
     finally:
         temp.unlink(missing_ok=True)
-    return {"schema":"arch_game_sync.provider_keys.save.v1","ok":True,"path":str(target),"changed":old != content,"preserved_existing":True,"configured_names":[key for key in SUPPORTED_KEYS if merged.get(key)],"mode":"0600","mutationPerformed":True}
+    return {"ok":True,"path":str(target),"changed":old != content,"preserved_existing":True,"configured_names":[key for key in SUPPORTED_KEYS if merged.get(key)],"mode":"0600","mutationPerformed":True}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -124,7 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 envelope = loaded
             result = _save(_payload(envelope))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        print(json.dumps({"schema":"arch_game_sync.provider_keys.v1","ok":False,"error":str(exc),"mutationPerformed":False}, sort_keys=True))
+        print(json.dumps({"ok":False,"error":str(exc),"mutationPerformed":False}, sort_keys=True))
         return 1
     print(json.dumps(result, sort_keys=True))
     return 0

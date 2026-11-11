@@ -5,7 +5,6 @@ from typing import Sequence
 
 OWNER="owner"
 SUNSHINE_UNIT="app-dev.lizardbyte.app.Sunshine.service"; SEAT_UNIT="sddm.service"
-SCHEMA="agathodaimon.console.restart.v1"
 
 
 def _result(argv, completed=None, *, error=None):
@@ -34,13 +33,13 @@ def _active_readback(unit,user):
 
 
 def _refusal(degree,signal,*,command_results=None,**fields):
-    return {"schema":SCHEMA,"ok":False,"degree":degree,"units_touched":[],"processes_touched":[],"command_results":command_results or [],"mutation_performed":False,"first_missing_signal":signal,**fields}
+    return {"ok":False,"degree":degree,"units_touched":[],"processes_touched":[],"command_results":command_results or [],"mutation_performed":False,"first_missing_signal":signal,**fields}
 
 
 def restart(degree):
     if degree not in {"stream","seat"}: return _refusal(degree,"console-restart-degree-required-one-of-stream-seat")
     unit=SUNSHINE_UNIT if degree=="stream" else SEAT_UNIT; user=degree=="stream"; present,checks=_unit_state(unit,user)
-    base={"schema":SCHEMA,"ok":False,"degree":degree,"units_touched":[],"processes_touched":[],"command_results":checks,"mutation_performed":False,"first_missing_signal":f"console-restart-{degree}-unit-absent","target_unit":unit}
+    base={"ok":False,"degree":degree,"units_touched":[],"processes_touched":[],"command_results":checks,"mutation_performed":False,"first_missing_signal":f"console-restart-{degree}-unit-absent","target_unit":unit}
     if not present: return base
     prefix=["systemctl"]+(["--user","-M",f"{OWNER}@.host"] if user else []); outcome=_command([*prefix,"restart",unit]); results=[*checks,outcome]
     attempted={**base,"units_touched":[unit],"command_results":results,"mutation_performed":True}

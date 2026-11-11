@@ -122,7 +122,6 @@ def _apply() -> int:
 
     converged = final == "/usr/local/sbin"
     receipt = {
-        "schema": "agathodaimon.staff-path.apply.v1",
         "kernel": "caduceus.staff.v1",
         "routine": "agathodaimon.python.staff-path",
         "target": {"path": str(path) if path is not None else None},

@@ -155,7 +155,6 @@ def _receipt(operation: str, ok: bool, signal: str, *, changed: bool | None = Fa
              details: Any = None, observed: Any = None, attempt: Any = None,
              final: Any = None, could_change: list[str] | None = None) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "ok": ok,
         "firstMissingSignal": signal,
         "mutationPerformed": changed,
@@ -705,7 +704,7 @@ def main(argv=None):
     if args and args != ["--help"]:
         print(json.dumps(_failure("linker", "linker-verb-unknown"), separators=(",", ":")))
         return 1
-    print(json.dumps({"schema": SCHEMA, "ok": True, "firstMissingSignal": "none",
+    print(json.dumps({"ok": True, "firstMissingSignal": "none",
                       "noun": "linker",
                       "verbs": ["browse", "delete", "deploy", "hardlink-scan", "mkdir", "rename", "tui"],
                       "mutationPerformed": False}, separators=(",", ":")))
