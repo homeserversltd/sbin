@@ -42,7 +42,7 @@ class IdentityClaimCoordinator:
         candidate = ipaddress.IPv4Address(address)
         return any(ipaddress.IPv4Address(boundary["start"]) <= candidate <= ipaddress.IPv4Address(boundary["end"]) for boundary in boundaries)
 
-    def _resolve_ip(self, explicit: str | None, fresh: dict[str, Any]) -> str:
+    def _resolve_ip(self, explicit: str | None, fresh: dict[str, Any], exempt_name: str | None = None) -> str:
         boundaries = fresh["boundary"]
         if not boundaries:
             raise IdentityError("current-kea-boundary-unavailable")
@@ -53,7 +53,7 @@ class IdentityClaimCoordinator:
                 raise IdentityError("claim-ip-malformed") from exc
             if not self._in_boundaries(explicit, boundaries):
                 raise IdentityError("claim-ip-outside-current-kea-boundary")
-            if explicit in self.dhcp.taken_addresses(self.dns):
+            if explicit in self.dhcp.taken_addresses(self.dns, exempt_name=exempt_name):
                 raise IdentityError("claim-ip-taken")
             return explicit
         return self.dhcp._get_next_available_reserved_ip(self.dns)
@@ -107,7 +107,7 @@ class IdentityClaimCoordinator:
                 existing = next((item for item in fresh["reservations"] if item["mac"] == mac), None)
                 if existing and existing["hostname"].lower() == hostname.lower() and any(record["name"] == canonical.rstrip(".") and existing["ip"] in record["a"] for record in fresh["dns"]["devices"]):
                     return {"schema": "caduceus.staff.network.identity.v1", "actuator": "network.identity.claim", "state": "noop", "request_id": request_key, "first_failing_boundary": "none", "mutationPerformed": False}
-                address = self._resolve_ip(ip, fresh)
+                address = self._resolve_ip(ip, fresh, exempt_name=canonical)
                 self._validate_candidates(mac, address, hostname, fresh)
                 dhcp_preimage, dns_preimage = self.dhcp.get_config(), self.dns.owned_preimage()
                 journal = self._journal(request_key, dhcp_preimage, dns_preimage)

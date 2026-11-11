@@ -267,7 +267,7 @@ class DhcpManager:
         start, end = self._get_reserved_range()
         return value is not None and int(ipaddress.IPv4Address(start)) <= value <= int(ipaddress.IPv4Address(end))
 
-    def taken_addresses(self, dns=None) -> set[str]:
+    def taken_addresses(self, dns=None, exempt_name: str | None = None) -> set[str]:
         from agathodaimon.network.dns._manager import DnsError, DnsManager
 
         config = self.get_config()
@@ -288,7 +288,9 @@ class DhcpManager:
                     options(child)
         options(dhcp)
         try:
-            taken.update(row["target"] for row in (dns or DnsManager())._all_local_records() if row["type"] == "A")
+            exempt = exempt_name.rstrip(".").lower() if exempt_name else None
+            taken.update(row["target"] for row in (dns or DnsManager())._all_local_records()
+                         if row["type"] == "A" and row["name"] != exempt)
         except (DnsError, OSError) as exc:
             raise DhcpError(str(exc)) from exc
         return taken
@@ -309,19 +311,25 @@ class DhcpManager:
         config = self.get_config()
         existing = self.get_reservations()
         match = next((item for item in existing if item["hw-address"].strip().lower().replace("-", ":") == hw_address), None)
-        if ip_address is not None and self._validate_ip_in_pool(ip_address):
-            raise DhcpError("dhcp-ip-inside-pool")
         if match is not None:
             if ip_address is None or ip_address == match["ip-address"]:
                 return {**match, "hw-address": hw_address}
             raise DhcpError("reservation with this MAC address already exists")
+        if ip_address is not None and self._validate_ip_in_pool(ip_address):
+            raise DhcpError("dhcp-ip-inside-pool")
         if ip_address is None:
             ip_address = self._get_next_available_reserved_ip()
         elif not self._validate_ip_address(ip_address) or not self._validate_ip_in_reserved_range(ip_address):
             start, end = self._get_reserved_range()
             raise DhcpError(f"IP address is outside the reserved range ({start} - {end})")
-        elif ip_address in self.taken_addresses():
-            raise DhcpError("dhcp-ip-taken")
+        else:
+            from agathodaimon.network.dns._manager import DnsError, DnsManager
+            try:
+                canonical = DnsManager.canonical_name(hostname) if hostname else None
+            except DnsError as exc:
+                raise DhcpError(str(exc)) from exc
+            if ip_address in self.taken_addresses(exempt_name=canonical):
+                raise DhcpError("dhcp-ip-taken")
         subnets = self._subnets(config)
         if not subnets:
             raise DhcpError("no subnet4 configuration found")
