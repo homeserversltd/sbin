@@ -1,5 +1,6 @@
 {
   "children": [
-    "list"
+    "list",
+    "add"
   ]
 }

@@ -1,0 +1,31 @@
+{
+  "children": [],
+  "mutation_allowed": true,
+  "sclerite": {
+    "name": "unbound",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {"band": true, "verbs": [], "routes": []}
+      },
+      "unbound": {
+        "band": true,
+        "verbs": [],
+        "routes": ["/api/v1/network/identity/device/add"],
+        "administrative": {"band": true, "verbs": [], "routes": ["POST /api/v1/network/identity/device/add"]}
+      }
+    }
+  },
+  "serve": [
+    {"stage_id": "reserve", "snake": "network/dhcp/add-reservation", "arguments": {"hw_address": {"$ref": "request.payload.mac"}, "ip_address": {"$ref": "request.payload.ip"}, "hostname": {"$ref": "request.payload.hostname"}}, "deadline_seconds": 30},
+    {"stage_id": "name", "snake": "network/dns/device-name/create", "arguments": {"hostname": {"$ref": "request.payload.hostname"}, "ip": {"$ref": "stages.reserve.receipt.result.ip-address"}, "move": {"$ref": "request.payload.move"}}, "depends_on": ["reserve"], "deadline_seconds": 30}
+  ],
+  "rescue": [
+    {"stage_id": "remove", "snake": "network/dhcp/remove-reservation", "arguments": {"identifier": {"$ref": "stages.reserve.receipt.result.created"}}, "on_refusal_of": ["name"], "deadline_seconds": 20}
+  ],
+  "finally": [
+    {"stage_id": "readback", "snake": "network/identity/device/list", "deadline_seconds": 10}
+  ]
+}
