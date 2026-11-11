@@ -1389,9 +1389,13 @@ def main(argv=None):
         stream_target = _slash_target(args[0]) if len(args) == 1 and "/" in args[0] else None
         stream = (stream_target is not None and stream_target.is_file()
                   and _index(stream_target.parent).get("envelope", {}).get("stdin") == "stream")
+        raw_target = _slash_target(args[0]) if 1 <= len(args) <= 2 and "/" in args[0] else None
+        raw_stdout = (raw_target is not None and raw_target.is_file()
+                      and _index(raw_target.parent).get("envelope", {}).get("stdout") == "raw")
     except (OSError, ValueError, TypeError):
         stream = False
-    if stream:
+        raw_stdout = False
+    if stream or raw_stdout:
         return _main(argv, folder, seats)
     destination = sys.stdout
     output = _StampOutput(destination)
@@ -1407,12 +1411,12 @@ def main(argv=None):
     except UnicodeDecodeError:
         raw = ""
     answer = None
-    if _stamp_target and raw.lstrip().startswith("{") and len(raw.splitlines()) == 1:
+    if _stamp_target:
         try:
             answer = json.loads(raw)
         except (ValueError, TypeError):
             pass
-    if isinstance(answer, dict) and isinstance(answer.get("ok"), bool) and answer.get("schema") not in ("caduceus.chord.receipt.v1", "agathodaimon.front-door.v1"):
+    if isinstance(answer, dict) and isinstance(answer.get("ok"), bool) and answer.get("schema") != "caduceus.chord.receipt.v1":
         sys.stdout.write(json.dumps(_stamp_receipt(answer, _stamp_target)) + "\n")
     else:
         _emit_stamp_bytes(destination, captured)

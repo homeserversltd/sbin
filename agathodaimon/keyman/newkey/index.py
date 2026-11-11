@@ -379,7 +379,6 @@ def _receipt_output(output: bytearray) -> bool:
         and isinstance(value.get("firstMissingSignal"), str)
         and (
             value.get("operation") == "newkey"
-            or value.get("schema") == "agathodaimon.front-door.v1"
             or value.get("schema") == "caduceus.staff.receipt.v1"
         )
     )
