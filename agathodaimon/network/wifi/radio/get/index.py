@@ -7,7 +7,7 @@ from agathodaimon.network.wifi import _nmcli
 
 def main(argv=None):
     result = _nmcli._receipt("radio-get", True)
-    result.update(schema="caduceus.network.wifi.radio.get.v1",
+    result.update(
                   present=False, enabled=False, device=None)
     if Path("/usr/bin/nmcli").exists():
         try:

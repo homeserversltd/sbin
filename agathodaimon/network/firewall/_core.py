@@ -18,7 +18,6 @@ from typing import Any, Callable, Sequence
 from agathodaimon._envelope import EnvelopeError
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
-SCHEMA = "caduceus.network.firewall.v1"
 DEFAULT_POLICY = Path("/etc/unbound/unbound.conf.d/agathodaimon-child-policy.conf")
 DEFAULT_NFT = Path("/etc/nftables.d/caduceus-child-filter.nft")
 CHECKCONF = Path("/usr/sbin/unbound-checkconf")
@@ -63,7 +62,6 @@ class FileImage:
 def _receipt(action: str, ok: bool, changed: bool, message: str,
              revision: str | None, first_missing_signal: str = "none", **extra: Any) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "action": action,
         "ok": ok,
         "changed": changed,

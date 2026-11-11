@@ -11,6 +11,5 @@ def main(argv=None):
     else:
         receipt = _nmcli._dispatch({"kind": 'radio', **request.payload})
         receipt = _envelope.attach(receipt, _nmcli.redacted_request(request))
-    receipt["schema"] = 'caduceus.network.wifi.radio.set.v1'
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

@@ -26,7 +26,6 @@ def redacted_request(request):
                    raw_envelope=json.dumps(value, separators=(',', ':')))
 
 
-SCHEMA = "caduceus.staff.network-wifi.v1"
 COMMAND_TIMEOUT = 10
 MAX_FIELD_BYTES = 128
 MAX_DNS_BYTES = 256
@@ -38,7 +37,6 @@ class WifiRefused(ValueError):
 
 def _receipt(action: str, ok: bool, signal: str = "none") -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "ok": ok,
         "action": action,
         "completed": ok,

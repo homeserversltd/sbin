@@ -15,7 +15,6 @@ def main(argv=None):
         else:
             value = _core.dispatch({"action": 'unregister', **request.payload})
         value = _envelope.attach(value, request)
-    value["schema"] = 'caduceus.network.firewall.unregister.v1'
     print(json.dumps(value, separators=(",", ":"), sort_keys=True))
     return 0 if value.get("ok") is True else 1
 
