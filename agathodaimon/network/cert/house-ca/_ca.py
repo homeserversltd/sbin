@@ -935,12 +935,13 @@ def _tailnet_name() -> str:
         raise ValueError("agathodaimon-portal-tailnet-name-unavailable") from None
 
 
-HESTIA_HTTP = """ssl_protocols TLSv1.2 TLSv1.3;
+HESTIA_HTTP = """map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+"""
+HESTIA_TLS = """ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
 ssl_prefer_server_ciphers off;
 ssl_session_cache shared:HestiaSSL:10m;
 ssl_session_timeout 10m;
-map $http_upgrade $connection_upgrade { default upgrade; '' close; }
 """
 HESTIA_PROXY = """proxy_http_version 1.1;
 proxy_set_header Upgrade $http_upgrade;
@@ -987,7 +988,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
     target = directory / f"agathodaimon-{portal.replace('.', '-')}.conf"
     legacy = directory / f"caduceus-{portal.replace('.', '-')}.conf"
     rendered = ' '.join([*(_nginx_location(loc['path'], loc['upstream'], snippets / 'proxy.conf', policy['read_timeout'], loc.get('strip_authorization', False)) for loc in locations or []), _nginx_location('/', upstream, snippets / 'proxy.conf', policy['read_timeout'])])
-    shared = f'client_max_body_size {policy["max_body_size"]};'
+    shared = f'include "{snippets / "tls.conf"}"; client_max_body_size {policy["max_body_size"]};'
     body = f"server {{ listen 443 ssl; server_name {' '.join(names)}; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered} }}\n"
     if tailnet_port is not None:
         body += f"server {{ listen *:{tailnet_port} ssl; ssl_certificate {certificate}; ssl_certificate_key {key_path}; {shared} {rendered} }}\n"
@@ -1020,6 +1021,7 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
     legacy_bytes = legacy.read_bytes() if legacy_present else None
     legacy_mode = legacy.stat().st_mode & 0o777 if legacy_present else 0o644
     central = [(directory / "00-hestia-http.conf", HESTIA_HTTP.encode()),
+               (snippets / "tls.conf", HESTIA_TLS.encode()),
                (snippets / "proxy.conf", HESTIA_PROXY.encode())]
     central_before = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.is_file() else (None, 0o644)
                       for path, _ in central}
@@ -1065,25 +1067,23 @@ def apply_nginx(portal: str, upstream: str, certificate: str, key_path: str, ali
         reload = _run(["systemctl", "reload", "nginx"], timeout=30)
     except (OSError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         output = ((error.stdout or "") + (error.stderr or "")).strip() if isinstance(error, subprocess.CalledProcessError) else str(error)
-        restored = False
-        restore_error = None
-        try:
-            if replacement_written:
-                if previous is None:
-                    target.unlink(missing_ok=True)
-                else:
-                    replace_config(target, previous, previous_mode)
-            if legacy_retired and legacy_bytes is not None:
-                replace_config(legacy, legacy_bytes, legacy_mode)
-            for path in reversed(central_written):
-                old, mode = central_before[path]
+        preimages = []
+        if replacement_written:
+            preimages.append((target, previous, previous_mode))
+        if legacy_retired and legacy_bytes is not None:
+            preimages.append((legacy, legacy_bytes, legacy_mode))
+        preimages.extend((path, *central_before[path]) for path in reversed(central_written))
+        failures = []
+        for path, old, mode in preimages:
+            try:
                 if old is None:
                     path.unlink(missing_ok=True)
                 else:
                     replace_config(path, old, mode)
-            restored = True
-        except OSError as rollback:
-            restore_error = str(rollback)
+            except OSError as rollback:
+                failures.append(f"{path}: {rollback}")
+        restored = not failures
+        restore_error = "; ".join(failures) if failures else None
         rollback_reloaded = False
         if validated and restored:
             # A failed activation is held at the previous configuration too.
