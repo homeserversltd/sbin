@@ -230,6 +230,7 @@ class DnsManager:
         except WriteError as exc:
             raise exc.cause
 
+    @identity_locked
     def _restore(self, previous: bytes | None, mode: int) -> None:
         self._replace_bytes(self.target, previous, mode)
         self._validate_live()
@@ -1014,6 +1015,7 @@ class DnsManager:
 
 
 
+@identity_locked
 def create_alias(alias_label: str, hostname: str, *, manager: DnsManager | None = None) -> dict[str, Any]:
     """Compose alias admission without rewriting an already-correct legacy A.
 
