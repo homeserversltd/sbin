@@ -1174,7 +1174,10 @@ def apply_nginx(portal: str, upstream: str | None, certificate: str, key_path: s
                  "tailnet_port": tailnet_port, "locations": locations, **policy}
     seat, files = _hestia_inputs(route_row)
     body = _hestia_render(route_row, seat, files, snippets, certificate, key_path)
-    skipped_fields = sorted(set(route_row) - set(seat.get("fields", {}))) if seat else []
+    known_fields = set(seat.get("fields", {})) if seat else set()
+    if seat:
+        known_fields.update(note.get("row_field", name.replace("-", "_")) for name, note in seat.get("notes", {}).items())
+    skipped_fields = sorted(set(route_row) - known_fields) if seat else []
     body_bytes = body.encode("utf-8")
     same = target.is_file() and target.read_bytes() == body_bytes
     legacy_present = legacy.is_file()
