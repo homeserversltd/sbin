@@ -52,6 +52,5 @@ def main(argv=None):
         receipt['served_fields'] = served
     if request is not None:
         receipt = _envelope.attach(receipt, request)
-    receipt['schema'] = 'caduceus.network.cert.house-ca.portal-admit.v1'
     print(json.dumps(receipt, separators=(',', ':')))
     return 0 if receipt.get('ok') else 1

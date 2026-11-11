@@ -148,7 +148,6 @@ def _generation() -> int:
 
 def _receipt(primitive: str, *, changed: bool, dry_run: bool = False, ok: bool = True, **fields: Any) -> dict[str, Any]:
     return {
-        "schema": f"caduceus.staff.house_ca.{primitive}.v1",
         "ok": ok,
         "primitive": primitive,
         "role": _profile(),

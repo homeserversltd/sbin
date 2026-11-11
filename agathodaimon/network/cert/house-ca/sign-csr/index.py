@@ -29,6 +29,5 @@ def main(argv=None):
             container["csrPem"] = "[REDACTED]"
         request = replace(request, value=carried, raw_envelope=json.dumps(carried))
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.cert.house-ca.sign-csr.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt.get("ok") else 1

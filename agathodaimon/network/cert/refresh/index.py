@@ -19,7 +19,6 @@ from urllib.parse import urlsplit
 
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
 
-SCHEMA = "caduceus.staff.v1"
 MAX_INPUT_BYTES = 64 * 1024
 MAX_CONFIG_BYTES = 8 * 1024 * 1024
 OPENSSL = "/usr/bin/openssl"
@@ -70,7 +69,6 @@ def _receipt(ok: bool, signal: str = "none", *, observed: Any = None,
              could_change: Sequence[str] = (), attempt: Any = None, final: Any = None,
              mutation: bool = False, **fields: Any) -> dict[str, Any]:
     return {
-        "schema": SCHEMA,
         "ok": ok,
         "action": "refresh",
         "firstMissingSignal": signal,

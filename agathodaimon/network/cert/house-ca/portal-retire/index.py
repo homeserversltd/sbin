@@ -28,6 +28,5 @@ def main(argv=None):
         receipt = ca._refusal("error", signal)
     if request is not None:
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.cert.house-ca.portal-retire.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt.get("ok") else 1
