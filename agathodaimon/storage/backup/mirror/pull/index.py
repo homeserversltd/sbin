@@ -21,7 +21,6 @@ if spec is None or spec.loader is None:
     raise RuntimeError("nas-sync-guard-unavailable")
 nas = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(nas)
-SCHEMA = "caduceus.backup.mirror.pull.v1"
 
 
 def wipe(buf):
@@ -131,7 +130,7 @@ def destination():
 
 def pull(metadata):
     started = time.monotonic()
-    result = {"schema": SCHEMA, "ok": False, "converged": False, "outcome": "refused",
+    result = {"ok": False, "converged": False, "outcome": "refused",
               "planned": False, "firstMissingSignal": "none", "checks": [], "rsyncExitCode": None,
               "rsyncStats": None, "maxDelete": None, "homeserver": None}
     lock = None
@@ -228,7 +227,7 @@ def main():
             raise ValueError("invalid")
         result = pull(metadata)
     except (ValueError, UnicodeError):
-        result = {"schema": SCHEMA, "ok": False, "converged": False, "outcome": "refused",
+        result = {"ok": False, "converged": False, "outcome": "refused",
                   "planned": False, "firstMissingSignal": "mirror-request-invalid", "checks": [],
                   "rsyncExitCode": None, "rsyncStats": None, "maxDelete": None, "homeserver": None}
     print(json.dumps(result, sort_keys=True))

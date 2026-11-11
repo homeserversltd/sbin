@@ -65,8 +65,7 @@ def _exclusive_free():
 
 
 def perform(action, hold_id=None, *, request=None):
-    schema = f"caduceus.nas-sync.{action}.v1"
-    receipt = {"schema": schema, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete", "steps": []}
+    receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete", "steps": []}
     started = time.monotonic()
     attempted = False
     marker = None

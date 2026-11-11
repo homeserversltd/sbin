@@ -9,7 +9,6 @@ from typing import Any, Sequence
 
 from agathodaimon import _envelope
 
-SCHEMA = "caduceus.storage.disk.wipe.v1"
 WIPEFS = "/usr/sbin/wipefs"
 _COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SAFE_STEP = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
@@ -41,12 +40,12 @@ def _run(argv: Sequence[str]) -> subprocess.CompletedProcess[Any]:
 
 
 def _receipt(action: str, planned: bool, commands: list[list[str]], **extra: Any) -> dict[str, Any]:
-    return {"schema": SCHEMA, "ok": True, "action": action, "planned": planned,
+    return {"ok": True, "action": action, "planned": planned,
             "mutationPerformed": not planned, "commands": commands, "firstMissingSignal": "none", **extra}
 
 
 def _fail(signal: str, failed_step: str | None = None, return_code: int | None = None) -> dict[str, Any]:
-    failure = {"schema": SCHEMA, "ok": False, "action": "unknown", "planned": False,
+    failure = {"ok": False, "action": "unknown", "planned": False,
                "mutationPerformed": False, "commands": [], "firstMissingSignal": signal}
     if failed_step is not None:
         failure["failedStep"] = failed_step

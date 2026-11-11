@@ -6,12 +6,11 @@ import stat
 import sys
 from pathlib import Path
 
-FAMILY = "caduceus.staff.force_permissions.v1"
 ROOT_PREFIX = "/mnt/nas"
 
 
 def receipt(ok, action, planned=False, mutation=False, commands=None, signal=None, **facts):
-    value = {"schema": FAMILY, "receiptFamily": FAMILY, "ok": ok, "action": action,
+    value = {"ok": ok, "action": action,
              "planned": planned, "mutationPerformed": mutation, "commands": commands or [],
              "firstMissingSignal": "none" if ok else (signal or "force_permissions.refused")}
     value.update(facts)

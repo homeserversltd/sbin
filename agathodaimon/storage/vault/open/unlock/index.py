@@ -9,7 +9,6 @@ from typing import Sequence
 from agathodaimon import _envelope
 from agathodaimon.storage.vault.open import _core
 
-SCHEMA = "caduceus.storage.vault.open.unlock.v1"
 MAX_INPUT_BYTES = 131072
 
 
@@ -61,7 +60,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         _core._wipe(raw)
         if secret is not None:
             _core._wipe(secret)
-    receipt["schema"] = SCHEMA
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     print(json.dumps(receipt, separators=(",", ":")))

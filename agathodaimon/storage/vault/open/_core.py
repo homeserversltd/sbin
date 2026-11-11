@@ -11,7 +11,6 @@ from typing import Any, Sequence
 
 import agathodaimon.lib.sacred_credential.index as sacred_credential
 
-_SCHEMA = "caduceus.vault.keyman-open.v1"
 _SERVICE = "homeconsole-vault"
 _CRYPTSETUP = "/usr/sbin/cryptsetup"
 _BASH = "/usr/bin/bash"
@@ -40,7 +39,6 @@ def _receipt(
     nas_first_missing_signal: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "schema": _SCHEMA,
         "ok": ok,
         "present": present,
         "firstMissingSignal": signal,
@@ -60,7 +58,6 @@ def _unlock_receipt(
     nas_first_missing_signal: str | None = None,
 ) -> dict[str, Any]:
     receipt = {
-        "schema": _SCHEMA,
         "ok": ok,
         "present": present,
         "already_open": already_open,

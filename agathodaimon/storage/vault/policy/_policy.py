@@ -9,7 +9,6 @@ import subprocess
 import sys
 from typing import Any, Sequence
 
-_SCHEMA = "caduceus.vault.policy-write.v1"
 _POLICY_SCHEMA = "caduceus.vault_policy.v1"
 _LEGACY_POLICY_SCHEMA = "fulcrum.keyman.vault_policy.v1"
 _POLICY_MODE = "separate_luks_vault"
@@ -32,7 +31,6 @@ def _receipt(
     fstab_restored: bool | None = None,
 ) -> dict[str, Any]:
     receipt = {
-        "schema": _SCHEMA,
         "ok": ok,
         "op": op,
         "mountpoint": mountpoint,

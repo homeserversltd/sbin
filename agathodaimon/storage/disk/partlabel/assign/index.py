@@ -7,7 +7,6 @@ import time
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.nas import deed, labels, runtime
 
-SCHEMA = "caduceus.disk.partlabel.assign.v1"
 
 
 def _disk_for(partition_identity):
@@ -50,7 +49,7 @@ def _preflight(current, target):
 
 
 def perform(current, target, *, request=None):
-    receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
+    receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
                "current_label": current, "label": target, "steps": []}
     started = time.monotonic()
     attempted = False
@@ -94,7 +93,7 @@ def main(argv=None):
         request = read(known_fields=("current_label", "label"))
         receipt = perform(request.payload.get("current_label"), request.payload.get("label"), request=request.intent_id)
     except (EnvelopeError, ValueError, UnicodeError):
-        receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
+        receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
     if request is not None:
         receipt = attach(receipt, request)
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))

@@ -3,7 +3,7 @@ import errno,fcntl,json,os,re,shlex,stat,subprocess,sys,time
 from pathlib import Path
 from agathodaimon.storage.nas import deed
 
-SCHEMA="caduceus.nas.sync.v1"; RSYNC="/usr/bin/rsync"; FINDMNT="/usr/bin/findmnt"; LSBLK="/usr/bin/lsblk"; BLKID="/usr/sbin/blkid"; JOURNALCTL="/usr/bin/journalctl"
+RSYNC="/usr/bin/rsync"; FINDMNT="/usr/bin/findmnt"; LSBLK="/usr/bin/lsblk"; BLKID="/usr/sbin/blkid"; JOURNALCTL="/usr/bin/journalctl"
 SOURCE=Path("/mnt/nas"); DESTINATION=Path("/mnt/nas_backup"); MAX_INPUT=65536
 DENYLIST={"homeserver-boot-efi","homeserver-boot","homeserver-swap","homeserver-vault","homeserver-deploy","homeserver-root"}
 KERNEL_ERROR=re.compile(r"(?:\bXFS\b.*(?:error|corrupt|shutdown)|\bI/O error\b|\bdevice-mapper\b.*(?:error|fail)|\bblk_update_request\b|\bBuffer I/O error\b)",re.I)
@@ -26,7 +26,7 @@ def lock_file():
 def bounded(e): return (str(e).replace("\n"," ").strip() or type(e).__name__)[:512]
 def receipt(action,outcome,planned=False,mutation=False,**fields):
  defaults={"reason":None,"checks":[],"rsyncExitCode":None,"rsyncStats":None,"maxDelete":None,"maxDeleteBasis":None,"coldStart":None}
- return {"schema":SCHEMA,"receiptFamily":SCHEMA,"action":action,"ok":outcome=="ok","outcome":outcome,"planned":planned,"mutationPerformed":mutation,"firstMissingSignal":"none" if outcome=="ok" else fields.get("reason",outcome),**defaults,**fields}
+ return {"action":action,"ok":outcome=="ok","outcome":outcome,"planned":planned,"mutationPerformed":mutation,"firstMissingSignal":"none" if outcome=="ok" else fields.get("reason",outcome),**defaults,**fields}
 def finish(v): return v
 def refused(action,reason,checks=None,**fields): return finish(receipt(action,"refused",reason=reason,checks=checks or [],**fields))
 def command(argv): return subprocess.run(argv,text=True,capture_output=True,check=False)

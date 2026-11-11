@@ -11,13 +11,12 @@ from pathlib import Path
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.backup.backblaze import shared
 
-SCHEMA = "caduceus.forgejo.skip-check.v1"
 APP_INI = Path("/opt/forgejo/custom/conf/app.ini")
 DB_NAME = re.compile(r"[A-Za-z0-9_.-]+\Z")
 
 
 def check(name):
-    result = {"schema": SCHEMA, "ok": False, "name": name if isinstance(name, str) else None,
+    result = {"ok": False, "name": name if isinstance(name, str) else None,
               "matches": False, "firstMissingSignal": "forgejo-skip-check-not-complete"}
     try:
         normalized = shared.normalize_skips([name])[0]
@@ -76,7 +75,7 @@ def main(argv=None):
         request = read(known_fields=("name",))
         result = check(request.payload.get("name"))
     except (EnvelopeError, ValueError, UnicodeError):
-        result = {"schema": SCHEMA, "ok": False, "name": None, "matches": False,
+        result = {"ok": False, "name": None, "matches": False,
                   "firstMissingSignal": "forgejo-skip-check-request-invalid"}
     if request is not None:
         result = attach(result, request)

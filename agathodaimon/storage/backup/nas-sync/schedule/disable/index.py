@@ -6,11 +6,10 @@ import time
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.nas import deed, runtime
 
-SCHEMA = "caduceus.nas-sync.schedule.disable.v1"
 
 
 def perform(*, request=None):
-    receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete", "steps": []}
+    receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete", "steps": []}
     started = time.monotonic()
     attempted = False
     try:
@@ -67,7 +66,7 @@ def main(argv=None):
         request = read()
         receipt = perform(request=request.intent_id)
     except (EnvelopeError, ValueError, UnicodeError):
-        receipt = {"schema": SCHEMA, "ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
+        receipt = {"ok": False, "firstMissingSignal": "agathodaimon-nas-request-invalid", "failedStep": "request", "steps": []}
     if request is not None:
         receipt = attach(receipt, request)
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))

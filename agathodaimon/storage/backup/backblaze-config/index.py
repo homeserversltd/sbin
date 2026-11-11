@@ -3,10 +3,10 @@ import base64,json,os,re,stat,subprocess,sys,tempfile,urllib.error,urllib.reques
 from pathlib import Path
 from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
 from agathodaimon.keyman.custody import call as custody_call
-SCHEMA="caduceus.backblaze.config.v1"; URL="https://api.backblazeb2.com/b2api/v2/b2_authorize_account"; KEYMAN="/vault/keyman/keyman"; CONFIG=Path("/etc/appliance/config.json")
+URL="https://api.backblazeb2.com/b2api/v2/b2_authorize_account"; KEYMAN="/vault/keyman/keyman"; CONFIG=Path("/etc/appliance/config.json")
 class Refusal(ValueError):
  def __init__(self,step,reason): self.step,self.reason=step,reason
-def fail(step,reason): return {"schema":SCHEMA,"ok":False,"step":step,"reason":reason,"mutationPerformed":False}
+def fail(step,reason): return {"ok":False,"step":step,"reason":reason,"mutationPerformed":False}
 def req(p,k):
  v=p.get(k)
  if not isinstance(v,str) or not v: raise Refusal("shape",f"{k} must be a non-empty string")
@@ -82,7 +82,7 @@ def dispatch(e):
  backblaze["locked"]=True
  try: write(d)
  except OSError as e: raise Refusal("write_config",f"unable to write appliance config: {e}")
- return {"schema":SCHEMA,"ok":True,"locked":True,"bucket":b,"keyman_service":s,"mutationPerformed":True}
+ return {"ok":True,"locked":True,"bucket":b,"keyman_service":s,"mutationPerformed":True}
 def main(argv=None):
  try:
   raw=sys.stdin.buffer.read(16385)

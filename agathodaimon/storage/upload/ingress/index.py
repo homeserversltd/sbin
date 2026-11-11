@@ -8,12 +8,11 @@ import sys
 import tempfile
 from pathlib import Path
 
-FAMILY = "caduceus.staff.file_ingress.v1"
 ROOT_PREFIX = "/mnt/nas"
 
 
 def receipt(ok, action, planned=False, mutation=False, commands=None, signal=None, **facts):
-    value = {"schema": FAMILY, "receiptFamily": FAMILY, "ok": ok, "action": action,
+    value = {"ok": ok, "action": action,
              "planned": planned, "mutationPerformed": mutation, "commands": commands or [],
              "firstMissingSignal": "none" if ok else (signal or "file_ingress.refused")}
     value.update(facts)

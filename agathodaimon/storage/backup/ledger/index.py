@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 
 from agathodaimon.storage.backup.backblaze import shared
 
-SCHEMA = 'caduceus.backup.ledger.v1'
 CHUNK = 65536
 BUDGET = 8 * 1024 * 1024
 
@@ -141,11 +140,11 @@ def main(argv=None):
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError('limit-invalid')
         rows, cursor = page(before, limit)
-        result = {'schema': SCHEMA, 'ok': True, 'rows': rows, 'next': cursor,
+        result = {'ok': True, 'rows': rows, 'next': cursor,
                   'firstMissingSignal': 'none'}
     except (OSError, ValueError, UnicodeError, shared.Refusal) as error:
         signal = str(error) if isinstance(error, ValueError) else 'backup-ledger-unavailable'
-        result = {'schema': SCHEMA, 'ok': False, 'rows': [], 'next': None,
+        result = {'ok': False, 'rows': [], 'next': None,
                   'firstMissingSignal': signal}
     print(json.dumps(result, separators=(',', ':')))
     return 0 if result['ok'] else 1

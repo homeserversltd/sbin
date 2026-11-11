@@ -7,14 +7,12 @@ from typing import Any, Sequence
 
 from agathodaimon.storage.disk.wipe import index as wipe
 
-SCHEMA = "caduceus.disk.door.v1"
 MAX_INPUT_BYTES = 64 * 1024
 Refusal = wipe.Refusal
 
 
 def _fail(signal: str, failed_step: str | None = None, return_code: int | None = None) -> dict[str, Any]:
     receipt = wipe._fail(signal, failed_step, return_code)
-    receipt["schema"] = SCHEMA
     return receipt
 
 
@@ -32,7 +30,6 @@ def dispatch(value: dict[str, Any]) -> dict[str, Any]:
         raise Refusal("agathodaimon-disk-planned-invalid")
     if action == "wipe":
         receipt = wipe.wipe_disk(payload, planned)
-        receipt["schema"] = SCHEMA
         return receipt
     raise Refusal("agathodaimon-disk-action-invalid")
 
