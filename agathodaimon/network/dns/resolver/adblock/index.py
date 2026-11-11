@@ -12,6 +12,5 @@ def main(argv=None):
         receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}
     else:
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.dns.resolver.adblock.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

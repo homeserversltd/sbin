@@ -18,6 +18,5 @@ def main(argv=None):
         except (DnsError, OSError) as exc:
             receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.dns.device-name.remove.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

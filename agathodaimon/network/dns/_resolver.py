@@ -125,7 +125,7 @@ class ResolverControl:
             active = unit.systemctl("is-active", "--quiet", "unbound", runner=self.runner).returncode == 0
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise DnsError("resolver-service-status-unavailable") from exc
-        return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "status", "adblockEnabled": matches[0].group("comment") is None, "upstreams": addresses, "dnsOverTls": dot, "blocklistDomainCount": count, "blocklistLastUpdate": updated, "unboundActive": active, "mutationPerformed": False, "firstMissingSignal": "none"}
+        return {"ok": True, "action": "status", "adblockEnabled": matches[0].group("comment") is None, "upstreams": addresses, "dnsOverTls": dot, "blocklistDomainCount": count, "blocklistLastUpdate": updated, "unboundActive": active, "mutationPerformed": False, "firstMissingSignal": "none"}
 
     @identity_locked
     def adblock(self, enabled: Any) -> dict[str, Any]:
@@ -139,14 +139,14 @@ class ResolverControl:
         line = f'{match.group("indent")}{"" if enabled else "# "}include: "/etc/unbound/blocklist.conf"{match.group("tail")}'
         after = before[:match.start()] + line + before[match.end():]
         self._install(before, after)
-        return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "adblock", "enabled": enabled, "mutationPerformed": before != after, "reload": "reloaded", "firstMissingSignal": "none"}
+        return {"ok": True, "action": "adblock", "enabled": enabled, "mutationPerformed": before != after, "reload": "reloaded", "firstMissingSignal": "none"}
 
     @identity_locked
     def update_blocklist(self) -> dict[str, Any]:
         self._run([sys.executable, self.UPDATE])
         unit.reload("unbound", runner=self._run)
         status = self.status()
-        return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "blocklist-update", "domainCount": status["blocklistDomainCount"], "mutationPerformed": True, "reload": "reloaded", "firstMissingSignal": "none"}
+        return {"ok": True, "action": "blocklist-update", "domainCount": status["blocklistDomainCount"], "mutationPerformed": True, "reload": "reloaded", "firstMissingSignal": "none"}
 
     @identity_locked
     def upstream(self, metadata: Any) -> dict[str, Any]:
@@ -181,7 +181,7 @@ class ResolverControl:
         lines.extend(f'    forward-addr: {address}{"@853" if dot else ""}' for address in canonical)
         after = before[:start] + "\n".join(lines) + "\n" + before[end:]
         self._install(before, after)
-        return {"schema": "caduceus.network.dns.resolver.v1", "ok": True, "action": "upstream", "upstreams": canonical, "dnsOverTls": dot, "mutationPerformed": before != after, "reload": "reloaded", "firstMissingSignal": "none"}
+        return {"ok": True, "action": "upstream", "upstreams": canonical, "dnsOverTls": dot, "mutationPerformed": before != after, "reload": "reloaded", "firstMissingSignal": "none"}
 
 
 def resolver_control(action: str, metadata: Any = None) -> dict[str, Any]:
@@ -197,4 +197,4 @@ def resolver_control(action: str, metadata: Any = None) -> dict[str, Any]:
             return resolver.upstream(metadata)
         raise DnsError("resolver-action-invalid")
     except DnsError as exc:
-        return {"schema": "caduceus.network.dns.resolver.v1", "ok": False, "action": action, "mutationPerformed": False, "firstMissingSignal": str(exc)}
+        return {"ok": False, "action": action, "mutationPerformed": False, "firstMissingSignal": str(exc)}

@@ -238,7 +238,6 @@ class DnsManager:
 
     def status(self) -> dict[str, Any]:
         return {
-            "schema": "caduceus.network.dns.v1",
             "action": "status",
             "target": str(self.target),
             "rootConfig": str(self.root_config),
@@ -950,7 +949,6 @@ class DnsManager:
         previous = target.read_bytes() if target.exists() else None
         before_hash, after_hash = self._digest(previous), self._digest(candidate)
         receipt: dict[str, Any] = {
-            "schema": "caduceus.network.dns.v1",
             "action": "apply-managed-drop-in",
             "target": str(target),
             "beforeHash": before_hash,

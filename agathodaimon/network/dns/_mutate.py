@@ -6,13 +6,13 @@ from agathodaimon.network.dns._manager import DnsError
 
 def device_name(manager, action, hostname, ip):
     receipt = manager.create_device_name(hostname, ip) if action == "create" else manager.remove_device_name(hostname, ip)
-    receipt |= {"schema": "caduceus.network.dns.v1", "actuator": f"network.dns.device_name.{action}", "ok": True, "firstMissingSignal": "none"}
+    receipt |= {"actuator": f"network.dns.device_name.{action}", "ok": True, "firstMissingSignal": "none"}
     return receipt
 
 
 def alias(manager, action, label, hostname):
     receipt = manager.create_alias(label, hostname) if action == "create" else manager.remove_alias(label, hostname)
-    receipt |= {"schema": "caduceus.network.dns.v1", "actuator": f"network.dns.alias.{action}", "ok": True, "firstMissingSignal": "none"}
+    receipt |= {"actuator": f"network.dns.alias.{action}", "ok": True, "firstMissingSignal": "none"}
     return receipt
 
 
@@ -34,7 +34,7 @@ def stop_apply(manager, target, drop_in, dry_run):
     path = manager._safe_target(target)
     candidate = manager._validate_payload(drop_in)
     previous = path.read_bytes() if path.exists() else None
-    return {"schema": "caduceus.network.dns.v1", "action": "plan-managed-drop-in",
+    return {"action": "plan-managed-drop-in",
             "target": str(path), "beforeHash": manager._digest(previous),
             "afterHash": manager._digest(candidate), "stagedValidation": False,
             "liveValidation": False, "reload": "not-run", "rollback": "not-needed",

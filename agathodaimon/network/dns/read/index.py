@@ -15,6 +15,5 @@ def main(argv=None):
         except DnsError as exc:
             receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}
         receipt = _envelope.attach(receipt, request)
-    receipt["schema"] = "caduceus.network.dns.read.v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

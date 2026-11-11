@@ -7,5 +7,5 @@ def main(argv=None):
     try:
         request = _envelope.read_fields()
     except _envelope.EnvelopeError:
-        return _stop.invalid('caduceus.network.dhcp.statistics.v1')
-    return _stop.run(request, 'caduceus.network.dhcp.statistics.v1', lambda manager: manager.get_statistics(), (), boundary=False)
+        return _stop.invalid()
+    return _stop.run(request, lambda manager: manager.get_statistics(), (), boundary=False)
