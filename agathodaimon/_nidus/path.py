@@ -7,6 +7,7 @@ from pathlib import Path
 _RUNTIME_PATHS = {
     "config": (Path("/etc/appliance/config.json"), ("etc", "appliance", "config.json")),
     "factory": (Path("/etc/appliance/config.factory"), ("etc", "appliance", "config.factory")),
+    "identity-lock": (Path("/var/lib/caduceus/network-identity-claim.lock"), ("var", "lib", "caduceus", "network-identity-claim.lock")),
     "profile": (Path("/etc/appliance/profile.json"), ("etc", "appliance", "profile.json")),
     "seats": (Path("/opt/caduceus/source/schema"), ("opt", "caduceus", "source", "schema")),
     "skeleton": (Path("/root/key/skeleton.key"), ("root", "key", "skeleton.key")),
