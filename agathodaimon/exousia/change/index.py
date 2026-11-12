@@ -21,7 +21,7 @@ def _pin(value, field, name):
     return pin
 
 
-def main(argv=None):
+def _main(argv=None):
     if list(sys.argv[1:] if argv is None else argv):
         print("one exousia verb is required", file=sys.stderr)
         _refuse("exousia-change-argument-extra")
@@ -63,6 +63,14 @@ def main(argv=None):
         return 1
     print(json.dumps(attach(result, request), separators=(",", ":")))
     return 0
+
+
+def main(argv=None):
+    try:
+        return _main(argv)
+    except Exception:  # noqa: BLE001
+        _refuse("exousia-change-internal-failure")
+        return 1
 
 
 if __name__ == "__main__":
