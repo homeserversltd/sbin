@@ -556,6 +556,18 @@ class DnsManager:
                 bindings[owner] = canonical
         return bindings
 
+    def device_name_state(self, canonical: str, address: str, move: bool, lines: list[str]):
+        """The writer's pure owned-name decision, shared with the read planner."""
+        if canonical in self._alias_bindings(lines):
+            raise DnsError("dns-alias-owner-conflict")
+        addresses = {target for owner, kind, target, marker in map(self._record_parts, lines) if owner == canonical and kind == "A" and marker is None}
+        reverses = {owner for owner, kind, target, _marker in map(self._record_parts, lines) if kind == "PTR" and target == canonical}
+        if {self._reverse_name(value) for value in addresses} != reverses:
+            raise DnsError("dns-device-projection-incomplete")
+        if addresses and addresses != {address} and not move:
+            raise DnsError("dns-name-owned-elsewhere")
+        return ("kept" if addresses == {address} else "move" if addresses else "new"), addresses, reverses
+
     def _migrate_gateway_records(self, lines: list[str]) -> list[str]:
         """Retire the old gateway identity only in the owned record set."""
         old = "homeserver.home.arpa."
@@ -884,15 +896,8 @@ class DnsManager:
             additions = [] if reverse_present else [f"{reverse} IN PTR {canonical}"]
             verification = self._candidate_apply(lines + additions, [("A", canonical), ("PTR", reverse)])
             return {"action": "device-name-create", "state": "applied" if verification["mutationPerformed"] else "noop", "canonical_name": canonical, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
-        if canonical in self._alias_bindings(lines):
-            raise DnsError("dns-alias-owner-conflict")
-        addresses = {target for owner, kind, target, marker in map(self._record_parts, lines) if owner == canonical and kind == "A" and marker is None}
-        reverses = {owner for owner, kind, target, _marker in map(self._record_parts, lines) if kind == "PTR" and target == canonical}
-        if {self._reverse_name(value) for value in addresses} != reverses:
-            raise DnsError("dns-device-projection-incomplete")
-        if addresses and addresses != {address} and not move:
-            raise DnsError("dns-name-owned-elsewhere")
-        if addresses == {address}:
+        state, addresses, reverses = self.device_name_state(canonical, address, move, lines)
+        if state == "kept":
             return {"action": "device-name-create", "state": "noop", "canonical_name": canonical,
                     "mutationPerformed": False, "verification": {"config_valid": None,
                     "reload_outcome": "not-needed-idempotent", "live_query_readback": [], "mutationPerformed": False}}

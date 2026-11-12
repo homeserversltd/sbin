@@ -1,6 +1,7 @@
 {
   "children": [
     "list",
-    "add"
+    "add",
+    "plan"
   ]
 }

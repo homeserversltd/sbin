@@ -265,9 +265,21 @@ class DhcpManager:
         return value is not None and start is not None and end is not None and int(ipaddress.IPv4Address(start)) <= value <= int(ipaddress.IPv4Address(end))
 
     def _validate_ip_in_reserved_range(self, ip: str) -> bool:
-        value = self._ip_to_int(ip)
         start, end = self._get_reserved_range()
+        return self.address_in_range(ip, start, end)
+
+    @staticmethod
+    def address_in_range(ip: str, start: str, end: str) -> bool:
+        value = DhcpManager._ip_to_int(ip)
         return value is not None and int(ipaddress.IPv4Address(start)) <= value <= int(ipaddress.IPv4Address(end))
+
+    @staticmethod
+    def reservation_match(existing, hw_address):
+        return next((item for item in existing if item["hw-address"].strip().lower().replace("-", ":") == hw_address), None)
+
+    @staticmethod
+    def reservation_kept(match, ip_address):
+        return ip_address is None or ip_address == match["ip-address"]
 
     @staticmethod
     def address_parts(config: dict[str, Any], *, include_gateways: bool = True):
@@ -328,9 +340,9 @@ class DhcpManager:
         self.mutation_performed = False
         config = self.get_config()
         existing = self.get_reservations()
-        match = next((item for item in existing if item["hw-address"].strip().lower().replace("-", ":") == hw_address), None)
+        match = self.reservation_match(existing, hw_address)
         if match is not None:
-            if ip_address is None or ip_address == match["ip-address"]:
+            if self.reservation_kept(match, ip_address):
                 return {**match, "hw-address": hw_address}
             raise DhcpError("reservation with this MAC address already exists")
         if ip_address is not None and self._validate_ip_in_pool(ip_address):
