@@ -466,7 +466,9 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 completed[sid] = row
                 stage_durations[-1] = int((time.monotonic() - stage_started) * 1000)
                 continue
-            rescue_untriggered = phase == "rescue" and not any(completed.get(dep, {}).get("outcome") == "stage-refused" for dep in stage["on_refusal_of"])
+            rescue_untriggered = phase == "rescue" and (settled_by is not None or not any(
+                completed.get(dep, {}).get("outcome") == "stage-refused" for dep in stage["on_refusal_of"]
+            ))
             dependency_blocked = any(
                 completed.get(dep, {}).get("outcome") != "stage-completed"
                 and not (phase == "finally" and completed.get(dep, {}).get("firstMissingSignal") == "chord-interrupted")
