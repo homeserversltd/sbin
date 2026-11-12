@@ -619,7 +619,8 @@ class DnsManager:
         candidate = (before + self.BEGIN + "".join(output) + self.END + after).encode("utf-8")
         return path, original, candidate
 
-    def _project_aliases(self, lines: list[str], *, removed_targets: set[str] | None = None) -> list[str]:
+    def _project_aliases(self, lines: list[str], *, removed_targets: set[str] | None = None,
+                         records: list[dict[str, Any]] | None = None) -> list[str]:
         """Refresh marked A aliases and migrate owned CNAMEs in one candidate."""
         bindings = self._alias_bindings(lines)
         base = [line for line in lines if self._record_parts(line)[1] != "CNAME" and self._record_parts(line)[3] is None]
@@ -629,7 +630,7 @@ class DnsManager:
             if kind == "A":
                 addresses.setdefault(owner, set()).add(target)
         other_addresses: dict[str, set[str]] = {}
-        for record in self._all_local_records():
+        for record in self._all_local_records() if records is None else records:
             if record["provenance"] != "owned" and record["type"] == "A" and (record["name"] != "home.arpa" or record["source"] == str(self.root_config)):
                 other_addresses.setdefault(record["name"] + ".", set()).add(record["target"])
 
@@ -659,7 +660,8 @@ class DnsManager:
             names.add(record["name"])
         return names
 
-    def _validate_candidate(self, lines: list[str], new_owners: set[str], *, lifted: set[tuple[str, int]] | None = None) -> None:
+    def _validate_candidate(self, lines: list[str], new_owners: set[str], *, lifted: set[tuple[str, int]] | None = None,
+                            records: list[dict[str, Any]] | None = None) -> None:
         owned_names: set[str] = set()
         cname_names: set[str] = set()
         alias_names: set[str] = set()
@@ -681,7 +683,7 @@ class DnsManager:
             raise DnsError("dns-cname-a-owner-conflict")
         if alias_names & owned_names or cname_names & alias_names:
             raise DnsError("dns-alias-owner-conflict")
-        observed = self._all_local_records()
+        observed = self._all_local_records() if records is None else records
         proposed_apex = {target for target, owner in device_addresses.items() if owner == "home.arpa"}
         base_apex = {record["target"] for record in observed if record["source"] == str(self.root_config) and record["name"] == "home.arpa" and record["type"] == "A"}
         if proposed_apex and proposed_apex != base_apex:
@@ -693,6 +695,37 @@ class DnsManager:
                 continue
             if record["name"] in new_owners or (record["type"] == "A" and record["target"] in device_addresses and device_addresses[record["target"]] != record["name"]):
                 raise DnsError("dns-observed-record-collision")
+
+    def prepare_name_candidate(self, lines: list[str], previous_lines: list[str], records: list[dict[str, Any]], *,
+                               canonical: str | None = None, address: str | None = None, move: bool = False,
+                               migrate: bool = True, lifted: set[tuple[str, int]] | None = None) -> dict[str, Any]:
+        """Decide a name or prepare a candidate from the supplied observation."""
+        if canonical is not None:
+            if address is None:
+                raise DnsError("dns-input-invalid")
+            reverse = self._reverse_name(address)
+            if canonical == "home.arpa.":
+                observed = {r["target"] for r in records if r["name"] == "home.arpa" and r["type"] == "A" and r["source"] == str(self.root_config)}
+                if observed != {address}:
+                    raise DnsError("dns-gateway-apex-address-mismatch")
+                present = any(r["name"] == reverse.rstrip(".") and r["type"] == "PTR" and r["target"] in {"home.arpa", "homeserver.home.arpa"} for r in records)
+                return {"state": "kept" if present else "new", "lines": lines + ([] if present else [f"{reverse} IN PTR {canonical}"]),
+                        "reverse": reverse, "reverses": set(), "apply": True}
+            state, _addresses, reverses = self.device_name_state(canonical, address, move, lines)
+            if state == "kept":
+                return {"state": state, "lines": lines, "reverse": reverse, "reverses": reverses, "apply": False}
+            retained = [line for line in lines if not (self._record_parts(line)[0] == canonical and self._record_parts(line)[1] == "A" or self._record_parts(line)[1:3] == ("PTR", canonical))]
+            return {"state": state, "lines": retained + [f"{canonical} IN A {address}", f"{reverse} IN PTR {canonical}"],
+                    "reverse": reverse, "reverses": reverses, "apply": True}
+        if migrate:
+            lines = self._migrate_gateway_records(lines)
+        previous_targets = {owner for owner, kind, _target, marker in map(self._record_parts, previous_lines) if kind == "A" and marker is None} | self._alias_bindings(previous_lines).keys()
+        current_targets = {owner for owner, kind, _target, marker in map(self._record_parts, lines) if kind == "A" and marker is None} | self._alias_bindings(lines).keys()
+        lines = self._project_aliases(lines, removed_targets=previous_targets - current_targets, records=records)
+        existing = {self._record_parts(line)[0].rstrip(".") for line in previous_lines}
+        new_owners = {self._record_parts(line)[0].rstrip(".") for line in lines} - existing
+        self._validate_candidate(lines, new_owners, lifted=lifted, records=records)
+        return {"lines": lines, "new_owners": new_owners}
 
     def _live_query_readback(self, query_tool: str, record_type: str, owner: str,
                              wanted: set[str]) -> tuple[dict[str, Any], set[str], bool]:
@@ -733,14 +766,10 @@ class DnsManager:
         previous_lines = self._owned_records()
         if sources is None:
             gateway_path, gateway_previous, gateway_candidate = self._gateway_file_candidate()
-            lines = self._migrate_gateway_records(lines)
         else:
             gateway_path, gateway_previous, gateway_candidate = self.dropin_dir / "caduceus-local-names.conf", None, None
-        previous_targets = {owner for owner, kind, _target, marker in map(self._record_parts, previous_lines) if kind == "A" and marker is None} | self._alias_bindings(previous_lines).keys()
-        current_targets = {owner for owner, kind, _target, marker in map(self._record_parts, lines) if kind == "A" and marker is None} | self._alias_bindings(lines).keys()
-        lines = self._project_aliases(lines, removed_targets=previous_targets - current_targets)
-        existing_owners = {self._record_parts(line)[0].rstrip(".") for line in previous_lines}
-        self._validate_candidate(lines, {self._record_parts(line)[0].rstrip(".") for line in lines} - existing_owners, lifted=lifted)
+        prepared = self.prepare_name_candidate(lines, previous_lines, self._all_local_records(), migrate=sources is None, lifted=lifted)
+        lines = prepared["lines"]
         include_source = (sources or {}).get(self.read_include)
         candidate = self._render_owned(lines, text=include_source[1].decode("utf-8") if include_source else None)
         queries = set(expected)
@@ -885,25 +914,15 @@ class DnsManager:
             return self._adopt_device_name(canonical, address)
         if not isinstance(address, str):
             raise DnsError("dns-input-invalid")
-        reverse = self._reverse_name(address)
+        self._reverse_name(address)
         lines = self._owned_records()
-        if canonical == "home.arpa.":
-            records = self._all_local_records()
-            observed = {r["target"] for r in records if r["name"] == "home.arpa" and r["type"] == "A" and r["source"] == str(self.root_config)}
-            if observed != {address}:
-                raise DnsError("dns-gateway-apex-address-mismatch")
-            reverse_present = any(r["name"] == reverse.rstrip(".") and r["type"] == "PTR" and r["target"] in {"home.arpa", "homeserver.home.arpa"} for r in records)
-            additions = [] if reverse_present else [f"{reverse} IN PTR {canonical}"]
-            verification = self._candidate_apply(lines + additions, [("A", canonical), ("PTR", reverse)])
-            return {"action": "device-name-create", "state": "applied" if verification["mutationPerformed"] else "noop", "canonical_name": canonical, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
-        state, addresses, reverses = self.device_name_state(canonical, address, move, lines)
-        if state == "kept":
+        records = self._all_local_records() if canonical == "home.arpa." else []
+        prepared = self.prepare_name_candidate(lines, lines, records, canonical=canonical, address=address, move=move)
+        if not prepared["apply"]:
             return {"action": "device-name-create", "state": "noop", "canonical_name": canonical,
                     "mutationPerformed": False, "verification": {"config_valid": None,
                     "reload_outcome": "not-needed-idempotent", "live_query_readback": [], "mutationPerformed": False}}
-        retained = [line for line in lines if not (self._record_parts(line)[0] == canonical and self._record_parts(line)[1] == "A" or self._record_parts(line)[1:3] == ("PTR", canonical))]
-        additions = [f"{canonical} IN A {address}", f"{reverse} IN PTR {canonical}"]
-        verification = self._candidate_apply(retained + additions, [("A", canonical), ("PTR", reverse)] + [("PTR", old) for old in reverses])
+        verification = self._candidate_apply(prepared["lines"], [("A", canonical), ("PTR", prepared["reverse"])] + [("PTR", old) for old in prepared["reverses"]])
         return {"action": "device-name-create", "state": "applied" if verification["mutationPerformed"] else "noop", "canonical_name": canonical, "mutationPerformed": verification["mutationPerformed"], "verification": verification}
 
     @identity_locked

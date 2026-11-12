@@ -57,8 +57,6 @@ def plan_identity(payload, dhcp=None, dns=None):
         considered.add(match['ip-address'])
         if dhcp.reservation_kept(match, requested):
             decision.update(ip=match['ip-address'], reservation='kept', reason='standing-reservation')
-            if match['hostname'].lower() != payload['hostname'].lower():
-                words.append('reservation-hostname-differs')
         else:
             words.append('reservation-elsewhere')
             refuse('dhcp-reservation-held-elsewhere', 'standing reservation: ' + match['ip-address'])
@@ -96,24 +94,10 @@ def plan_identity(payload, dhcp=None, dns=None):
     address = decision['ip']
     if address:
         try:
-            if hostname == 'home.arpa.':
-                apex = {r['target'] for r in records if r['name'] == 'home.arpa' and r['type'] == 'A' and r['source'] == str(dns.root_config)}
-                if apex != {address}:
-                    raise DnsError('dns-gateway-apex-address-mismatch')
-                reverse = dns._reverse_name(address).rstrip('.')
-                decision['name'] = 'kept' if any(r['name'] == reverse and r['type'] == 'PTR' and r['target'] in {'home.arpa', 'homeserver.home.arpa'} for r in records) else 'new'
-            else:
-                state, addresses, reverses = dns.device_name_state(hostname, address, payload['move'], lines)
-                decision['name'] = state
-                if state != 'kept':
-                    retained = [line for line in lines if not (dns._record_parts(line)[0] == hostname and dns._record_parts(line)[1] == 'A' or dns._record_parts(line)[1:3] == ('PTR', hostname))]
-                    candidate = retained + [f'{hostname} IN A {address}', f'{dns._reverse_name(address)} IN PTR {hostname}']
-                    candidate = dns._migrate_gateway_records(candidate)
-                    previous_targets = {o for o, k, _t, marker in map(dns._record_parts, lines) if k == 'A' and marker is None} | dns._alias_bindings(lines).keys()
-                    current_targets = {o for o, k, _t, marker in map(dns._record_parts, candidate) if k == 'A' and marker is None} | dns._alias_bindings(candidate).keys()
-                    candidate = dns._project_aliases(candidate, removed_targets=previous_targets - current_targets)
-                    existing = {dns._record_parts(line)[0].rstrip('.') for line in lines}
-                    dns._validate_candidate(candidate, {dns._record_parts(line)[0].rstrip('.') for line in candidate} - existing)
+            prepared = dns.prepare_name_candidate(lines, lines, records, canonical=hostname, address=address, move=payload['move'])
+            decision['name'] = prepared['state']
+            if prepared['apply']:
+                dns.prepare_name_candidate(prepared['lines'], lines, records)
             if decision['name'] == 'new':
                 words.append('name-absent')
             elif decision['name'] == 'move':
