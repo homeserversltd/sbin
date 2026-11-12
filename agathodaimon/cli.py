@@ -1617,9 +1617,18 @@ def _main(argv, folder, seats):
                 wrapped_argv_pin, _pin = _take_envelope_pin(argv_envelope)
                 _pin = None
                 args[1] = json.dumps(argv_envelope, separators=(",", ":"))
-        if isinstance(argv_envelope, dict) and _contains_secret_name(argv_envelope.get("payload")):
-            _front_answer("invalid-or-forbidden-long-option", "options")
-            return 2
+        if isinstance(argv_envelope, dict):
+            payload_check = argv_envelope.get("payload")
+            if isinstance(payload_check, dict):
+                from agathodaimon._envelope import _REDACTED_PIN
+                flags = payload_check.get("flags")
+                exousia = flags.get("exousia") if isinstance(flags, dict) else None
+                if isinstance(exousia, dict) and exousia.get("pin") == _REDACTED_PIN:
+                    payload_check = copy.deepcopy(payload_check)
+                    payload_check["flags"]["exousia"].pop("pin")
+            if _contains_secret_name(payload_check):
+                _front_answer("invalid-or-forbidden-long-option", "options")
+                return 2
     if _transmission_keys_json_argv(args):
         return _refuse_administrative("transmission-keys-stdin-required")
     caduceus_root = os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0
