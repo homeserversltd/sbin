@@ -217,7 +217,8 @@ def _declared_echo(request: Request) -> dict[str, Any]:
     if "stamps" in value:
         stamps = value["stamps"]
         carried["stamps"] = [
-            {key: _leaf_only(stamp[key]) for key in ("verb", "outcome", "timestamp") if key in stamp}
+            ({key: _leaf_only(stamp[key]) for key in ("verb", "outcome", "timestamp") if key in stamp}
+             or {"undeclared_keys_left_out": True})
             if isinstance(stamp, Mapping) else _leaf_only(stamp)
             for stamp in stamps
         ] if isinstance(stamps, list) else _leaf_only(stamps)

@@ -921,6 +921,19 @@ def _protected_context(context: Any) -> Any:
         return None
 
 
+def _protected_response(context: Any, handle: InvocationHandle | None) -> Any:
+    """Carry the projected context and only a staff-originated diagnostic."""
+    projected = None if _diagnostic_only_context(context) else _protected_context(context)
+    state = handle.state if handle is not None else None
+    signal = state.unavailable if state is not None else (handle.trace_unavailable_signal if handle is not None else None)
+    if signal is None:
+        return projected
+    result: dict[str, Any] = {"trace_unavailable": {"signal": signal}}
+    if projected is not None:
+        result["load_context"] = projected
+    return result
+
+
 def attach_context(value: Any, explicit_context: Any = None, *, protected: bool = False) -> Any:
     """Add the active reply carrier without touching raw_envelope or typed fields."""
     if not isinstance(value, dict):
@@ -933,7 +946,7 @@ def attach_context(value: Any, explicit_context: Any = None, *, protected: bool 
         if context is None:
             context = explicit_context
         if protected:
-            context = _protected_context(context)
+            context = _protected_response(context, _ACTIVE.get())
         if context is None:
             return value
         return _attach_context_value(value, context)
@@ -1112,7 +1125,7 @@ def run_cli(envelope: Any, operation: str, callback: Callable[[], Any]) -> Any:
                     from agathodaimon._envelope import sensitive_echo
                     protected = sensitive_echo()
                     if protected:
-                        context = _protected_context(context)
+                        context = _protected_response(context, handle)
                     if context is not None:
                         payload = _inject_context(payload, context, protected=protected)
                 except Exception:
