@@ -948,8 +948,10 @@ def _capture_piped_envelope() -> tuple[dict | None, bool, object]:
     pin = None
     try:
         parsed = json.loads(raw)
-    except (TypeError, ValueError, RecursionError):
+    except (TypeError, json.JSONDecodeError):
         parsed = None
+    except (ValueError, RecursionError):
+        raise ValueError("invalid-envelope-json") from None
     if isinstance(parsed, dict):
         envelope, unwrapped = _unwrap_receipt(parsed)
         pin_present, pin = _take_envelope_pin(envelope)
@@ -1619,8 +1621,11 @@ def _main(argv, folder, seats):
     if remainder == ["--help"]: _help(path); return 0
     try:
         envelope, pin_present, pin = _capture_piped_envelope()
-    except ValueError:
-        _front_answer("receipt-carries-no-request", "unwrap-receipt", path)
+    except ValueError as exc:
+        if str(exc) == "invalid-envelope-json":
+            _front_answer("invalid-envelope-json", "parse-envelope", path)
+        else:
+            _front_answer("receipt-carries-no-request", "unwrap-receipt", path)
         return 2
     if children and has_index and not remainder and (not isinstance(sys.stdin, _EnvelopeStdin) or not sys.stdin.getvalue()):
         print(json.dumps({"noun":original[0],"verbs":children},indent=2)); return 0
