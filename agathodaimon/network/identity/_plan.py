@@ -57,6 +57,8 @@ def plan_identity(payload, dhcp=None, dns=None):
         considered.add(match['ip-address'])
         if dhcp.reservation_kept(match, requested):
             decision.update(ip=match['ip-address'], reservation='kept', reason='standing-reservation')
+            if match['hostname'].lower() != payload['hostname'].lower():
+                words.append('reservation-hostname-differs')
         else:
             words.append('reservation-elsewhere')
             refuse('dhcp-reservation-held-elsewhere', 'standing reservation: ' + match['ip-address'])
