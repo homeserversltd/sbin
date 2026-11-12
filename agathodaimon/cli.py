@@ -1031,7 +1031,9 @@ def _pin_required() -> bool:
 
 
 def _take_envelope_pin(value: object) -> tuple[bool, object]:
-    """Remove the secret flag from every supported Alkahest carrier location."""
+    """Remove PIN carriers; the redaction marker protects echoes, not admission."""
+    from agathodaimon._envelope import _REDACTED_PIN, mark_gate_pin_present
+
     if not isinstance(value, dict):
         return False, None
     found = False
@@ -1043,7 +1045,9 @@ def _take_envelope_pin(value: object) -> tuple[bool, object]:
         exousia = flags.get("exousia") if isinstance(flags, dict) else None
         if isinstance(exousia, dict) and "pin" in exousia:
             candidate = exousia.pop("pin")
-            if not found and candidate != "[REDACTED]":
+            if candidate == _REDACTED_PIN:
+                mark_gate_pin_present(True)
+            elif not found:
                 found, pin = True, candidate
     return found, pin
 
