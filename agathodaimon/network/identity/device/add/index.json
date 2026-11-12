@@ -19,13 +19,14 @@
     }
   },
   "serve": [
-    {"stage_id": "reserve", "snake": "network/dhcp/add-reservation", "arguments": {"hw_address": {"$ref": "request.payload.mac"}, "ip_address": {"$ref": "request.payload.ip"}, "hostname": {"$ref": "request.payload.hostname"}}, "deadline_seconds": 30},
+    {"stage_id": "plan", "snake": "network/identity/device/plan", "arguments": {"mac": {"$ref": "request.payload.mac"}, "hostname": {"$ref": "request.payload.hostname"}, "ip": {"$ref": "request.payload.ip"}, "move": {"$ref": "request.payload.move"}, "settle": false}, "settles_on": "result.diff.empty", "deadline_seconds": 20},
+    {"stage_id": "reserve", "snake": "network/dhcp/add-reservation", "arguments": {"hw_address": {"$ref": "request.payload.mac"}, "ip_address": {"$ref": "stages.plan.receipt.result.plan.ip"}, "hostname": {"$ref": "request.payload.hostname"}}, "depends_on": ["plan"], "deadline_seconds": 30},
     {"stage_id": "name", "snake": "network/dns/device-name/create", "arguments": {"hostname": {"$ref": "request.payload.hostname"}, "ip": {"$ref": "stages.reserve.receipt.result.ip-address"}, "move": {"$ref": "request.payload.move"}}, "depends_on": ["reserve"], "deadline_seconds": 30}
   ],
   "rescue": [
     {"stage_id": "remove", "snake": "network/dhcp/remove-reservation", "arguments": {"identifier": {"$ref": "stages.reserve.receipt.result.created"}}, "on_refusal_of": ["name"], "deadline_seconds": 20}
   ],
   "finally": [
-    {"stage_id": "readback", "snake": "network/identity/device/list", "deadline_seconds": 10}
+    {"stage_id": "tail", "snake": "network/identity/device/plan", "arguments": {"mac": {"$ref": "request.payload.mac"}, "hostname": {"$ref": "request.payload.hostname"}, "ip": {"$ref": "request.payload.ip"}, "move": {"$ref": "request.payload.move"}, "settle": true}, "deadline_seconds": 10}
   ]
 }
