@@ -65,6 +65,8 @@ def _payload(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _request(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    if "schema" in value and value.get("schema") != SCHEMA:
+        raise ValueError("foreign envelope schema")
     if value.get("schema") == SCHEMA:
         missing = [key for key in _envelope_kernel() if key not in value]
         if missing:
