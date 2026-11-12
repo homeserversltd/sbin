@@ -864,11 +864,12 @@ def _hestia_sites(ca: Any, live: str) -> list[dict[str, Any]]:
             ports = re.findall(r"\blisten\s+\*:(\d+)\s+ssl\s*;", text)
             if not ports:
                 continue
-            names = set(re.findall(r"\bserver_name\s+([^;\s]+)\s*;", text))
+            directives = re.findall(r"\bserver_name\s+([^;]+);", text)
+            names = [directive.split() for directive in directives]
             certificates = set(re.findall(r"\bssl_certificate\s+[\"']?([^;\s\"']+)[\"']?\s*;", text))
-            if len(names) != 1 or len(certificates) != 1:
+            if not names or any(not item for item in names) or len({item[0] for item in names}) != 1 or len(certificates) != 1:
                 raise ValueError()
-            name = names.pop().lower()
+            name = names[0][0].lower()
             if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", name):
                 raise ValueError()
             directory = ca.cert_dir()
