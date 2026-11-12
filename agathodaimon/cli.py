@@ -1086,7 +1086,7 @@ def _capture_piped_envelope() -> tuple[dict | None, bool, object]:
     if isinstance(parsed, dict):
         envelope, unwrapped = _unwrap_receipt(parsed)
         pin_present, pin = _take_envelope_pin(envelope)
-        if pin_present or unwrapped:
+        if pin_present or unwrapped or _envelope.sensitive_echo():
             raw = json.dumps(envelope, separators=(",", ":"))
     sys.stdin = _EnvelopeStdin(raw)
     return envelope, pin_present, pin
@@ -1694,7 +1694,7 @@ def _main(argv, folder, seats):
         pin_present, pin = _take_envelope_pin(envelope)
         from agathodaimon._envelope import mark_gate_pin_present
         mark_gate_pin_present(pin_present)
-        if pin_present or unwrapped:
+        if pin_present or unwrapped or _envelope.sensitive_echo():
             raw_envelope = json.dumps(envelope, separators=(",", ":"))
         target = _slash_target(args[0])
         if target is None:
@@ -1724,7 +1724,11 @@ def _main(argv, folder, seats):
         if not isinstance(envelope, dict):
             _front_answer("envelope-must-be-a-json-object", "parse-envelope")
             return 2
-        raw_envelope = args[1]
+        if _envelope.sensitive_echo():
+            _take_envelope_pin(envelope)
+            raw_envelope = json.dumps(envelope, separators=(",", ":"))
+        else:
+            raw_envelope = args[1]
         target = _slash_target(args[0])
         if target is None:
             _front_answer("unknown-path", "walk-path")
