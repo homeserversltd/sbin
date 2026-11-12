@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from agathodaimon._envelope import SCHEMA
+
 SUPPORTED_KEYS = ("THEGAMESDB_API_KEY", "SCREENSCRAPER_API_KEY")
 DEFAULT_PATH = Path("/etc/arch-game-sync/providers.env")
 
@@ -62,6 +64,15 @@ def _payload(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
     return envelope
 
 
+def _request(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    if value.get("schema") == SCHEMA:
+        payload = value.get("payload")
+        if not isinstance(payload, Mapping) or not payload:
+            raise ValueError("provider request payload required")
+        return payload
+    return value
+
+
 def _save(values: Mapping[str, Any]) -> dict[str, Any]:
     unknown = sorted(str(key) for key in values if str(key) not in SUPPORTED_KEYS)
     if unknown:
@@ -110,8 +121,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 loaded = json.loads(raw)
                 if not isinstance(loaded, Mapping):
                     raise ValueError("crossing input must be a JSON object")
-                envelope = loaded
-                if envelope.get("verb") == "save":
+                envelope = _request(loaded)
+                operation = envelope.get("verb")
+                if loaded.get("schema") == SCHEMA and operation is None:
+                    request_args = envelope.get("args")
+                    if isinstance(request_args, list) and request_args:
+                        operation = request_args[0]
+                if operation == "save":
                     args.operation = "save"
         if args.operation == "status":
             result = _status()
@@ -120,7 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 loaded = json.load(sys.stdin)
                 if not isinstance(loaded, Mapping):
                     raise ValueError("save input must be a JSON object")
-                envelope = loaded
+                envelope = _request(loaded)
             result = _save(_payload(envelope))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok":False,"error":str(exc),"mutationPerformed":False}, sort_keys=True))
