@@ -902,6 +902,14 @@ def _protected_context(context: Any) -> Any:
     """Keep only top-level names from the load-context seat; stamps are open."""
     if not isinstance(context, Mapping):
         return None
+    if (
+        "schema" not in context
+        and "load_context" in context
+        and set(context).issubset({"load_context", "trace_unavailable", "trace_incomplete"})
+    ):
+        context = context["load_context"]
+        if not isinstance(context, Mapping):
+            return None
     from agathodaimon._nidus.path import appliance_runtime_path
     try:
         seat = json.loads((appliance_runtime_path("seats") / (LOAD_CONTEXT_SCHEMA + ".json")).read_text(encoding="utf-8"))
