@@ -28,7 +28,7 @@ def main(argv=None):
         return 2
     try:
         request = read()
-    except EnvelopeError as exc:
+    except (EnvelopeError, RecursionError) as exc:
         message = str(exc)
         if message == "foreign envelope schema":
             signal = "exousia-reset-envelope-foreign"

@@ -29,7 +29,7 @@ def main(argv=None):
     try:
         try:
             request = read(known_fields=("oldPin", "newPin"), declared_flags=("oldPin", "newPin"))
-        except EnvelopeError as exc:
+        except (EnvelopeError, RecursionError) as exc:
             message = str(exc)
             if message == "foreign envelope schema":
                 signal = "exousia-change-envelope-foreign"
