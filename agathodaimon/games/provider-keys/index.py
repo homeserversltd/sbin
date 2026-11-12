@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from agathodaimon._envelope import SCHEMA
+from agathodaimon._envelope import SCHEMA, _envelope_kernel
 
 SUPPORTED_KEYS = ("THEGAMESDB_API_KEY", "SCREENSCRAPER_API_KEY")
 DEFAULT_PATH = Path("/etc/arch-game-sync/providers.env")
@@ -66,6 +66,9 @@ def _payload(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _request(value: Mapping[str, Any]) -> Mapping[str, Any]:
     if value.get("schema") == SCHEMA:
+        missing = [key for key in _envelope_kernel() if key not in value]
+        if missing:
+            raise ValueError("missing envelope kernel keys: " + ",".join(missing))
         payload = value.get("payload")
         if not isinstance(payload, Mapping) or not payload:
             raise ValueError("provider request payload required")
