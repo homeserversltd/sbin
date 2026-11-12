@@ -589,6 +589,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 interrupted[0] = False
                 refusal = "chord-interrupted"
                 row["firstMissingSignal"] = refusal
+                if phase == "observe" and settled_by == sid:
+                    settled_by = None
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
             if phase == "serve" and not refusal and "settles_on" in stage:
                 value = row["receipt"]
