@@ -927,7 +927,7 @@ def _argv_envelope_has_pin(args: list[str]) -> bool:
             continue
         try:
             envelope = json.loads(argument)
-        except (TypeError, json.JSONDecodeError):
+        except (TypeError, ValueError, RecursionError):
             continue
         found, _pin = _take_envelope_pin(envelope)
         if found:
@@ -948,7 +948,7 @@ def _capture_piped_envelope() -> tuple[dict | None, bool, object]:
     pin = None
     try:
         parsed = json.loads(raw)
-    except (TypeError, json.JSONDecodeError):
+    except (TypeError, ValueError, RecursionError):
         parsed = None
     if isinstance(parsed, dict):
         envelope, unwrapped = _unwrap_receipt(parsed)
@@ -1445,6 +1445,9 @@ def _main(argv, folder, seats):
     if len(args) == 2 and "/" in args[0]:
         try:
             argv_envelope = json.loads(args[1])
+        except RecursionError:
+            _front_answer("invalid-envelope-json", "parse-envelope")
+            return 2
         except (TypeError, ValueError):
             argv_envelope = None
         if isinstance(argv_envelope, dict):
@@ -1520,7 +1523,7 @@ def _main(argv, folder, seats):
         raw_envelope = sys.stdin.read()
         try:
             envelope = json.loads(raw_envelope)
-        except (TypeError, json.JSONDecodeError):
+        except (TypeError, ValueError, RecursionError):
             _front_answer("invalid-envelope-json", "parse-envelope")
             return 2
         if not isinstance(envelope, dict):
@@ -1556,7 +1559,7 @@ def _main(argv, folder, seats):
     if len(args) == 2 and "/" in args[0]:
         try:
             envelope = json.loads(args[1])
-        except (TypeError, json.JSONDecodeError):
+        except (TypeError, ValueError, RecursionError):
             _front_answer("invalid-envelope-json", "parse-envelope")
             return 2
         if not isinstance(envelope, dict):
@@ -1633,7 +1636,7 @@ def _main(argv, folder, seats):
             if raw.strip():
                 try:
                     json.loads(raw)
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, RecursionError):
                     _front_answer("invalid-envelope-json", "parse-envelope", path)
                 else:
                     _front_answer("envelope-must-be-a-json-object", "parse-envelope", path)
