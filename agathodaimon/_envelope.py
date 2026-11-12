@@ -249,7 +249,8 @@ def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     if protected:
         _sensitive_echo.set(True)
     if not request.envelope:
-        return _load_trace.attach_context(receipt, explicit_context, protected=protected)
+        return _load_trace.attach_context(receipt, explicit_context, protected=protected,
+                                          returned_context=request.returned_load_context is not None)
     result = dict(receipt)
     stamp = {"verb": request.verb, "outcome": _outcome(result), "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     carried = _declared_echo(request) if protected else copy.deepcopy(request.value)
@@ -261,6 +262,7 @@ def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     if "stamps" not in request.value or isinstance(request.value.get("stamps"), list):
         envelope["stamps"] = prior + [dict(stamp)]
     result.update(intent_id=carried.get("intent_id") if protected else request.intent_id, raw_envelope=raw_envelope, envelope=envelope, stamps=prior + [dict(stamp)], staff=dict(stamp))
-    return _load_trace.attach_context(result, explicit_context, protected=protected)
+    return _load_trace.attach_context(result, explicit_context, protected=protected,
+                                      returned_context=request.returned_load_context is not None)
 def read_fields(*fields: str, flags: Sequence[str] = (), rooms: Sequence[str] = (), secret: Sequence[str] = ()) -> Request:
     return read(known_fields=fields, declared_flags=flags, rooms=rooms, secret=secret)
