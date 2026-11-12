@@ -41,8 +41,8 @@ def _paths():
 
 def _refuse(signal):
     # This is a read-only sender; a refused read leaves no deed.
-    print(json.dumps({"schema": "caduceus.nas.mirror-serve.v1", "ok": False,
-                      "firstMissingSignal": signal}, separators=(",", ":")), file=sys.stderr, flush=True)
+    print(json.dumps({"ok": False, "firstMissingSignal": signal},
+                     separators=(",", ":")), file=sys.stderr, flush=True)
     return 1
 
 
