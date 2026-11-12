@@ -51,6 +51,8 @@
     "network/dhcp/validate",
     "network/dns/alias/create",
     "network/dns/alias/remove",
+    "network/dns/blocklist/source/add",
+    "network/dns/blocklist/source/remove",
     "network/dns/device-name/create",
     "network/dns/device-name/remove",
     "network/dns/drop-in/apply",
@@ -283,6 +285,8 @@
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/dhcp/reservations",
+    "/api/v1/network/dns/blocklist/source/add",
+    "/api/v1/network/dns/blocklist/source/remove",
     "/api/v1/network/dns/read",
     "/api/v1/network/dns/resolver/status",
     "/api/v1/network/dns/status",
@@ -338,6 +342,8 @@
       "network/dhcp/update-reservation-ip",
       "network/dns/alias/create",
       "network/dns/alias/remove",
+      "network/dns/blocklist/source/add",
+      "network/dns/blocklist/source/remove",
       "network/dns/device-name/create",
       "network/dns/device-name/remove",
       "network/dns/drop-in/apply",
@@ -476,7 +482,9 @@
       "POST /api/v1/config/set",
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
-      "POST /api/v1/interactables/{id}/unsilence"
+      "POST /api/v1/interactables/{id}/unsilence",
+      "POST /api/v1/network/dns/blocklist/source/add",
+      "POST /api/v1/network/dns/blocklist/source/remove"
     ]
   }
 }

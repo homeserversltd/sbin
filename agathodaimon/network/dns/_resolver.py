@@ -4,7 +4,6 @@ import ipaddress
 import os
 import re
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
@@ -20,7 +19,6 @@ class ResolverControl:
     CONFIG = Path("/etc/unbound/unbound.conf")
     BLOCKLIST = Path("/etc/unbound/blocklist.conf")
     CHECKCONF = "/usr/sbin/unbound-checkconf"
-    UPDATE = "/usr/local/lib/updates/modules/adblock/index.py"
     PRESETS = {
         "quad9": ["9.9.9.9", "149.112.112.112"],
         "cloudflare": ["1.1.1.1", "1.0.0.1"],
@@ -112,20 +110,13 @@ class ResolverControl:
         if len(matches) != 1:
             raise DnsError("resolver-blocklist-include-ambiguous")
         addresses, dot = self._forward_values(text)
-        count = 0
-        updated = None
-        try:
-            stat_result = self.BLOCKLIST.stat()
-            updated = int(stat_result.st_mtime)
-            with self.BLOCKLIST.open(encoding="utf-8", errors="replace") as handle:
-                count = sum(1 for line in handle if line.lstrip().startswith("local-zone:"))
-        except FileNotFoundError:
-            pass
+        from agathodaimon.network.dns._blocklist import status_info
+        blocklist = status_info()
         try:
             active = unit.systemctl("is-active", "--quiet", "unbound", runner=self.runner).returncode == 0
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise DnsError("resolver-service-status-unavailable") from exc
-        return {"ok": True, "action": "status", "adblockEnabled": matches[0].group("comment") is None, "upstreams": addresses, "dnsOverTls": dot, "blocklistDomainCount": count, "blocklistLastUpdate": updated, "unboundActive": active, "mutationPerformed": False, "firstMissingSignal": "none"}
+        return {"ok": True, "action": "status", "adblockEnabled": matches[0].group("comment") is None, "upstreams": addresses, "dnsOverTls": dot, **blocklist, "unboundActive": active, "mutationPerformed": False, "firstMissingSignal": "none"}
 
     @identity_locked
     def adblock(self, enabled: Any) -> dict[str, Any]:
@@ -141,12 +132,9 @@ class ResolverControl:
         self._install(before, after)
         return {"ok": True, "action": "adblock", "enabled": enabled, "mutationPerformed": before != after, "reload": "reloaded", "firstMissingSignal": "none"}
 
-    @identity_locked
     def update_blocklist(self) -> dict[str, Any]:
-        self._run([sys.executable, self.UPDATE])
-        unit.reload("unbound", runner=self._run)
-        status = self.status()
-        return {"ok": True, "action": "blocklist-update", "domainCount": status["blocklistDomainCount"], "mutationPerformed": True, "reload": "reloaded", "firstMissingSignal": "none"}
+        from agathodaimon.network.dns._blocklist import execute
+        return execute("converge")
 
     @identity_locked
     def upstream(self, metadata: Any) -> dict[str, Any]:

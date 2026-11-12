@@ -1,0 +1,8 @@
+{
+  "kind": "collection",
+  "children": [
+    "list",
+    "add",
+    "remove"
+  ]
+}

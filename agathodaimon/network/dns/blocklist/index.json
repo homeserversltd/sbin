@@ -1,0 +1,8 @@
+{
+  "kind": "deed",
+  "children": [
+    "converge",
+    "verify",
+    "source"
+  ]
+}

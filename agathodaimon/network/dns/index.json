@@ -3,6 +3,7 @@
     "status",
     "read",
     "resolver",
+    "blocklist",
     "device-name",
     "alias",
     "drop-in"
