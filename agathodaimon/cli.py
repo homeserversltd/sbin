@@ -266,6 +266,7 @@ def _validate_chord(declaration: dict):
         raise _ChordError("chord-stage-invalid")
     seen = set()
     serve_ids = set()
+    settles_declared = False
     for phase, stages in (("serve", serve), ("rescue", rescue), ("finally", final)):
         for stage in stages:
             if not isinstance(stage, dict):
@@ -278,6 +279,12 @@ def _validate_chord(declaration: dict):
                 raise _ChordError("chord-stage-invalid")
             if not isinstance(stage.get("arguments", {}), dict) or not isinstance(stage.get("required", True), bool):
                 raise _ChordError("chord-stage-invalid")
+            if "settles_on" in stage:
+                settles_on = stage["settles_on"]
+                if (phase != "serve" or settles_declared or not isinstance(settles_on, str)
+                        or re.fullmatch(r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*", settles_on) is None):
+                    raise _ChordError("chord-stage-invalid")
+                settles_declared = True
             deps = stage.get("depends_on", [])
             if not isinstance(deps, list) or any(not isinstance(dep, str) or dep not in (serve_ids if phase == "finally" else seen) for dep in deps):
                 raise _ChordError("chord-stage-invalid")
@@ -423,16 +430,19 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                                   "firstMissingField": stage["stage_id"]}))
                 return 1
     blocked = False
+    settled_by = None
     last_executed = None
 
     def consume_between_stages():
-        nonlocal blocked, failed, signal
+        nonlocal blocked, failed, signal, settled_by
         if not interrupted[0] or last_executed is None:
             return
         interrupted[0] = False
         previous_row, previous_phase = last_executed
         previous_row["outcome"] = "stage-refused"
         previous_row["firstMissingSignal"] = "chord-interrupted"
+        if settled_by == previous_row["stage_id"]:
+            settled_by = None
         if failed is None:
             failed, signal = previous_row["stage_id"], "chord-interrupted"
         if previous_phase == "serve":
@@ -451,6 +461,11 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             stage_refusals.append(None)
             row = {"stage_id": sid, "transition": band, "outcome": "stage-skipped", "arguments": {}, "receipt": None}
             rows.append(row)
+            if phase == "serve" and settled_by is not None and not blocked:
+                row["skipped_by"] = "settled"
+                completed[sid] = row
+                stage_durations[-1] = int((time.monotonic() - stage_started) * 1000)
+                continue
             rescue_untriggered = phase == "rescue" and not any(completed.get(dep, {}).get("outcome") == "stage-refused" for dep in stage["on_refusal_of"])
             dependency_blocked = any(
                 completed.get(dep, {}).get("outcome") != "stage-completed"
@@ -528,6 +543,12 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 refusal = "chord-interrupted"
                 row["firstMissingSignal"] = refusal
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
+            if phase == "serve" and not refusal and "settles_on" in stage:
+                value = row["receipt"]
+                for part in stage["settles_on"].split("."):
+                    value = value.get(part) if isinstance(value, dict) else None
+                if value is True:
+                    settled_by = sid
             stage_durations[-1] = int((time.monotonic() - stage_started) * 1000)
             stage_refusals[-1] = refusal
             if refusal and (was_interrupted or phase == "finally" or stage.get("required", True)) and failed is None:
@@ -544,6 +565,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                             row.get("firstMissingSignal") or refusal, duration_ms)
     ok = (failed is None and
           all(not stage.get("required", True) or row["outcome"] == "stage-completed"
+              or (row["outcome"] == "stage-skipped" and row.get("skipped_by") == "settled")
               for stage, row in zip(serve, rows[:len(serve)])) and
           all(row["outcome"] == "stage-completed" for row in rows[len(serve) + len(rescue):]))
     if not dry_run and _mutation_allowed(path) is not False:
@@ -560,8 +582,11 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
         if isinstance(row["receipt"], dict):
             row["receipt"] = _redact_declared({key: value for key, value in row["receipt"].items()
                                                if key not in {"raw_envelope", "envelope"}}, _HAND_SECRET_NAMES)
-    print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": ok, "routine_id": routine_id,
-                      "request": request, "stages": rows, "failedStage": failed, "firstMissingSignal": signal, "changed": changed}, separators=(",", ":")))
+    answer = {"schema": "caduceus.chord.receipt.v1", "ok": ok, "routine_id": routine_id,
+              "request": request, "stages": rows, "failedStage": failed, "firstMissingSignal": signal, "changed": changed}
+    if settled_by is not None:
+        answer["settledBy"] = settled_by
+    print(json.dumps(answer, separators=(",", ":")))
     return 0 if ok else 1
 
 
