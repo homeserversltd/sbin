@@ -50,7 +50,8 @@ def _device_projection_body() -> tuple[list[dict[str, Any]], list[dict[str, str]
         for value in (item["declared_reservation"], item["observed_lease"])
         if value
     }
-    infrastructure_addresses = IdentityClaimCoordinator._infrastructure_addresses(dhcp.get_config())
+    infrastructure_addresses = {IdentityClaimCoordinator.RESOLVER_GATEWAY_ADDRESS}
+    infrastructure_addresses.update(address for kind, address in dhcp.address_parts(dhcp.get_config(), include_gateways=False) if kind == "subnet-router")
     service_names: list[dict[str, str]] = []
     for address, names in dns_by_ip.items():
         if address in known_ips:

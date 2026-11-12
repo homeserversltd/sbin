@@ -269,26 +269,41 @@ class DhcpManager:
         start, end = self._get_reserved_range()
         return value is not None and int(ipaddress.IPv4Address(start)) <= value <= int(ipaddress.IPv4Address(end))
 
+    @staticmethod
+    def address_parts(config: dict[str, Any], *, include_gateways: bool = True):
+        """Yield the picker's infrastructure inputs with their origin kind."""
+        dhcp = config.get("Dhcp4", {})
+        subnets = [subnet for subnet in dhcp.get("subnet4", []) if isinstance(subnet, dict)]
+        subnet_options = {id(option) for subnet in subnets
+                          for option in (subnet.get("option-data") if isinstance(subnet.get("option-data"), list) else [])
+                          if isinstance(option, dict)}
+        if include_gateways:
+            for subnet in subnets:
+                network = ipaddress.IPv4Network(str(subnet["subnet"]), strict=False)
+                yield "subnet-gateway", str(network.network_address + 1)
+
+        def options(value):
+            if isinstance(value, dict):
+                name = value.get("name")
+                if name in {"routers", "domain-name-servers"}:
+                    kind = "subnet-router" if name == "routers" and id(value) in subnet_options else name
+                    for part in str(value.get("data", "")).split(","):
+                        yield kind, part.strip()
+                for child in value.values():
+                    yield from options(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from options(child)
+
+        yield from options(dhcp)
+
     def taken_addresses(self, dns=None, exempt_name: str | None = None) -> set[str]:
         from agathodaimon.network.dns._manager import DnsError, DnsManager
 
         config = self.get_config()
         taken = {item["ip-address"] for item in self.get_reservations()}
         taken.update(item["ip-address"] for item in self.get_leases())
-        dhcp = config["Dhcp4"]
-        for subnet in self._subnets(config):
-            network = ipaddress.IPv4Network(str(subnet["subnet"]), strict=False)
-            taken.add(str(network.network_address + 1))
-        def options(value):
-            if isinstance(value, dict):
-                if value.get("name") in {"routers", "domain-name-servers"}:
-                    taken.update(part.strip() for part in str(value.get("data", "")).split(",") if part.strip())
-                for child in value.values():
-                    options(child)
-            elif isinstance(value, list):
-                for child in value:
-                    options(child)
-        options(dhcp)
+        taken.update(address for _kind, address in self.address_parts(config) if address)
         try:
             exempt = exempt_name.rstrip(".").lower() if exempt_name else None
             taken.update(row["target"] for row in (dns or DnsManager())._all_local_records()
