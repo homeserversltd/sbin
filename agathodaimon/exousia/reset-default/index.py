@@ -11,6 +11,10 @@ from agathodaimon.exousia._common import invoke_library
 _SIGNAL = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 
 
+def _refuse(signal):
+    print(json.dumps({"ok": False, "firstMissingSignal": signal}, separators=(",", ":")))
+
+
 def _valid_hex(value):
     return isinstance(value, str) and len(value) == 64 and all(
         char in "0123456789abcdefABCDEF" for char in value
@@ -20,21 +24,31 @@ def _valid_hex(value):
 def main(argv=None):
     if list(sys.argv[1:] if argv is None else argv):
         print("one exousia verb is required", file=sys.stderr)
+        _refuse("exousia-reset-argument-extra")
         return 2
     try:
         request = read()
     except EnvelopeError as exc:
-        print(str(exc), file=sys.stderr)
+        message = str(exc)
+        if message == "foreign envelope schema":
+            signal = "exousia-reset-envelope-foreign"
+        elif message.startswith("missing envelope kernel keys:"):
+            signal = "exousia-reset-envelope-kernel-missing"
+        else:
+            signal = "exousia-reset-envelope-invalid"
+        _refuse(signal)
         return 2
 
     try:
         value = invoke_library("reset-default-pin", {})
     except Exception:  # noqa: BLE001
         print("exousia reset refused", file=sys.stderr)
+        _refuse("exousia-reset-refused")
         return 1
 
     if not isinstance(value, dict):
         print("exousia reset returned invalid status", file=sys.stderr)
+        _refuse("exousia-reset-status-invalid")
         return 1
 
     if value.get("ok") is False:
@@ -46,10 +60,12 @@ def main(argv=None):
         public_key, epoch = value.get("publicKey"), value.get("epoch")
         if not _valid_hex(public_key) or not _valid_hex(epoch):
             print("exousia reset returned invalid public state", file=sys.stderr)
+            _refuse("exousia-reset-public-state-invalid")
             return 1
         result = {"ok": True, "publicKey": public_key, "epoch": epoch}
     else:
         print("exousia reset returned invalid status", file=sys.stderr)
+        _refuse("exousia-reset-status-invalid")
         return 1
 
     print(json.dumps(attach(result, request), separators=(",", ":")))
