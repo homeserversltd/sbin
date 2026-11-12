@@ -1443,6 +1443,12 @@ def _emit_stamp_bytes(destination, data):
 
 
 def main(argv=None):
+    from agathodaimon._envelope import echo_scope
+    with echo_scope():
+        return _scoped_main(argv)
+
+
+def _scoped_main(argv=None):
     global _stamp_target, _stamp_seat, _front_args, _front_dry_run
     started = time.monotonic()
     _front_dry_run = False
@@ -1633,6 +1639,8 @@ def _main(argv, folder, seats):
             _front_answer("receipt-carries-no-request", "unwrap-receipt")
             return 2
         pin_present, pin = _take_envelope_pin(envelope)
+        from agathodaimon._envelope import mark_gate_pin_present
+        mark_gate_pin_present(pin_present)
         if pin_present or unwrapped:
             raw_envelope = json.dumps(envelope, separators=(",", ":"))
         target = _slash_target(args[0])
@@ -1717,6 +1725,8 @@ def _main(argv, folder, seats):
     if remainder == ["--help"]: _help(path); return 0
     try:
         envelope, pin_present, pin = _capture_piped_envelope()
+        from agathodaimon._envelope import mark_gate_pin_present
+        mark_gate_pin_present(pin_present)
     except ValueError as exc:
         if str(exc) == "invalid-envelope-json":
             _front_answer("invalid-envelope-json", "parse-envelope", path)

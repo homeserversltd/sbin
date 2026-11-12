@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import copy, json, os, re, sys
+from contextvars import ContextVar
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Any, Mapping, Sequence
@@ -16,6 +18,30 @@ _seat_required: tuple[str, ...] = ()
 _seat_foreign: Any = None
 _PIN_FIELDS = ("pin", "oldPin", "newPin")
 _REDACTED_PIN = "[REDACTED]"
+_gate_pin = ContextVar("staff_gate_pin_present", default=False)
+_sensitive_echo = ContextVar("staff_sensitive_echo", default=False)
+
+
+@contextmanager
+def echo_scope():
+    """Keep non-secret presence and trace policy local to one invocation."""
+    gate_token = _gate_pin.set(False)
+    echo_token = _sensitive_echo.set(False)
+    try:
+        yield
+    finally:
+        _sensitive_echo.reset(echo_token)
+        _gate_pin.reset(gate_token)
+
+
+def mark_gate_pin_present(present: bool) -> None:
+    if present:
+        _gate_pin.set(True)
+        _sensitive_echo.set(True)
+
+
+def sensitive_echo() -> bool:
+    return _sensitive_echo.get()
 
 
 class EnvelopeError(ValueError): pass
@@ -59,6 +85,10 @@ class Request:
     load_context: Any = None
     returned_load_context: Any = None
     secret_fields: tuple[str, ...] = ()
+    known_fields: tuple[str, ...] = ()
+    declared_flags: tuple[str, ...] = ()
+    rooms: tuple[str, ...] = ()
+    gate_pin_present: bool = False
     @property
     def verb(self) -> str:
         if isinstance(self.transition, str) and self.transition:
@@ -73,11 +103,15 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise EnvelopeError("invalid JSON") from exc
     if not isinstance(value, dict): raise EnvelopeError("JSON object required")
+    if secret or _gate_pin.get() or _pin_bearing_exousia(value):
+        _sensitive_echo.set(True)
     load_context_present, load_context = _load_trace.extract_load_context(value)
     if "schema" not in value:
         return Request(
             value, False, _selected(value, tuple(known_fields) + tuple(secret)), raw,
             load_context_present=load_context_present, load_context=load_context, secret_fields=tuple(secret),
+            known_fields=tuple(known_fields), declared_flags=tuple(declared_flags), rooms=tuple(rooms),
+            gate_pin_present=_gate_pin.get(),
         )
     if value.get("schema") != SCHEMA: raise EnvelopeError("foreign envelope schema")
     missing = [k for k in _envelope_kernel() if k not in value]
@@ -96,7 +130,8 @@ def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = ()
     return Request(
         value, True, payload, raw, value.get("intent_id"), value.get("transition"),
         value.get("version"), value.get("timestamp"), load_context_present, load_context,
-        secret_fields=tuple(secret),
+        secret_fields=tuple(secret), known_fields=tuple(known_fields),
+        declared_flags=tuple(declared_flags), rooms=tuple(rooms), gate_pin_present=_gate_pin.get(),
     )
 def _outcome(receipt: Mapping[str, Any]) -> str:
     first_missing_signal = receipt.get("firstMissingSignal")
@@ -149,30 +184,78 @@ def _redact_declared(value: Any, names: Sequence[str]) -> Any:
     return value
 
 
+def _leaf_only(value: Any) -> Any:
+    """A field declaration names no children; never infer their names."""
+    if isinstance(value, dict):
+        return {}
+    if isinstance(value, list):
+        return [_leaf_only(item) for item in value]
+    return copy.deepcopy(value)
+
+
+def _declared_echo(request: Request) -> dict[str, Any]:
+    value = request.value
+    names = set(request.known_fields + request.declared_flags + request.rooms + request.secret_fields)
+
+    def field(name: str, item: Any) -> Any:
+        if name in request.secret_fields or name in _PIN_FIELDS:
+            return _REDACTED_PIN
+        return _leaf_only(item)
+
+    def group(source: Any, allowed: Sequence[str]) -> dict[str, Any]:
+        if not isinstance(source, Mapping):
+            return {}
+        result = {key: field(key, item) for key, item in source.items() if key in allowed}
+        scoped = source.get("exousia")
+        if isinstance(scoped, Mapping):
+            children = {key: field(key, item) for key, item in scoped.items() if key in allowed}
+            if children:
+                result["exousia"] = children
+        return result
+
+    carried = {key: _leaf_only(value[key]) for key in (_envelope_kernel() or ("schema",)) if key in value}
+    if "stamps" in value:
+        carried["stamps"] = _leaf_only(value["stamps"])
+    source = value.get("payload")
+    if isinstance(source, Mapping):
+        payload = {key: field(key, item) for key, item in source.items() if key in names and key not in ("flags", "rooms")}
+        for key, allowed in (("flags", request.declared_flags), ("rooms", request.rooms)):
+            nested = group(source.get(key), allowed)
+            if nested:
+                payload[key] = nested
+        carried["payload"] = payload
+    for key, allowed in (("flags", request.declared_flags), ("rooms", request.rooms)):
+        nested = group(value.get(key), allowed)
+        if nested:
+            carried[key] = nested
+    if request.gate_pin_present:
+        carried.setdefault("flags", {}).setdefault("exousia", {})["pin"] = _REDACTED_PIN
+    return carried
+
+
 def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     explicit_context = (
         request.returned_load_context
         if request.returned_load_context is not None
         else request.load_context if request.load_context_present else None
     )
-    if request.secret_fields:
-        explicit_context = _redact_declared(explicit_context, request.secret_fields)
+    protected = request.gate_pin_present or _pin_bearing_exousia(request.value) or bool(request.secret_fields)
+    if protected:
+        _sensitive_echo.set(True)
+        explicit_context = None
     if not request.envelope:
-        return _load_trace.attach_context(receipt, explicit_context)
+        return receipt if protected else _load_trace.attach_context(receipt, explicit_context)
     result = dict(receipt)
     stamp = {"verb": request.verb, "outcome": _outcome(result), "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
-    pin_bearing = _pin_bearing_exousia(request.value)
-    carried = _redact_pin_carriers(request.value) if pin_bearing else copy.deepcopy(request.value)
-    if request.secret_fields:
-        carried = _redact_declared(carried, request.secret_fields)
+    carried = _declared_echo(request) if protected else copy.deepcopy(request.value)
     prior = carried.get("stamps"); prior = list(prior) if isinstance(prior, list) else []
-    raw_envelope = json.dumps(carried, separators=(",", ":")) if pin_bearing or request.secret_fields else request.raw_envelope
+    raw_envelope = json.dumps(carried, separators=(",", ":")) if protected else request.raw_envelope
     envelope = carried
     # Absent/list stamps are an additive custody lane. Preserve malformed
     # caller data in the carried envelope while top-level custody stays usable.
     if "stamps" not in request.value or isinstance(request.value.get("stamps"), list):
         envelope["stamps"] = prior + [dict(stamp)]
-    result.update(intent_id=request.intent_id, raw_envelope=raw_envelope, envelope=envelope, stamps=prior + [dict(stamp)], staff=dict(stamp))
-    return _load_trace.attach_context(result, explicit_context)
+    result.update(intent_id=carried.get("intent_id") if protected else request.intent_id, raw_envelope=raw_envelope, envelope=envelope, stamps=prior + [dict(stamp)], staff=dict(stamp))
+    return result if protected else _load_trace.attach_context(result, explicit_context)
 def read_fields(*fields: str, flags: Sequence[str] = (), rooms: Sequence[str] = (), secret: Sequence[str] = ()) -> Request:
     return read(known_fields=fields, declared_flags=flags, rooms=rooms, secret=secret)

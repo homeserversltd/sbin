@@ -1079,7 +1079,8 @@ def run_cli(envelope: Any, operation: str, callback: Callable[[], Any]) -> Any:
             if payload:
                 try:
                     context = handle.response_context() if handle is not None else None
-                    if context is not None:
+                    from agathodaimon._envelope import sensitive_echo
+                    if context is not None and not sensitive_echo():
                         payload = _inject_context(payload, context)
                 except Exception:
                     if handle is not None:
