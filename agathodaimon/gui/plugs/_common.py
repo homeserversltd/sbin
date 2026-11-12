@@ -157,6 +157,12 @@ def _signal(receipt: dict[str, Any]) -> str:
     return value if isinstance(value, str) and value != "none" else ""
 
 
+# A door verdict rides beside the stop's receipt.
+def _refusal_signal(receipt: dict[str, Any]) -> str:
+    value = receipt.get("doorSignal")
+    return value if isinstance(value, str) and value and value != "none" else _signal(receipt)
+
+
 def _receipt_ok(receipt: dict[str, Any]) -> bool:
     return receipt.get("ok") is True
 
@@ -219,7 +225,7 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str) -> No
                 running = receipt.get("running")
                 message = "Opened" if running is True else "Closed" if running is False else "Request completed"
             else:
-                message = _signal(receipt) or "Manager request refused"
+                message = _refusal_signal(receipt) or "Manager request refused"
         except (OSError, urllib.error.URLError, ValueError, UnicodeDecodeError) as error:
             message = f"Manager unavailable: {error}"
         GLib.idle_add(checked, message, True)
@@ -503,7 +509,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         if generation != state["read_generation"]:
             return False
         if error is not None or receipt is None or not _receipt_ok(receipt) or not isinstance(receipt.get("values"), dict):
-            signal = error or (_signal(receipt) if receipt is not None else "") or "Settings read refused"
+            signal = error or (_refusal_signal(receipt) if receipt is not None else "") or "Settings read refused"
             for field, row in rows.items():
                 row.set_visible(False)
                 show_status(field)
@@ -558,13 +564,13 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             state["status"][field] = "Saved"
             refresh(field)
             return False
-        signal = _signal(receipt) or "Setting refused"
+        signal = _refusal_signal(receipt) or "Setting refused"
         state["hydrating"] = True
         try:
             setters[field](previous)
             show_status(field, "Not saved", signal)
-            if signal.startswith(("unsupported:", "privilege:")):
-                static_signals[field] = signal
+            if _signal(receipt).startswith(("unsupported:", "privilege:")):
+                static_signals[field] = _signal(receipt)
                 row.set_sensitive(False)
             else:
                 row.set_sensitive(True)
