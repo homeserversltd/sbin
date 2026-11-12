@@ -505,15 +505,9 @@ def _preflight(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any
     expected = ROLE[role]
     other_label = ROLE["backup" if role == "primary" else "primary"]["partlabel"]
     requested_labels = [row for row in _walk_nodes(tree) if row.get("partlabel") == expected["partlabel"]]
-    target_labels = []
-    target_stack = [node]
-    while target_stack:
-        current = target_stack.pop()
-        if current.get("partlabel") == other_label:
-            target_labels.append(current)
-        children = current.get("children", []) or []
-        if isinstance(children, list):
-            target_stack.extend(children)
+    target_labels = [row for row in _walk_nodes(tree) if row.get("type") == "part"
+                     and _normalize_pkname(row.get("pkname")) == os.path.basename(device)
+                     and row.get("partlabel") == other_label]
     if requested_labels or target_labels:
         _record(receipt, "partlabel-preflight", False, partlabel=expected["partlabel"],
                 requestedLabelCount=len(requested_labels), oppositeRoleOnTarget=len(target_labels))
