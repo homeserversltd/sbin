@@ -918,6 +918,9 @@ def attach_context(value: Any, explicit_context: Any = None, *, protected: bool 
     if not isinstance(value, dict):
         return value
     try:
+        if protected and "load_context" in value:
+            value = dict(value)
+            value["load_context"] = _protected_context(value["load_context"]) or {}
         context = response_context()
         if context is None:
             context = explicit_context
@@ -1057,13 +1060,15 @@ def _reply_failed(text: str) -> bool:
     return isinstance(value, Mapping) and (value.get("ok") is False or value.get("converged") is False)
 
 
-def _inject_context(text: str, context: Any) -> str:
+def _inject_context(text: str, context: Any, *, protected: bool = False) -> str:
     try:
         value = json.loads(text)
     except (TypeError, ValueError, json.JSONDecodeError):
         return text
     if not isinstance(value, dict):
         return text
+    if protected and "load_context" in value:
+        value["load_context"] = _protected_context(value["load_context"]) or {}
     value = _attach_context_value(value, context)
     output = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return output + ("\n" if text.endswith(("\n", "\r")) else "")
@@ -1097,10 +1102,11 @@ def run_cli(envelope: Any, operation: str, callback: Callable[[], Any]) -> Any:
                 try:
                     context = handle.response_context() if handle is not None else None
                     from agathodaimon._envelope import sensitive_echo
-                    if sensitive_echo():
+                    protected = sensitive_echo()
+                    if protected:
                         context = _protected_context(context)
                     if context is not None:
-                        payload = _inject_context(payload, context)
+                        payload = _inject_context(payload, context, protected=protected)
                 except Exception:
                     if handle is not None:
                         handle.mark_incomplete("load-trace-reply-enrichment-unavailable")
