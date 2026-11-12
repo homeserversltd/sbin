@@ -117,7 +117,13 @@ def _save(values: Mapping[str, Any]) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agathodaimon-games-provider-keys")
     parser.add_argument("operation", choices=("status", "save"), nargs="?", default="status")
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code != 2:
+            raise
+        print(json.dumps({"ok": False, "firstMissingSignal": "provider-keys-arguments-invalid"}))
+        return 2
     envelope: Mapping[str, Any] | None = None
     try:
         if argv == []:

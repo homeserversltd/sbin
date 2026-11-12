@@ -1395,40 +1395,13 @@ def main(argv=None):
         return _main(argv, folder, seats)
     destination = sys.stdout
     output = _StampOutput(destination)
-    exit_error = None
     try:
         with contextlib.redirect_stdout(output):
             result = _main(argv, folder, seats)
-    except SystemExit as exc:
-        if exc.code is None or exc.code == 0:
-            _emit_stamp_bytes(destination, output.bytes())
-            raise
-        exit_error = exc
-        result = exc.code if isinstance(exc.code, int) else 1
     except BaseException:
         _emit_stamp_bytes(destination, output.bytes())
         raise
     captured = output.bytes()
-    if not captured and result and _stamp_target:
-        target_path = ROOT / _stamp_target
-        try:
-            declaration = _index(target_path)
-            envelope = declaration.get("envelope", {})
-            eligible = (isinstance(envelope, dict)
-                        and envelope.get("stdin") != "stream"
-                        and envelope.get("stdout") != "raw"
-                        and ((target_path / "index.py").is_file() or "serve" not in declaration))
-        except (OSError, ValueError, TypeError, AttributeError):
-            eligible = False
-        if eligible:
-            answer = {"ok": False, "firstMissingSignal": "agathodaimon-stop-refused-without-answer"}
-            sys.stdout.write(json.dumps(_stamp_receipt(answer, _stamp_target)) + "\n")
-            if exit_error is not None:
-                raise exit_error
-            return result
-    if exit_error is not None:
-        _emit_stamp_bytes(destination, captured)
-        raise exit_error
     try:
         raw = captured.decode("utf-8")
     except UnicodeDecodeError:
