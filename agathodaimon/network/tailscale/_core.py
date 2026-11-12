@@ -481,8 +481,9 @@ def _plan_optional_config(path: Path, name: str) -> tuple[bytes | None, bytes | 
         raise Refused("tailscale-homeserver-config-invalid") from error
     if not isinstance(config, dict):
         raise Refused("tailscale-homeserver-config-invalid")
+    original = copy.deepcopy(config)
     updated, old = _rewrite_config(config, name)
-    return raw, updated, meta, old
+    return raw, raw if config == original else updated, meta, old
 
 
 def _image(path: Path) -> Image:
@@ -1018,38 +1019,41 @@ def _current_tree_paths(trees: Sequence[Path]) -> set[Path]:
     return result
 
 
-def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
+def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[str, Any]:
+    if type(dry_run) is not bool:
+        return _receipt("tailnet", False, "tailscale-tailnet-dry-run-invalid", attempt="validate-dry-run", dry_run=False)
     prior_tailnet: str | None = None
     try:
         live_name, normalized = _live_tailnet()
     except Refused as error:
         return _receipt("tailnet", False, error.signal, observed={"nameSupplied": bool(name)},
                         attempt="read-live-name", priorTailnet=None, newTailnet=None,
-                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[])
+                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
     if not isinstance(name, str) or (name and name.lower() != normalized):
         return _receipt("tailnet", False, "tailscale-tailnet-name-mismatch",
                         observed={"typedName": name, "liveTailnet": normalized, "liveName": live_name},
                         attempt="compare-live-name", priorTailnet=None, newTailnet=normalized,
-                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[])
+                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
     try:
         backup_override = _validate_backup_argument(backup_dir)
     except Refused as error:
         return _receipt("tailnet", False, error.signal,
                         observed={"normalizedName": normalized, "backupArgumentValidated": False},
                         attempt="validate-backup-argument-before-lock", final={"newTailnet": normalized},
-                        priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[])
+                        priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
 
     config_path = appliance_runtime_path("config")
     lock_fd: int | None = None
     try:
-        lock_fd = os.open(config_path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if not dry_run:
+            lock_fd = os.open(config_path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         if lock_fd is not None:
             os.close(lock_fd)
         return _receipt("tailnet", False, "tailscale-tailnet-config-lock-unavailable",
                         observed={"configPath": str(config_path)}, attempt="serialize-config-transaction",
-                        priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[])
+                        priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
 
     images: dict[Path, Image] = {}
     directory_contents: dict[Path, list[str]] = {}
@@ -1086,6 +1090,7 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
             "tailnet", ok, signal_name, observed=observed, could_change=public_paths(attempted),
             attempt=attempt, final=final, mutation=mutation,
             priorTailnet=prior_tailnet, newTailnet=normalized, liveName=live_name, hestiaSites=site_results,
+            dry_run=dry_run,
             changedFiles=sorted(set(public_paths(changed))), attemptedFiles=sorted(set(public_paths(attempted))),
             backupPath=backup_path, subjectAltNames=sans,
             nginxAliases={str(path): [str(alias) for alias in aliases_for_changed.get(path, [])] for path in sorted(aliases_for_changed, key=str)},
@@ -1201,12 +1206,13 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
 
     try:
         ca = _house_ca_module()
-        ca_lock = ca.house_ca_lock()
-        try:
-            ca_lock.__enter__()
-        except (OSError, RuntimeError):
-            ca_lock = None
-            raise Refused("tailscale-tailnet-house-ca-lock-unavailable") from None
+        if not dry_run:
+            ca_lock = ca.house_ca_lock()
+            try:
+                ca_lock.__enter__()
+            except (OSError, RuntimeError):
+                ca_lock = None
+                raise Refused("tailscale-tailnet-house-ca-lock-unavailable") from None
         sites = _hestia_sites(ca, live_name)
         site_results = [{"name": site["name"], "port": site["port"],
                          "leaf": "kept" if site["standing"] else "pending"} for site in sites]
@@ -1230,6 +1236,20 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
         native_module = _certificate_module()
         native_inventory = native_module.prospective_mutable_inventory(normalized)
         sans = list(native_inventory.get("subjectAltNames", []))
+        if dry_run:
+            served = sorted(_served_certificate_sans())
+            nginx_files, _aliases, _names = _nginx_sources()
+            observed["oldSide"] = {
+                "runtimeConfig": {"path": str(config_path), "verdict": "pending" if config_changed else "standing"},
+                "oldSiteConfig": {"path": str(OG_CONFIG), "verdict": "absent" if optional_raw is None else ("pending" if optional_changed else "standing")},
+                "nginxFiles": [{"path": str(path), "verdict": "pending" if path in nginx_plan else "standing"}
+                               for path in sorted(nginx_files, key=str)
+                               if not (path.parent == NGINX_CONF_D and path.name.startswith("agathodaimon-") and path.suffix == ".conf")],
+                "servedCertificate": {"names": served, "verdict": "standing" if f"home.{normalized}.ts.net" in served else "pending"},
+            }
+            return make_receipt(True, attempt={"stages": ["read-live-name", "plan-old-side", "inspect-hestia-leaves"]},
+                                final={"declaredTailnet": prior_tailnet, "backupCreated": False,
+                                       "certificateRefreshed": False, "nginxReloaded": False}, mutation=False)
         old_current = (prior_tailnet == normalized and not config_changed and not optional_changed and not nginx_plan
                        and f"home.{normalized}.ts.net" in _served_certificate_sans())
         if old_current and all(site["standing"] for site in sites):
@@ -1306,14 +1326,17 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
         stage = "backup"
         backup_path = _backup(backup_override, images, directory_contents)
         observed["backupComplete"] = True
+        stages = ["backup"]
 
         if config_changed:
+            stages.append("write-config")
             stage = "write-config"
             write_started = True
             attempted.append(str(config_path))
             _atomic_write(config_path, config_temp, new_config_bytes, images[config_path], owned_staging_paths)
             changed_files.append(str(config_path))
         if optional_changed and optional_raw is not None and optional_new is not None and optional_meta is not None and optional_temp is not None:
+            stages.append("write-homeserver-config")
             stage = "write-homeserver-config"
             temp = optional_temp
             write_started = True
@@ -1321,6 +1344,8 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
             _atomic_write(OG_CONFIG, temp, optional_new, Image(True, optional_meta.st_mode, optional_meta.st_uid, optional_meta.st_gid, optional_raw), owned_staging_paths)
             changed_files.append(str(OG_CONFIG))
         for target, data in sorted(nginx_plan.items(), key=lambda pair: str(pair[0])):
+            if "rewrite-nginx" not in stages:
+                stages.append("rewrite-nginx")
             stage = "rewrite-nginx"
             image = images[target]
             temp = target.with_name(f".{target.name}.tailscale-{transaction_id}.tmp")
@@ -1330,6 +1355,7 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
             changed_files.append(str(target))
             changed_files.extend(str(alias) for alias in aliases_for_changed.get(target, []))
         if not old_current:
+            stages.append("native-certificate-refresh")
             stage = "refresh-legacy-certificate"
             write_started = True
 
@@ -1349,6 +1375,8 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
                 raise Refused(signal_name if isinstance(signal_name, str) and signal_name != "none" else "tailscale-tailnet-certificate-refresh-failed")
             changed_files.extend(item for item in certificate.get("writtenPaths", []) if isinstance(item, str))
         stage = "hestia-leaves"
+        if sites:
+            stages.append("hestia-leaves")
         issued: dict[str, bool] = {}
         for site in sites:
             identity = site["name"]
@@ -1367,19 +1395,24 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
                 if row["name"] == identity:
                     row["leaf"] = "re-issued" if issued[identity] else "kept"
         stage = "nginx-validation"
+        stages.append("nginx-test")
         tested = _run([NGINX, "-t"], 20)
         if tested is None or tested.returncode != 0:
             raise Refused("tailscale-tailnet-nginx-validation-failed")
         stage = "nginx-reload"
+        stages.append("nginx-reload")
         reloaded = _run([SYSTEMCTL, "reload", "nginx"], 30)
         if reloaded is None or reloaded.returncode != 0:
             raise Refused("tailscale-tailnet-nginx-reload-failed")
         stage = "tls-readback"
+        stages.append("tls-readback")
         identity = f"home.{normalized}.ts.net"
         tls = _tls_readback(identity, Path("/etc/ssl/home.arpa/cert.pem"))
         if tls is None or tls.get("hostnameVerified") is not True or identity not in tls.get("subjectAltNames", []):
             raise Refused("tailscale-tailnet-nginx-tls-readback-failed")
         stage = "hestia-readback"
+        if sites:
+            stages.append("hestia-readback")
         for site in sites:
             if not _hestia_readback(live_name, site["port"], ca.cert_dir() / "ca.pem"):
                 raise Refused("tailscale-tailnet-hestia-readback-failed")
@@ -1392,8 +1425,7 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
                 changed_files.append(str(path))
         return make_receipt(
             True,
-            attempt={"stages": ["backup", "write-config", "write-homeserver-config" if optional_changed else "homeserver-config-absent-or-unchanged",
-                                "rewrite-nginx", "native-certificate-refresh", "nginx-test", "nginx-reload", "tls-readback"]},
+            attempt={"stages": stages},
             final={"declaredTailnet": normalized, "subjectAltNames": sans, "changedFiles": sorted(set(public_paths(changed_files))),
                    "nginxReloaded": True, "tlsHostnameVerified": True, "backupComplete": True,
                    "certificateRefreshed": not old_current, "hestiaPortsVerified": len(sites)},

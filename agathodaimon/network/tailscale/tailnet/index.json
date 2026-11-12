@@ -1,6 +1,7 @@
 {
   "children": [],
   "hand": "envelope",
+  "dry-run": true,
   "sclerite": {
     "name": "tailscale",
     "features": {
