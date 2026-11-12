@@ -2501,7 +2501,7 @@ def _seat_info(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any
     if node.get("maj:min") != identity:
         raise Refusal("agathodaimon-nas-device-identity-mismatch", "device-identity-preflight")
     partition = _partition_path(device)
-    parts = [row for row in _walk_nodes({"blockdevices": [node]}) if row.get("path") == partition]
+    parts = [row for row in _walk_nodes(tree) if row.get("path") == partition]
     if (len(parts) != 1 or parts[0].get("type") != "part"
             or _normalize_pkname(parts[0].get("pkname")) != os.path.basename(device)
             or parts[0].get("partlabel") != expected["partlabel"]):
