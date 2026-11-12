@@ -17,10 +17,11 @@ import uuid
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, Mapping, Sequence, cast
+from agathodaimon.carapace import normalize_profile
 
 AUTO_RESOLUTION_CEILINGS = {
     "homeconsole": (2560, 1440),
-    "tv": (1920, 1080),
+    "hometv": (1920, 1080),
     "default": (1920, 1080),
 }
 DEFAULT_REFRESH_RATE = 60
@@ -612,13 +613,13 @@ def _read_profile_name() -> str | None:
         if not isinstance(identity, dict):
             return None
         profile = identity.get("profile")
-        return profile if isinstance(profile, str) else None
+        return normalize_profile(profile) if isinstance(profile, str) else None
     except (ImportError, OSError, UnicodeError, json.JSONDecodeError, ValueError, TypeError, RecursionError):
         return None
 
 
 def _automatic_resolution_ceiling(profile: str | None) -> tuple[str | None, str, tuple[int, int]]:
-    identity = _read_profile_name() if profile is None else profile
+    identity = normalize_profile(_read_profile_name() if profile is None else profile)
     selected = identity if isinstance(identity, str) and identity in AUTO_RESOLUTION_CEILINGS else "default"
     return identity, selected, AUTO_RESOLUTION_CEILINGS[selected]
 

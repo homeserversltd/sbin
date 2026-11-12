@@ -1,6 +1,6 @@
 {
   "schema": "agathodaimon.defconfig.v1",
-  "profile": "tv",
+  "profile": "hometv",
   "features": [
     "sway",
     "pactl",

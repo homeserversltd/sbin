@@ -13,7 +13,14 @@ ROOT = Path(__file__).resolve().parent
 FEATURES_PATH = ROOT / "sclerites.json"
 DEFCONFIG_DIR = ROOT / "defconfigs"
 CROSSINGS_DIR = ROOT / "crossings"
-PROFILES = ("homeserver", "homeconsole", "tv", "homesi", "specula")
+PROFILES = ("homeserver", "homeconsole", "hometv", "homesi", "specula")
+
+
+def normalize_profile(profile: Any) -> Any:
+    """Resolve the field's legacy HomeTV profile identifier at the read seat."""
+    return "hometv" if profile == "tv" else profile
+
+
 CROSSING_SCHEMA = "appliance.crossings.v1"
 PART = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 ROUTE_SEGMENT = r"(?:[a-z0-9][a-z0-9_.-]*|:[a-z][a-z0-9_]*)"

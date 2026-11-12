@@ -32,7 +32,7 @@ and prerequisites add derived features without adding profile-band lists:
   `local-ai`, `pid2-unit`.
 - `homeconsole`: `sway`, `pactl`, `desktop`, `nmcli`, `games`, `sddm`,
   `console-restart`.
-- `tv`: `sway`, `pactl`, `desktop`, `nmcli`, `gtk4`.
+- `hometv`: `sway`, `pactl`, `desktop`, `nmcli`, `gtk4`.
 
 `all` and `settings` are always on. `settings` owns the compositor-free
 `settings/datetime` and `settings/region` crossings; session-bound settings

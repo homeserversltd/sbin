@@ -2511,7 +2511,10 @@ def _item_name(value: Any, fallback: str) -> str:
 
 def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
     feed_path = os.environ.get("HARMONIA_FEED_PATH")
-    receipt_dir = Path(os.environ.get("HARMONIA_RECEIPT_DIR", "/var/lib/harmonia/receipts/tv-update-latest"))
+    receipt_override = os.environ.get("HARMONIA_RECEIPT_DIR")
+    receipt_dir = Path(receipt_override) if receipt_override is not None else Path("/var/lib/harmonia/receipts/hometv-update-latest")
+    if receipt_override is None and not receipt_dir.exists():
+        receipt_dir = receipt_dir.parent / "tv-update-latest"
     subscription_path = Path(os.environ.get("HARMONIA_SUBSCRIPTION_PATH", "/var/lib/harmonia/subscription.json"))
     try:
         if feed_path is not None:
@@ -2556,7 +2559,9 @@ def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
         )
         if unresolved:
             hotfixes.append(_item_name(item, hotfix_id))
-    ledger_path = receipt_dir.parent / "tv-ledger.jsonl"
+    ledger_path = receipt_dir.parent / "hometv-ledger.jsonl"
+    if not ledger_path.exists():
+        ledger_path = receipt_dir.parent / "tv-ledger.jsonl"
     entries: list[dict[str, Any]] = []
     try:
         for line in ledger_path.read_text(encoding="utf-8").splitlines():

@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable
+from agathodaimon.carapace import normalize_profile
 
 from ._common import CADUCEUS_URL, _receipt_ok, _signal, build_settings_widget
 
@@ -295,7 +296,7 @@ def _trust_fetch(server: str, renew: bool) -> str:
 
 def _profile() -> str:
     try:
-        return json.loads(Path("/etc/appliance/profile.json").read_text(encoding="utf-8")).get("profile", "")
+        return normalize_profile(json.loads(Path("/etc/appliance/profile.json").read_text(encoding="utf-8")).get("profile", ""))
     except (OSError, ValueError, AttributeError):
         return ""
 
@@ -581,7 +582,7 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
             state_label = Gtk.Label(label=trust["message"], xalign=0, wrap=True)
             state_label.add_css_class("accent" if trust["state"] == "trusted" else "warning")
             content.append(state_label)
-            device = "TV" if _profile() == "tv" else "device"
+            device = "TV" if _profile() == "hometv" else "device"
             description = {
                 "accept": f"Let this {device} open your HomeServer's apps and pages securely, without browser security warnings.",
                 "renew": f"Let this {device} open your HomeServer's apps and pages securely, without browser security warnings.",

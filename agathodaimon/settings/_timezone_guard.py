@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from agathodaimon.carapace import normalize_profile
 
 
 def require_timezone_change_allowed():
@@ -12,7 +13,7 @@ def require_timezone_change_allowed():
     else:
         try:
             value = json.loads((Path(root) / "etc/appliance/profile.json").read_text(encoding="utf-8"))
-            profile = value.get("profile") if isinstance(value, dict) else None
+            profile = normalize_profile(value.get("profile")) if isinstance(value, dict) else None
         except (OSError, UnicodeError, ValueError):
             profile = None
     if not isinstance(profile, str) or not profile:

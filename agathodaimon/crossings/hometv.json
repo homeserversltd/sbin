@@ -1,6 +1,6 @@
 {
   "schema": "appliance.crossings.v1",
-  "profile": "tv",
+  "profile": "hometv",
   "bands": [
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
@@ -79,6 +79,7 @@
     "network/identity/device/add",
     "network/identity/device/list",
     "network/linker",
+    "network/time-upstream",
     "network/wake-on-lan/probe",
     "network/wake-on-lan/send",
     "notify/act",

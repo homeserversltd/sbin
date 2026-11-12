@@ -86,16 +86,17 @@ def _not_after(path: Path) -> str:
 
 
 def _profile() -> str:
+    from agathodaimon.carapace import normalize_profile
     path = _path("CADUCEUS_APPLIANCE_PROFILE_PATH", "/etc/appliance/profile.json")
     try:
         profile = json.loads(path.read_text())
         if isinstance(profile, dict):
             value = profile.get("profile")
             if isinstance(value, str) and value.strip():
-                return value.strip()
+                return normalize_profile(value.strip())
     except (OSError, UnicodeError, json.JSONDecodeError):
         pass
-    return os.environ.get("CADUCEUS_PROFILE", "homeserver")
+    return normalize_profile(os.environ.get("CADUCEUS_PROFILE", "homeserver"))
 
 
 def _csr_identity() -> tuple[str, list[str]]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import platform
 import socket
+from agathodaimon.carapace import normalize_profile
 
 try:
     from ._common import _command, _json, _page, _read
@@ -18,7 +19,7 @@ except ImportError:
 
 PLUG = {"id": "about-system", "title": "About System", "icon": "help-about-symbolic", "order": 0, "parent": None}
 
-PRODUCTS = {"tv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
+PRODUCTS = {"hometv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
 
 
 def _os_release() -> dict[str, str]:
@@ -129,7 +130,7 @@ def _groups(Gdk) -> list[tuple[str, list[tuple[str, str]]]]:
     profile = _json("/etc/appliance/profile.json")
     return [
         ("Appliance", [
-            ("Product", PRODUCTS.get(profile.get("profile"), str(profile.get("profile") or ""))),
+            ("Product", PRODUCTS.get(normalize_profile(profile.get("profile")), str(profile.get("profile") or ""))),
             ("Born", str(profile.get("born_at") or "")[:10]),
             ("Hostname", socket.gethostname()),
             ("Local IP", _local_ip()),

@@ -84,7 +84,8 @@ def _configuration():
     # This is a household coordinate, never a caller-selected credential destination.
     if block.get("forge", FORGE) != FORGE:
         raise Refusal("thyrsus-forge-invalid")
-    profile = _json_file("profile").get("profile")
+    from agathodaimon.carapace import normalize_profile
+    profile = normalize_profile(_json_file("profile").get("profile"))
     if not isinstance(profile, str) or not profile:
         raise Refusal("thyrsus-profile-unsupported")
     return profile

@@ -27,6 +27,7 @@ class _EnvelopeStdin(StringIO):
 ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 from agathodaimon._envelope import appliance_runtime_path
+from agathodaimon.carapace import normalize_profile
 from agathodaimon import _load_trace
 from agathodaimon._seat import ForeignSeat, read_seats
 _stamp_target = None
@@ -685,8 +686,8 @@ def _profile_for_crossing() -> tuple[str, bool]:
     kernel = value.get("kernel")
     if isinstance(kernel, dict) and kernel.get("engine_component") == "harmonia-monad":
         return "specula", True
-    profile = value.get("profile")
-    if profile in ("homeserver", "homesi", "homeconsole", "tv"):
+    profile = normalize_profile(value.get("profile"))
+    if profile in ("homeserver", "homesi", "homeconsole", "hometv"):
         return profile, True
     return "specula", True
 

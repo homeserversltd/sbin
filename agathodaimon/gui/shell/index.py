@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
+from agathodaimon.carapace import normalize_profile
 
 PLUG_KEYS = ("id", "title", "icon", "order", "parent")
 PLUGS_DIR = Path(__file__).resolve().parent.parent / "plugs"
@@ -109,7 +110,7 @@ def ordered_plugs(registry: dict[str, Plug]) -> list[tuple[Plug, int]]:
 START_PLUG = "about-system"
 NOTIFICATIONS_PLUG = "notifications"
 MANUAL_MODULE = "manual"
-PRODUCT_TITLES = {"tv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
+PRODUCT_TITLES = {"hometv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
 
 
 def _app_title() -> str:
@@ -117,7 +118,7 @@ def _app_title() -> str:
         profile = json.loads(Path("/etc/appliance/profile.json").read_text(encoding="utf-8")).get("profile")
     except (OSError, ValueError, AttributeError):
         profile = None
-    return f"{PRODUCT_TITLES.get(profile, 'Appliance')} Settings"
+    return f"{PRODUCT_TITLES.get(normalize_profile(profile), 'Appliance')} Settings"
 
 
 def _pack_header_buttons(header: Any, widget: Any) -> bool:
