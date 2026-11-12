@@ -1414,6 +1414,11 @@ def main(argv=None):
             pass
     if isinstance(answer, dict) and isinstance(answer.get("ok"), bool) and answer.get("schema") != "caduceus.chord.receipt.v1":
         sys.stdout.write(json.dumps(_stamp_receipt(answer, _stamp_target)) + "\n")
+    elif (isinstance(answer, dict) and answer.get("schema") == "caduceus.chord.receipt.v1"
+          and _stamp_seat is not None and "seat" not in answer):
+        compact = raw == json.dumps(answer, separators=(",", ":")) + "\n"
+        answer.setdefault("seat", _stamp_seat)
+        sys.stdout.write(json.dumps(answer, separators=(",", ":") if compact else None) + "\n")
     else:
         _emit_stamp_bytes(destination, captured)
     return result
