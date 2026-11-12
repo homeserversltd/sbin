@@ -238,8 +238,8 @@ def _contains_secret_name(value):
     return False
 
 
-# The walker's part-name literals are serve, rescue, and finally.
-_CHORD_PART_NAMES = frozenset({"serve", "rescue", "finally"})
+# The part names are checked against the seat when help is requested.
+_CHORD_PART_NAMES = frozenset({"serve", "rescue", "finally", "ouroboros"})
 
 
 class _ChordError(ValueError):
@@ -266,7 +266,27 @@ def _validate_chord(declaration: dict):
     final = declaration.get("finally", [])
     if not all(isinstance(stages, list) for stages in (serve, rescue, final)):
         raise _ChordError("chord-stage-invalid")
-    seen = set()
+    ring = declaration.get("ouroboros")
+    if "ouroboros" in declaration:
+        if not isinstance(ring, dict) or not isinstance(ring.get("observe"), str):
+            raise _ChordError("chord-stage-invalid")
+        target = _slash_target(ring["observe"])
+        if target is None or not target.is_file() or _mutation_allowed(target.parent) is not False:
+            raise _ChordError("chord-stage-invalid")
+        arguments = ring.get("arguments")
+        if not isinstance(arguments, dict):
+            raise _ChordError("chord-stage-invalid")
+        for name in ("deadline_seconds", "reobserve_deadline_seconds"):
+            deadline = ring.get(name)
+            if isinstance(deadline, bool) or not isinstance(deadline, int) or not 1 <= deadline <= 600:
+                raise _ChordError("chord-stage-deadline-invalid")
+        for ref in _references(arguments):
+            parts = ref.split(".")
+            if parts[-1] in _HAND_SECRET_NAMES:
+                raise _ChordError("chord-ref-secret")
+            if len(parts) < 3 or parts[:2] != ["request", "payload"] or not all(parts[2:]):
+                raise _ChordError("chord-ref-unresolved")
+    seen = {"observe"} if ring is not None else set()
     serve_ids = set()
     settles_declared = False
     for phase, stages in (("serve", serve), ("rescue", rescue), ("finally", final)):
@@ -277,7 +297,7 @@ def _validate_chord(declaration: dict):
                 raise _ChordError("chord-stage-not-snake")
             sid, snake = stage.get("stage_id"), stage.get("snake")
             target = _slash_target(snake) if isinstance(snake, str) and snake else None
-            if not isinstance(sid, str) or not sid or sid in seen or target is None or not target.is_file():
+            if not isinstance(sid, str) or not sid or sid in seen or (ring is not None and sid == "reobserve") or target is None or not target.is_file():
                 raise _ChordError("chord-stage-invalid")
             if not isinstance(stage.get("arguments", {}), dict) or not isinstance(stage.get("required", True), bool):
                 raise _ChordError("chord-stage-invalid")
@@ -416,7 +436,9 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
         return 1
     try:
-        serve, rescue, final = _validate_chord(_index(path))
+        declaration = _index(path)
+        serve, rescue, final = _validate_chord(declaration)
+        ring = declaration.get("ouroboros")
     except (OSError, ValueError, _ChordError) as exc:
         reason = str(exc) if isinstance(exc, _ChordError) else "chord-stage-invalid"
         preflight_refusal(reason)
@@ -424,7 +446,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": reason}))
         return 1
     if dry_run:
-        for stage in serve + rescue + final:
+        ring_stages = ([{"stage_id": "observe", "snake": ring["observe"]}] if ring is not None else [])
+        for stage in ring_stages + serve + rescue + final:
             target = _slash_target(stage["snake"])
             if _index(target.parent).get("dry-run") is not True:
                 print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
@@ -448,10 +471,19 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             settled_by = None
         if failed is None:
             failed, signal = previous_row["stage_id"], "chord-interrupted"
-        if previous_phase == "serve":
+        if previous_phase == "serve" or (ring is not None and previous_phase == "observe"):
             blocked = True
 
-    for phase, stages in (("serve", serve), ("rescue", rescue), ("finally", final)):
+    phases = [("serve", serve), ("rescue", rescue), ("finally", final)]
+    if ring is not None:
+        def ring_stage(sid, settle, deadline):
+            return {"stage_id": sid, "snake": ring["observe"],
+                    "arguments": {**ring["arguments"], "settle": settle}, "deadline_seconds": deadline}
+        phases = [("observe", [ring_stage("observe", False, ring["deadline_seconds"])]),
+                  ("serve", serve), ("rescue", rescue),
+                  ("reobserve", [ring_stage("reobserve", True, ring["reobserve_deadline_seconds"])]),
+                  ("finally", final)]
+    for phase, stages in phases:
         for stage in stages:
             consume_between_stages()
             sid, band = stage["stage_id"], stage["snake"]
@@ -504,6 +536,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                         completed[sid] = row
                         stage_durations[-1] = int((time.monotonic() - stage_started) * 1000)
                         continue
+                if interrupted[0] and phase == "reobserve":
+                    interrupted[0] = False
                 if interrupted[0]:
                     raise _ChordError("chord-interrupted")
                 last_executed = (row, phase)
@@ -536,7 +570,15 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                         refusal = "chord-stage-receipt-schema-mismatch"
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
                     refusal = receipt.get("firstMissingSignal") or "chord-stage-refused"
-                if receipt is not None and _stage_changed(receipt) is True:
+                if phase == "observe" and refusal is None:
+                    result = receipt.get("result")
+                    diff = result.get("diff") if isinstance(result, dict) else None
+                    empty = diff.get("empty") if isinstance(diff, dict) else None
+                    if not isinstance(empty, bool):
+                        refusal = "ouroboros-observe-shape-invalid"
+                    elif empty is True:
+                        settled_by = sid
+                if phase not in ("observe", "reobserve") and receipt is not None and _stage_changed(receipt) is True:
                     changed = True
             except _ChordError as exc:
                 refusal = str(exc)
@@ -558,7 +600,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             stage_refusals[-1] = refusal
             if refusal and (was_interrupted or phase == "finally" or stage.get("required", True)) and failed is None:
                 failed, signal = sid, refusal
-            if refusal and phase == "serve" and (was_interrupted or stage.get("required", True)):
+            if refusal and phase in ("serve", "observe") and (was_interrupted or stage.get("required", True)):
                 blocked = True
             completed[sid] = row
             last_executed = (row, phase)
@@ -568,11 +610,13 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             if is_write:
                 _stage_deed(routine_id, row, _stage_word(row, True),
                             row.get("firstMissingSignal") or refusal, duration_ms)
+    serve_offset = 1 if ring is not None else 0
+    final_offset = serve_offset + len(serve) + len(rescue)
     ok = (failed is None and
           all(not stage.get("required", True) or row["outcome"] == "stage-completed"
               or (row["outcome"] == "stage-skipped" and row.get("skipped_by") == "settled")
-              for stage, row in zip(serve, rows[:len(serve)])) and
-          all(row["outcome"] == "stage-completed" for row in rows[len(serve) + len(rescue):]))
+              for stage, row in zip(serve, rows[serve_offset:serve_offset + len(serve)])) and
+          all(row["outcome"] == "stage-completed" for row in rows[final_offset:]))
     if not dry_run and _mutation_allowed(path) is not False:
         try:
             logged = _chord_deed(routine_id, rows, stage_mutating, ok, changed, signal, started)
