@@ -818,6 +818,109 @@ def _restore(path: Path, image: Image, restore_temp: Path | None = None, owned: 
     _fsync_directory(path.parent)
 
 
+def _house_ca_module() -> Any:
+    path = Path(__file__).resolve().parent.parent / "cert" / "house-ca" / "_ca.py"
+    spec = importlib.util.spec_from_file_location("agathodaimon.network.cert.house_ca.native", path)
+    if spec is None or spec.loader is None:
+        raise Refused("tailscale-tailnet-house-ca-unavailable")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _live_tailnet() -> tuple[str, str]:
+    result = _run([TAILSCALE, "status", "--json", "--peers=false"], 8)
+    try:
+        if result is None or result.returncode != 0 or len(result.stdout) > 1024 * 1024:
+            raise ValueError()
+        status = json.loads(result.stdout)
+        if not isinstance(status, dict) or status.get("BackendState") != "Running":
+            raise ValueError()
+        node = status.get("Self")
+        host = node.get("DNSName") if isinstance(node, dict) else None
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError()
+    except (ValueError, TypeError, json.JSONDecodeError):
+        raise Refused("tailscale-tailnet-live-name-unavailable") from None
+    host = host.rstrip(".").lower()
+    labels = host.split(".")
+    if len(labels) != 4 or labels[2:] != ["ts", "net"] or any(
+        not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels[:2]
+    ):
+        raise Refused("tailscale-tailnet-live-name-unusable")
+    return host, labels[1]
+
+
+def _hestia_sites(ca: Any, live: str) -> list[dict[str, Any]]:
+    sites: list[dict[str, Any]] = []
+    try:
+        if not NGINX_CONF_D.exists():
+            return sites
+        for path in sorted(NGINX_CONF_D.glob("agathodaimon-*.conf")):
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                continue
+            raw, _ = _read_regular(path, "tailscale-tailnet-hestia-site-unreadable")
+            text = re.sub(r"(?m)#.*$", "", raw.decode("utf-8"))
+            ports = re.findall(r"\blisten\s+\*:(\d+)\s+ssl\s*;", text)
+            if not ports:
+                continue
+            names = set(re.findall(r"\bserver_name\s+([^;\s]+)\s*;", text))
+            certificates = set(re.findall(r"\bssl_certificate\s+[\"']?([^;\s\"']+)[\"']?\s*;", text))
+            if len(names) != 1 or len(certificates) != 1:
+                raise ValueError()
+            name = names.pop().lower()
+            if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", name):
+                raise ValueError()
+            directory = ca.cert_dir()
+            certificate = Path(certificates.pop())
+            if ca._root() != Path("/") and certificate.is_absolute():
+                rooted = ca._root() / str(certificate).lstrip("/")
+                if rooted == directory / f"{name}.pem":
+                    certificate = rooted
+            if certificate != directory / f"{name}.pem":
+                raise ValueError()
+            leaf, key = directory / f"{name}.pem", directory / f"{name}.key.pem"
+            if any(_image(path).kind not in {"absent", "file"} for path in (leaf, key, directory / "ca.srl")):
+                raise ValueError()
+            dns, ips = [name], []
+            if leaf.exists():
+                result = _run(["/usr/bin/openssl", "x509", "-in", str(leaf), "-noout", "-ext", "subjectAltName"], 10)
+                if result is None or result.returncode != 0 or "Subject Alternative Name:" not in result.stdout:
+                    raise ValueError()
+                dns, ips = [], []
+                for entry in result.stdout.split("\n", 1)[1].replace("\n", " ").split(","):
+                    entry = entry.strip()
+                    if entry.startswith("DNS:"):
+                        dns.append(entry[4:].lower())
+                    elif entry.startswith("IP Address:"):
+                        ips.append(str(ipaddress.ip_address(entry[11:])))
+                    else:
+                        raise ValueError()
+                dns = [item for item in dns if not item.endswith(".ts.net")]
+                dns.append(name)
+            dns = list(dict.fromkeys([*dns, live]))
+            ips = list(dict.fromkeys(ips))
+            standing = ca._standing_leaf(leaf, key, directory / "ca.pem", dns, ips, exact=True) is not None
+            for port in ports:
+                number = int(port)
+                if not 1 <= number <= 65535:
+                    raise ValueError()
+                sites.append({"name": name, "port": number, "dns": dns, "ips": ips, "standing": standing, "leaf": leaf, "key": key})
+        return sites
+    except (OSError, UnicodeError, ValueError, IndexError, Refused) as error:
+        raise Refused("tailscale-tailnet-hestia-site-unreadable") from error
+
+
+def _hestia_readback(host: str, port: int, root: Path) -> bool:
+    try:
+        context = ssl.create_default_context(cafile=str(root))
+        with socket.create_connection(("127.0.0.1", port), timeout=8) as raw:
+            with context.wrap_socket(raw, server_hostname=host) as sock:
+                return host in [value for kind, value in sock.getpeercert().get("subjectAltName", ()) if kind == "DNS"]
+    except (OSError, ssl.SSLError, ValueError):
+        return False
+
+
 def _certificate_module() -> Any:
     path = Path(__file__).resolve().parent.parent / "cert" / "refresh" / "index.py"
     spec = importlib.util.spec_from_file_location("agathodaimon.network.cert.refresh.native", path)
@@ -916,13 +1019,17 @@ def _current_tree_paths(trees: Sequence[Path]) -> set[Path]:
 
 def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
     prior_tailnet: str | None = None
-    normalized = name.lower() if isinstance(name, str) else ""
-    empty_attempt: list[str] = []
-    if not isinstance(name, str) or not NAME_PATTERN.fullmatch(normalized):
-        return _receipt("tailnet", False, "tailscale-tailnet-name-pattern-refused",
-                        observed={"nameSupplied": isinstance(name, str) and bool(name)},
-                        attempt="validate-and-normalize-name", final={"newTailnet": None},
-                        priorTailnet=None, newTailnet=None, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[])
+    try:
+        live_name, normalized = _live_tailnet()
+    except Refused as error:
+        return _receipt("tailnet", False, error.signal, observed={"nameSupplied": bool(name)},
+                        attempt="read-live-name", priorTailnet=None, newTailnet=None,
+                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[])
+    if not isinstance(name, str) or (name and name.lower() != normalized):
+        return _receipt("tailnet", False, "tailscale-tailnet-name-mismatch",
+                        observed={"typedName": name, "liveTailnet": normalized, "liveName": live_name},
+                        attempt="compare-live-name", priorTailnet=None, newTailnet=normalized,
+                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[])
     try:
         backup_override = _validate_backup_argument(backup_dir)
     except Refused as error:
@@ -962,16 +1069,23 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
     trust_update_attempted = False
     signal_previous: dict[int, Any] = {}
     signal_state: dict[str, bool] | None = None
-    observed: dict[str, Any] = {"configPath": str(config_path), "normalizedName": normalized}
+    observed: dict[str, Any] = {"configPath": str(config_path), "normalizedName": normalized, "liveName": live_name}
     native_module: Any = None
+    ca: Any = None
+    ca_lock: Any = None
+    sites: list[dict[str, Any]] = []
+    site_results: list[dict[str, Any]] = []
+
+    def public_paths(paths: Sequence[str]) -> list[str]:
+        return [path for path in paths if ".key" not in Path(path).name]
 
     def make_receipt(ok: bool, signal_name: str = "none", *, attempt: Any = None, final: Any = None,
                      mutation: bool = False, changed: Sequence[str] = (), **extra: Any) -> dict[str, Any]:
         return _receipt(
-            "tailnet", ok, signal_name, observed=observed, could_change=attempted,
+            "tailnet", ok, signal_name, observed=observed, could_change=public_paths(attempted),
             attempt=attempt, final=final, mutation=mutation,
-            priorTailnet=prior_tailnet, newTailnet=normalized,
-            changedFiles=sorted(set(changed)), attemptedFiles=sorted(set(attempted)),
+            priorTailnet=prior_tailnet, newTailnet=normalized, liveName=live_name, hestiaSites=site_results,
+            changedFiles=sorted(set(public_paths(changed))), attemptedFiles=sorted(set(public_paths(attempted))),
             backupPath=backup_path, subjectAltNames=sans,
             nginxAliases={str(path): [str(alias) for alias in aliases_for_changed.get(path, [])] for path in sorted(aliases_for_changed, key=str)},
             **extra,
@@ -1078,13 +1192,27 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
             attempt={"failedStage": failed_stage, "rollback": "restored" if good else "failed",
                      "rollbackFailures": sorted(set(errors)), "nginxTestReturnCode": test.returncode if test else None,
                      "nginxReloadReturnCode": reload.returncode if reload else None},
-            final={"declaredTailnet": prior_tailnet if good else normalized, "changedFiles": mismatches,
+            final={"declaredTailnet": prior_tailnet if good else normalized, "changedFiles": public_paths(mismatches),
                    "rollbackComplete": good},
             mutation=write_started,
             changed=mismatches,
         )
 
     try:
+        ca = _house_ca_module()
+        ca_lock = ca.house_ca_lock()
+        try:
+            ca_lock.__enter__()
+        except (OSError, RuntimeError):
+            ca_lock = None
+            raise Refused("tailscale-tailnet-house-ca-lock-unavailable") from None
+        sites = _hestia_sites(ca, live_name)
+        site_results = [{"name": site["name"], "port": site["port"],
+                         "leaf": "kept" if site["standing"] else "pending"} for site in sites]
+        if sites and (not (ca.cert_dir() / "ca.pem").is_file() or
+                      not (ca.cert_dir() / "ca.key.pem").is_file() or
+                      not ca._root_valid(ca.cert_dir() / "ca.pem", ca.cert_dir() / "ca.key.pem")):
+            raise Refused("tailscale-tailnet-house-ca-unavailable")
         raw_config, new_config_bytes, config_meta, prior_tailnet, config_old_names, config_changed = _plan_runtime_config(config_path, normalized)
         observed.update({"configReadable": True, "declaredTailnet": prior_tailnet})
         if backup_override is not None:
@@ -1093,13 +1221,17 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
         optional_raw, optional_new, optional_meta, optional_old_names = _plan_optional_config(OG_CONFIG, normalized)
         optional_changed = optional_raw is not None and optional_new is not None and optional_raw != optional_new
         nginx_plan, aliases_for_changed, nginx_names = _nginx_plan(config_old_names | optional_old_names, normalized)
+        nginx_plan = {path: data for path, data in nginx_plan.items()
+                      if not (path.parent == NGINX_CONF_D and path.name.startswith("agathodaimon-") and path.suffix == ".conf")}
+        aliases_for_changed = {path: value for path, value in aliases_for_changed.items() if path in nginx_plan}
         all_old_names = set(config_old_names) | set(optional_old_names) | set(nginx_names)
         observed["priorTailnets"] = sorted(all_old_names)
         native_module = _certificate_module()
         native_inventory = native_module.prospective_mutable_inventory(normalized)
         sans = list(native_inventory.get("subjectAltNames", []))
-        if (prior_tailnet == normalized and not config_changed and not optional_changed and not nginx_plan
-                and f"home.{normalized}.ts.net" in _served_certificate_sans()):
+        old_current = (prior_tailnet == normalized and not config_changed and not optional_changed and not nginx_plan
+                       and f"home.{normalized}.ts.net" in _served_certificate_sans())
+        if old_current and all(site["standing"] for site in sites):
             observed["unchangedAcrossConfigNginxCertificate"] = True
             return make_receipt(True, attempt="unchanged-declared-tailnet-no-op",
                                 final={"declaredTailnet": prior_tailnet, "changedFiles": [], "backupCreated": False,
@@ -1112,6 +1244,15 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
         transaction_id = uuid.uuid4().hex
         config_temp = config_path.with_name(f".{config_path.name}.tailscale-{transaction_id}.tmp")
         planned_paths = [config_path, config_temp, *native_paths]
+        if sites:
+            planned_paths.append(ca.cert_dir() / "ca.srl")
+            for site in sites:
+                planned_paths.extend((site["leaf"], site["key"]))
+                csr = ca.cert_dir() / f'{site["name"]}.csr.pem'
+                cnf = ca.cert_dir() / f'.{site["name"]}.cnf'
+                if _image(csr).kind != "absent" or _image(cnf).kind != "absent":
+                    raise Refused("tailscale-tailnet-hestia-temporary-seat-exists")
+                planned_paths.extend((csr, cnf))
         optional_temp: Path | None = None
         if optional_changed:
             if optional_meta is None:
@@ -1187,24 +1328,43 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
             _atomic_write(target, temp, data, image, owned_staging_paths)
             changed_files.append(str(target))
             changed_files.extend(str(alias) for alias in aliases_for_changed.get(target, []))
-        stage = "refresh-legacy-certificate"
-        write_started = True
+        if not old_current:
+            stage = "refresh-legacy-certificate"
+            write_started = True
 
-        def mark_trust_update() -> None:
-            nonlocal trust_update_attempted
-            trust_update_attempted = True
+            def mark_trust_update() -> None:
+                nonlocal trust_update_attempted
+                trust_update_attempted = True
 
-        def mark_native_path(path: Path) -> None:
-            owned_changed_paths.add(path)
-            attempted.append(str(path))
+            def mark_native_path(path: Path) -> None:
+                owned_changed_paths.add(path)
+                attempted.append(str(path))
 
-        certificate = native_module.refresh_legacy_certificate(on_trust_update=mark_trust_update, on_path_change=mark_native_path)
-        if isinstance(certificate, dict):
-            attempted.extend(item for item in certificate.get("writtenPaths", []) if isinstance(item, str))
-        if not isinstance(certificate, dict) or certificate.get("ok") is not True:
-            signal_name = certificate.get("firstMissingSignal") if isinstance(certificate, dict) else None
-            raise Refused(signal_name if isinstance(signal_name, str) and signal_name != "none" else "tailscale-tailnet-certificate-refresh-failed")
-        changed_files.extend(item for item in certificate.get("writtenPaths", []) if isinstance(item, str))
+            certificate = native_module.refresh_legacy_certificate(on_trust_update=mark_trust_update, on_path_change=mark_native_path)
+            if isinstance(certificate, dict):
+                attempted.extend(item for item in certificate.get("writtenPaths", []) if isinstance(item, str))
+            if not isinstance(certificate, dict) or certificate.get("ok") is not True:
+                signal_name = certificate.get("firstMissingSignal") if isinstance(certificate, dict) else None
+                raise Refused(signal_name if isinstance(signal_name, str) and signal_name != "none" else "tailscale-tailnet-certificate-refresh-failed")
+            changed_files.extend(item for item in certificate.get("writtenPaths", []) if isinstance(item, str))
+        stage = "hestia-leaves"
+        issued: dict[str, bool] = {}
+        for site in sites:
+            identity = site["name"]
+            if identity not in issued:
+                if not site["standing"]:
+                    write_started = True
+                    owned_changed_paths.update((site["leaf"], site["key"], ca.cert_dir() / "ca.srl",
+                                                ca.cert_dir() / f'{identity}.csr.pem', ca.cert_dir() / f'.{identity}.cnf'))
+                    result = ca.issue_leaf(identity, site["dns"], site["ips"], exact=True)
+                    if not isinstance(result, dict) or result.get("ok") is not True:
+                        raise Refused("tailscale-tailnet-hestia-issue-failed")
+                    issued[identity] = bool(result.get("changed"))
+                else:
+                    issued[identity] = False
+            for row in site_results:
+                if row["name"] == identity:
+                    row["leaf"] = "re-issued" if issued[identity] else "kept"
         stage = "nginx-validation"
         tested = _run([NGINX, "-t"], 20)
         if tested is None or tested.returncode != 0:
@@ -1218,6 +1378,10 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
         tls = _tls_readback(identity, Path("/etc/ssl/home.arpa/cert.pem"))
         if tls is None or tls.get("hostnameVerified") is not True or identity not in tls.get("subjectAltNames", []):
             raise Refused("tailscale-tailnet-nginx-tls-readback-failed")
+        stage = "hestia-readback"
+        for site in sites:
+            if not _hestia_readback(live_name, site["port"], ca.cert_dir() / "ca.pem"):
+                raise Refused("tailscale-tailnet-hestia-readback-failed")
         current_paths = _current_tree_paths(tree_roots)
         extras = current_paths - set(images)
         for path in extras:
@@ -1229,8 +1393,9 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
             True,
             attempt={"stages": ["backup", "write-config", "write-homeserver-config" if optional_changed else "homeserver-config-absent-or-unchanged",
                                 "rewrite-nginx", "native-certificate-refresh", "nginx-test", "nginx-reload", "tls-readback"]},
-            final={"declaredTailnet": normalized, "subjectAltNames": sans, "changedFiles": sorted(set(changed_files)),
-                   "nginxReloaded": True, "tlsHostnameVerified": True, "backupComplete": True},
+            final={"declaredTailnet": normalized, "subjectAltNames": sans, "changedFiles": sorted(set(public_paths(changed_files))),
+                   "nginxReloaded": True, "tlsHostnameVerified": True, "backupComplete": True,
+                   "certificateRefreshed": not old_current, "hestiaPortsVerified": len(sites)},
             mutation=write_started,
             changed=changed_files,
             transactionId=transaction_id,
@@ -1258,6 +1423,8 @@ def _tailnet(name: str, backup_dir: str | None) -> dict[str, Any]:
                 signal.signal(signum, old_handler)
             except (OSError, ValueError):
                 pass
+        if ca_lock is not None:
+            ca_lock.__exit__(None, None, None)
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
