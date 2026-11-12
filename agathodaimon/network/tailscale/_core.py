@@ -1215,7 +1215,7 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
                 raise Refused("tailscale-tailnet-house-ca-lock-unavailable") from None
         sites = _hestia_sites(ca, live_name)
         site_results = [{"name": site["name"], "port": site["port"],
-                         "leaf": "kept" if site["standing"] else "pending"} for site in sites]
+                         "leaf": ("standing" if dry_run else "kept") if site["standing"] else "pending"} for site in sites]
         if sites and (not (ca.cert_dir() / "ca.pem").is_file() or
                       not (ca.cert_dir() / "ca.key.pem").is_file() or
                       not ca._root_valid(ca.cert_dir() / "ca.pem", ca.cert_dir() / "ca.key.pem")):
