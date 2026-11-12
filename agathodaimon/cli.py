@@ -234,6 +234,10 @@ def _contains_secret_name(value):
     return False
 
 
+# The walker's part-name literals are serve, rescue, and finally.
+_CHORD_PART_NAMES = frozenset({"serve", "rescue", "finally"})
+
+
 class _ChordError(ValueError):
     pass
 
@@ -1414,6 +1418,20 @@ def main(argv=None):
     return result
 
 
+def _chord_part_names_drift(seat):
+    if not isinstance(seat, dict):
+        return None
+    names = set()
+    for key in ("required", "optional"):
+        values = seat.get(key)
+        if isinstance(values, list):
+            names.update(value for value in values if isinstance(value, str))
+    if names == _CHORD_PART_NAMES:
+        return None
+    return {"seat_only": sorted(names - _CHORD_PART_NAMES),
+            "walker_only": sorted(_CHORD_PART_NAMES - names)}
+
+
 def _main(argv, folder, seats):
     global _stamp_target
     args=list(sys.argv[1:] if argv is None else argv)
@@ -1462,6 +1480,11 @@ def _main(argv, folder, seats):
                   "loaded": [{"id": seat_id, "schema_version": seat["schema_version"]}
                              for seat_id, seat in seats.items() if seat["state"] == "loaded"],
                   "absent": [seat_id for seat_id, seat in seats.items() if seat["state"] == "absent"]}
+        drift = _chord_part_names_drift(seats.get("caduceus.chord.v1", {}).get("seat"))
+        if drift is not None:
+            for entry in census["loaded"]:
+                if entry["id"] == "caduceus.chord.v1":
+                    entry["drift"] = drift
         print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT),"seats":census},indent=2)); return 0
     if args == ["--version"]:
         print(_shelf_version()); return 0
