@@ -215,7 +215,12 @@ def _declared_echo(request: Request) -> dict[str, Any]:
 
     carried = {key: _leaf_only(value[key]) for key in (_envelope_kernel() or ("schema",)) if key in value}
     if "stamps" in value:
-        carried["stamps"] = _leaf_only(value["stamps"])
+        stamps = value["stamps"]
+        carried["stamps"] = [
+            {key: _leaf_only(stamp[key]) for key in ("verb", "outcome", "timestamp") if key in stamp}
+            if isinstance(stamp, Mapping) else _leaf_only(stamp)
+            for stamp in stamps
+        ] if isinstance(stamps, list) else _leaf_only(stamps)
     source = value.get("payload")
     if isinstance(source, Mapping):
         payload = {key: field(key, item) for key, item in source.items() if key in names and key not in ("flags", "rooms")}
@@ -242,9 +247,8 @@ def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     protected = request.gate_pin_present or _pin_bearing_exousia(request.value) or bool(request.secret_fields)
     if protected:
         _sensitive_echo.set(True)
-        explicit_context = None
     if not request.envelope:
-        return receipt if protected else _load_trace.attach_context(receipt, explicit_context)
+        return _load_trace.attach_context(receipt, explicit_context, protected=protected)
     result = dict(receipt)
     stamp = {"verb": request.verb, "outcome": _outcome(result), "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
     carried = _declared_echo(request) if protected else copy.deepcopy(request.value)
@@ -256,6 +260,6 @@ def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     if "stamps" not in request.value or isinstance(request.value.get("stamps"), list):
         envelope["stamps"] = prior + [dict(stamp)]
     result.update(intent_id=carried.get("intent_id") if protected else request.intent_id, raw_envelope=raw_envelope, envelope=envelope, stamps=prior + [dict(stamp)], staff=dict(stamp))
-    return result if protected else _load_trace.attach_context(result, explicit_context)
+    return _load_trace.attach_context(result, explicit_context, protected=protected)
 def read_fields(*fields: str, flags: Sequence[str] = (), rooms: Sequence[str] = (), secret: Sequence[str] = ()) -> Request:
     return read(known_fields=fields, declared_flags=flags, rooms=rooms, secret=secret)

@@ -26,6 +26,8 @@ class _EnvelopeStdin(StringIO):
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
+from agathodaimon import _envelope
+sys.modules["_envelope"] = _envelope
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon.carapace import normalize_profile
 from agathodaimon import _load_trace

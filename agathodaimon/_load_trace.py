@@ -898,7 +898,22 @@ def _attach_context_value(value: dict[str, Any], context: Any) -> dict[str, Any]
     return result
 
 
-def attach_context(value: Any, explicit_context: Any = None) -> Any:
+def _protected_context(context: Any) -> Any:
+    """Keep only top-level names from the load-context seat; stamps are open."""
+    if not isinstance(context, Mapping):
+        return None
+    from agathodaimon._nidus.path import appliance_runtime_path
+    try:
+        seat = json.loads((appliance_runtime_path("seats") / (LOAD_CONTEXT_SCHEMA + ".json")).read_text(encoding="utf-8"))
+        fields = seat.get("fields") if isinstance(seat, Mapping) and seat.get("schema") == LOAD_CONTEXT_SCHEMA else None
+        if not isinstance(fields, Mapping):
+            return None
+        return {key: copy.deepcopy(value) for key, value in context.items() if key in fields}
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return None
+
+
+def attach_context(value: Any, explicit_context: Any = None, *, protected: bool = False) -> Any:
     """Add the active reply carrier without touching raw_envelope or typed fields."""
     if not isinstance(value, dict):
         return value
@@ -906,6 +921,8 @@ def attach_context(value: Any, explicit_context: Any = None) -> Any:
         context = response_context()
         if context is None:
             context = explicit_context
+        if protected:
+            context = _protected_context(context)
         if context is None:
             return value
         return _attach_context_value(value, context)
@@ -1080,7 +1097,9 @@ def run_cli(envelope: Any, operation: str, callback: Callable[[], Any]) -> Any:
                 try:
                     context = handle.response_context() if handle is not None else None
                     from agathodaimon._envelope import sensitive_echo
-                    if context is not None and not sensitive_echo():
+                    if sensitive_echo():
+                        context = _protected_context(context)
+                    if context is not None:
                         payload = _inject_context(payload, context)
                 except Exception:
                     if handle is not None:
