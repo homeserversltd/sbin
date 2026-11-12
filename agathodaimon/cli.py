@@ -408,7 +408,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             _chord_deed(routine_id, [], [], False, False, reason, started)
 
     from agathodaimon._envelope import _pin_bearing_exousia, _redact_declared, _redact_pin_carriers
-    request = json.dumps(_redact_declared(_redact_pin_carriers(envelope), _HAND_SECRET_NAMES), separators=(",", ":"))
+    echoed = _envelope.echo_undeclared(envelope)
+    request = json.dumps(_redact_declared(_redact_pin_carriers(echoed), _HAND_SECRET_NAMES), separators=(",", ":"))
     if _pin_bearing_exousia(envelope):
         preflight_refusal("chord-secret-carrier-refused")
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
@@ -676,7 +677,7 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
         mod = _load(path)
     fn = getattr(mod, "main", None)
     if fn is None:
-        print(json.dumps({"schema":"agathodaimon.cli.read.v1","path":str(path.parent.relative_to(ROOT)),"ok":True,"envelope":envelope,"mutationPerformed":False}))
+        print(json.dumps({"schema":"agathodaimon.cli.read.v1","path":str(path.parent.relative_to(ROOT)),"ok":True,"envelope":_envelope.echo_undeclared(envelope),"mutationPerformed":False}))
         return 0
     original_stdin = sys.stdin
     try:

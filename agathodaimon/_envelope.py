@@ -239,6 +239,18 @@ def _declared_echo(request: Request) -> dict[str, Any]:
     return carried
 
 
+def echo_undeclared(value: dict[str, Any]) -> dict[str, Any]:
+    """Project a front-door echo where no stop has declared any fields."""
+    pin_present = _gate_pin.get() or _pin_bearing_exousia(value)
+    if not pin_present and not _sensitive_echo.get():
+        return value
+    _sensitive_echo.set(True)
+    request = Request(value, True, {}, "", gate_pin_present=pin_present)
+    projected = _declared_echo(request)
+    return {key: item for key, item in projected.items()
+            if key in _envelope_kernel() or key == "flags"}
+
+
 def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     explicit_context = (
         request.returned_load_context
