@@ -348,10 +348,10 @@ def _stage_word(row, mutating):
     return "changed" if isinstance(receipt, dict) and _stage_changed(receipt) else "kept"
 
 
-def _stage_deed(routine_id, row, word, signal, started):
+def _stage_deed(routine_id, row, word, signal, duration_ms):
     from agathodaimon._deed import send
     send("sbin", row["stage_id"], word != "refused", target=_deed_target(routine_id),
-         duration_ms=int((time.monotonic() - started) * 1000),
+         duration_ms=duration_ms,
          signal=signal or "operation-failed", outcome=word)
 
 
@@ -384,6 +384,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
     routine_id = path.relative_to(ROOT).as_posix()
     rows = []
     stage_mutating = []
+    stage_durations = []
+    stage_refusals = []
     completed = {}
     failed = None
     signal = "none"
@@ -445,6 +447,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             is_write = (declared_target is None or
                         _mutation_allowed(declared_target.parent if declared_target.is_file() else declared_target) is not False)
             stage_mutating.append(is_write)
+            stage_durations.append(0)
+            stage_refusals.append(None)
             row = {"stage_id": sid, "transition": band, "outcome": "stage-skipped", "arguments": {}, "receipt": None}
             rows.append(row)
             rescue_untriggered = phase == "rescue" and not any(completed.get(dep, {}).get("outcome") == "stage-refused" for dep in stage["on_refusal_of"])
@@ -455,8 +459,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             )
             if (phase == "serve" and blocked) or rescue_untriggered or dependency_blocked:
                 completed[sid] = row
-                if is_write and not dry_run:
-                    _stage_deed(routine_id, row, "skipped", None, stage_started)
+                stage_durations[-1] = int((time.monotonic() - stage_started) * 1000)
                 continue
             refusal = None
             stage_target = None
@@ -479,8 +482,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                     consume_between_stages()
                     if phase == "serve" and blocked:
                         completed[sid] = row
-                        if is_write and not dry_run:
-                            _stage_deed(routine_id, row, "skipped", None, stage_started)
+                        stage_durations[-1] = int((time.monotonic() - stage_started) * 1000)
                         continue
                 if interrupted[0]:
                     raise _ChordError("chord-interrupted")
@@ -526,8 +528,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 refusal = "chord-interrupted"
                 row["firstMissingSignal"] = refusal
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
-            if is_write and not dry_run:
-                _stage_deed(routine_id, row, _stage_word(row, True), refusal, stage_started)
+            stage_durations[-1] = int((time.monotonic() - stage_started) * 1000)
+            stage_refusals[-1] = refusal
             if refusal and (was_interrupted or phase == "finally" or stage.get("required", True)) and failed is None:
                 failed, signal = sid, refusal
             if refusal and phase == "serve" and (was_interrupted or stage.get("required", True)):
@@ -535,6 +537,11 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             completed[sid] = row
             last_executed = (row, phase)
     consume_between_stages()
+    if not dry_run:
+        for row, is_write, duration_ms, refusal in zip(rows, stage_mutating, stage_durations, stage_refusals):
+            if is_write:
+                _stage_deed(routine_id, row, _stage_word(row, True),
+                            row.get("firstMissingSignal") or refusal, duration_ms)
     ok = (failed is None and
           all(not stage.get("required", True) or row["outcome"] == "stage-completed"
               for stage, row in zip(serve, rows[:len(serve)])) and
