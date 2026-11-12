@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import re
 import sys
 from urllib.parse import urlsplit
 from urllib.request import Request, ProxyHandler, HTTPRedirectHandler, build_opener
@@ -16,7 +17,8 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int = 0,
-         signal: str = "operation-failed") -> bool:
+         signal: str = "operation-failed", outcome: str | None = None,
+         stages: list | None = None) -> bool:
     """Send fixed deed metadata; callers must never supply secret material."""
     try:
         if not all(isinstance(x, str) and x and len(x) <= 48 and
@@ -58,6 +60,14 @@ def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int 
                                     "first_missing_field": None if ok else verb,
                                     "duration_ms": max(0, int(duration_ms))},
         }
+        attributes = event["attributes_redacted"]
+        if isinstance(outcome, str) and re.fullmatch(r"[a-z][a-z-]{0,23}", outcome):
+            attributes["outcome"] = outcome
+        if (isinstance(stages, list) and len(stages) <= 8 and
+                all(isinstance(pair, (list, tuple)) and len(pair) == 2 and
+                    all(isinstance(token, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,24}", token)
+                        for token in pair) for pair in stages)):
+            attributes["stages"] = stages
         data = json.dumps(event, separators=(",", ":"), ensure_ascii=True).encode()
         if len(data) >= 1024:
             raise ValueError("deed too large")

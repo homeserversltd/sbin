@@ -33,6 +33,7 @@ from agathodaimon._seat import ForeignSeat, read_seats
 _stamp_target = None
 _stamp_seat = None
 _front_args = []
+_front_dry_run = False
 
 def _stamp_receipt(receipt, target):
     if (not target or not isinstance(receipt, dict)
@@ -331,20 +332,37 @@ def _stage_changed(receipt):
     return False
 
 
-def _chord_deed(routine_id, envelope, rows, ok, failed, signal, started):
-    def token(value):
-        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,128}", value) else "invalid"
-    fields = {"who": "agathodaimon", "verb": "chord", "target": token(routine_id),
-              "routine_id": token(routine_id), "outcome": "ok" if ok else "failed",
-              "duration_ms": int((time.monotonic() - started) * 1000),
-              "stages": [[token(row["stage_id"]), row["outcome"]] for row in rows],
-              "failedStage": token(failed) if failed else None, "firstMissingSignal": token(signal)}
-    request_id = envelope.get("intent_id")
-    if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request_id):
-        fields["request_id"] = request_id
+def _deed_target(routine_id):
+    target = routine_id.replace("/", ".")
+    return target if re.fullmatch(r"[A-Za-z0-9_.-]{1,48}", target) else "chord"
+
+
+def _stage_word(row, mutating):
+    if row["outcome"] == "stage-skipped":
+        return "skipped"
+    if row["outcome"] == "stage-refused":
+        return "refused"
+    if not mutating:
+        return "completed"
+    receipt = row.get("receipt")
+    return "changed" if isinstance(receipt, dict) and _stage_changed(receipt) else "kept"
+
+
+def _stage_deed(routine_id, row, word, signal, started):
     from agathodaimon._deed import send
-    # The routine identifier may contain slashes; the door receives a fixed target.
-    send("sbin", "chord", ok, target="chord", duration_ms=fields["duration_ms"])
+    send("sbin", row["stage_id"], word != "refused", target=_deed_target(routine_id),
+         duration_ms=int((time.monotonic() - started) * 1000),
+         signal=signal or "operation-failed", outcome=word)
+
+
+def _chord_deed(routine_id, rows, mutating, ok, changed, signal, started):
+    from agathodaimon._deed import send
+    word = "refused" if not ok else "changed" if changed else "kept"
+    stages = [[row["stage_id"], _stage_word(row, is_write)]
+              for row, is_write in zip(rows, mutating)]
+    return send("sbin", "chord", ok, target=_deed_target(routine_id),
+                duration_ms=int((time.monotonic() - started) * 1000),
+                signal=signal, outcome=word, stages=stages)
 
 
 def _walk_chord(path: Path, envelope: dict) -> int:
@@ -365,13 +383,23 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
     started = time.monotonic()
     routine_id = path.relative_to(ROOT).as_posix()
     rows = []
+    stage_mutating = []
     completed = {}
     failed = None
     signal = "none"
     changed = False
+    payload = envelope.get("payload")
+    dry_run = isinstance(payload, dict) and payload.get("dry-run") is True
+    mutating_chord = _mutation_allowed(path) is not False
+
+    def preflight_refusal(reason):
+        if mutating_chord and not dry_run:
+            _chord_deed(routine_id, [], [], False, False, reason, started)
+
     from agathodaimon._envelope import _pin_bearing_exousia, _redact_declared, _redact_pin_carriers
     request = json.dumps(_redact_declared(_redact_pin_carriers(envelope), _HAND_SECRET_NAMES), separators=(",", ":"))
     if _pin_bearing_exousia(envelope):
+        preflight_refusal("chord-secret-carrier-refused")
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
         return 1
@@ -379,11 +407,10 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
         serve, rescue, final = _validate_chord(_index(path))
     except (OSError, ValueError, _ChordError) as exc:
         reason = str(exc) if isinstance(exc, _ChordError) else "chord-stage-invalid"
+        preflight_refusal(reason)
         print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": reason}))
         return 1
-    payload = envelope.get("payload")
-    dry_run = isinstance(payload, dict) and payload.get("dry-run") is True
     if dry_run:
         for stage in serve + rescue + final:
             target = _slash_target(stage["snake"])
@@ -413,6 +440,11 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
         for stage in stages:
             consume_between_stages()
             sid, band = stage["stage_id"], stage["snake"]
+            stage_started = time.monotonic()
+            declared_target = _slash_target(band)
+            is_write = (declared_target is None or
+                        _mutation_allowed(declared_target.parent if declared_target.is_file() else declared_target) is not False)
+            stage_mutating.append(is_write)
             row = {"stage_id": sid, "transition": band, "outcome": "stage-skipped", "arguments": {}, "receipt": None}
             rows.append(row)
             rescue_untriggered = phase == "rescue" and not any(completed.get(dep, {}).get("outcome") == "stage-refused" for dep in stage["on_refusal_of"])
@@ -423,6 +455,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             )
             if (phase == "serve" and blocked) or rescue_untriggered or dependency_blocked:
                 completed[sid] = row
+                if is_write and not dry_run:
+                    _stage_deed(routine_id, row, "skipped", None, stage_started)
                 continue
             refusal = None
             stage_target = None
@@ -445,6 +479,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                     consume_between_stages()
                     if phase == "serve" and blocked:
                         completed[sid] = row
+                        if is_write and not dry_run:
+                            _stage_deed(routine_id, row, "skipped", None, stage_started)
                         continue
                 if interrupted[0]:
                     raise _ChordError("chord-interrupted")
@@ -490,8 +526,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                 refusal = "chord-interrupted"
                 row["firstMissingSignal"] = refusal
             row["outcome"] = "stage-refused" if refusal else "stage-completed"
-            if not dry_run and row["outcome"] == "stage-completed" and stage_target is not None and _mutation_allowed(stage_target.parent if stage_target.is_file() else stage_target) is not False:
-                changed = True
+            if is_write and not dry_run:
+                _stage_deed(routine_id, row, _stage_word(row, True), refusal, stage_started)
             if refusal and (was_interrupted or phase == "finally" or stage.get("required", True)) and failed is None:
                 failed, signal = sid, refusal
             if refusal and phase == "serve" and (was_interrupted or stage.get("required", True)):
@@ -503,10 +539,12 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
           all(not stage.get("required", True) or row["outcome"] == "stage-completed"
               for stage, row in zip(serve, rows[:len(serve)])) and
           all(row["outcome"] == "stage-completed" for row in rows[len(serve) + len(rescue):]))
-    if changed:
+    if not dry_run and _mutation_allowed(path) is not False:
         try:
-            _chord_deed(routine_id, envelope, rows, ok, failed, signal, started)
+            logged = _chord_deed(routine_id, rows, stage_mutating, ok, changed, signal, started)
         except (OSError, ValueError):
+            logged = False
+        if not logged and changed:
             ok = False
             if failed is None:
                 signal = "chord-deed-log-unavailable"
@@ -521,7 +559,13 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
 
 
 def _dry_run_admits(path: Path, envelope: dict | None, argv: list[str] | None = None) -> bool:
+    global _front_dry_run
     payload = envelope.get("payload") if isinstance(envelope, dict) else None
+    args = payload.get("args") if isinstance(payload, dict) else None
+    candidates = (args if isinstance(args, list) else []) + (argv if isinstance(argv, list) else [])
+    _front_dry_run = _front_dry_run or (isinstance(payload, dict) and payload.get("dry-run") is True) or any(
+        arg in ("--dry-run", "--dry-run=true") for arg in candidates if isinstance(arg, str)
+    )
     if not isinstance(payload, dict) or "dry-run" not in payload:
         args = payload.get("args") if isinstance(payload, dict) else None
         candidates = (args if isinstance(args, list) else []) + (argv if isinstance(argv, list) else [])
@@ -1365,7 +1409,9 @@ def _emit_stamp_bytes(destination, data):
 
 
 def main(argv=None):
-    global _stamp_target, _stamp_seat, _front_args
+    global _stamp_target, _stamp_seat, _front_args, _front_dry_run
+    started = time.monotonic()
+    _front_dry_run = False
     _front_args = list(sys.argv[1:] if argv is None else argv)
     _stamp_target = None
     _stamp_seat = None
@@ -1414,6 +1460,22 @@ def main(argv=None):
             answer = json.loads(raw)
         except (ValueError, TypeError):
             pass
+    if (isinstance(answer, dict) and isinstance(answer.get("ok"), bool)
+            and answer.get("schema") != "caduceus.chord.receipt.v1"
+            and not _front_dry_run and isinstance(_stamp_target, str)
+            and any(_stamp_target.startswith(prefix) for prefix in
+                    ("network/dhcp/", "network/dns/", "network/identity/"))):
+        try:
+            target = _slash_target(_stamp_target)
+            if target is not None and target.is_file() and _mutation_allowed(target.parent) is not False:
+                from agathodaimon._deed import send
+                word = "refused" if not answer["ok"] else "changed" if _stage_changed(answer) else "kept"
+                send("sbin", _stamp_target.rsplit("/", 1)[-1], answer["ok"],
+                     target=_stamp_target.replace("/", "."), outcome=word,
+                     signal=answer.get("firstMissingSignal") or "operation-failed",
+                     duration_ms=int((time.monotonic() - started) * 1000))
+        except Exception:
+            print("caduceus-deed-post-failed", file=sys.stderr)
     if isinstance(answer, dict) and isinstance(answer.get("ok"), bool) and answer.get("schema") != "caduceus.chord.receipt.v1":
         sys.stdout.write(json.dumps(_stamp_receipt(answer, _stamp_target)) + "\n")
     elif (isinstance(answer, dict) and answer.get("schema") == "caduceus.chord.receipt.v1"
