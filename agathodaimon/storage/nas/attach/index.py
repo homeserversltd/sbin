@@ -20,7 +20,7 @@ def _failure(signal_name: str, step: str, role: str | None = None) -> dict[str, 
         "mountpoint": None, "alreadyMounted": False, "steps": [],
         "unitsStarted": [], "unitStatesBefore": {}, "services": [],
         "servicesStarted": [], "mapperReadback": None, "mountReadback": None,
-        "failedStep": step,
+        "failedStep": step, "shareStep": None, "shares": [],
     }
 
 
@@ -53,7 +53,8 @@ def dispatch(request: Any) -> dict[str, Any]:
         receipt = attach_role(role, start_services=False)
     except Refusal as failure:
         receipt = failure.receipt or _failure(failure.signal_name, failure.step, role)
-    if receipt.get("ok") is not True or receipt.get("alreadyMounted") is not True:
+    if (receipt.get("ok") is not True or receipt.get("alreadyMounted") is not True
+            or (receipt.get("shareStep") or {}).get("written") is True):
         deed.finish("nas-attach", "nas-" + role if role in {"primary", "backup"} else "nas-role", receipt, started, request=request.intent_id)
     return attach_envelope(receipt, request)
 

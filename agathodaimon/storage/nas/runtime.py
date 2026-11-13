@@ -1368,13 +1368,59 @@ def _attach_failure(receipt: dict[str, Any], failure: Refusal) -> Refusal:
     return failure
 
 
+def _share_step(receipt: dict[str, Any], role: str, *, exclude_role: bool,
+                expect: str | None, step: str, signal: str) -> None:
+    info = _role_info(role)
+    share, mountpoint = info["key"], info["mountpoint"]
+    cause = None
+    failed = False
+    try:
+        from agathodaimon.storage.drive import _shares
+        result = _shares.rebuild(exclude_mountpoints=(mountpoint,) if exclude_role else ())
+    except Exception as error:
+        cause = error.signal_name if isinstance(error, Refusal) else "rebuild-raised"
+        result = None
+        failed = True
+    if not failed and (not isinstance(result, dict) or result.get("ok") is not True):
+        cause = result.get("firstMissingSignal") if isinstance(result, dict) else "rebuild-raised"
+        failed = True
+    served = written = reloaded = False
+    shares = []
+    if not failed and isinstance(result, dict):
+        try:
+            served = result["includedBySmbConf"] is True
+            shares = result["shares"]
+            names = [item["name"] for item in shares]
+            written = result["changed"] is True
+            reloaded = result["reloaded"] is True
+        except (KeyError, TypeError):
+            cause, failed = "rebuild-raised", True
+        else:
+            if served and expect == "shared" and share not in names:
+                cause, failed = "role-not-in-shares", True
+            elif served and expect == "unshared" and share in names:
+                cause, failed = "role-still-shared", True
+    if failed:
+        receipt["shareStep"] = {"ok": False, "role": role, "share": share,
+                                "step": step, "cause": cause}
+        receipt["shares"] = []
+        _fail(receipt, signal, step, cause=cause)
+    receipt["shareStep"] = {
+        "ok": True, "role": role, "share": share, "step": step,
+        "action": "rebuilt-without-role" if exclude_role else "rebuilt-with-role",
+        "served": served, "written": written, "reloaded": reloaded, "shares": shares,
+    }
+    receipt["shares"] = shares if served else []
+    _record(receipt, step, True, served=served, written=written, reloaded=reloaded)
+
+
 def _receipt(role: str | None) -> dict[str, Any]:
     return {
         "ok": False, "firstMissingSignal": "agathodaimon-nas-not-complete",
         "role": role, "partlabel": None, "partition": None, "mapper": None,
         "mountpoint": None, "steps": [], "unitsStarted": [], "unitStatesBefore": {},
         "services": [], "servicesStarted": [], "servicesNotRunning": [],
-        "mapperReadback": None, "mountReadback": None,
+        "mapperReadback": None, "mountReadback": None, "shareStep": None, "shares": [],
         "alreadyOpen": False, "alreadyMounted": False, "servicesStopped": [], "unitsStopped": [],
     }
 
@@ -1427,7 +1473,7 @@ def _observed_holder_info(receipt: dict[str, Any], info: dict[str, str]) -> dict
 @guarded_drive
 def attach_role(role: str, *, start_services: bool = True,
                 after_mount_verified: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
-    """Attach one fixed role; a correct existing mount is a strict no-op."""
+    """Attach one fixed role; an existing mount rebuilds only differing shares."""
     receipt = _receipt(role if isinstance(role, str) else None)
     try:
         _require_root(receipt)
@@ -1451,6 +1497,8 @@ def attach_role(role: str, *, start_services: bool = True,
                     or mount.get("mounted") is not True or mount.get("sourceMatches") is not True
                     or mount.get("fstype") != "xfs"):
                 raise Refusal("agathodaimon-nas-mounted-state-mismatch", "mount-readback", receipt=receipt)
+            _share_step(receipt, role, exclude_role=False, expect="shared", step="share-attach",
+                        signal="agathodaimon-nas-share-rebuild-failed")
             services = _list_enabled_nas_services(receipt, info["mountpoint"])
             receipt["services"] = [dict(service) for service in services]
             receipt["servicesStarted"] = []
@@ -1505,6 +1553,8 @@ def attach_role(role: str, *, start_services: bool = True,
                 or mount.get("mounted") is not True or mount.get("sourceMatches") is not True
                 or mount.get("fstype") != "xfs"):
             raise Refusal("agathodaimon-nas-mount-readback-mismatch", "mount-readback", receipt=receipt)
+        _share_step(receipt, role, exclude_role=False, expect="shared", step="share-attach",
+                    signal="agathodaimon-nas-share-rebuild-failed")
         receipt["alreadyMounted"] = False
         if after_mount_verified is not None:
             after_mount_verified(receipt)
@@ -1699,6 +1749,7 @@ def detach_role(role: str) -> dict[str, Any]:
     receipt = _receipt(role if isinstance(role, str) else None)
     receipt["servicesStopped"] = []
     receipt["unitsStopped"] = []
+    share_removed = False
     try:
         _require_root(receipt)
         info = _role_info(role)
@@ -1734,6 +1785,9 @@ def detach_role(role: str) -> dict[str, Any]:
                          if entry["target"].startswith(info["mountpoint"].rstrip("/") + "/")]
         if nested_before:
             _fail(receipt, "agathodaimon-nas-mount-busy", "mount-stop", nestedMounts=nested_before)
+        _share_step(receipt, role, exclude_role=True, expect="unshared", step="share-detach",
+                    signal="agathodaimon-nas-share-rebuild-failed")
+        share_removed = True
         if current_mount is not None:
             current_info = _observed_holder_info(receipt, _info_for(role, role_partition(role)))
             if (current_info["mapper"] != runtime_info["mapper"]
@@ -1756,6 +1810,7 @@ def detach_role(role: str) -> dict[str, Any]:
                   nestedMounts=nested, findmntAbsent=final_mount.get("findmntAbsent"))
         _record(receipt, "mount-absent-readback", True, mounted=False, nestedMountCount=0,
                 findmntAbsent=True)
+        share_removed = False
 
         if mapper_exists:
             if _device_identity(role_partition(role), "partition-readback") != _device_identity(partition, "partition-readback"):
@@ -1789,7 +1844,21 @@ def detach_role(role: str) -> dict[str, Any]:
                 unitsStopped=list(receipt["unitsStopped"]))
         return receipt
     except Refusal as failure:
+        if share_removed:
+            try:
+                _share_step(receipt, role, exclude_role=False, expect=None, step="share-restore",
+                            signal="agathodaimon-nas-share-restore-failed")
+                receipt["shareStep"]["restored"] = True
+            except Refusal:
+                receipt["shareStep"]["restored"] = False
         raise _attach_failure(receipt, failure) from None
     except Exception:
         failure = Refusal("agathodaimon-nas-detach-aborted", "detach")
+        if share_removed:
+            try:
+                _share_step(receipt, role, exclude_role=False, expect=None, step="share-restore",
+                            signal="agathodaimon-nas-share-restore-failed")
+                receipt["shareStep"]["restored"] = True
+            except Refusal:
+                receipt["shareStep"]["restored"] = False
         raise _attach_failure(receipt, failure) from None
