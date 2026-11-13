@@ -114,7 +114,7 @@ def _candidate(data, receipt):
         os.close(fd)
 
 
-def rebuild(exclude_mountpoints=()):
+def rebuild(exclude_mountpoints=(), *, force_reload=False):
     receipt = {"ok": False, "firstMissingSignal": "agathodaimon-drive-shares-incomplete", "changed": False, "mutationPerformed": False, "reloaded": False, "file": FILE, "includedBySmbConf": False, "shares": [], "pruned": [], "steps": []}
     try:
         runtime._require_root(receipt)
@@ -158,12 +158,13 @@ def rebuild(exclude_mountpoints=()):
             if existing != rendered:
                 _candidate(rendered, receipt)
                 runtime._record(receipt, "file-commit", True)
-                if included:
-                    result = runtime._run([runtime.SYSTEMCTL, "reload", "smbd.service"], step="reload")
-                    if result.returncode:
-                        raise runtime.Refusal("agathodaimon-drive-shares-reload-failed", "reload", result.returncode)
-                    receipt["reloaded"] = True
-                    runtime._record(receipt, "reload", True)
+            if included and (receipt["changed"] or force_reload):
+                receipt["mutationPerformed"] = True
+                result = runtime._run([runtime.SYSTEMCTL, "reload", "smbd.service"], step="reload")
+                if result.returncode:
+                    raise runtime.Refusal("agathodaimon-drive-shares-reload-failed", "reload", result.returncode)
+                receipt["reloaded"] = True
+                runtime._record(receipt, "reload", True)
             receipt["pruned"] = _opened._forget_many(dead)
             if receipt["pruned"]:
                 receipt["mutationPerformed"] = True

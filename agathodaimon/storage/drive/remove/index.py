@@ -163,7 +163,7 @@ def _act_body(device, dry_run, receipt, context):
                        "sharesRebuildWithout": mount is not None, "unmount": mount is not None})
         return
     context["shares_attempted"] = mount is not None
-    reply = _shares.rebuild(exclude_mountpoints=(target,) if mount is not None else ())
+    reply = _shares.rebuild(exclude_mountpoints=(target,), force_reload=True) if mount is not None else _shares.rebuild(exclude_mountpoints=())
     _merge_share(receipt, reply)
     if not isinstance(reply, dict) or reply.get("ok") is not True:
         signal = reply.get("firstMissingSignal") if isinstance(reply, dict) else None
@@ -171,13 +171,19 @@ def _act_body(device, dry_run, receipt, context):
         if isinstance(signal, str) and signal.endswith("command-group-unreaped"):
             receipt["mutationUnknown"] = True
             context["unreaped"] = True
+        if mount is not None and isinstance(reply, dict) and reply.get("failedStep") == "reload":
+            _refuse("agathodaimon-drive-share-unconfirmed", "drive-shares")
         _refuse("agathodaimon-drive-shares-refused", "drive-shares")
     _step(receipt, "drive-shares", True, {"includedBySmbConf": reply.get("includedBySmbConf"),
                                            "reloaded": reply.get("reloaded")})
     if mount is None:
         receipt["ok"] = True
         return
-    if reply.get("includedBySmbConf") is True and reply.get("changed") is not True and reply.get("reloaded") is not True:
+    shares = reply.get("shares")
+    if (not isinstance(shares, list)
+            or any(not isinstance(item, dict) or item.get("path") == target for item in shares)
+            or reply.get("includedBySmbConf") not in (True, False)
+            or (reply.get("includedBySmbConf") is True and reply.get("reloaded") is not True)):
         _refuse("agathodaimon-drive-share-unconfirmed", "drive-shares")
     receipt["share"] = {"name": label, "closedBeforeUnmount": True,
                         "includedBySmbConf": reply.get("includedBySmbConf"), "reloaded": reply.get("reloaded")}
