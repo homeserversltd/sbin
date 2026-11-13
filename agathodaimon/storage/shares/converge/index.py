@@ -18,7 +18,7 @@ def main(argv=None):
         receipt = _shares.rebuild()
     except (EnvelopeError, ValueError, UnicodeError):
         receipt = {"ok": False, "firstMissingSignal": "agathodaimon-drive-shares-request-invalid", "failedStep": "request", "changed": False, "mutationPerformed": False, "reloaded": False, "file": _shares.FILE, "includedBySmbConf": False, "shares": [], "pruned": [], "steps": []}
-    if receipt.get("changed") or not receipt.get("ok"):
+    if receipt.get("mutationPerformed") or not receipt.get("ok"):
         _deed.send("sbin", "drive-shares-rebuild", bool(receipt.get("ok")), target="drive-shares", duration_ms=int((time.monotonic() - started) * 1000), signal=receipt.get("firstMissingSignal", "operation-failed"))
     if request is not None:
         receipt = attach(receipt, request)

@@ -192,6 +192,7 @@
     "storage/nas/setup/plan",
     "storage/nas/setup/rollback",
     "storage/nas/setup/seat",
+    "storage/shares/converge",
     "storage/upload/force-permissions",
     "storage/upload/ingress",
     "storage/vault/open/unlock",
@@ -500,6 +501,10 @@
       "ssh"
     ],
     [
+      "shares",
+      "converge"
+    ],
+    [
       "thyrsus",
       "admit"
     ],
@@ -706,6 +711,7 @@
     "/api/v1/storage/nas/role/observe",
     "/api/v1/storage/nas/role/swap",
     "/api/v1/storage/nas/setup",
+    "/api/v1/storage/shares/converge",
     "/api/v1/storage/vault/auto-decrypt",
     "/api/v1/storage/vault/unlock",
     "/api/v1/sync/now",
@@ -825,6 +831,7 @@
       "storage/nas/setup/plan",
       "storage/nas/setup/rollback",
       "storage/nas/setup/seat",
+      "storage/shares/converge",
       "storage/vault/policy/read",
       "storage/vault/policy/write",
       "thyrsus/admit",
@@ -1045,6 +1052,7 @@
       "/api/v1/storage/nas/key/probe",
       "/api/v1/storage/nas/role/swap",
       "/api/v1/storage/nas/setup",
+      "/api/v1/storage/shares/converge",
       "/api/v1/storage/vault/auto-decrypt",
       "/api/v1/thyrsus/admit",
       "/api/v1/thyrsus/forge-token",
