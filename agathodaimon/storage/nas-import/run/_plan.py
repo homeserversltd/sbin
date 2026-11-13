@@ -54,6 +54,9 @@ def build(receipt: dict, device: str) -> dict:
     mapper = runtime._device_identity("/dev/mapper/" + primary["mapper"], "import-nas-readback")
     if not runtime._direct_slaves(mapper):
         raise runtime.Refusal("agathodaimon-nas-not-attached", "import-nas-readback")
+    backing = runtime._mapper_state(receipt, primary)
+    if not backing.get("exists") or not backing.get("backingMatches"):
+        raise runtime.Refusal("agathodaimon-nas-mounted-state-mismatch", "import-nas-readback")
     runtime._record(receipt, "import-nas-readback", True)
 
     parent = "/mnt/nas/Imports"
