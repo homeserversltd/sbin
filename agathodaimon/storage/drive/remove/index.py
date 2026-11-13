@@ -117,6 +117,8 @@ def _act_body(device, dry_run, receipt, context):
         row, mount = missing
         label = row["label"]
         node = {"path": mount["source"], "maj:min": row["device_identity"]}
+        context.update(node=node, target=mount["target"])
+        receipt.update(partition=node["path"], mount=mount["target"], mountLeftStanding=True)
     else:
         if resolved is None:
             _refuse("agathodaimon-drive-device-not-in-block-census", "device-census")
