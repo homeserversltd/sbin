@@ -75,14 +75,16 @@ def _mount_readback(entries, path, data, fstype, uid):
         options = str(entry.get("superOptions", "")).split(",")
         if "uid=" + str(uid) not in options:
             _refuse("agathodaimon-drive-mount-readback-mismatch", "drive-mount-readback")
-        mask = next((value.split("=", 1)[1] for value in options if value.startswith("fmask=")), None)
-        if mask is None:
-            mask = next((value.split("=", 1)[1] for value in options if value.startswith("umask=")), None)
+        masks = {key: value for option in options if "=" in option
+                 for key, value in [option.split("=", 1)] if key in {"fmask", "dmask", "umask"}}
         try:
-            writable = mask is not None and int(mask, 8) & 0o200 == 0
+            file_mask = int(masks.get("fmask", masks.get("umask", "")), 8)
+            dir_mask = int(masks.get("dmask", masks.get("umask", "")), 8)
         except ValueError:
-            writable = False
-        return writable
+            _refuse("agathodaimon-drive-mount-readback-mismatch", "drive-mount-readback")
+        if file_mask & 0o200 or dir_mask & 0o200:
+            _refuse("agathodaimon-drive-mount-readback-mismatch", "drive-mount-readback")
+        return True
     try:
         info = os.stat(path)
         return info.st_uid == uid and bool(info.st_mode & stat.S_IWUSR)
@@ -112,10 +114,21 @@ def _forget_unmounted(receipt, ledger):
         return False
 
 
-def _rollback(receipt, ledger, rebuild_shares):
-    path, label = receipt["mount"], receipt["label"]
+def _rollback(receipt, ledger, rebuild_shares, expected_identity):
+    path = receipt["mount"]
     if receipt["alreadyMounted"]:
         receipt["mountLeftStanding"] = True
+        return
+    try:
+        from agathodaimon.storage.drive import _drive
+        entries = [row for row in _drive.mountinfo_entries() if row.get("target") == path]
+        if len(entries) != 1 or entries[0].get("dev") != expected_identity:
+            receipt.update(rollbackSignal="agathodaimon-drive-mount-readback-mismatch",
+                           mutationPerformed=False, mutationUnknown=True)
+            return
+    except runtime.Refusal:
+        receipt.update(rollbackSignal="agathodaimon-drive-mount-readback-mismatch",
+                       mutationPerformed=False, mutationUnknown=True)
         return
     try:
         result = runtime._run(["/usr/bin/umount", path], step="drive-rollback-umount", timeout=180)
@@ -233,7 +246,7 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
                                failedStep="drive-mount-readback", mountLeftStanding=True)
                 return
             receipt["mutationPerformed"] = True
-            _rollback(receipt, ledger, rebuild_shares)
+            _rollback(receipt, ledger, rebuild_shares, data["maj:min"])
             if receipt["firstMissingSignal"] == "agathodaimon-drive-busy":
                 return
             _refuse("agathodaimon-drive-mount-failed", "drive-mount")
@@ -270,7 +283,7 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
     except runtime.Refusal as failure:
         receipt.update(firstMissingSignal=failure.signal_name, failedStep=failure.step)
         _step(receipt, failure.step, False, {})
-        _rollback(receipt, ledger, rebuild_shares)
+        _rollback(receipt, ledger, rebuild_shares, data["maj:min"])
 
 
 def open_drive(device, *, dry_run=False, rebuild_shares=None, ledger=None) -> dict:
