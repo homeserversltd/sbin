@@ -14,6 +14,7 @@ from typing import Any, Sequence
 from agathodaimon._deed import send
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus import unit
+from agathodaimon.storage.nas import runtime
 
 _MAX_INPUT_BYTES = 64 * 1024
 _TEST = "/usr/local/sbin/harddrive_test.sh"
@@ -139,6 +140,23 @@ def _mounted(device: str) -> None:
         raise Refusal("disk-test-device-mounted", device=device, mounted=mounted)
 
 
+def _check_imports(device: str) -> None:
+    try:
+        result = run(["/usr/bin/systemctl", "list-units", "--type=service", "--state=active",
+                      "--no-legend", "--no-pager", "--plain", "homeserver-nas-import-*"], timeout=30)
+        if result.returncode:
+            raise ValueError("systemctl failed")
+        for line in result.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 4 or not fields[0].startswith("homeserver-nas-import-") or not fields[0].endswith(".service") or fields[2] != "active":
+                raise ValueError("invalid unit census")
+            raise Refusal("disk-test-import-running", device=device)
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        if isinstance(error, Refusal):
+            raise
+        raise Refusal("disk-test-command-failed", device=device) from error
+
+
 def _deed(device: str, started: float, ok: bool, signal: str) -> None:
     recorded = send("sbin", "disk-test", ok, target=Path(device).name, duration_ms=int((time.monotonic() - started) * 1000), signal=signal)
     print("disk-test-deed recorded" if recorded else "disk-test-deed unrecorded", file=sys.stderr)
@@ -208,29 +226,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         if os.geteuid() != 0:
             raise Refusal("disk-test-root-required", device=device)
         _device_path(device)
-        state, description = _holder()
-        if state in _ACTIVE:
-            raise _running(description, device)
-        _mounted(device)
-        try:
-            result = run(["/usr/bin/systemd-run", "--unit=agathodaimon-disk-test", "--collect", f"--description=disk-test {device} {mode}", "--property=Type=exec", "--working-directory=/usr/local/sbin", "--", sys.executable, "-m", "agathodaimon.storage.disk.test.index", "--worker", device, mode], timeout=30)
-        except (OSError, subprocess.SubprocessError):
-            result = None
-        if result is None or result.returncode:
+        with runtime.drive_guard():
+            state, description = _holder()
+            if state in _ACTIVE:
+                raise _running(description, device)
+            _check_imports(device)
+            _mounted(device)
             try:
-                state, description = _holder()
-                if state in _ACTIVE and description.split()[:2] == ["disk-test", device]:
-                    raise _running(description, device)
-            except Refusal as error:
-                if error.signal == "disk-test-already-running":
-                    raise
-            _deed(device, started, False, "disk-test-start-refused")
-            raise Refusal("disk-test-start-refused", device=device)
-        state, description = _holder()
-        if state != "active":
-            raise Refusal("disk-test-start-unobservable", device=device)
+                result = run(["/usr/bin/systemd-run", "--unit=agathodaimon-disk-test", "--collect", f"--description=disk-test {device} {mode}", "--property=Type=exec", "--working-directory=/usr/local/sbin", "--", sys.executable, "-m", "agathodaimon.storage.disk.test.index", "--worker", device, mode], timeout=30)
+            except (OSError, subprocess.SubprocessError):
+                result = None
+            if result is None or result.returncode:
+                try:
+                    state, description = _holder()
+                    if state in _ACTIVE and description.split()[:2] == ["disk-test", device]:
+                        raise _running(description, device)
+                except Refusal as error:
+                    if error.signal == "disk-test-already-running":
+                        raise
+                _deed(device, started, False, "disk-test-start-refused")
+                raise Refusal("disk-test-start-refused", device=device)
+            state, description = _holder()
+            if state != "active":
+                raise Refusal("disk-test-start-unobservable", device=device)
         print(json.dumps({"ok": True, "started": True, "unit": _UNIT, "device": device, "mode": mode, "firstMissingSignal": "none"}, separators=(",", ":")))
         return 0
+    except runtime.Refusal as error:
+        if error.signal_name == "agathodaimon-nas-drive-operation-running":
+            signal = "disk-test-drive-operation-running"
+        elif error.signal_name.startswith("agathodaimon-nas-command-"):
+            signal = "disk-test-command-failed"
+        else:
+            signal = "disk-test-guard-unavailable"
+        return _refuse(signal, device=device)
     except Refusal as error:
         details = dict(error.details)
         if device is not None:
