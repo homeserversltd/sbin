@@ -52,14 +52,23 @@ def _merge_share(receipt, reply):
         receipt["pruned"] = reply.get("pruned", [])
 
 
-def _restore(receipt):
+def _restore(receipt, target):
     try:
         reply = _shares.rebuild(exclude_mountpoints=())
         _merge_share(receipt, reply)
-        restored = isinstance(reply, dict) and reply.get("ok") is True
-        receipt["sharesRestored"] = restored
-        if not restored:
-            receipt["rollbackSignal"] = (reply.get("firstMissingSignal") if isinstance(reply, dict) else None) or "agathodaimon-drive-shares-refused"
+        ok = isinstance(reply, dict) and reply.get("ok") is True
+        rows = reply.get("shares", []) if isinstance(reply, dict) else []
+        present = isinstance(rows, list) and any(
+            isinstance(row, dict) and row.get("path") == target for row in rows)
+        included = reply.get("includedBySmbConf") if isinstance(reply, dict) else None
+        reloaded = reply.get("reloaded") if isinstance(reply, dict) else None
+        changed = reply.get("changed") if isinstance(reply, dict) else None
+        confirmed = ok and present and (included is False or (included is True and (changed is True and reloaded is True)))
+        receipt["sharesRestored"] = confirmed
+        receipt["shareRestoreIncluded"] = included
+        if not confirmed:
+            signal = reply.get("firstMissingSignal") if isinstance(reply, dict) else None
+            receipt["rollbackSignal"] = signal if signal and signal != "none" else "agathodaimon-drive-share-restore-unconfirmed"
     except Exception:
         receipt["sharesRestored"] = False
         receipt["rollbackSignal"] = "agathodaimon-drive-shares-refused"
@@ -136,6 +145,7 @@ def _act_body(device, dry_run, receipt, context):
             receipt["nestedMounts"] = nested
         _refuse("agathodaimon-drive-mount-readback-mismatch", "drive-pre-unmount")
     outcome = None
+    context["unmount_started"] = True
     try:
         result = runtime._run(["/usr/bin/umount", target], step="drive-umount", timeout=180)
         receipt["unmountRc"] = result.returncode
@@ -185,11 +195,13 @@ def _act(device, dry_run, receipt, context):
             receipt["returnCode"] = code
         _step(receipt, step, False, {})
         matching, nested = _observe(receipt, context.get("node"), context.get("target"))
-        if context.get("shares_attempted") and not context.get("unreaped") and matching is not None:
-            if matching or nested:
-                _restore(receipt)
-            else:
+        if context.get("shares_attempted") and not context.get("unreaped"):
+            if matching is None or matching or nested:
+                _restore(receipt, context["target"])
+            elif context.get("unmount_started"):
                 receipt.update(unmounted=True, changed=True, mutationPerformed=True)
+            else:
+                receipt["mutationUnknown"] = True
 
 
 def remove_drive(device, *, dry_run=False):
