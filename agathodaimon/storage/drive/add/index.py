@@ -21,11 +21,20 @@ def _receipt(device):
             "ownerWritable": False, "alreadyMounted": False,
             "mutationPerformed": False, "shareServed": False,
             "rolledBack": False, "directMountStarted": False,
-            "createdMountpoint": False, "steps": []}
+            "createdMountpoint": False, "failedStep": None, "mountLeftStanding": False,
+            "rollbackSignal": None, "mutationUnknown": False, "steps": []}
 
 
 def _step(receipt, step, ok, readback):
     receipt["steps"].append({"step": step, "ok": ok, "readback": readback})
+
+
+def _drive_signal(signal):
+    if signal.startswith("agathodaimon-nas-command-"):
+        return "agathodaimon-drive-command-failed"
+    if signal == "sync-hold-refused-running":
+        return "agathodaimon-drive-sync-running"
+    return signal
 
 
 def _refuse(signal, step, code=None) -> NoReturn:
@@ -49,8 +58,11 @@ def _seat_defaults(rebuild_shares, ledger):
 
 
 def _test_unit(device, receipt):
-    result = runtime._run(["/usr/bin/systemctl", "show", "agathodaimon-disk-test.service",
-                           "--property=ActiveState,Description"], step="drive-test-unit", timeout=30)
+    try:
+        result = runtime._run(["/usr/bin/systemctl", "show", "agathodaimon-disk-test.service",
+                               "--property=ActiveState,Description"], step="drive-test-unit", timeout=30)
+    except runtime.Refusal as failure:
+        raise runtime.Refusal(_drive_signal(failure.signal_name), failure.step, failure.return_code) from None
     if result.returncode != 0:
         _refuse("agathodaimon-drive-test-unit-unavailable", "drive-test-unit", result.returncode)
     try:
@@ -78,11 +90,12 @@ def _mount_readback(entries, path, data, fstype, uid):
         masks = {key: value for option in options if "=" in option
                  for key, value in [option.split("=", 1)] if key in {"fmask", "dmask", "umask"}}
         try:
-            file_mask = int(masks.get("fmask", masks.get("umask", "")), 8)
-            dir_mask = int(masks.get("dmask", masks.get("umask", "")), 8)
+            for mask in masks.values():
+                if int(mask, 8) & 0o200:
+                    _refuse("agathodaimon-drive-mount-readback-mismatch", "drive-mount-readback")
         except ValueError:
             _refuse("agathodaimon-drive-mount-readback-mismatch", "drive-mount-readback")
-        if file_mask & 0o200 or dir_mask & 0o200:
+        if data["fstype"] == "vfat" and not ("umask" in masks or {"fmask", "dmask"} <= masks.keys()):
             _refuse("agathodaimon-drive-mount-readback-mismatch", "drive-mount-readback")
         return True
     try:
@@ -114,52 +127,76 @@ def _forget_unmounted(receipt, ledger):
         return False
 
 
-def _rollback(receipt, ledger, rebuild_shares, expected_identity):
+def _rollback(receipt, ledger, rebuild_shares, expected_identity, *, unreaped=False):
+    from agathodaimon.storage.drive import _drive
     path = receipt["mount"]
     if receipt["alreadyMounted"]:
         receipt["mountLeftStanding"] = True
         return
-    try:
-        from agathodaimon.storage.drive import _drive
-        entries = [row for row in _drive.mountinfo_entries() if row.get("target") == path]
+
+    def observe():
+        try:
+            return [row for row in _drive.mountinfo_entries() if row.get("target") == path]
+        except Exception:
+            receipt.update(mutationUnknown=True, rollbackSignal="agathodaimon-drive-mount-readback-mismatch")
+            return None
+
+    entries = observe()
+    if entries:
+        receipt.update(mutationPerformed=True, mountLeftStanding=True)
+    if unreaped:
+        receipt["mutationUnknown"] = True
+        return
+    if entries is None:
+        return
+    if entries:
         if len(entries) != 1 or entries[0].get("dev") != expected_identity:
-            receipt.update(rollbackSignal="agathodaimon-drive-mount-readback-mismatch",
-                           mutationPerformed=False, mutationUnknown=True)
+            receipt["rollbackSignal"] = "agathodaimon-drive-mount-readback-mismatch"
             return
-    except runtime.Refusal:
-        receipt.update(rollbackSignal="agathodaimon-drive-mount-readback-mismatch",
-                       mutationPerformed=False, mutationUnknown=True)
-        return
-    try:
-        result = runtime._run(["/usr/bin/umount", path], step="drive-rollback-umount", timeout=180)
-        _step(receipt, "drive-rollback-umount", result.returncode == 0, {"returnCode": result.returncode})
-        if result.returncode != 0:
-            raise runtime.Refusal("agathodaimon-drive-busy", "drive-rollback-umount", result.returncode)
-    except runtime.Refusal:
-        receipt.update(firstMissingSignal="agathodaimon-drive-busy", failedStep="drive-rollback-umount",
-                       unmounted=path, mutationPerformed=True, mountLeftStanding=True)
-        return
-    receipt["mutationPerformed"] = False
+        try:
+            result = runtime._run(["/usr/bin/umount", path], step="drive-rollback-umount", timeout=180)
+            _step(receipt, "drive-rollback-umount", result.returncode == 0, {"returnCode": result.returncode})
+            if result.returncode != 0:
+                raise runtime.Refusal("agathodaimon-drive-busy", "drive-rollback-umount", result.returncode)
+        except runtime.Refusal as failure:
+            unreaped_umount = failure.signal_name.endswith("command-group-unreaped")
+            if unreaped_umount:
+                receipt["mutationUnknown"] = True
+            entries = observe()
+            if entries:
+                receipt.update(firstMissingSignal="agathodaimon-drive-busy", failedStep="drive-rollback-umount",
+                               unmounted=path, mutationPerformed=True, mountLeftStanding=True)
+                return
+            if entries is None or unreaped_umount:
+                return
+        else:
+            entries = observe()
+        if entries is None:
+            return
+        if entries:
+            receipt.update(firstMissingSignal="agathodaimon-drive-busy", failedStep="drive-rollback-umount",
+                           unmounted=path, mutationPerformed=True, mountLeftStanding=True)
+            return
+    receipt.update(mutationPerformed=False, mountLeftStanding=False)
     clean = _forget_unmounted(receipt, ledger)
     try:
         reply = rebuild_shares(exclude_mountpoints=(path,))
         share_clean = isinstance(reply, dict) and reply.get("ok") is True
         _step(receipt, "drive-share-cleanup", share_clean, {})
         if not share_clean:
-            receipt.setdefault("rollbackSignal", "agathodaimon-drive-shares-refused")
+            receipt["rollbackSignal"] = receipt["rollbackSignal"] or "agathodaimon-drive-shares-refused"
             clean = False
     except Exception:
         _step(receipt, "drive-share-cleanup", False, {})
-        receipt.setdefault("rollbackSignal", "agathodaimon-drive-shares-refused")
+        receipt["rollbackSignal"] = receipt["rollbackSignal"] or "agathodaimon-drive-shares-refused"
         clean = False
     if receipt["createdMountpoint"] and not _rmdir(path, receipt):
-        receipt.setdefault("rollbackSignal", "agathodaimon-drive-mountpoint-cleanup-failed")
+        receipt["rollbackSignal"] = receipt["rollbackSignal"] or "agathodaimon-drive-mountpoint-cleanup-failed"
         clean = False
     receipt["rolledBack"] = clean
 
 
-@runtime.guarded_drive
-def _act(device, dry_run, rebuild_shares, ledger, receipt):
+def _act_body(device, dry_run, rebuild_shares, ledger, receipt, context):
     if os.geteuid() != 0:
         _refuse("agathodaimon-drive-root-required", "drive-root")
     try:
@@ -198,15 +235,13 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
             _refuse("agathodaimon-drive-mountpoint-not-empty", "drive-mountpoint")
     fstype, options = _resolve.mount_plan(data["fstype"], uid, gid)
     rebuild_shares, ledger = _seat_defaults(rebuild_shares, ledger)
+    context.update(ledger=ledger, rebuild_shares=rebuild_shares, identity=data["maj:min"])
     if dry_run:
         receipt.update(ok=True, planned={"fstype": fstype, "options": options, "mount": path,
                                          "label": label, "share": receipt["share"]})
         return
     if not existing:
         try:
-            rows = ledger.rows()
-            if any(row.get("label") == label and row.get("device_identity") != data["maj:min"] for row in rows):
-                _refuse("agathodaimon-drive-mountpoint-in-use", "drive-ledger-record")
             ledger.record(label, data["maj:min"])
         except runtime.Refusal:
             raise
@@ -225,36 +260,19 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
                     _rmdir(path, receipt)
                 _refuse("agathodaimon-drive-mountpoint-not-directory", "drive-mountpoint")
         argv = ["/usr/bin/mount", "-t", fstype] + (["-o", options] if options is not None else []) + [data["path"], path]
-        receipt["directMountStarted"] = True
         try:
-            result = runtime._run(argv, step="drive-mount", timeout=180)
-        except runtime.Refusal:
-            try:
-                current = next((row for row in _drive.mountinfo_entries() if row.get("target") == path), None)
-            except runtime.Refusal:
-                receipt.update(firstMissingSignal="agathodaimon-drive-mount-readback-mismatch",
-                               failedStep="drive-mount-readback", mutationUnknown=True)
-                return
-            if current is None:
-                _forget_unmounted(receipt, ledger)
-                if receipt["createdMountpoint"] and not _rmdir(path, receipt):
-                    receipt["rollbackSignal"] = "agathodaimon-drive-mountpoint-cleanup-failed"
-                _refuse("agathodaimon-drive-mount-failed", "drive-mount")
-            if current.get("dev") != data["maj:min"]:
-                _forget_unmounted(receipt, ledger)
-                receipt.update(firstMissingSignal="agathodaimon-drive-mountpoint-in-use",
-                               failedStep="drive-mount-readback", mountLeftStanding=True)
-                return
-            receipt["mutationPerformed"] = True
-            _rollback(receipt, ledger, rebuild_shares, data["maj:min"])
-            if receipt["firstMissingSignal"] == "agathodaimon-drive-busy":
-                return
-            _refuse("agathodaimon-drive-mount-failed", "drive-mount")
+            info = os.stat(data["path"])
+            if not stat.S_ISBLK(info.st_mode) or f"{os.major(info.st_rdev)}:{os.minor(info.st_rdev)}" != data["maj:min"]:
+                raise ValueError("device identity changed")
+        except (OSError, ValueError):
+            _forget_unmounted(receipt, ledger)
+            if receipt["createdMountpoint"] and not _rmdir(path, receipt):
+                receipt["rollbackSignal"] = "agathodaimon-drive-mountpoint-cleanup-failed"
+            _refuse("agathodaimon-drive-device-identity-mismatch", "drive-device-identity")
+        receipt["directMountStarted"] = True
+        result = runtime._run(argv, step="drive-mount", timeout=180)
         _step(receipt, "drive-mount", result.returncode == 0, {"returnCode": result.returncode})
         if result.returncode != 0:
-            _forget_unmounted(receipt, ledger)
-            if receipt["createdMountpoint"]:
-                _rmdir(path, receipt)
             _refuse("agathodaimon-drive-mount-failed", "drive-mount", result.returncode)
         receipt["mutationPerformed"] = True
     try:
@@ -270,8 +288,8 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
             reply = rebuild_shares(exclude_mountpoints=())
         except Exception:
             _refuse("agathodaimon-drive-shares-refused", "drive-shares")
-        if reply.get("ok") is not True:
-            receipt["shareFailure"] = reply.get("firstMissingSignal")
+        if not isinstance(reply, dict) or reply.get("ok") is not True:
+            receipt["shareFailure"] = reply.get("firstMissingSignal") if isinstance(reply, dict) else None
             _refuse("agathodaimon-drive-shares-refused", "drive-shares")
         if reply.get("includedBySmbConf") is not True:
             _refuse("agathodaimon-drive-share-not-served", "drive-shares")
@@ -280,31 +298,54 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
         receipt["shareServed"] = True
         _step(receipt, "drive-shares", True, {"includedBySmbConf": True})
         receipt["ok"] = True
-    except runtime.Refusal as failure:
-        receipt.update(firstMissingSignal=failure.signal_name, failedStep=failure.step)
-        _step(receipt, failure.step, False, {})
-        _rollback(receipt, ledger, rebuild_shares, data["maj:min"])
+    except runtime.Refusal:
+        raise
 
 
-def open_drive(device, *, dry_run=False, rebuild_shares=None, ledger=None) -> dict:
+@runtime.guarded_drive
+def _act(device, dry_run, rebuild_shares, ledger, receipt, context):
+    try:
+        _act_body(device, dry_run, rebuild_shares, ledger, receipt, context)
+    except Exception as failure:
+        if isinstance(failure, runtime.Refusal):
+            signal, step, code = _drive_signal(failure.signal_name), failure.step, failure.return_code
+            unreaped = failure.signal_name.endswith("command-group-unreaped")
+        else:
+            signal, step, code, unreaped = "agathodaimon-drive-operation-unavailable", "drive-operation", None, False
+        receipt.update(firstMissingSignal=signal, failedStep=step)
+        if code is not None:
+            receipt["returnCode"] = code
+        _step(receipt, step, False, {})
+        if receipt["directMountStarted"] or (receipt["alreadyMounted"] and context):
+            _rollback(receipt, context["ledger"], context["rebuild_shares"], context["identity"], unreaped=unreaped)
+
+
+def add_drive(device, *, dry_run=False, rebuild_shares=None, ledger=None) -> dict:
     started = time.monotonic()
     receipt = _receipt(device)
+    context = {}
     try:
         if os.geteuid() != 0:
             _refuse("agathodaimon-drive-root-required", "drive-root")
-        _act(device, dry_run, rebuild_shares, ledger, receipt)
+        _act(device, dry_run, rebuild_shares, ledger, receipt, context)
     except runtime.Refusal as failure:
-        receipt.update(firstMissingSignal=failure.signal_name, failedStep=failure.step)
+        receipt.update(firstMissingSignal=_drive_signal(failure.signal_name), failedStep=failure.step)
         if failure.return_code is not None:
             receipt["returnCode"] = failure.return_code
         _step(receipt, failure.step, False, {})
-    except OSError:
+    except Exception:
         receipt.update(firstMissingSignal="agathodaimon-drive-operation-unavailable", failedStep="drive-operation")
+        if receipt["directMountStarted"] and context:
+            try:
+                with runtime.drive_guard():
+                    _rollback(receipt, context["ledger"], context["rebuild_shares"], context["identity"])
+            except Exception:
+                receipt["mutationUnknown"] = True
     if receipt["directMountStarted"] and receipt["mutationPerformed"]:
         try:
-            logged = deed.record("drive-open", receipt["ok"], int((time.monotonic() - started) * 1000),
-                                 signal=None if receipt["ok"] else "agathodaimon-drive-busy")
-        except (OSError, ValueError):
+            logged = deed.record("drive-add", receipt["ok"], int((time.monotonic() - started) * 1000),
+                                 signal=None if receipt["ok"] else receipt["firstMissingSignal"])
+        except Exception:
             logged = False
         if not logged:
             receipt["deedLogSignal"] = "caduceus-deed-post-failed"
@@ -319,7 +360,7 @@ def dispatch(request: Any) -> dict[str, Any]:
         receipt = _receipt(payload.get("device"))
         receipt.update(firstMissingSignal="agathodaimon-drive-dry-run-invalid", failedStep="request")
     else:
-        receipt = open_drive(payload.get("device"), dry_run=dry_run)
+        receipt = add_drive(payload.get("device"), dry_run=dry_run)
     return attach_envelope(receipt, request)
 
 

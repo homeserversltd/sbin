@@ -143,7 +143,7 @@ def mount_plan(fstype: str, uid: int, gid: int) -> tuple[str, str | None]:
     if fstype not in SUPPORTED_FSTYPES:
         raise _runtime.Refusal("agathodaimon-drive-filesystem-unsupported", "mount-plan")
     if fstype in {"ext3", "ext4", "xfs", "btrfs"}:
-        return fstype, None
+        return fstype, "nosuid,nodev"
     if type(uid) is not int or type(gid) is not int or uid < 0 or gid < 0:
         raise _runtime.Refusal("agathodaimon-drive-owner-unresolved", "mount-plan")
     options = f"nosuid,nodev,uid={uid},gid={gid}"
