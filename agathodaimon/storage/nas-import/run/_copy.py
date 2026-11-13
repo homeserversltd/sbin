@@ -104,7 +104,10 @@ def _unmount(receipt, mp):
     receipt["sourceStillMounted"] = result.returncode != 1
     runtime._record(receipt, step, result.returncode == 1, rc=result.returncode)
     if result.returncode == 1:
-        os.rmdir(mp)
+        try:
+            os.rmdir(mp)
+        except OSError:
+            _fail(receipt, "source-unmount-failed", "import-source-mountpoint-cleanup", unmount_rc)
     if unmount_rc != 0:
         _fail(receipt, "source-unmount-failed", "import-source-unmount", unmount_rc)
     if result.returncode != 1:
@@ -283,10 +286,13 @@ def _act(plan: dict, receipt: dict) -> dict:
                 failure = error if isinstance(error, runtime.Refusal) else runtime.Refusal(
                     _PREFIX + "source-unmount-failed", "import-source-unmount", receipt=receipt)
         elif mp_made:
+            observed_absent = False
             try:
                 result = runtime._run([_FIND, "--noheadings", "--mountpoint", mp],
                                       step="import-source-unmount-readback")
                 if result.returncode == 1:
+                    observed_absent = True
+                    receipt["sourceStillMounted"] = False
                     os.rmdir(mp)
                 elif result.returncode == 0:
                     receipt["sourceStillMounted"] = True
@@ -295,8 +301,9 @@ def _act(plan: dict, receipt: dict) -> dict:
                     receipt["sourceStillMounted"] = True
                     failure = runtime.Refusal(_PREFIX + "source-unmount-failed",
                                               "import-source-unmount-readback", result.returncode, receipt)
-            except (runtime.Refusal, OSError):
-                receipt["sourceStillMounted"] = True
+            except (runtime.Refusal, OSError) as error:
+                if isinstance(error, OSError):
+                    receipt["sourceStillMounted"] = not observed_absent
                 failure = runtime.Refusal(_PREFIX + "source-unmount-failed", "import-source-unmount-readback", receipt=receipt)
         if protection_attempted and original_ro is False and not receipt["sourceStillMounted"]:
             try:
