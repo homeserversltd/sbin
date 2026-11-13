@@ -15,9 +15,13 @@ def build(receipt: dict, device: str) -> dict:
         resolver = importlib.import_module("agathodaimon.storage.drive._resolve")
     except ImportError:
         raise runtime.Refusal("agathodaimon-nas-import-resolver-unavailable", "import-resolver") from None
-    node = resolver.resolve_device(receipt, device)
+    resolved = resolver.resolve_device(receipt, device)
+    node = resolved.get("data")
+    if node is None:
+        signal = resolved.get("dataRefusal") or "agathodaimon-drive-no-filesystem"
+        raise runtime.Refusal(signal, "import-source")
     graph, _ = runtime._block_graph()
-    component = runtime._component(graph, node["identity"])
+    component = runtime._component(graph, resolved["identity"])
     if any(row["dev"] in component for row in runtime._mountinfo()):
         runtime._fail(receipt, "agathodaimon-nas-device-mounted", "import-source-mounted")
     runtime._record(receipt, "import-source-mounted", True)
@@ -36,7 +40,7 @@ def build(receipt: dict, device: str) -> dict:
             runtime._fail(receipt, "agathodaimon-drive-disk-test-running", "drive-test-unit")
     runtime._record(receipt, "drive-test-unit", True, activeState=state)
 
-    label = resolver.label_for(node)
+    label = resolver.label_for(resolved)
     if not isinstance(label, str) or not label:
         raise runtime.Refusal("agathodaimon-nas-import-label-unavailable", "import-label")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", label):

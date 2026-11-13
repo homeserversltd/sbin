@@ -45,7 +45,7 @@ def _deed(receipt, started):
 
 
 def _plan(receipt, device):
-    return importlib.import_module("agathodaimon.storage.nas.import._plan").build(receipt, device)
+    return importlib.import_module("agathodaimon.storage.nas-import.run._plan").build(receipt, device)
 
 
 def _device(value):
@@ -127,7 +127,7 @@ def worker(args):
         with runtime.drive_guard():
             plan = _plan(receipt, device)
             try:
-                act = importlib.import_module("agathodaimon.storage.nas.import._copy").act
+                act = importlib.import_module("agathodaimon.storage.nas-import.run._copy").act
             except (ImportError, AttributeError):
                 raise runtime.Refusal("agathodaimon-nas-import-act-unavailable", "import-copy") from None
             receipt = act(plan, receipt)

@@ -6,12 +6,12 @@
     "features": {
       "nas": {
         "band": true,
-        "verbs": [["nas", "import"]],
-        "routes": ["/api/v1/storage/nas/import"],
+        "verbs": [["nas-import", "run"]],
+        "routes": ["/api/v1/storage/nas-import/run"],
         "administrative": {
           "band": true,
           "verbs": [],
-          "routes": ["/api/v1/storage/nas/import"]
+          "routes": ["/api/v1/storage/nas-import/run"]
         }
       }
     }
