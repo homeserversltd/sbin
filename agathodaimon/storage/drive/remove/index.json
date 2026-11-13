@@ -1,0 +1,20 @@
+{
+  "hand": "envelope",
+  "dry-run": true,
+  "children": [],
+  "sclerite": {
+    "name": "drive",
+    "features": {
+      "drive": {
+        "band": true,
+        "verbs": [["drive", "remove"]],
+        "routes": ["/api/v1/storage/drive/remove"],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": ["/api/v1/storage/drive/remove"]
+        }
+      }
+    }
+  }
+}

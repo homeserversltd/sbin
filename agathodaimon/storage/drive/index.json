@@ -1,4 +1,4 @@
 {
-  "children": ["add"],
+  "children": ["add", "remove"],
   "kind": "collection"
 }
