@@ -30,7 +30,14 @@ def build(receipt: dict, device: str) -> dict:
                            "--property=ActiveState,Description"], step="drive-test-unit", timeout=30)
     if result.returncode != 0:
         raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit", result.returncode)
-    fields = dict(line.split("=", 1) for line in runtime._decode_output(result, "drive-test-unit").splitlines() if "=" in line)
+    fields = {}
+    for line in runtime._decode_output(result, "drive-test-unit").splitlines():
+        if "=" not in line:
+            raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit")
+        key, value = line.split("=", 1)
+        if key not in {"ActiveState", "Description"} or key in fields:
+            raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit")
+        fields[key] = value
     state = fields.get("ActiveState")
     if state not in {"active", "activating", "deactivating", "reloading", "inactive", "failed"} or "Description" not in fields:
         raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit")
