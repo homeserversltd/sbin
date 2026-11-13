@@ -100,6 +100,25 @@ def _missing_device(device):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _guard_missing(device, node, receipt, entries):
+    """Refuse protected mounts and swap even when the device census lost them."""
+    suffix = r"(?:p[1-9][0-9]*)?" if device[-1].isdigit() else r"(?:[1-9][0-9]*)?"
+    source = re.compile(re.escape(device) + suffix + r"\Z")
+    related = [entry for entry in entries if entry.get("dev") == node["maj:min"]
+               or (isinstance(entry.get("source"), str) and source.fullmatch(entry["source"]))]
+    if any(entry.get("target") in _resolve.SYSTEM_CRITICAL for entry in related):
+        _refuse("agathodaimon-drive-system-device-refused", "protected-mount-preflight")
+    try:
+        swaps = runtime.runtime_path("/proc/swaps").read_text(encoding="utf-8").splitlines()[1:]
+    except (OSError, UnicodeError):
+        _refuse("agathodaimon-drive-protected-census-unavailable", "protected-mount-preflight")
+    if any(line.split() and source.fullmatch(line.split()[0]) for line in swaps):
+        _refuse("agathodaimon-drive-system-device-refused", "protected-mount-preflight")
+    if any(entry.get("target") in {"/mnt/nas", "/mnt/nas_backup"} for entry in related):
+        receipt["instead"] = "storage nas detach"
+        _refuse("agathodaimon-drive-nas-role-refused", "protected-mount-preflight")
+
+
 def _act_body(device, dry_run, receipt, context):
     missing = None
     resolved = None
@@ -119,6 +138,7 @@ def _act_body(device, dry_run, receipt, context):
         node = {"path": mount["source"], "maj:min": row["device_identity"]}
         context.update(node=node, target=mount["target"])
         receipt.update(partition=node["path"], mount=mount["target"], mountLeftStanding=True)
+        _guard_missing(device, node, receipt, _drive.mountinfo_entries())
     else:
         if resolved is None:
             _refuse("agathodaimon-drive-device-not-in-block-census", "device-census")
@@ -189,6 +209,8 @@ def _act_body(device, dry_run, receipt, context):
                         "includedBySmbConf": reply.get("includedBySmbConf"), "reloaded": reply.get("reloaded")}
     # Recheck both the target and identity immediately before issuing umount.
     entries = _drive.mountinfo_entries()
+    if missing is not None:
+        _guard_missing(device, node, receipt, entries)
     at_target = [entry for entry in entries if entry.get("target") == target]
     nested = [entry["target"] for entry in entries if entry.get("target", "").startswith(target + "/")]
     if len(at_target) != 1 or at_target[0].get("dev") != node["maj:min"] or nested:
