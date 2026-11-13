@@ -43,13 +43,18 @@
     "keyman": {},
     "backup-drive": {},
     "disk-wipe": {},
+    "drive": {
+      "requires": [],
+      "implies": []
+    },
     "nas": {
       "requires": [
         "keyman"
       ],
       "implies": [
         "luks",
-        "xfs"
+        "xfs",
+        "drive"
       ]
     },
     "luks": {

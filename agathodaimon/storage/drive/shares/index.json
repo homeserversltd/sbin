@@ -1,0 +1,4 @@
+{
+  "children": ["rebuild"],
+  "kind": "collection"
+}

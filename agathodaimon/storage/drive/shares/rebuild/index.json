@@ -1,0 +1,19 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "sclerite": {
+    "name": "drive",
+    "features": {
+      "drive": {
+        "band": true,
+        "verbs": [["drive", "shares", "rebuild"]],
+        "routes": ["/api/v1/storage/drive/shares/rebuild"],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": ["/api/v1/storage/drive/shares/rebuild"]
+        }
+      }
+    }
+  }
+}
