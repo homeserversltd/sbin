@@ -101,6 +101,17 @@ def _rmdir(path, receipt):
         return False
 
 
+def _forget_unmounted(receipt, ledger):
+    try:
+        ledger.forget(receipt["label"])
+        _step(receipt, "drive-ledger-forget", True, {})
+        return True
+    except Exception:
+        _step(receipt, "drive-ledger-forget", False, {})
+        receipt["rollbackSignal"] = "agathodaimon-drive-ledger-unavailable"
+        return False
+
+
 def _rollback(receipt, ledger, rebuild_shares):
     path, label = receipt["mount"], receipt["label"]
     if receipt["alreadyMounted"]:
@@ -116,14 +127,7 @@ def _rollback(receipt, ledger, rebuild_shares):
                        unmounted=path, mutationPerformed=True, mountLeftStanding=True)
         return
     receipt["mutationPerformed"] = False
-    clean = True
-    try:
-        ledger.forget(label)
-        _step(receipt, "drive-ledger-forget", True, {})
-    except Exception:
-        _step(receipt, "drive-ledger-forget", False, {})
-        receipt["rollbackSignal"] = "agathodaimon-drive-ledger-unavailable"
-        clean = False
+    clean = _forget_unmounted(receipt, ledger)
     try:
         reply = rebuild_shares(exclude_mountpoints=(path,))
         share_clean = isinstance(reply, dict) and reply.get("ok") is True
@@ -186,10 +190,26 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
                                          "label": label, "share": receipt["share"]})
         return
     if not existing:
+        try:
+            rows = ledger.rows()
+            if any(row.get("label") == label and row.get("device_identity") != data["maj:min"] for row in rows):
+                _refuse("agathodaimon-drive-mountpoint-in-use", "drive-ledger-record")
+            ledger.record(label, data["maj:min"])
+        except runtime.Refusal:
+            raise
+        except Exception:
+            _refuse("agathodaimon-drive-ledger-unavailable", "drive-ledger-record")
+        _step(receipt, "drive-ledger-record", True, {"beforeMount": True})
         if absent:
-            os.mkdir(path, 0o755)
-            receipt["createdMountpoint"] = True
-            if not stat.S_ISDIR(os.lstat(path).st_mode):
+            try:
+                os.mkdir(path, 0o755)
+                receipt["createdMountpoint"] = True
+                if not stat.S_ISDIR(os.lstat(path).st_mode):
+                    _refuse("agathodaimon-drive-mountpoint-not-directory", "drive-mountpoint")
+            except (OSError, runtime.Refusal):
+                _forget_unmounted(receipt, ledger)
+                if receipt["createdMountpoint"]:
+                    _rmdir(path, receipt)
                 _refuse("agathodaimon-drive-mountpoint-not-directory", "drive-mountpoint")
         argv = ["/usr/bin/mount", "-t", fstype] + (["-o", options] if options is not None else []) + [data["path"], path]
         receipt["directMountStarted"] = True
@@ -203,10 +223,12 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
                                failedStep="drive-mount-readback", mutationUnknown=True)
                 return
             if current is None:
+                _forget_unmounted(receipt, ledger)
                 if receipt["createdMountpoint"] and not _rmdir(path, receipt):
                     receipt["rollbackSignal"] = "agathodaimon-drive-mountpoint-cleanup-failed"
                 _refuse("agathodaimon-drive-mount-failed", "drive-mount")
             if current.get("dev") != data["maj:min"]:
+                _forget_unmounted(receipt, ledger)
                 receipt.update(firstMissingSignal="agathodaimon-drive-mountpoint-in-use",
                                failedStep="drive-mount-readback", mountLeftStanding=True)
                 return
@@ -217,6 +239,7 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
             _refuse("agathodaimon-drive-mount-failed", "drive-mount")
         _step(receipt, "drive-mount", result.returncode == 0, {"returnCode": result.returncode})
         if result.returncode != 0:
+            _forget_unmounted(receipt, ledger)
             if receipt["createdMountpoint"]:
                 _rmdir(path, receipt)
             _refuse("agathodaimon-drive-mount-failed", "drive-mount", result.returncode)
@@ -224,11 +247,12 @@ def _act(device, dry_run, rebuild_shares, ledger, receipt):
     try:
         receipt["ownerWritable"] = _mount_readback(_drive.mountinfo_entries(), path, data, fstype, uid)
         _step(receipt, "drive-mount-readback", True, {"ownerWritable": receipt["ownerWritable"]})
-        try:
-            ledger.record(label, data["maj:min"])
-        except Exception:
-            _refuse("agathodaimon-drive-ledger-unavailable", "drive-ledger-record")
-        _step(receipt, "drive-ledger-record", True, {})
+        if existing:
+            try:
+                ledger.record(label, data["maj:min"])
+            except Exception:
+                _refuse("agathodaimon-drive-ledger-unavailable", "drive-ledger-record")
+            _step(receipt, "drive-ledger-record", True, {"beforeMount": False})
         try:
             reply = rebuild_shares(exclude_mountpoints=())
         except Exception:
