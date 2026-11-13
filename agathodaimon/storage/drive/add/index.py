@@ -286,10 +286,16 @@ def _act_body(device, dry_run, rebuild_shares, ledger, receipt, context):
             _step(receipt, "drive-ledger-record", True, {"beforeMount": False})
         try:
             reply = rebuild_shares(exclude_mountpoints=())
+        except runtime.Refusal as failure:
+            if failure.signal_name.endswith("command-group-unreaped"):
+                raise
+            _refuse("agathodaimon-drive-shares-refused", "drive-shares")
         except Exception:
             _refuse("agathodaimon-drive-shares-refused", "drive-shares")
         if not isinstance(reply, dict) or reply.get("ok") is not True:
             receipt["shareFailure"] = reply.get("firstMissingSignal") if isinstance(reply, dict) else None
+            if isinstance(receipt["shareFailure"], str) and receipt["shareFailure"].endswith("command-group-unreaped"):
+                raise runtime.Refusal(receipt["shareFailure"], reply.get("failedStep") or "drive-shares")
             _refuse("agathodaimon-drive-shares-refused", "drive-shares")
         if reply.get("includedBySmbConf") is not True:
             _refuse("agathodaimon-drive-share-not-served", "drive-shares")
