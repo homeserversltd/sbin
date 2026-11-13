@@ -97,18 +97,42 @@ def _mount_options(kind):
 def _unmount(receipt, mp):
     step = "import-source-unmount"
     result = runtime._run(["/usr/bin/umount", mp], step=step, timeout=60)
-    if result.returncode != 0:
-        receipt["sourceStillMounted"] = True
-        _fail(receipt, "source-unmount-failed", step, result.returncode)
-    runtime._record(receipt, step, True, rc=result.returncode)
+    unmount_rc = result.returncode
+    runtime._record(receipt, step, unmount_rc == 0, rc=unmount_rc)
     step = "import-source-unmount-readback"
     result = runtime._run([_FIND, "--noheadings", "--mountpoint", mp], step=step)
+    receipt["sourceStillMounted"] = result.returncode != 1
+    runtime._record(receipt, step, result.returncode == 1, rc=result.returncode)
+    if result.returncode == 1:
+        os.rmdir(mp)
+    if unmount_rc != 0:
+        _fail(receipt, "source-unmount-failed", "import-source-unmount", unmount_rc)
     if result.returncode != 1:
-        receipt["sourceStillMounted"] = True
         _fail(receipt, "source-unmount-failed", step, result.returncode)
-    receipt["sourceStillMounted"] = False
-    runtime._record(receipt, step, True, rc=result.returncode)
-    os.rmdir(mp)
+
+
+def _nas_check(receipt, nas, fd, parent, expected, step):
+    result = runtime._run([_FIND, "--json", "--mountpoint", nas, "--output",
+                           "MAJ:MIN,TARGET"], step=step)
+    parent_dev = 0
+    try:
+        rows = json.loads(result.stdout).get("filesystems", [])
+        row = rows[0] if len(rows) == 1 else {}
+        identity = row.get("maj:min")
+        st = os.fstat(fd).st_dev
+        pinned = f"{os.major(st)}:{os.minor(st)}"
+        parent_dev = os.stat(parent).st_dev
+        valid = (result.returncode == 0 and row.get("target") == nas
+                 and identity == pinned and (expected is None or identity == expected)
+                 and parent_dev == st)
+    except (OSError, ValueError, TypeError, AttributeError):
+        valid = False
+        identity = None
+    if not valid:
+        _fail(receipt, "nas-moved", step, result.returncode)
+    runtime._record(receipt, step, True, identity=identity,
+                    parentDevice=f"{os.major(parent_dev)}:{os.minor(parent_dev)}")
+    return identity
 
 
 def _owner_tree(dest, imports, imports_made, uid, gid):
@@ -143,6 +167,8 @@ def _act(plan: dict, receipt: dict) -> dict:
     mp_made = False
     failure = None
     imports_made = False
+    nas_fd = None
+    nas_identity = None
     try:
         options = _mount_options(plan["fstype"])
         if options is None:
@@ -191,6 +217,8 @@ def _act(plan: dict, receipt: dict) -> dict:
         if not valid:
             _fail(receipt, "source-mount-readback-mismatch", "import-source-readback", result.returncode)
         runtime._record(receipt, "import-source-readback", True, options=row["options"])
+        nas_fd = os.open(nas, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        nas_identity = _nas_check(receipt, nas, nas_fd, nas, None, "import-nas-before-destination")
         source_stat = os.statvfs(mp)
         nas_stat = os.statvfs(nas)
         used = (source_stat.f_blocks - source_stat.f_bfree) * source_stat.f_frsize
@@ -216,7 +244,17 @@ def _act(plan: dict, receipt: dict) -> dict:
             _fail(receipt, "destination-exists", "import-destination")
         runtime._record(receipt, "import-destination", True, importsMade=imports_made)
         base = [_RSYNC, "-rlpt", "--no-owner", "--no-group", "--chmod=u+rwX"]
-        result = runtime._run(base + ["--stats", mp + "/", dest + "/"], step="import-copy", timeout=86400)
+        cwd_fd = os.open(".", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.chdir(dest)
+            _nas_check(receipt, nas, nas_fd, imports, nas_identity, "import-nas-before-copy")
+            if os.stat(".").st_dev != os.fstat(nas_fd).st_dev:
+                _fail(receipt, "nas-moved", "import-nas-before-copy")
+            result = runtime._run(base + ["--stats", mp + "/", "./"], step="import-copy", timeout=86400)
+            _nas_check(receipt, nas, nas_fd, imports, nas_identity, "import-nas-after-copy")
+        finally:
+            os.fchdir(cwd_fd)
+            os.close(cwd_fd)
         if result.returncode != 0:
             _fail(receipt, "copy-failed", "import-copy", result.returncode)
         match = re.search(rb"^Total transferred file size:\s*([0-9][0-9,]*) bytes", result.stdout, re.MULTILINE)
@@ -240,7 +278,8 @@ def _act(plan: dict, receipt: dict) -> dict:
                 mounted = False
                 mp_made = False
             except (runtime.Refusal, OSError) as error:
-                receipt["sourceStillMounted"] = True
+                if isinstance(error, OSError):
+                    receipt["sourceStillMounted"] = True
                 failure = error if isinstance(error, runtime.Refusal) else runtime.Refusal(
                     _PREFIX + "source-unmount-failed", "import-source-unmount", receipt=receipt)
         elif mp_made:
@@ -268,21 +307,29 @@ def _act(plan: dict, receipt: dict) -> dict:
             except runtime.Refusal as error:
                 failure = error
     if failure is not None:
+        if nas_fd is not None:
+            os.close(nas_fd)
         raise runtime._attach_failure(receipt, failure) from None
+    if nas_fd is None or nas_identity is None:
+        _fail(receipt, "nas-moved", "import-nas-before-ownership")
     try:
+        _nas_check(receipt, nas, nas_fd, imports, nas_identity, "import-nas-before-ownership")
         metadata = os.stat(nas)
         _owner_tree(dest, imports, imports_made, metadata.st_uid, metadata.st_gid)
         runtime._record(receipt, "import-ownership", True)
     except OSError:
         failure = runtime.Refusal(_PREFIX + "ownership-failed", "import-ownership", receipt=receipt)
         raise runtime._attach_failure(receipt, failure) from None
+    finally:
+        os.close(nas_fd)
     receipt.update(ok=True, firstMissingSignal="none")
     return receipt
 
 
 def act(plan: dict, receipt: dict) -> dict:
     try:
-        return _act(plan, receipt)
+        with runtime.drive_guard():
+            return _act(plan, receipt)
     except runtime.Refusal as failure:
         if failure.receipt is receipt and "failedStep" in receipt:
             raise
