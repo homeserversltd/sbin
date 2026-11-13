@@ -1750,6 +1750,32 @@ def detach_role(role: str) -> dict[str, Any]:
     receipt["servicesStopped"] = []
     receipt["unitsStopped"] = []
     share_removed = False
+
+    def restore_share() -> None:
+        try:
+            _share_step(receipt, role, exclude_role=False, expect=None, step="share-restore",
+                        signal="agathodaimon-nas-share-restore-failed")
+        except Refusal:
+            receipt["shareStep"]["restored"] = False
+            return
+        except Exception:
+            receipt["shareStep"] = {"ok": False, "role": role, "step": "share-restore",
+                                    "cause": "rebuild-raised", "restored": False,
+                                    "signal": "agathodaimon-nas-share-restore-failed"}
+            receipt["shares"] = []
+            return
+        try:
+            info = _role_info(role)
+            mounted = _mount_for_target(_mountinfo(), info["mountpoint"]) is not None
+            present = any(item["name"] == info["key"] for item in receipt["shareStep"]["shares"])
+        except Exception:
+            receipt["shareStep"]["restored"] = False
+            receipt["shareStep"]["signal"] = "agathodaimon-nas-share-restore-unconfirmed"
+            return
+        receipt["shareStep"]["restored"] = not mounted or present
+        if not receipt["shareStep"]["restored"]:
+            receipt["shareStep"]["signal"] = "agathodaimon-nas-share-restore-unconfirmed"
+
     try:
         _require_root(receipt)
         info = _role_info(role)
@@ -1785,9 +1811,9 @@ def detach_role(role: str) -> dict[str, Any]:
                          if entry["target"].startswith(info["mountpoint"].rstrip("/") + "/")]
         if nested_before:
             _fail(receipt, "agathodaimon-nas-mount-busy", "mount-stop", nestedMounts=nested_before)
+        share_removed = True
         _share_step(receipt, role, exclude_role=True, expect="unshared", step="share-detach",
                     signal="agathodaimon-nas-share-rebuild-failed")
-        share_removed = True
         if current_mount is not None:
             current_info = _observed_holder_info(receipt, _info_for(role, role_partition(role)))
             if (current_info["mapper"] != runtime_info["mapper"]
@@ -1845,20 +1871,10 @@ def detach_role(role: str) -> dict[str, Any]:
         return receipt
     except Refusal as failure:
         if share_removed:
-            try:
-                _share_step(receipt, role, exclude_role=False, expect=None, step="share-restore",
-                            signal="agathodaimon-nas-share-restore-failed")
-                receipt["shareStep"]["restored"] = True
-            except Refusal:
-                receipt["shareStep"]["restored"] = False
+            restore_share()
         raise _attach_failure(receipt, failure) from None
     except Exception:
         failure = Refusal("agathodaimon-nas-detach-aborted", "detach")
         if share_removed:
-            try:
-                _share_step(receipt, role, exclude_role=False, expect=None, step="share-restore",
-                            signal="agathodaimon-nas-share-restore-failed")
-                receipt["shareStep"]["restored"] = True
-            except Refusal:
-                receipt["shareStep"]["restored"] = False
+            restore_share()
         raise _attach_failure(receipt, failure) from None
