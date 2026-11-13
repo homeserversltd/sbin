@@ -1757,11 +1757,12 @@ def detach_role(role: str) -> dict[str, Any]:
                         signal="agathodaimon-nas-share-restore-failed")
         except Refusal:
             receipt["shareStep"]["restored"] = False
+            receipt["shareStep"]["signal"] = "agathodaimon-nas-share-restore-unconfirmed"
             return
         except Exception:
             receipt["shareStep"] = {"ok": False, "role": role, "step": "share-restore",
                                     "cause": "rebuild-raised", "restored": False,
-                                    "signal": "agathodaimon-nas-share-restore-failed"}
+                                    "signal": "agathodaimon-nas-share-restore-unconfirmed"}
             receipt["shares"] = []
             return
         try:
