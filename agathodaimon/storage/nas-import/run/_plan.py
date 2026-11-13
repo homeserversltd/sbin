@@ -36,7 +36,15 @@ def build(receipt: dict, device: str) -> dict:
         raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit")
     if state in {"active", "activating", "deactivating", "reloading"}:
         parts = fields["Description"].split()
-        if len(parts) == 3 and parts[0] == "disk-test" and parts[1] == device:
+        if len(parts) != 3 or parts[0] != "disk-test" or not re.fullmatch(r"/dev/[A-Za-z0-9._-]+", parts[1]):
+            raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit")
+        try:
+            test_identity = runtime._device_identity(parts[1], "drive-test-unit")
+        except runtime.Refusal:
+            raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit") from None
+        if test_identity not in graph:
+            raise runtime.Refusal("agathodaimon-nas-import-test-state-unavailable", "drive-test-unit")
+        if test_identity in component:
             runtime._fail(receipt, "agathodaimon-drive-disk-test-running", "drive-test-unit")
     runtime._record(receipt, "drive-test-unit", True, activeState=state)
 
