@@ -485,7 +485,11 @@ def _new_tab(payload, profile, receipt):
     receipt["mutationPerformed"] = True
     receipt["repo_url"] = "https://" + FORGE + "/" + quote(owner, safe="") + "/" + repo.name
     receipt["path"] = str(repo)
-    receipt["next"] = ["Activate " + repo.name + " in Woodpecker", "Add FORGEJO_TOKEN to its Woodpecker secrets"]
+    receipt["next"] = [
+        "Activate " + repo.name + " in Woodpecker",
+        "Add FORGEJO_TOKEN to its Woodpecker secrets",
+        "When the first Release is ready, add the tab in your HomeServer: press +, choose Make one, and add " + owner + "/" + repo.name + ".",
+    ]
     if _git(directory, ["clone", "--quiet", "--branch", "main", "--", "https://github.com/homeserversltd/xenia-hello-world-example", str(repo)], capture=False).returncode:
         raise Refusal("new-tab-clone-failed")
     receipt["attempt"].append({"step": "clone-example", "ok": True})

@@ -39,9 +39,11 @@ creates a private `cartridge-<id>` repository, seeds it from the public Test tab
 and pushes its `main` branch. The directory must already exist and belong to
 its repository owner. The id is a lowercase slug of 2–40 letters, digits and
 hyphens. Read `repo_url`, `path`, `next`, `firstMissingSignal` and `attempt`.
-Activate the repository in Woodpecker and add its `FORGEJO_TOKEN` secret; this
-does not admit the tab. If a later step fails, the created repository and any
-local work remain; inspect `attempt` before trying again.
+Activate the repository in Woodpecker and add its `FORGEJO_TOKEN` secret. When
+the first Release is ready, add the tab in your HomeServer: press +, choose Make
+one, and add `<owner>/cartridge-<id>`. The pipeline does not admit the tab. If a
+later step fails, the created repository and any local work remain; inspect
+`attempt` before trying again.
 
 Privileged callers use the declared staff bands `thyrsus/propose`,
 `thyrsus/admit`, `thyrsus/forge-token`, `thyrsus/new-tab` and `thyrsus/forge`, with the ordinary
