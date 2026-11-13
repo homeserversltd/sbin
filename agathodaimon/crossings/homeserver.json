@@ -130,6 +130,7 @@
     "storage/disk/partlabel/assign",
     "storage/disk/test",
     "storage/drive/add",
+    "storage/drive/remove",
     "storage/nas-import/run",
     "storage/nas/attach",
     "storage/nas/detach",
@@ -181,6 +182,10 @@
     [
       "drive",
       "add"
+    ],
+    [
+      "drive",
+      "remove"
     ],
     [
       "exousia",
@@ -522,6 +527,7 @@
     "/api/v1/storage/backup/nas-sync/schedule/disable",
     "/api/v1/storage/disk/partlabel/assign",
     "/api/v1/storage/drive/add",
+    "/api/v1/storage/drive/remove",
     "/api/v1/storage/nas-import/run",
     "/api/v1/storage/nas/attach",
     "/api/v1/storage/nas/detach",
@@ -619,6 +625,7 @@
       "storage/backup/nas-sync/sync",
       "storage/disk/partlabel/assign",
       "storage/drive/add",
+      "storage/drive/remove",
       "storage/nas-import/run",
       "storage/nas/attach",
       "storage/nas/detach",
@@ -805,6 +812,7 @@
       "/api/v1/storage/backup/nas-sync/schedule/disable",
       "/api/v1/storage/disk/partlabel/assign",
       "/api/v1/storage/drive/add",
+      "/api/v1/storage/drive/remove",
       "/api/v1/storage/nas-import/run",
       "/api/v1/storage/nas/attach",
       "/api/v1/storage/nas/detach",
