@@ -6,6 +6,7 @@
     "disk-doors",
     "drive",
     "nas",
+    "shares",
     "upload"
   ]
 }
