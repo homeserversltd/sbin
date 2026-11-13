@@ -130,8 +130,13 @@ def _forget_unmounted(receipt, ledger):
 def _rollback(receipt, ledger, rebuild_shares, expected_identity, *, unreaped=False):
     from agathodaimon.storage.drive import _drive
     path = receipt["mount"]
+    if unreaped:
+        receipt["mutationUnknown"] = True
     if receipt["alreadyMounted"]:
-        receipt["mountLeftStanding"] = True
+        try:
+            receipt["mountLeftStanding"] = any(row.get("target") == path for row in _drive.mountinfo_entries())
+        except Exception:
+            receipt.update(mutationUnknown=True, rollbackSignal="agathodaimon-drive-mount-readback-mismatch")
         return
 
     def observe():
