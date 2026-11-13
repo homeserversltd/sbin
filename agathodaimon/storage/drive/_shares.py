@@ -139,11 +139,11 @@ def rebuild(exclude_mountpoints=()):
             for row in _opened.rows():
                 label, identity, mountpoint = row["label"], row["device_identity"], row["mountpoint"]
                 valid = _opened.valid_label(label) and isinstance(identity, str) and _opened._ID.fullmatch(identity) and mountpoint == "/mnt/" + label
-                mount = runtime._mount_for_target(mounts, mountpoint) if valid else None
+                mount = runtime._mount_for_target(mounts, mountpoint)
                 alive = bool(valid and mount and mount["dev"] == identity and runtime.runtime_path("/sys/dev/block/" + identity).exists())
-                if not alive:
+                if mount is None:
                     dead.append(label)
-                elif mountpoint not in exclude_mountpoints:
+                elif alive and mountpoint not in exclude_mountpoints:
                     data.append({"name": label, "path": mountpoint})
             shares.extend(sorted(data, key=lambda row: row["name"]))
             names = [item["name"].casefold() for item in shares]

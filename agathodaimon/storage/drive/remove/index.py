@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sys
 import time
 from typing import Any, NoReturn, Sequence
@@ -75,21 +76,63 @@ def _restore(receipt, target):
     _step(receipt, "drive-shares-restore", receipt["sharesRestored"], {})
 
 
+def _missing_device(device):
+    """Find exactly one recorded mount whose original source names this absent disk."""
+    if not isinstance(device, str) or not re.fullmatch(r"/dev/(?:sd[a-z]+|nvme[0-9]+n[0-9]+|loop[0-9]+)", device):
+        return None
+    if os.path.lexists(runtime.runtime_path(device)):
+        return None
+    suffix = r"(?:p[1-9][0-9]*)?" if device[-1].isdigit() else r"(?:[1-9][0-9]*)?"
+    source = re.compile(re.escape(device) + suffix + r"\Z")
+    entries = _drive.mountinfo_entries()
+    candidates = []
+    for row in _opened.rows():
+        label, identity, target = row.get("label"), row.get("device_identity"), row.get("mountpoint")
+        if not (isinstance(label, str) and _opened.valid_label(label) and isinstance(identity, str) and _opened._ID.fullmatch(identity)
+                and target == "/mnt/" + label):
+            continue
+        if runtime.runtime_path("/sys/dev/block/" + identity).exists():
+            continue
+        matches = [entry for entry in entries if entry.get("target") == target and entry.get("dev") == identity
+                   and isinstance(entry.get("source"), str) and source.fullmatch(entry["source"])]
+        if len(matches) == 1 and sum(entry.get("target") == target for entry in entries) == 1:
+            candidates.append((row, matches[0]))
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _act_body(device, dry_run, receipt, context):
-    resolved = _resolve.resolve_device(receipt, device)
+    missing = None
+    resolved = None
+    mount = None
+    try:
+        resolved = _resolve.resolve_device(receipt, device)
+    except runtime.Refusal as failure:
+        if failure.signal_name != "agathodaimon-drive-device-not-in-block-census":
+            raise
+        missing = _missing_device(device)
+        if missing is None:
+            raise
     _step(receipt, "drive-device", True, {})
-    if any(label in {"homeserver-primary-nas", "homeserver-backup-nas"} for label in resolved["partlabels"]):
-        receipt["instead"] = "storage nas detach"
-        _refuse("agathodaimon-drive-nas-role-refused", "drive-device")
-    node = resolved["data"]
-    if node is None:
-        _refuse(resolved["dataRefusal"], "drive-data")
-    label = _resolve.label_for(resolved)
+    if missing is not None:
+        row, mount = missing
+        label = row["label"]
+        node = {"path": mount["source"], "maj:min": row["device_identity"]}
+    else:
+        if resolved is None:
+            _refuse("agathodaimon-drive-device-not-in-block-census", "device-census")
+        if any(label in {"homeserver-primary-nas", "homeserver-backup-nas"} for label in resolved["partlabels"]):
+            receipt["instead"] = "storage nas detach"
+            _refuse("agathodaimon-drive-nas-role-refused", "drive-device")
+        node = resolved["data"]
+        if node is None:
+            _refuse(resolved["dataRefusal"], "drive-data")
+        label = _resolve.label_for(resolved)
     _test_unit(device, receipt)
+    if missing is None:
+        mount = _drive.mount_of(node)
     target = "/mnt/" + label
     context.update(node=node, target=target)
     receipt["partition"] = node["path"]
-    mount = _drive.mount_of(node)
     if mount is None:
         receipt["alreadyRemoved"] = True
         receipt["mount"] = None
