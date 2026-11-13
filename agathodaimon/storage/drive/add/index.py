@@ -294,7 +294,7 @@ def _act_body(device, dry_run, rebuild_shares, ledger, receipt, context):
             _refuse("agathodaimon-drive-shares-refused", "drive-shares")
         if not isinstance(reply, dict) or reply.get("ok") is not True:
             receipt["shareFailure"] = reply.get("firstMissingSignal") if isinstance(reply, dict) else None
-            if isinstance(receipt["shareFailure"], str) and receipt["shareFailure"].endswith("command-group-unreaped"):
+            if isinstance(reply, dict) and isinstance(receipt["shareFailure"], str) and receipt["shareFailure"].endswith("command-group-unreaped"):
                 raise runtime.Refusal(receipt["shareFailure"], reply.get("failedStep") or "drive-shares")
             _refuse("agathodaimon-drive-shares-refused", "drive-shares")
         if reply.get("includedBySmbConf") is not True:
