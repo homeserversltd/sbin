@@ -38,6 +38,16 @@ def _ro_state(receipt, device, step):
     return value == b"1"
 
 
+def _source_unmounted(receipt, identity, step):
+    result = runtime._run([_FIND, "--list", "--noheadings", "--output", "MAJ:MIN"], step=step)
+    if result.returncode != 0 or not result.stdout.strip():
+        _fail(receipt, "source-mount-state-unreadable", step, result.returncode)
+    if identity in result.stdout.decode("utf-8", "replace").split():
+        receipt["sourceStillMounted"] = True
+        _fail(receipt, "source-mounted", step)
+    runtime._record(receipt, step, True)
+
+
 def _clean_source(plan, receipt):
     device = plan["dataPath"]
     kind = plan["fstype"]
@@ -114,7 +124,7 @@ def _owner_tree(dest, imports, imports_made, uid, gid):
             os.lchown(os.path.join(root, name), uid, gid)
 
 
-def act(plan: dict, receipt: dict) -> dict:
+def _act(plan: dict, receipt: dict) -> dict:
     device = plan["dataPath"]
     parent = str(runtime.runtime_path("/run/homeserver-nas-import"))
     mp = str(runtime.runtime_path(plan["sourceMountpoint"]))
@@ -137,6 +147,7 @@ def act(plan: dict, receipt: dict) -> dict:
         options = _mount_options(plan["fstype"])
         if options is None:
             _fail(receipt, "source-filesystem-unsupported", "import-source-protection")
+        _source_unmounted(receipt, plan["identity"], "import-source-mount-state-before")
         original_ro = _ro_state(receipt, device, "import-source-protection-before")
         receipt["sourceInitiallyReadOnly"] = original_ro
         protection_attempted = True
@@ -250,6 +261,7 @@ def act(plan: dict, receipt: dict) -> dict:
                 failure = runtime.Refusal(_PREFIX + "source-unmount-failed", "import-source-unmount-readback", receipt=receipt)
         if protection_attempted and original_ro is False and not receipt["sourceStillMounted"]:
             try:
+                _source_unmounted(receipt, plan["identity"], "import-source-mount-state-restore")
                 _checked(receipt, [_BLOCK, "--setrw", device], "import-source-protection-restore", "source-protection-failed")
                 if _ro_state(receipt, device, "import-source-protection-restore-readback"):
                     _fail(receipt, "source-protection-failed", "import-source-protection-restore-readback")
@@ -266,3 +278,17 @@ def act(plan: dict, receipt: dict) -> dict:
         raise runtime._attach_failure(receipt, failure) from None
     receipt.update(ok=True, firstMissingSignal="none")
     return receipt
+
+
+def act(plan: dict, receipt: dict) -> dict:
+    try:
+        return _act(plan, receipt)
+    except runtime.Refusal as failure:
+        if failure.receipt is receipt and "failedStep" in receipt:
+            raise
+        raise runtime._attach_failure(receipt, failure) from None
+    except (KeyError, TypeError, ValueError, OSError):
+        receipt.setdefault("changed", False)
+        receipt.setdefault("mutationPerformed", False)
+        failure = runtime.Refusal(_PREFIX + "plan-invalid", "import-plan", receipt=receipt)
+        raise runtime._attach_failure(receipt, failure) from None
