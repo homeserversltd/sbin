@@ -474,6 +474,7 @@ def _mountinfo() -> list[dict[str, str]]:
         entries.append({
             "dev": fields[2], "root": unescape(fields[3]), "target": unescape(fields[4]),
             "source": unescape(tail[1]), "fstype": tail[0],
+            "superOptions": unescape(tail[2]) if len(tail) > 2 else "",
         })
     if not entries:
         raise Refusal("agathodaimon-nas-mount-census-empty", "mount-census")

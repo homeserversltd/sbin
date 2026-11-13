@@ -1,4 +1,4 @@
-"""Read and classify whole drives for the open, eject and import lanes."""
+"""Read and classify whole drives for add, remove and storage/nas-import/run."""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,11 @@ from agathodaimon.storage.nas.setup import _setup
 SUPPORTED_FSTYPES = frozenset({"ext3", "ext4", "xfs", "btrfs", "vfat", "exfat", "ntfs"})
 LOCKED_FSTYPES = frozenset({"crypto_LUKS", "LVM2_member", "linux_raid_member"})
 RESERVED_LABELS = frozenset({"nas", "nas_backup", "global", "homes", "printers", "print$"})
+# Caduceus routes/storage/disk/census/index.rs SYSTEM_CRITICAL_MOUNTS, plus /vault.
+SYSTEM_CRITICAL = frozenset({
+    "/", "/boot", "/boot/efi", "/home", "/usr", "/var", "/etc", "/bin",
+    "/sbin", "/lib", "/lib64", "/opt", "/srv", "/tmp", "/swap", "[SWAP]", "/vault",
+})
 
 
 def census(receipt: dict) -> list[dict]:
@@ -74,19 +79,18 @@ def resolve_device(receipt: dict, device: str) -> dict:
             raise ValueError("identity")
     except (OSError, ValueError):
         raise _runtime.Refusal("agathodaimon-drive-device-identity-mismatch", "device-identity", receipt=receipt) from None
-    edges, paths = _runtime._block_graph()
+    edges, _paths = _runtime._block_graph()
     component = _runtime._component(edges, identity)
     entries = _drive.mountinfo_entries()
-    receipt.setdefault("steps", [])
-    try:
-        _setup._validate_vault_and_protected_mounts(receipt, component, edges, paths, entries)
-    except _runtime.Refusal as failure:
-        if failure.signal_name != "agathodaimon-nas-system-device-refused":
-            raise
-        if receipt.get("steps"):
-            receipt["steps"][-1].setdefault("readback", {})["signal"] = failure.signal_name
-        raise _runtime.Refusal("agathodaimon-drive-system-device-refused", failure.step,
-                               failure.return_code, receipt) from None
+    critical_mount = any(entry["target"] in SYSTEM_CRITICAL and entry["dev"] in component
+                         for entry in entries)
+    critical_census = any(row.get("mountpoint") in SYSTEM_CRITICAL
+                          for row in rows
+                          if row.get("maj:min") in component or row.get("path") == device
+                          or row.get("pkname") == device)
+    if critical_mount or critical_census:
+        raise _runtime.Refusal("agathodaimon-drive-system-device-refused",
+                               "protected-mount-preflight", receipt=receipt)
     nodes = [row for row in rows if row["type"] == "part" and row["pkname"] == device]
     data = None
     refusal = None
@@ -102,6 +106,8 @@ def resolve_device(receipt: dict, device: str) -> dict:
             refusal = "agathodaimon-drive-no-filesystem"
         else:
             refusal = "agathodaimon-drive-filesystem-unsupported"
+    elif disk["fstype"] in LOCKED_FSTYPES:
+        refusal = "agathodaimon-drive-locked-refused"
     elif disk["fstype"] in SUPPORTED_FSTYPES:
         data = disk
     elif not disk["fstype"]:
@@ -119,6 +125,8 @@ def _sanitize(value: str) -> str:
 
 
 def label_for(resolved: dict) -> str:
+    if resolved.get("data") is None:
+        raise _runtime.Refusal("agathodaimon-drive-no-data-node", "drive-label")
     label = _sanitize(resolved["data"].get("label") or "")
     if not label:
         model = _sanitize(resolved.get("model") or "")
