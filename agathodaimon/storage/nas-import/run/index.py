@@ -14,6 +14,8 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from agathodaimon import _envelope
+# The shared resolver's NAS setup dependency uses the staff CLI's alias.
+sys.modules["_envelope"] = _envelope
 from agathodaimon._deed import send
 from agathodaimon.storage.nas import runtime
 
