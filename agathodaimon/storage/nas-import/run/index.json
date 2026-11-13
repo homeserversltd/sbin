@@ -1,0 +1,19 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [["nas", "import"]],
+        "routes": ["/api/v1/storage/nas/import"],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": ["/api/v1/storage/nas/import"]
+        }
+      }
+    }
+  }
+}
