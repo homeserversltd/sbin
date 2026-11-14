@@ -2469,13 +2469,16 @@ def _temp_c() -> int | None:
 
 def meter(payload: dict[str, Any]) -> Mapping[str, Any]:
     kind = _require_string(payload, "kind", "face-meter-kind-required")
-    if kind not in {"cpu", "ram", "temp", "disk"}:
+    if kind not in {"cpu", "ram", "disk"}:
         raise FaceError("face-meter-kind-invalid")
     if kind == "cpu":
         pct = _cpu_percent()
         text = f"CPU {_bars(pct)}"
         class_name = _class_for(pct)
         tooltip = f"CPU: {pct}%"
+        celsius = _temp_c()
+        if celsius is not None:
+            tooltip += f" · {celsius}°C"
         return {"ok": True, "firstMissingSignal": "none", "text": text, "tooltip": tooltip, "class": class_name, "value": pct}
     if kind == "ram":
         total, used = _memory_values()
@@ -2488,12 +2491,6 @@ def meter(payload: dict[str, Any]) -> Mapping[str, Any]:
         if total <= 0:
             raise FaceError("face-meter-disk-total-invalid")
         return {"ok": True, "firstMissingSignal": "none", "text": f"DSK {_bars(pct)}", "tooltip": f"Disk /: {pct}% ({used}/{total} MiB)", "class": _class_for(pct), "value": pct}
-    celsius = _temp_c()
-    if celsius is None:
-        return {"ok": True, "firstMissingSignal": "none", "text": "TMP ????", "tooltip": "No temperature sensor found", "class": "high", "value": None}
-    pct = max(0, min(100, (celsius - 30) * 100 // 70))
-    class_name = "high" if celsius >= 90 else "medium" if celsius >= 75 else "low"
-    return {"ok": True, "firstMissingSignal": "none", "text": f"TMP {_bars(pct)}", "tooltip": f"CPU package temperature: {celsius}°C", "class": class_name, "value": celsius}
 
 
 def _load_optional_json(path: Path) -> Any:
