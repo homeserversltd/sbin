@@ -6,6 +6,8 @@ import re
 import subprocess
 from typing import Any, Sequence
 
+from agathodaimon import _envelope
+
 
 def redacted_request(request):
     """Keep envelope custody without returning Wi-Fi passwords."""
@@ -213,6 +215,55 @@ def _nmcli_fields(line: str) -> list[str]:
     return fields
 
 
+def _valid_radio_device(device: Any) -> bool:
+    return (isinstance(device, str) and device not in {".", ".."}
+            and re.fullmatch(r"[A-Za-z0-9_.-]{1,15}", device) is not None)
+
+
+def _wifi_devices(output: str) -> list[str]:
+    devices = []
+    for line in output.splitlines():
+        fields = _nmcli_fields(line)
+        if len(fields) == 2 and fields[0] == "wifi" and fields[1]:
+            devices.append(fields[1])
+    return devices
+
+
+def _radio_soft(device: str):
+    if not _valid_radio_device(device):
+        raise WifiRefused("wifi-device-invalid")
+    # The seat coordinate is moved by the shared runtime-path table; its
+    # fourth parent is the appliance root on both the body and scratch.
+    root = _envelope.appliance_runtime_path("seats").parents[3]
+    directory = root / "sys" / "class" / "net" / device / "phy80211"
+    try:
+        return next(iter(sorted(directory.glob("rfkill*/soft"))), None)
+    except OSError:
+        return None
+
+
+def _radio_enabled(device: str, fallback: bool) -> bool:
+    try:
+        path = _radio_soft(device)
+        value = path.read_text(encoding="ascii").strip() if path else ""
+    except (OSError, UnicodeError, ValueError, WifiRefused):
+        return fallback
+    return value == "0" if value in {"0", "1"} else fallback
+
+
+def _radio_product(device: str) -> str | None:
+    try:
+        output = _run_nmcli(("-t", "-f", "GENERAL.PRODUCT", "device", "show", device))
+    except WifiRefused:
+        return None
+    for line in output.splitlines():
+        fields = _nmcli_fields(line)
+        if len(fields) >= 2 and fields[0] == "GENERAL.PRODUCT":
+            product = ":".join(fields[1:]).strip()
+            return product if product and product != "--" else None
+    return None
+
+
 def _active_uuid(interface: str, output: str) -> str:
     for line in output.splitlines():
         fields = _nmcli_fields(line)
@@ -226,7 +277,7 @@ def _dispatch(payload: Any) -> dict[str, Any]:
         return _receipt("invalid", False, "wifi-body-not-object")
     kind = payload.get("kind")
     supported = {
-        "radio": {"kind", "enabled"},
+        "radio": {"kind", "enabled", "device"},
         "connect_device": {"kind", "interface"},
         "connect_wifi": {"kind", "ssid", "password"},
         "disconnect": {"kind", "interface"},
@@ -241,10 +292,28 @@ def _dispatch(payload: Any) -> dict[str, Any]:
 
     try:
         if kind == "radio":
+            if "device" in payload and not _valid_radio_device(payload["device"]):
+                raise WifiRefused("wifi-device-invalid")
             enabled = payload.get("enabled")
             if type(enabled) is not bool:
                 raise WifiRefused("wifi-enabled-required")
-            _run_nmcli(("radio", "wifi", "on" if enabled else "off"))
+            if "device" not in payload:
+                _run_nmcli(("radio", "wifi", "on" if enabled else "off"))
+            else:
+                device = payload["device"]
+                devices = _wifi_devices(_run_nmcli(("-t", "-f", "TYPE,DEVICE", "device")))
+                if device not in devices:
+                    raise WifiRefused("wifi-device-not-a-radio")
+                try:
+                    path = _radio_soft(device)
+                    if path is None:
+                        raise OSError("radio switch missing")
+                    desired = "0" if enabled else "1"
+                    path.write_text(desired, encoding="ascii")
+                    if path.read_text(encoding="ascii").strip() != desired:
+                        raise OSError("radio switch readback mismatch")
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise WifiRefused("wifi-radio-did-not-converge") from exc
         elif kind == "connect_device":
             interface = _text(payload, "interface")
             _run_nmcli(("device", "connect", interface))
