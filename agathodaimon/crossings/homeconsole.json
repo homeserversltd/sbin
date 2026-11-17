@@ -287,6 +287,7 @@
     "/api/v1/interactables/:id/run",
     "/api/v1/interactables/:id/silence",
     "/api/v1/interactables/:id/unsilence",
+    "/api/v1/network/bandwidth/measure",
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/dhcp/reservations",
@@ -471,6 +472,7 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
+      "/api/v1/network/bandwidth/measure",
       "/api/v1/settings/appearance",
       "/api/v1/settings/datetime",
       "/api/v1/settings/default-apps",

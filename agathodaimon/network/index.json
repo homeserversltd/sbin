@@ -14,6 +14,18 @@
   ],
   "sclerite": {
     "name": "all",
-    "features": {}
+    "features": {
+      "all": {
+        "band": false,
+        "routes": [
+          "/api/v1/network/bandwidth/measure"
+        ],
+        "administrative": {
+          "routes": [
+            "/api/v1/network/bandwidth/measure"
+          ]
+        }
+      }
+    }
   }
 }

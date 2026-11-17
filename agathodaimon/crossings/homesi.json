@@ -460,6 +460,7 @@
     "/api/v1/local-ai/memory",
     "/api/v1/local-ai/nap",
     "/api/v1/local-ai/slot/:slot",
+    "/api/v1/network/bandwidth/measure",
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/device/wifi/connect",
@@ -695,6 +696,7 @@
     "routes": [
       "/api/v1/access/sudo/mode",
       "/api/v1/hermes/dashboard-login",
+      "/api/v1/network/bandwidth/measure",
       "/api/v1/settings/appearance",
       "/api/v1/settings/datetime",
       "/api/v1/settings/default-apps",
