@@ -538,33 +538,58 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
                 [*command, "--listpackage", logical],
                 check=False, text=True, capture_output=True,
             )
-            if owner.returncode != 0 or owner.stdout.strip() != "homeserver-house-trust":
-                return owner.returncode or 1, False
+            if owner.returncode != 0:
+                return owner.returncode, False
             old_seat = module.with_name(module.name + ".distrib")
-            if old_seat.exists():
-                current = subprocess.run([*command, "--truename", logical], check=False, text=True, capture_output=True)
-                if current.returncode != 0 or current.stdout.strip() != logical + ".distrib" or new_seat.exists():
-                    return current.returncode or 1, False
+            owned = owner.stdout.strip()
+            if owned not in ("", "homeserver-house-trust"):
+                return 1, False
+            if old_seat.exists() or old_seat.is_symlink():
+                if not old_seat.is_file() or old_seat.is_symlink():
+                    return 1, False
+                if new_seat.is_symlink() or (new_seat.exists() and not new_seat.is_file()):
+                    return 1, False
                 package = [*command, "--package", "homeserver-house-trust", "--no-rename"]
-                removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
-                if removed.returncode != 0:
-                    return removed.returncode, False
-                try:
-                    added = subprocess.run([*package, "--divert", logical_seat, "--add", logical], check=False, text=True, capture_output=True)
-                except OSError:
-                    subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
-                    return 1, False
-                if added.returncode != 0:
-                    subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
-                    return added.returncode, False
-                try:
-                    os.rename(old_seat, new_seat)
-                    moved = True
-                except OSError:
-                    removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
-                    if removed.returncode == 0:
+                if not owned:
+                    if new_seat.exists():
+                        return 1, False
+                else:
+                    current = subprocess.run([*command, "--truename", logical], check=False, text=True, capture_output=True)
+                    if current.returncode != 0:
+                        return current.returncode, False
+                    if current.stdout.strip() == logical + ".distrib":
+                        if new_seat.exists():
+                            return 1, False
+                        removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
+                        if removed.returncode != 0:
+                            return removed.returncode, False
+                        moved = True
+                        owned = ""
+                    elif current.stdout.strip() != logical_seat:
+                        return 1, False
+                if not owned:
+                    try:
+                        added = subprocess.run([*package, "--divert", logical_seat, "--add", logical], check=False, text=True, capture_output=True)
+                    except OSError:
                         subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
-                    return 1, False
+                        return 1, moved
+                    if added.returncode != 0:
+                        subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                        return added.returncode, moved
+                    moved = True
+                if new_seat.exists():
+                    old_seat.unlink()
+                else:
+                    try:
+                        os.rename(old_seat, new_seat)
+                    except OSError:
+                        removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
+                        if removed.returncode == 0:
+                            subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                        return 1, moved
+                moved = True
+            elif not owned:
+                return 1, False
             trust = module.parent / "pkcs11/p11-kit-trust.so"
             link = os.readlink(module)
             destination = root / link.lstrip("/") if link.startswith("/") else module.parent / link
