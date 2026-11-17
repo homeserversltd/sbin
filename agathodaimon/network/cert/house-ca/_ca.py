@@ -504,7 +504,7 @@ def _browser_bridge(arch: bool) -> tuple[str, Path | None]:
         if module.is_symlink():
             link = os.readlink(module)
             destination = root / link.lstrip("/") if link.startswith("/") else module.parent / link
-            if destination.resolve() == trust.resolve():
+            if destination.resolve() == trust.resolve() and not module.with_name(module.name + ".distrib").exists():
                 return "bridged", module
         if module.is_file() and not module.is_symlink():
             return "unbridged", module
@@ -529,7 +529,10 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
     command = [executable]
     if rooted:
         command.extend(["--root", str(root)])
+    new_seat = module.with_name("nssckbi.distrib")
+    logical_seat = str(Path(logical).with_name(new_seat.name))
     if module.is_symlink():
+        moved = False
         try:
             owner = subprocess.run(
                 [*command, "--listpackage", logical],
@@ -537,6 +540,36 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
             )
             if owner.returncode != 0 or owner.stdout.strip() != "homeserver-house-trust":
                 return owner.returncode or 1, False
+            old_seat = module.with_name(module.name + ".distrib")
+            if old_seat.exists():
+                current = subprocess.run([*command, "--truename", logical], check=False, text=True, capture_output=True)
+                if current.returncode != 0 or current.stdout.strip() != logical + ".distrib" or new_seat.exists():
+                    return current.returncode or 1, False
+                package = [*command, "--package", "homeserver-house-trust", "--no-rename"]
+                removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
+                if removed.returncode != 0:
+                    return removed.returncode, False
+                try:
+                    added = subprocess.run([*package, "--divert", logical_seat, "--add", logical], check=False, text=True, capture_output=True)
+                except OSError:
+                    subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                    return 1, False
+                if added.returncode != 0:
+                    subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                    return added.returncode, False
+                try:
+                    os.rename(old_seat, new_seat)
+                    moved = True
+                except OSError:
+                    removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
+                    if removed.returncode == 0:
+                        subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                    return 1, False
+            trust = module.parent / "pkcs11/p11-kit-trust.so"
+            link = os.readlink(module)
+            destination = root / link.lstrip("/") if link.startswith("/") else module.parent / link
+            if destination.resolve() == trust.resolve():
+                return 0, moved
             temporary = module.with_name(f".{module.name}.{os.urandom(16).hex()}.new")
             temporary.symlink_to("pkcs11/p11-kit-trust.so")
             try:
@@ -545,8 +578,8 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
                 temporary.unlink(missing_ok=True)
             return 0, True
         except OSError:
-            return None, False
-    command.extend(["--package", "homeserver-house-trust", "--divert", logical + ".distrib", "--rename", logical])
+            return 1, moved
+    command.extend(["--package", "homeserver-house-trust", "--divert", logical_seat, "--rename", logical])
     diverted = False
     try:
         result = subprocess.run(command, check=False, text=True, capture_output=True)
