@@ -50,11 +50,12 @@ def read_state():
     except FileNotFoundError:
         cmdline = ''
     current = REFERENCE.search(cmdline)
+    forced = bool(current and f'video={current.group(1)}:e' in cmdline.split())
     return {'connectors': [{'connector': n, 'sysfs': str(p), 'status': s, 'edid_size': len(e)} for n, p, s, e in connectors()],
             'files': {'firmware': {'path': str(firmware) if firmware else None, 'exists': firmware.is_file() if firmware else False, 'connector': connector},
                       'hook': {'path': str(hook), 'exists': hook.is_file(), 'connector': connector},
                       'drop_in': {'path': str(grub), 'exists': grub.is_file(), 'connector': connector}},
-            'held_now': bool(current), 'held_now_connector': current.group(1) if current else None,
+            'held_now': forced, 'edid_firmware_now': bool(current), 'held_now_connector': current.group(1) if current else None,
             'held_next_boot': bool(match)}
 
 
@@ -99,14 +100,30 @@ def execute(verb, payload):
         if grub.exists() and (old is None or old.group(1) != selected or old.group(2) != selected + '.bin'):
             raise ValueError('hdmi-hold-existing-link-release-first')
         edits = render(selected, matches[0][3])
+        # A fresh hold never adopts unrelated files at either fixed target.
+        if not grub.exists() and any(p.exists() or p.is_symlink() for p, _, _ in edits[:2]):
+            raise ValueError('hdmi-hold-existing-target-unmanaged')
+        # An existing hook must be our exact rendered program, not another file.
+        if grub.exists() and hook.exists() and hook.read_bytes() != edits[1][1]:
+            raise ValueError('hdmi-hold-existing-hook-unmanaged')
     else:
         if grub.exists() and old is None:
             raise ValueError('hdmi-hold-drop-in-unrecognized')
+        hook_file = None
+        if hook.exists():
+            hook_text = hook.read_text()
+            hook_match = re.search(r'^cp /usr/lib/firmware/edid/([A-Za-z0-9_-]+\.bin) "\$\{DESTDIR\}/usr/lib/firmware/edid/\1"$', hook_text, re.MULTILINE)
+            if not hook_match:
+                raise ValueError('hdmi-hold-existing-hook-unmanaged')
+            hook_file = hook_match.group(1)
+            if old and old.group(2) != hook_file:
+                raise ValueError('hdmi-hold-file-reference-mismatch')
         if old:
             firmware = path('/usr/lib/firmware/edid/' + old.group(2))
             edits = [(firmware, None, 0), (hook, None, 0), (grub, None, 0)]
-        elif hook.exists():
-            raise ValueError('hdmi-hold-firmware-identity-unknown')
+        elif hook_file:
+            firmware = path('/usr/lib/firmware/edid/' + hook_file)
+            edits = [(firmware, None, 0), (hook, None, 0), (grub, None, 0)]
         else:
             edits = []
     plan = [{'path': str(p), 'action': 'remove' if data is None else 'write',

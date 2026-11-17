@@ -430,6 +430,7 @@
       "settings/display/adaptive-sync/set",
       "settings/display/apply",
       "settings/display/hdmi-hold/hold",
+      "settings/display/hdmi-hold/read",
       "settings/display/hdmi-hold/release",
       "settings/display/hdr/set",
       "settings/display/read",
