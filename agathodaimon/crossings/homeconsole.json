@@ -51,8 +51,11 @@
     "network/dhcp/validate",
     "network/dns/alias/create",
     "network/dns/alias/remove",
+    "network/dns/blocklist/converge",
     "network/dns/blocklist/source/add",
+    "network/dns/blocklist/source/list",
     "network/dns/blocklist/source/remove",
+    "network/dns/blocklist/verify",
     "network/dns/device-name/create",
     "network/dns/device-name/remove",
     "network/dns/drop-in/apply",
@@ -73,10 +76,12 @@
     "network/identity/device/list",
     "network/identity/device/plan",
     "network/linker",
+    "network/time-upstream",
     "network/wake-on-lan/probe",
     "network/wake-on-lan/send",
     "notify/act",
     "notify/post",
+    "screen/follow",
     "settings/appearance/read",
     "settings/appearance/set",
     "settings/datetime/household-time/ensure-ntp",
@@ -121,6 +126,7 @@
     "settings/ssh/status",
     "settings/ssh/unit/resolve",
     "settings/ssh/verify",
+    "sound/follow",
     "storage/backup/drive/ask",
     "storage/backup/drive/status",
     "storage/backup/forgejo/credential",
@@ -288,8 +294,6 @@
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/dhcp/reservations",
-    "/api/v1/network/dns/blocklist/source/add",
-    "/api/v1/network/dns/blocklist/source/remove",
     "/api/v1/network/dns/read",
     "/api/v1/network/dns/resolver/status",
     "/api/v1/network/dns/status",
@@ -487,9 +491,7 @@
       "POST /api/v1/config/set",
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
-      "POST /api/v1/interactables/{id}/unsilence",
-      "POST /api/v1/network/dns/blocklist/source/add",
-      "POST /api/v1/network/dns/blocklist/source/remove"
+      "POST /api/v1/interactables/{id}/unsilence"
     ]
   }
 }

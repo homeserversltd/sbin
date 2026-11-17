@@ -26,6 +26,8 @@
     "unit",
     "xenos",
     "owner-group",
-    "screen-supervisor"
+    "screen-supervisor",
+    "screen",
+    "sound"
   ]
 }

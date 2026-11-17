@@ -1,0 +1,18 @@
+{
+  "children": ["follow"],
+  "sclerite": {
+    "name": "desktop",
+    "features": {
+      "desktop": {
+        "band": false,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}
