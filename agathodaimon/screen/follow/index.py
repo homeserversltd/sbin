@@ -6,6 +6,7 @@ import json
 import os
 import re
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -245,6 +246,7 @@ def _wait_for_output_event(socket):
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
         if process.stdout is None:
             result["signal"] = "sway-output-subscription-no-stdout"
@@ -252,7 +254,7 @@ def _wait_for_output_event(socket):
             remaining = max(0.0, 5.0 - (time.monotonic() - started))
             readable, _, _ = select.select([process.stdout], [], [], remaining)
             if readable:
-                line = process.stdout.readline()
+                line = os.read(process.stdout.fileno(), 4096)
                 result["event_received"] = bool(line)
                 if not line:
                     result["signal"] = "sway-output-subscription-ended"
@@ -262,8 +264,10 @@ def _wait_for_output_event(socket):
         result["signal"] = "sway-output-subscription-failed:" + type(error).__name__
     finally:
         if process is not None:
-            if process.poll() is None:
-                process.kill()
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             try:
                 process.wait(timeout=1)
             except subprocess.TimeoutExpired:
@@ -310,6 +314,8 @@ def _run(dry_run):
         return _receipt("sway-owner-runtime-unavailable")
 
     follower, profile_state, profile_signal = _profile_follower()
+    if profile_signal:
+        return _receipt(profile_signal, observed={"connector": None, "sway": None, "profile": profile_state})
     prior_environment = _configured_environment(socket, runtime, follower)
     signals = []
     _add_signal(signals, profile_signal)
