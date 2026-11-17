@@ -60,8 +60,11 @@
     "network/dhcp/validate",
     "network/dns/alias/create",
     "network/dns/alias/remove",
+    "network/dns/blocklist/converge",
     "network/dns/blocklist/source/add",
+    "network/dns/blocklist/source/list",
     "network/dns/blocklist/source/remove",
+    "network/dns/blocklist/verify",
     "network/dns/device-name/create",
     "network/dns/device-name/remove",
     "network/dns/drop-in/apply",
@@ -101,6 +104,9 @@
     "settings/default-apps/set",
     "settings/display/adaptive-sync/set",
     "settings/display/apply",
+    "settings/display/hdmi-hold/hold",
+    "settings/display/hdmi-hold/read",
+    "settings/display/hdmi-hold/release",
     "settings/display/hdr/set",
     "settings/display/read",
     "settings/display/set",
@@ -346,8 +352,6 @@
     "/api/v1/network/device",
     "/api/v1/network/device/wake",
     "/api/v1/network/dhcp/reservations",
-    "/api/v1/network/dns/blocklist/source/add",
-    "/api/v1/network/dns/blocklist/source/remove",
     "/api/v1/network/dns/read",
     "/api/v1/network/dns/resolver/status",
     "/api/v1/network/dns/status",
@@ -425,6 +429,8 @@
       "settings/default-apps/set",
       "settings/display/adaptive-sync/set",
       "settings/display/apply",
+      "settings/display/hdmi-hold/hold",
+      "settings/display/hdmi-hold/release",
       "settings/display/hdr/set",
       "settings/display/read",
       "settings/display/set",
@@ -543,9 +549,7 @@
       "POST /api/v1/config/set",
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
-      "POST /api/v1/interactables/{id}/unsilence",
-      "POST /api/v1/network/dns/blocklist/source/add",
-      "POST /api/v1/network/dns/blocklist/source/remove"
+      "POST /api/v1/interactables/{id}/unsilence"
     ]
   }
 }

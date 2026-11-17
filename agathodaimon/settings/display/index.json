@@ -1,5 +1,12 @@
 {
-  "children": ["read", "apply", "set", "hdr", "adaptive-sync"],
+  "children": [
+    "read",
+    "apply",
+    "set",
+    "hdr",
+    "adaptive-sync",
+    "hdmi-hold"
+  ],
   "sclerite": {
     "name": "desktop",
     "features": {
