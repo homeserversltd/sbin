@@ -10,7 +10,7 @@
         "verbs": [],
         "routes": [],
         "administrative": {
-          "band": true,
+          "band": false,
           "verbs": [],
           "routes": []
         }
