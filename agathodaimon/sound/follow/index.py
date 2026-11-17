@@ -256,7 +256,10 @@ def _find_card(cards: list[dict[str, Any]], identity: dict[str, Any]) -> dict[st
 
 
 def _read_card_change() -> str:
-    command_argv, environment = _command_for_owner(["pactl", "subscribe"])
+    # grep parks on the subscription pipe and exits at the first card change;
+    # unrelated server events do not consume the one permitted wait.
+    command_argv, environment = _command_for_owner(["pactl"])
+    command_argv = [*command_argv[:-1], "sh", "-c", "stdbuf -oL pactl subscribe | grep --line-buffered -m 1 -E \"^Event 'change' on card #[0-9]+$\""]
     process = None
     try:
         process = subprocess.Popen(
@@ -267,13 +270,12 @@ def _read_card_change() -> str:
             env=environment,
             start_new_session=True,
         )
-        stream = process.stdout
-        if stream is None:
+        if process.stdout is None:
             return "pactl-subscribe-unavailable"
-        ready, _, _ = select.select([stream], [], [], 5.0)
+        ready, _, _ = select.select([process.stdout], [], [], 5.0)
         if not ready:
             return "pactl-card-change-timeout"
-        event = stream.readline()
+        event = os.read(process.stdout.fileno(), 4096).decode("utf-8", "replace")
         if not event:
             return "pactl-subscribe-exited"
         if re.match(r"^\s*Event 'change' on card #\d+\s*$", event):
@@ -314,8 +316,7 @@ def _read_sinks_for_card(sinks: list[dict[str, Any]], card: dict[str, Any]) -> l
             ]
         ).lower()
     ]
-    candidates = named_hdmi or same_card
-    return sorted(candidates, key=lambda sink: str(sink.get("name", "")))
+    return sorted(named_hdmi, key=lambda sink: str(sink.get("name", "")))
 
 
 def _sink_name(sink: dict[str, Any] | None) -> str | None:

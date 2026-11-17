@@ -385,8 +385,15 @@ def _run(dry_run):
                 "connector": connector_after_wait,
                 "sway": sway_after_wait,
             }
-            if _signals_mismatch(current_connector, current_sway):
+            if not connector_after_wait.get("ok") or not sway_after_wait.get("ok") or _signals_mismatch(current_connector, current_sway):
                 _add_signal(signals, "hdmi-sway-outputs-mismatch-after-subscription")
+                signal = signals[0]
+                return _receipt(
+                    signal, observed=observed, could_change_to=could_change_to,
+                    attempt={"attempted": False, "commands": [], "output_subscription": wait},
+                    final_receipt={"ok": False, "firstMissingSignal": signal, "mutationPerformed": False},
+                    outputs_after=current_sway.get("outputs"),
+                )
             could_change_to = {
                 "target": _target(supervisor, current_sway),
                 "follower": follower,
