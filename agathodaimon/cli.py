@@ -1324,7 +1324,7 @@ def _administrative_pin_admits(
     if _display_startup_reapplication_without_pin(target, remainder, startup_envelope):
         return True
     declared = _mutation_allowed(ROOT / target)
-    if (declared is False and target != "settings/display/hdmi-hold/read") or (declared is None and not _admin_mutation_request(target, remainder, envelope)):
+    if declared is False or (declared is None and not _admin_mutation_request(target, remainder, envelope)):
         return True
     if not pin_present:
         tty_available, pin = _prompt_administrative_pin()
