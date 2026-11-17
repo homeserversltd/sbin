@@ -252,8 +252,17 @@ def record_deed(v,started):
  stats=v.get("rsyncStats")
  raw=stats.get("Total transferred file size") if isinstance(stats,dict) else None
  match=re.fullmatch(r"([0-9][0-9,]*) bytes",raw) if isinstance(raw,str) else None
- transferred=int(match.group(1).replace(",","")) if match else None
- try: deed.record("nas-sync-mirror","nas-sync",safe_receipt,started,transferred_bytes=transferred)
+ try: transferred=int(match.group(1).replace(",","")) if match else None
+ except ValueError: transferred=None
+ counts={}
+ for key,name in (("Number of regular files transferred","files_transferred"),("Number of deleted files","files_deleted")):
+  raw=stats.get(key) if isinstance(stats,dict) else None
+  if isinstance(raw,str) and re.fullmatch(r"[0-9]+(?:,[0-9]{3})*",raw):
+   try: counts[name]=int(raw.replace(",",""))
+   except ValueError: pass
+ final=v.get("finalFileCount")
+ if type(final) is int and final>=0: counts["file_count"]=final
+ try: deed.record("nas-sync-mirror","nas-sync",safe_receipt,started,transferred_bytes=transferred,counts=counts)
  except Exception:
   v["deedLogSignal"]="agathodaimon-nas-deed-log-unavailable"
   if v.get("ok") is True:

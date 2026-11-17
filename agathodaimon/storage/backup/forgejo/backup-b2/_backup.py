@@ -412,7 +412,11 @@ def capture_restic_error(stream, env, application_key, result):
 def log_deed(bucket, started, outcome, included, excluded, snapshot, failure, byte_counts, ci_count, restic_error):
     from agathodaimon._deed import send
     return send("sbin", "forgejo-backup-b2", outcome == "ok", target="forgejo-backup",
-                duration_ms=int((time.monotonic() - started) * 1000))
+                duration_ms=int((time.monotonic() - started) * 1000),
+                counts={"added_bytes": byte_counts.get("added_bytes"),
+                        "total_bytes": byte_counts.get("total_bytes"),
+                        "included": included, "excluded": excluded, "ci_excluded": ci_count},
+                ref=snapshot, signal=failure)
 
 
 def backup(bucket):

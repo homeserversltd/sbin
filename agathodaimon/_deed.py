@@ -18,7 +18,8 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int = 0,
          signal: str = "operation-failed", outcome: str | None = None,
-         stages: list | None = None) -> bool:
+         stages: list | None = None, counts: dict | None = None,
+         ref: str | None = None) -> bool:
     """Send fixed deed metadata; callers must never supply secret material."""
     try:
         if not all(isinstance(x, str) and x and len(x) <= 48 and
@@ -68,7 +69,29 @@ def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int 
                     all(isinstance(token, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,24}", token)
                         for token in pair) for pair in stages)):
             attributes["stages"] = stages
-        data = json.dumps(event, separators=(",", ":"), ensure_ascii=True).encode()
+        if isinstance(counts, dict):
+            valid = {}
+            for name, value in counts.items():
+                if (isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,23}", name)
+                        and type(value) is int and value >= 0):
+                    valid[name] = value
+                    if len(valid) == 8:
+                        break
+            if valid:
+                attributes["counts"] = valid
+        if isinstance(ref, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", ref):
+            attributes["ref"] = ref
+        for optional in ("ref", "counts", None):
+            try:
+                data = json.dumps(event, separators=(",", ":"), ensure_ascii=True).encode()
+            except ValueError:
+                data = b"" if optional is None else b" " * 1024
+                if optional is None:
+                    raise
+            if len(data) < 1024:
+                break
+            if optional is not None:
+                attributes.pop(optional, None)
         if len(data) >= 1024:
             raise ValueError("deed too large")
         request = Request(f"http://127.0.0.1:{parsed.port}/api/v1/log/write", data=data,

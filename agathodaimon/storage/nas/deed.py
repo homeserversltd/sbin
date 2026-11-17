@@ -11,7 +11,7 @@ import uuid
 from agathodaimon.storage.nas import runtime
 
 
-def record(verb: str, target: str, receipt: dict, started: float, *, request=None, transferred_bytes=None) -> None:
+def record(verb: str, target: str, receipt: dict, started: float, *, request=None, transferred_bytes=None, counts=None) -> None:
     # These values are internal labels, never envelope fields or key material.
     if verb not in {"nas-sync-mirror", "mirror-pull", "sync-hold", "sync-release", "sync-schedule-disable", "partlabel-assign",
                     "nas-open", "nas-attach", "nas-detach", "nas-setup", "nas-folders", "nas-seat"}:
@@ -37,8 +37,12 @@ def record(verb: str, target: str, receipt: dict, started: float, *, request=Non
     if isinstance(request, str) and re.fullmatch(r"[A-Za-z0-9._/:+-]{1,160}", request):
         fields["request"] = request
     from agathodaimon._deed import send
+    deed_counts = dict(counts) if isinstance(counts, dict) else {}
+    if "transferred_bytes" in fields:
+        deed_counts["transferred_bytes"] = fields["transferred_bytes"]
     send("sbin", verb, receipt.get("ok") is True, target=target,
-         duration_ms=fields["duration_ms"])
+         duration_ms=fields["duration_ms"], counts=deed_counts,
+         outcome=fields["outcome"], signal=signal)
 
 
 def finish(verb: str, target: str, receipt: dict, started: float, *, request=None) -> None:
