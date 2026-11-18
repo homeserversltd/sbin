@@ -21,10 +21,9 @@ import time
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
 
 GIB = 1024 ** 3
-ROLES = {"brain": "text-to-text", "embed": "embedding", "ear": "speech-to-text"}
-DEFAULT_CTX = {"brain": 24576, "embed": 4096, "ear": 4608}
-DEFAULT_PORT = {"brain": 8100, "embed": 8101, "ear": 8090}
-SERVER = "/usr/local/bin/llama-server"  # HomeSI phase-4/upstream-binary-pin, b11819.
+ROLES = {"brain": "text-to-text", "embed": "embedding", "ear": "speech-to-text", "rerank": "reranking"}
+DEFAULT_CTX = {"brain": 24576, "embed": 4096, "ear": 4608, "rerank": 8192}
+DEFAULT_PORT = {"brain": 8100, "embed": 8101, "ear": 8090, "rerank": 8103}
 FORMULA = "blocks(model) = ceil((file_bytes + kv_bytes(ctx)) / GiB); GiB = 1073741824; file_bytes includes paired mmproj; kv_bytes(ctx) = ctx * kv_bytes_per_ctx"
 KV_ESTIMATE = "f16 K+V: 2 * layers * kv_heads * (key_length + value_length) bytes per ctx token; missing dimensions estimated as 32 layers, 8 KV heads, 128 key/value dimensions"
 MAX_HEADER = 128 * 1024 * 1024
@@ -64,6 +63,8 @@ def _config() -> dict:
 def _slot(local: dict, name: str) -> dict:
     if name not in ROLES:
         raise LocalAIError("local-ai-slot-unknown")
+    if name == "rerank" and name not in local["slots"]:
+        raise LocalAIError("local-ai-slot-undeclared")
     value = local["slots"].get(name, {})
     if not isinstance(value, dict) or value.get("role", ROLES[name]) != ROLES[name]:
         raise LocalAIError("local-ai-slot-role-invalid")
@@ -98,7 +99,7 @@ def _model_path(shelf: str, filename: str) -> Path:
 
 
 def gguf_metadata(path: Path) -> dict:
-    """Read selected scalar metadata only; seek past arrays and never read tensors."""
+    """Read selected metadata and tensor names, never tensor data."""
     with path.open("rb") as source:
         size = os.fstat(source.fileno()).st_size
 
@@ -152,7 +153,7 @@ def gguf_metadata(path: Path) -> dict:
 
         if take(4) != b"GGUF" or number("I") not in (2, 3):
             raise LocalAIError("local-ai-gguf-format")
-        number("Q")  # tensor count; tensor descriptors and tensor bytes are not read.
+        tensor_count = number("Q")
         count = number("Q")
         if count > 100000:
             raise LocalAIError("local-ai-gguf-metadata-limit")
@@ -168,10 +169,20 @@ def gguf_metadata(path: Path) -> dict:
             if selected and item is not None:
                 metadata[key] = item
             audio = audio or key.startswith(("audio.", "whisper.", "granite_speech."))
-        return {"values": metadata, "audio": audio, "header_bytes": source.tell()}
+        classifier = False
+        for _ in range(tensor_count):
+            name = string(True)
+            dimensions = number("I")
+            if dimensions > 4:
+                raise LocalAIError("local-ai-gguf-tensor-dimensions")
+            skip(8 * dimensions + 4 + 8)  # dimensions, type, offset; no tensor data
+            classifier = classifier or name == "cls.output.weight"
+        return {"values": metadata, "audio": audio, "classifier": classifier, "header_bytes": source.tell()}
 
 
 def _role(header: dict) -> str | None:
+    if header.get("classifier"):
+        return "reranking"
     values = header["values"]
     architecture = str(values.get("general.architecture", "")).lower()
     kind = " ".join(str(values.get("general." + key, "")) for key in ("type", "kind", "name", "basename")).lower()
@@ -207,7 +218,7 @@ def _save(local: dict, filename: str, *, slot: dict | None = None, projectors: l
     if role is None or filename.lower().startswith("mmproj"):
         raise LocalAIError("local-ai-projector-is-not-a-save")
     name = next(name for name, expected in ROLES.items() if expected == role)
-    configured = _slot(local, name)
+    configured = {"ctx": DEFAULT_CTX[name]} if name == "rerank" and name not in local["slots"] else _slot(local, name)
     ctx = (slot or configured)["ctx"]
     mmproj = None
     mmproj_bytes = 0
@@ -421,6 +432,8 @@ def card(local: dict) -> dict:
     gpu = _gpu_memory()
     slots = {}
     for name in ROLES:
+        if name == "rerank" and name not in local["slots"]:
+            continue
         slot = _slot(local, name)
         save = _save(local, slot["model"], slot=slot) if slot["model"] is not None else None
         if save is not None and save["role"] != slot["role"]:
@@ -493,6 +506,21 @@ def apply(local: dict, name: str) -> dict:
             "mutationPerformed": True}
 
 
+def _engine_argv(local: dict, slot: dict, save: dict, selected: str) -> list[str]:
+    server = str(appliance_runtime_path("model-engine"))
+    argv = [server, "-m", str(_model_path(local["shelf"], slot["model"])),
+            "-c", str(slot["ctx"]), "--port", str(slot["port"]),
+            "--host", "0.0.0.0" if slot["lan"] else "127.0.0.1", "-ngl", "99",
+            "--device", selected, "--fit", "off", "--parallel", "1"]
+    if slot["role"] == "speech-to-text":
+        argv.extend(["-mm", str(_model_path(local["shelf"], save["mmproj"]))])
+    if slot["role"] == "embedding":
+        argv.append("--embedding")  # pooling comes from this model's metadata.
+    if slot["role"] == "reranking":
+        argv.append("--reranking")
+    return argv
+
+
 def run(local: dict, name: str) -> dict:
     slot = _slot(local, name)
     if slot["model"] is None:
@@ -503,23 +531,17 @@ def run(local: dict, name: str) -> dict:
     devices = _vulkan_devices()
     if not devices:
         raise LocalAIError("local-ai-no-vulkan-gpu")
-    code, output = _command([SERVER, "--list-devices"])
+    server = str(appliance_runtime_path("model-engine"))
+    code, output = _command([server, "--list-devices"])
     available = re.findall(r"^\s*(Vulkan\d+):\s*(.+)$", output, re.MULTILINE) if code == 0 else []
     selected = next((identifier for identifier, description in available
                      if any(device["name"] in description for device in devices)), None)
     if selected is None:
         raise LocalAIError("local-ai-no-vulkan-gpu")
-    argv = [SERVER, "-m", str(_model_path(local["shelf"], slot["model"])),
-            "-c", str(slot["ctx"]), "--port", str(slot["port"]),
-            "--host", "0.0.0.0" if slot["lan"] else "127.0.0.1", "-ngl", "99",
-            "--device", selected, "--fit", "off", "--parallel", "1"]
-    if slot["role"] == "speech-to-text":
-        argv.extend(["-mm", str(_model_path(local["shelf"], save["mmproj"]))])
-    if slot["role"] == "embedding":
-        argv.append("--embedding")  # pooling comes from this model's metadata.
+    argv = _engine_argv(local, slot, save, selected)
     environment = {key: value for key, value in os.environ.items() if not key.startswith("LLAMA_ARG_")}
     # Native engine output streams to the caller; no retained log/receipt or CPU retry.
-    os.execve(SERVER, argv, environment)
+    os.execve(server, argv, environment)
     raise AssertionError("execve returned")
 
 
