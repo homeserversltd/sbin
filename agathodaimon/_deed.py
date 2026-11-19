@@ -77,8 +77,6 @@ def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int 
                                     "first_missing_field": None if ok else verb,
                                     "duration_ms": max(0, int(duration_ms))},
         }
-        if _debug:
-            event["debug"] = True
         attributes = event["attributes_redacted"]
         if isinstance(outcome, str) and re.fullmatch(r"[a-z][a-z-]{0,23}", outcome):
             attributes["outcome"] = outcome
@@ -110,13 +108,12 @@ def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int 
                 break
             if optional is not None:
                 attributes.pop(optional, None)
-        if 1024 <= len(data) < 1024 + len(b',"debug":true') and "debug" in event:
-            # Do not let the mark alone lose a deed to an oversized profile
-            # label. Use the same label Caduceus would project from it.
-            event["body_id"] = re.sub(r"[^A-Za-z0-9_\. :/-]", "", body_id)[:24] or "unknown-body"
-            data = json.dumps(event, separators=(",", ":"), ensure_ascii=True).encode()
         if len(data) >= 1024:
             raise ValueError("deed too large")
+        mark = b',"debug":true'
+        if _debug and len(data) + len(mark) < 1024:
+            # Mark the already-bounded JSON object without dropping a field.
+            data = data[:-1] + mark + b"}"
         request = Request(f"http://127.0.0.1:{parsed.port}/api/v1/log/write", data=data,
                           headers={"Content-Type": "application/json"}, method="POST")
         with build_opener(ProxyHandler({}), _NoRedirect()).open(request, timeout=2) as response:

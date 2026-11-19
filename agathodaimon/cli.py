@@ -1501,18 +1501,17 @@ def main(argv=None):
 
     process_argv = sys.argv
     args = list(process_argv[1:] if argv is None else argv)
-    debug = bool(args and args[0] == "--debug")
+    debug = argv is None and bool(args and args[0] == "--debug")
     if debug:
         del args[0]
-    strip_process_argv = debug and argv is None
     with echo_scope(), debug_scope(debug):
-        if strip_process_argv:
+        if debug:
             # Some in-process stops read sys.argv rather than receiving argv.
             sys.argv = [process_argv[0], *args]
         try:
             return _scoped_main(args)
         finally:
-            if strip_process_argv:
+            if debug:
                 sys.argv = process_argv
 
 
