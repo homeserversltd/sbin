@@ -1,6 +1,7 @@
 """Send bounded staff deeds to the local Caduceus hyalos door."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 import re
@@ -9,6 +10,21 @@ from urllib.parse import urlsplit
 from urllib.request import Request, ProxyHandler, HTTPRedirectHandler, build_opener
 
 from agathodaimon._envelope import appliance_runtime_path
+
+
+_debug = False
+
+
+@contextmanager
+def debug_scope(enabled: bool):
+    """Mark deeds only while the staff invocation is active."""
+    global _debug
+    previous = _debug
+    _debug = enabled
+    try:
+        yield
+    finally:
+        _debug = previous
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -61,6 +77,8 @@ def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int 
                                     "first_missing_field": None if ok else verb,
                                     "duration_ms": max(0, int(duration_ms))},
         }
+        if _debug:
+            event["debug"] = True
         attributes = event["attributes_redacted"]
         if isinstance(outcome, str) and re.fullmatch(r"[a-z][a-z-]{0,23}", outcome):
             attributes["outcome"] = outcome
