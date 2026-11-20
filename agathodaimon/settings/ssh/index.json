@@ -1,5 +1,5 @@
 {
-  "children": ["status", "config", "unit", "verify", "on", "off"],
+  "children": ["status", "config", "unit", "verify", "on", "off", "password"],
   "sclerite": {
     "name": "all",
     "features": {
