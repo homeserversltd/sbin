@@ -3,10 +3,9 @@ from __future__ import annotations
 
 import os
 import re
-import secrets
 import sqlite3
-import stat
 
+from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.storage.drive import _opened
 from agathodaimon.storage.nas import runtime
 
@@ -76,48 +75,53 @@ def _render(shares):
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _candidate(data, receipt):
-    parent = runtime.runtime_path("/etc/samba")
-    fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    name = ".drives.conf." + secrets.token_hex(16) + ".tmp"
-    out = None
-    created = False
-    try:
-        out = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644, dir_fd=fd)
-        created = True
-        os.fchmod(out, 0o644)
-        view = memoryview(data)
-        while view:
-            written = os.write(out, view)
-            if written <= 0:
-                raise OSError("short write")
-            view = view[written:]
-        os.fsync(out)
-        os.close(out)
-        out = None
-        result = runtime._run([TESTPARM, "-s", str(parent / name)], step="candidate-validation")
+def _reload_samba(receipt):
+    receipt["mutationPerformed"] = True
+    result = runtime._run([runtime.SYSTEMCTL, "reload", "smbd.service"], step="reload")
+    if result.returncode:
+        raise runtime.Refusal("agathodaimon-drive-shares-reload-failed", "reload", result.returncode)
+    receipt["reloaded"] = True
+
+
+def _write_config(data, receipt, included):
+    def check():
+        # testparm consumes the candidate without a second on-disk writer.
+        result = runtime._run([TESTPARM, "-s", "/dev/stdin"], input_data=data, step="candidate-validation")
         if result.returncode:
             raise runtime.Refusal("agathodaimon-drive-shares-candidate-invalid", "candidate-validation", result.returncode)
-        os.replace(name, "drives.conf", src_dir_fd=fd, dst_dir_fd=fd)
-        created = False
-        receipt["changed"] = True
+
+    def readback():
+        if runtime._read_regular_nofollow(FILE)[0] != data:
+            raise runtime.Refusal("agathodaimon-drive-shares-readback-mismatch", "readback")
+
+    cause = None
+    try:
+        parts = write([{"path": runtime.runtime_path(FILE), "candidate": data, "mode": 0o644}],
+                      check=check, reload=(lambda: _reload_samba(receipt)) if included else None,
+                      readback=readback)
+    except WriteError as failure:
+        parts, cause = failure.parts, failure.cause
+    steps = parts["attempt"]["steps"]
+    receipt["steps"].extend(steps)
+    receipt.update(observed={"files": parts["observed"]},
+                   could_change_to={"files": parts["could_change_to"]},
+                   attempt=parts["attempt"],
+                   changed=any(row["before"] != row["after"] for row in parts["observed"]))
+    # A completed replacement counts as an act even if the bytes were restored.
+    if any(row["step"] == "restore" or (row["step"] == "replace" and row["outcome"] == "ok")
+           for row in steps):
         receipt["mutationPerformed"] = True
-        os.fsync(fd)
-    finally:
-        if out is not None:
-            os.close(out)
-        if created:
-            try:
-                os.unlink(name, dir_fd=fd)
-            except FileNotFoundError:
-                pass
-        os.close(fd)
+    if isinstance(cause, runtime.Refusal):
+        raise cause from None
+    if cause is not None:
+        raise runtime.Refusal("agathodaimon-drive-shares-io-failed", "shares-io") from None
 
 
 def rebuild(exclude_mountpoints=(), *, force_reload=False):
     receipt = {"ok": False, "firstMissingSignal": "agathodaimon-drive-shares-incomplete", "changed": False, "mutationPerformed": False, "reloaded": False, "file": FILE, "includedBySmbConf": False, "shares": [], "pruned": [], "steps": []}
     try:
-        runtime._require_root(receipt)
+        runtime._require_root({})
+        receipt["steps"].append({"step": "root-preflight", "outcome": "ok"})
         if not isinstance(exclude_mountpoints, tuple) or any(not isinstance(p, str) or not p.startswith("/") or os.path.normpath(p) != p for p in exclude_mountpoints):
             raise runtime.Refusal("agathodaimon-drive-shares-exclusion-invalid", "request")
         # An absent scratch census refuses before a scratch lock path can be opened.
@@ -125,7 +129,7 @@ def rebuild(exclude_mountpoints=(), *, force_reload=False):
             runtime._mountinfo()
         with runtime.drive_guard():
             mounts = runtime._mountinfo()
-            runtime._record(receipt, "mount-census", True)
+            receipt["steps"].append({"step": "mount-census", "outcome": "ok"})
             included, sections = _smb_config()
             receipt["includedBySmbConf"] = included
             shares = []
@@ -156,23 +160,19 @@ def rebuild(exclude_mountpoints=(), *, force_reload=False):
             except FileNotFoundError:
                 existing = None
             if existing != rendered:
-                _candidate(rendered, receipt)
-                runtime._record(receipt, "file-commit", True)
-            if included and (receipt["changed"] or force_reload):
-                receipt["mutationPerformed"] = True
-                result = runtime._run([runtime.SYSTEMCTL, "reload", "smbd.service"], step="reload")
-                if result.returncode:
-                    raise runtime.Refusal("agathodaimon-drive-shares-reload-failed", "reload", result.returncode)
-                receipt["reloaded"] = True
-                runtime._record(receipt, "reload", True)
+                _write_config(rendered, receipt, included)
+            elif included and force_reload:
+                # Removal still needs confirmation when its candidate was already seated.
+                _reload_samba(receipt)
+                receipt["steps"].append({"step": "reload", "outcome": "ok"})
             receipt["pruned"] = _opened._forget_many(dead)
             if receipt["pruned"]:
                 receipt["mutationPerformed"] = True
             receipt.update(ok=True, firstMissingSignal="none")
     except runtime.Refusal as failure:
         receipt.update(firstMissingSignal=failure.signal_name, failedStep=failure.step)
-        runtime._record(receipt, failure.step, False)
     except (OSError, sqlite3.Error, ValueError, TypeError):
         receipt.update(firstMissingSignal="agathodaimon-drive-shares-io-failed", failedStep="shares-io")
-        runtime._record(receipt, "shares-io", False)
+    if not receipt["ok"] and not any(row["outcome"] == "failed" for row in receipt["steps"]):
+        receipt["steps"].append({"step": receipt["failedStep"], "outcome": "failed"})
     return receipt
