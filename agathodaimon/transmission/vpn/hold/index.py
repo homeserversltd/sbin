@@ -1,6 +1,9 @@
 """Keep the selected provider tunnel and forwarded peer port alive."""
 from __future__ import annotations
 
+import fcntl
+import json
+import os
 import signal
 import threading
 import time
@@ -87,8 +90,34 @@ def _failure(value: dict[str, Any], failure: Exception, rung: str) -> None:
               ["provider tunnel", "provider state"], "report-hold-failure", {"ok": False})
 
 
+def _take_hold_lock() -> None:
+    path = rt.runtime_path(f"{rt.STATE_DIR}/hold.lock")
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    directory = rt._open_absolute_dir(rt.STATE_DIR)
+    try:
+        fd = os.open(path.name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory)
+    finally:
+        os.close(directory)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.fchmod(fd, 0o600)
+    except BaseException:
+        os.close(fd)
+        raise
+    # Keep the non-inheritable descriptor open until the hold process exits.
+
+
 def dispatch(request: Any) -> dict[str, Any]:
+    try:
+        _take_hold_lock()
+    except (OSError, rt.TransmissionError):
+        owns_lock = False
+    else:
+        owns_lock = True
+
     result = rt.receipt()
+    result["tripMarkerWritten"] = False
     stop = threading.Event()
     signal_seen: list[str | None] = [None]
     previous_handlers: dict[int, Any] = {}
@@ -97,19 +126,21 @@ def dispatch(request: Any) -> dict[str, Any]:
     protocol_face = None
     tunnel = None
     state_identity: tuple[int, int] | None = None
-    rung = "provider"
+    rung = "hold-lock"
     failed = False
-    notify_address = rt.claim_notify_socket()
 
     def request_stop(signum: int, _frame: Any) -> None:
         signal_seen[0] = signal.Signals(signum).name
         stop.set()
 
-    for signum in (signal.SIGTERM, signal.SIGINT):
-        previous_handlers[signum] = signal.getsignal(signum)
-        signal.signal(signum, request_stop)
-
     try:
+        if not owns_lock:
+            raise rt.TransmissionError("transmission-hold-already-held", rung)
+        rung = "provider"
+        notify_address = rt.claim_notify_socket()
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            previous_handlers[signum] = signal.signal(signum, request_stop)
+
         options, providers = rt.resolve_bound_vpn(request)
         provider = options["provider"]
         protocol = options["protocol"]
@@ -219,47 +250,57 @@ def dispatch(request: Any) -> dict[str, Any]:
         failed = True
         _failure(result, failure, rung)
     finally:
-        cleanup_failures: list[dict[str, Any]] = []
-        cleanup_readback: dict[str, Any] = {}
-        if face is not None:
+        if owns_lock:
+            cleanup_failures: list[dict[str, Any]] = []
+            cleanup_readback: dict[str, Any] = {}
+            if face is not None:
+                try:
+                    rt.close_namespace_output(cleanup_failures)
+                except Exception:
+                    cleanup_failures.append({"signal": "transmission-namespace-output-close-failed",
+                                             "step": "namespace-output-close"})
+                try:
+                    face.teardown()
+                except Exception as failure:
+                    signal_name = failure.signal_name if isinstance(failure, rt.TransmissionError) else "transmission-vpn-teardown-failed"
+                    command_step = failure.step if isinstance(failure, rt.TransmissionError) else "vpn-teardown"
+                    cleanup_failures.append({"signal": signal_name, "step": command_step})
             try:
-                rt.close_namespace_output(cleanup_failures)
+                cleanup_readback, network_failures = rt.teardown_namespace()
+                cleanup_failures.extend(network_failures)
             except Exception:
-                cleanup_failures.append({"signal": "transmission-namespace-output-close-failed",
-                                         "step": "namespace-output-close"})
-            try:
-                face.teardown()
-            except Exception as failure:
-                signal_name = failure.signal_name if isinstance(failure, rt.TransmissionError) else "transmission-vpn-teardown-failed"
-                command_step = failure.step if isinstance(failure, rt.TransmissionError) else "vpn-teardown"
-                cleanup_failures.append({"signal": signal_name, "step": command_step})
-        try:
-            cleanup_readback, network_failures = rt.teardown_namespace()
-            cleanup_failures.extend(network_failures)
-        except Exception:
-            cleanup_failures.append({"signal": "transmission-namespace-teardown-failed",
-                                     "step": "namespace-teardown"})
-        if provider is not None and state_identity is not None:
-            try:
-                if not rt.remove_provider_state(provider, state_identity):
-                    cleanup_failures.append({"signal": "transmission-forward-state-cleanup-failed",
-                                             "step": "forward-state-remove"})
-            except Exception as failure:
-                signal_name = failure.signal_name if isinstance(failure, rt.TransmissionError) else "transmission-forward-state-cleanup-failed"
-                command_step = failure.step if isinstance(failure, rt.TransmissionError) else "forward-state-remove"
-                cleanup_failures.append({"signal": signal_name, "step": command_step})
-        if cleanup_failures:
-            result["cleanupFailures"] = cleanup_failures
-            if not failed:
-                result["ok"] = False
-                result["firstMissingSignal"] = cleanup_failures[0]["signal"]
-                result["failedRung"] = "cleanup"
-                result["failedCommandError"] = cleanup_failures[0]
-        rt._stamp(result, "cleanup", {"failures": len(cleanup_failures)},
-                  ["provider tunnel", "VPN namespace", "provider state"],
-                  "teardown-and-readback", {"ok": not cleanup_failures, **cleanup_readback})
+                cleanup_failures.append({"signal": "transmission-namespace-teardown-failed",
+                                         "step": "namespace-teardown"})
+            if provider is not None and state_identity is not None:
+                try:
+                    if not rt.remove_provider_state(provider, state_identity):
+                        cleanup_failures.append({"signal": "transmission-forward-state-cleanup-failed",
+                                                 "step": "forward-state-remove"})
+                except Exception as failure:
+                    signal_name = failure.signal_name if isinstance(failure, rt.TransmissionError) else "transmission-forward-state-cleanup-failed"
+                    command_step = failure.step if isinstance(failure, rt.TransmissionError) else "forward-state-remove"
+                    cleanup_failures.append({"signal": signal_name, "step": command_step})
+            if cleanup_failures:
+                result["cleanupFailures"] = cleanup_failures
+                if not failed:
+                    result["ok"] = False
+                    result["firstMissingSignal"] = cleanup_failures[0]["signal"]
+                    result["failedRung"] = "cleanup"
+                    result["failedCommandError"] = cleanup_failures[0]
+            rt._stamp(result, "cleanup", {"failures": len(cleanup_failures)},
+                      ["provider tunnel", "VPN namespace", "provider state"],
+                      "teardown-and-readback", {"ok": not cleanup_failures, **cleanup_readback})
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
+        if owns_lock and result.get("stopped") is not True:
+            marker = {"signal": result["firstMissingSignal"], "at": rt.now_utc()}
+            try:
+                rt.write_atomic(rt.TRIP_MARKER, json.dumps(marker, separators=(",", ":")).encode() + b"\n",
+                                0o644)
+            except (OSError, rt.TransmissionError):
+                result["tripMarkerError"] = "transmission-trip-marker-write-failed"
+            else:
+                result["tripMarkerWritten"] = True
 
     return rt.finish(result, request)
 
@@ -272,6 +313,7 @@ def main(argv=None) -> int:
         result = dispatch(request)
     except Exception as failure:
         result = rt.finish(rt.failure_receipt(failure), request)
+    result.setdefault("tripMarkerWritten", False)
     exit_code = rt.print_receipt(result, "transmission/vpn/hold")
     # Cleanup faults remain visible in the receipt, without turning a Stop into a trip.
     return 0 if result.get("stopped") is True else exit_code
