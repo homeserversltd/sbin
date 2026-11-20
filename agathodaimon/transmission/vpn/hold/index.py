@@ -219,7 +219,8 @@ def dispatch(request: Any) -> dict[str, Any]:
         failed = True
         _failure(result, failure, rung)
     finally:
-        cleanup_failures: list[dict[str, str]] = []
+        cleanup_failures: list[dict[str, Any]] = []
+        cleanup_readback: dict[str, Any] = {}
         if face is not None:
             try:
                 face.teardown()
@@ -227,6 +228,12 @@ def dispatch(request: Any) -> dict[str, Any]:
                 signal_name = failure.signal_name if isinstance(failure, rt.TransmissionError) else "transmission-vpn-teardown-failed"
                 command_step = failure.step if isinstance(failure, rt.TransmissionError) else "vpn-teardown"
                 cleanup_failures.append({"signal": signal_name, "step": command_step})
+        try:
+            cleanup_readback, network_failures = rt.teardown_namespace()
+            cleanup_failures.extend(network_failures)
+        except Exception:
+            cleanup_failures.append({"signal": "transmission-namespace-teardown-failed",
+                                     "step": "namespace-teardown"})
         if provider is not None and state_identity is not None:
             try:
                 if not rt.remove_provider_state(provider, state_identity):
@@ -243,9 +250,9 @@ def dispatch(request: Any) -> dict[str, Any]:
                 result["firstMissingSignal"] = cleanup_failures[0]["signal"]
                 result["failedRung"] = "cleanup"
                 result["failedCommandError"] = cleanup_failures[0]
-                rt._stamp(result, "cleanup", {"failures": len(cleanup_failures)},
-                          ["provider tunnel", "provider state"],
-                          "report-cleanup-failure", {"ok": False})
+        rt._stamp(result, "cleanup", {"failures": len(cleanup_failures)},
+                  ["provider tunnel", "VPN namespace", "provider state"],
+                  "teardown-and-readback", {"ok": not cleanup_failures, **cleanup_readback})
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 
@@ -260,7 +267,9 @@ def main(argv=None) -> int:
         result = dispatch(request)
     except Exception as failure:
         result = rt.finish(rt.failure_receipt(failure), request)
-    return rt.print_receipt(result, "transmission/vpn/hold")
+    exit_code = rt.print_receipt(result, "transmission/vpn/hold")
+    # Cleanup faults remain visible in the receipt, without turning a Stop into a trip.
+    return 0 if result.get("stopped") is True else exit_code
 
 
 if __name__ == "__main__":

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from agathodaimon._envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.lib.keyman_export.index import (
     MISSING_KEY, PREFLIGHT_UNOBSERVABLE, KeymanExportError,
     _export as _keyman_export, export_credential,
@@ -1094,6 +1095,20 @@ def _rule_semantically_matches(rule: Mapping[str, Any], expected: list[Any]) -> 
     return _nft_semantic_expressions(rule.get("expr")) == expected
 
 
+_NAMESPACE_OUTPUT_CHAIN = ("inet", "agathodaimon_transmission", "output")
+_OUTBOUND_FORWARD_MARKER = "agathodaimon-transmission-outbound-vpn-traffic"
+_RETURN_FORWARD_MARKER = "agathodaimon-transmission-vpn-return-traffic"
+_NAT_MASQUERADE_MARKER = "agathodaimon-transmission-nat-masquerade-vpn"
+_LAN_RPC_MARKER = re.compile(
+    r"agathodaimon-transmission-(?:vpn-)?lan-rpc-[1-9][0-9]{0,4}-[A-Za-z0-9_.-]{1,15}"
+)
+# OpenVPN config/auth basenames and their write_atomic staging files, not endpoint.json.
+_OPENVPN_RUN_NAME = r"openvpn-(?:auth-[0-9]+-[0-9a-f]{24}|[0-9]+-[0-9a-f]{24}\.conf)"
+_OPENVPN_RUN_FILE = re.compile(
+    rf"(?:{_OPENVPN_RUN_NAME}|\.{_OPENVPN_RUN_NAME}\.[0-9]+\.[0-9a-f]{{16}}\.tmp)"
+)
+
+
 def _ensure_nft_rule(family: str, table: str, chain: str, marker: str,
                      rule: list[str], step: str) -> None:
     expected = _nft_expected_expr(rule)
@@ -1140,7 +1155,7 @@ def _ensure_namespace_output_rules(endpoint: Mapping[str, Any], provider: str) -
             or not isinstance(interface, str) or not _IFACE_RE.fullmatch(interface)):
         raise TransmissionError("transmission-provider-endpoint-invalid", "provider-endpoint")
 
-    family, table, chain = "inet", "agathodaimon_transmission", "output"
+    family, table, chain = _NAMESPACE_OUTPUT_CHAIN
     listed = _nft_run(["-j", "list", "tables"], "namespace-firewall-tables-readback",
                       namespace=VPN_NAMESPACE)
     if listed.returncode != 0:
@@ -1255,21 +1270,168 @@ def _enable_host_forwarding_and_nat(wan: str) -> None:
     if readback.returncode != 0 or readback.stdout.strip() != b"1":
         raise TransmissionError("transmission-ip-forward-readback-failed", "ip-forward-readback")
     _ensure_nft_rule(
-        "inet", "filter", "forward", "agathodaimon-transmission-outbound-vpn-traffic",
+        "inet", "filter", "forward", _OUTBOUND_FORWARD_MARKER,
         ["iifname", HOST_VETH, "oifname", wan, "ip", "saddr", "192.168.2.0/24", "accept"],
         "outbound-forward-rule",
     )
     _ensure_nft_rule(
-        "inet", "filter", "forward", "agathodaimon-transmission-vpn-return-traffic",
+        "inet", "filter", "forward", _RETURN_FORWARD_MARKER,
         ["iifname", wan, "oifname", HOST_VETH, "ip", "daddr", "192.168.2.0/24",
          "ct", "state", "established,related", "accept"],
         "return-forward-rule",
     )
     _ensure_nft_rule(
-        "ip", "nat", "postrouting", "agathodaimon-transmission-nat-masquerade-vpn",
+        "ip", "nat", "postrouting", _NAT_MASQUERADE_MARKER,
         ["ip", "saddr", "192.168.2.0/24", "oifname", wan, "masquerade"],
         "namespace-nat-rule",
     )
+
+
+def teardown_namespace() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fail closed, remove the hold's network and run files, and read back once."""
+    failures: list[dict[str, Any]] = []
+
+    def fail(step: str, cause: str = "failed", **facts: Any) -> None:
+        failures.append({"step": step, "signal": f"transmission-{step}-{cause}", **facts})
+
+    def command(step: str, *argv: str, **facts: Any) -> str | None:
+        try:
+            result = nidus_run(command_argv(argv), timeout=5)
+        except subprocess.TimeoutExpired:
+            fail(step, "timeout", **facts)
+        except UnicodeError:
+            fail(step, "invalid-output", **facts)
+        except (OSError, TransmissionError):
+            fail(step, "unavailable", **facts)
+        else:
+            if result.returncode == 0:
+                return result.stdout
+            fail(step, returnCode=result.returncode, **facts)
+        return None
+
+    def rows(step: str, *argv: str, key: str | None = None,
+             allow_empty: bool = False) -> list[dict[str, Any]] | None:
+        raw = command(step, *argv)
+        if raw is None:
+            return None
+        try:
+            # iproute2 may print nothing for an empty namespace inventory.
+            data = [] if allow_empty and not raw.strip() else json.loads(raw)
+        except json.JSONDecodeError:
+            data = None
+        if key is not None and isinstance(data, dict):
+            data = data.get(key)
+        if not isinstance(data, list) or not all(isinstance(row, dict) for row in data):
+            fail(step, "invalid-output")
+            return None
+        return data
+
+    def present(step: str, argv: tuple[str, ...], key: str, name: str) -> bool | None:
+        items = rows(step, *argv, allow_empty=(key == "name"))
+        if items is None:
+            return None
+        if any(not isinstance(row.get(key), str) for row in items):
+            fail(step, "invalid-output")
+            return None
+        return any(row[key] == name for row in items)
+
+    netns_list = (IP, "-j", "netns", "list")
+    link_list = (IP, "-j", "link", "show")
+    namespace_before = present("namespace-teardown-preflight", netns_list, "name", VPN_NAMESPACE)
+    output_rules_after_flush = None
+    if namespace_before is not False:
+        family, table, chain = _NAMESPACE_OUTPUT_CHAIN
+        target = " ".join(_NAMESPACE_OUTPUT_CHAIN)
+        nft_inside = (IP, "netns", "exec", VPN_NAMESPACE, NFT)
+        # One nft transaction: even if setup left the chain missing or with the
+        # wrong policy, never expose an empty chain with policy accept.
+        close_output = (f"add table {family} {table}; add chain {target} "
+                        "{ type filter hook output priority 0; policy drop; }; "
+                        f"flush chain {target}")
+        if command("namespace-output-flush", *nft_inside, close_output) is not None:
+            step = "namespace-output-flush-readback"
+            nft_rows = rows(step, *nft_inside, "-j", "list", "chain", family, table, chain, key="nftables")
+            if nft_rows is not None:
+                output_rules_after_flush = sum("rule" in row for row in nft_rows)
+                closed = any(isinstance(item := row.get("chain"), dict)
+                             and (item.get("family"), item.get("table"), item.get("name"))
+                             == _NAMESPACE_OUTPUT_CHAIN
+                             and item.get("type") == "filter" and item.get("hook") == "output"
+                             and item.get("policy") == "drop" for row in nft_rows)
+                if not closed or output_rules_after_flush:
+                    fail(step, "mismatch")
+
+    # List, never flush, the host ruleset. Only these marker/chain pairs belong to us.
+    host_rows = rows("host-rules-teardown-readback", NFT, "-j", "-a", "list", "ruleset", key="nftables")
+    forward_chain = ("inet", "filter", "forward")
+    nat_chain = ("ip", "nat", "postrouting")
+    for row in host_rows or []:
+        rule = row.get("rule")
+        if not isinstance(rule, dict):
+            continue
+        location = (rule.get("family"), rule.get("table"), rule.get("chain"))
+        marker = _nft_rule_comment(rule)
+        if location == forward_chain and marker is not None and (
+                marker in {_OUTBOUND_FORWARD_MARKER, _RETURN_FORWARD_MARKER} or _LAN_RPC_MARKER.fullmatch(marker)):
+            owned_chain = forward_chain
+        elif location == nat_chain and marker == _NAT_MASQUERADE_MARKER:
+            owned_chain = nat_chain
+        else:
+            continue
+        handle = rule.get("handle")
+        if type(handle) is not int or handle <= 0:
+            fail("host-rule-delete", "handle-invalid", marker=marker)
+            continue
+        command("host-rule-delete", NFT, "delete", "rule", *owned_chain, "handle", str(handle),
+                marker=marker, handle=handle)
+
+    if present("veth-teardown-preflight", link_list, "ifname", HOST_VETH) is not False:
+        command("veth-delete", IP, "link", "del", HOST_VETH)
+    if namespace_before is not False:
+        command("namespace-delete", IP, "netns", "del", VPN_NAMESPACE)
+
+    removed_paths: list[str] = []
+    run_dir = f"{STATE_DIR}/pia"
+    step = "tunnel-run-file-sweep"
+    try:
+        fd = _open_absolute_dir(run_dir)
+        try:
+            for name in sorted(os.listdir(fd)):
+                if not _OPENVPN_RUN_FILE.fullmatch(name):
+                    continue
+                path = f"{run_dir}/{name}"
+                try:
+                    if not stat.S_ISREG(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                        fail(step, "not-regular", path=path)
+                        continue
+                    os.unlink(name, dir_fd=fd)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    fail(step, path=path)
+                else:
+                    removed_paths.append(path)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        pass
+    except (OSError, TransmissionError):
+        fail(step, path=run_dir)
+
+    host_veth = present("veth-teardown-readback", link_list, "ifname", HOST_VETH)
+    if host_veth is True:
+        fail("veth-teardown-readback", "still-present")
+    namespace = present("namespace-teardown-readback", netns_list, "name", VPN_NAMESPACE)
+    pidless = None
+    if namespace is True:
+        fail("namespace-teardown-readback", "still-present")
+        # Observe once; the dependent daemon exits after the hold, not before it.
+        pids = command("namespace-pid-readback", IP, "netns", "pids", VPN_NAMESPACE)
+        if pids is not None:
+            pidless = not pids.strip()
+    return {"namespacePresent": namespace, "namespacePidless": pidless,
+            "hostVethPresent": host_veth, "outputRulesAfterFlush": output_rules_after_flush,
+            "removedRunFiles": removed_paths}, failures
 
 
 def _ensure_namespace(provider: str, rpc_port: int,
@@ -1970,12 +2132,9 @@ def ensure_rpc_lan_rules(rpc_port: int) -> list[str]:
         desired_markers.add(f"agathodaimon-transmission-lan-rpc-{rpc_port}-{safe_name}")
         desired_markers.add(f"agathodaimon-transmission-vpn-lan-rpc-{rpc_port}-{safe_name}")
     _chain, current_rules = _nft_list("inet", "filter", "forward", "lan-rpc-stale-readback")
-    owned_marker = re.compile(
-        r"^agathodaimon-transmission-(?:vpn-)?lan-rpc-[1-9][0-9]{0,4}-[A-Za-z0-9_.-]{1,15}$"
-    )
     for rule in current_rules:
         marker = _nft_rule_comment(rule)
-        if marker is None or not owned_marker.fullmatch(marker) or marker in desired_markers:
+        if marker is None or not _LAN_RPC_MARKER.fullmatch(marker) or marker in desired_markers:
             continue
         handle = rule.get("handle")
         if isinstance(handle, bool) or not isinstance(handle, int):

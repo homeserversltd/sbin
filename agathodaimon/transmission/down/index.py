@@ -1,4 +1,4 @@
-"""Stop only the native Transmission unit and verify PartOf cleanup."""
+"""Stop the native Transmission unit and verify the VPN namespace is gone."""
 from __future__ import annotations
 
 import time
@@ -60,7 +60,7 @@ def dispatch(request: Any) -> dict[str, Any]:
                                         "holdUnit": hold_unit,
                                         "holdStateBefore": hold_before})
         rt._stamp(result, "daemon", {"unit": rt.NATIVE_UNIT, "state": native_before},
-                  [rt.NATIVE_UNIT, hold_unit], "stop-native-unit-for-PartOf-propagation",
+                  [rt.NATIVE_UNIT, hold_unit], "stop-native-unit-for-hold-cleanup",
                   {"stopRequested": True, "returnCode": stopped.returncode})
 
         rung = "hold"
@@ -68,14 +68,15 @@ def dispatch(request: Any) -> dict[str, Any]:
         final: dict[str, Any] = {}
         while True:
             native_state = rt.unit_state(rt.NATIVE_UNIT, step="native-stop-readback")
-            hold_state = rt.unit_state(hold_unit, step="hold-PartOf-readback")
+            hold_state = rt.unit_state(hold_unit, step="hold-stop-readback")
             namespace_present, tunnel_present = _tunnel_present(tunnel_interface)
             final = {"nativeState": native_state, "holdUnit": hold_unit,
                      "holdState": hold_state, "namespacePreserved": namespace_present,
                      "tunnelInterfacePresent": tunnel_present}
             if (native_state in _TERMINAL_NONACTIVE_STATES
-                    and hold_state in _TERMINAL_NONACTIVE_STATES
-                    and not tunnel_present):
+                    and hold_state in _TERMINAL_NONACTIVE_STATES):
+                if namespace_present:
+                    raise rt.TransmissionError("transmission-down-namespace-preserved", "final-readback", final)
                 break
             if time.monotonic() >= deadline:
                 raise rt.TransmissionError("transmission-down-readback-timeout", "final-readback", final)
@@ -85,11 +86,11 @@ def dispatch(request: Any) -> dict[str, Any]:
         result["namespacePreserved"] = namespace_present
         rt._stamp(result, "hold", {"unit": hold_unit, "stateBefore": hold_before},
                   [hold_unit] if hold_before not in _TERMINAL_NONACTIVE_STATES else [],
-                  "read-PartOf-state-without-direct-stop", {"state": hold_state})
+                  "read-hold-state-without-direct-stop", {"state": hold_state})
 
         rung = "final-readback"
         rt._stamp(result, "final-readback", {"namespacePresent": namespace_present}, False,
-                  "read-native-and-PartOf-hold-terminal-nonactive-and-tunnel-absent", final)
+                  "read-terminal-units-and-namespace-absent", final)
         result["ok"] = True
         result["firstMissingSignal"] = "none"
         return rt.finish(result, request)
