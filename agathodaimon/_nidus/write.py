@@ -86,7 +86,15 @@ def write(edits, *, check=None, verify=None, reload=None, readback=None):
             snapshots.append((path, candidate, before, old_mode, old_owner, edit.get("mode", old_mode), desired_owner))
             parts["observed"].append({"path": str(path), "before": _digest(before), "after": _digest(before)})
             parts["could_change_to"].append(str(path))
-        changed = any(candidate != before for _, candidate, before, *_ in snapshots)
+        replacements = [
+            (path, candidate, mode, owner)
+            for path, candidate, before, old_mode, old_owner, mode, owner in snapshots
+            if candidate != before or (
+                candidate is not None
+                and (mode != old_mode or (owner is not None and owner != old_owner))
+            )
+        ]
+        changed = bool(replacements)
         parts["changed"] = changed
         parts["attempt"]["attempted"] = changed
 
@@ -106,9 +114,7 @@ def write(edits, *, check=None, verify=None, reload=None, readback=None):
 
         run("check", check)
         if changed:
-            for path, candidate, before, _old_mode, _old_owner, mode, owner in snapshots:
-                if candidate == before:
-                    continue
+            for path, candidate, mode, owner in replacements:
                 phase = "replace"
                 row = {"step": "replace", "path": str(path), "outcome": "failed"}
                 steps.append(row)
