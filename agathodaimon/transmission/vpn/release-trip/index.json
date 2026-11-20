@@ -1,0 +1,8 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "sclerite": {"name": "transmission", "features": {"transmission": {
+    "band": true, "verbs": [["vpn", "release-trip"]], "routes": [],
+    "administrative": {"band": true, "verbs": [["vpn", "release-trip"]], "routes": []}
+  }}}
+}

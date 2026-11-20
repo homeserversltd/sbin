@@ -4,7 +4,8 @@
     "namespace",
     "hold",
     "resolve",
-    "rollback-stop"
+    "rollback-stop",
+    "release-trip"
   ],
   "providers": [
     "pia"

@@ -166,6 +166,7 @@
     "transmission/onness",
     "transmission/status",
     "transmission/up",
+    "transmission/vpn/release-trip",
     "transmission/vpn/resolve",
     "transmission/vpn/rollback-stop",
     "unit/disable",
@@ -444,6 +445,10 @@
     ],
     [
       "vpn",
+      "release-trip"
+    ],
+    [
+      "vpn",
       "resolve"
     ],
     [
@@ -658,6 +663,7 @@
       "transmission/keys",
       "transmission/onness",
       "transmission/up",
+      "transmission/vpn/release-trip",
       "transmission/vpn/resolve",
       "transmission/vpn/rollback-stop"
     ],
@@ -777,6 +783,10 @@
       [
         "transmission",
         "onness"
+      ],
+      [
+        "vpn",
+        "release-trip"
       ],
       [
         "vpn",
