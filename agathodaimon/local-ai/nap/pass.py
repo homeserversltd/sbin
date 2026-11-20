@@ -14,6 +14,7 @@ import unicodedata
 from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import UUID
 
 logging.disable(logging.CRITICAL)
 os.environ["MEM0_TELEMETRY"] = "false"
@@ -72,8 +73,7 @@ def llm_json(memory, instruction, value):
         raise ValueError("model-response-invalid") from error
 
 
-def get_owned(memory, ident, user):
-    item = memory.get(ident)
+def get_owned(item, user):
     if not item or item.get("user_id") != user:
         return None
     expiration = item.get("expiration_date")
@@ -110,7 +110,7 @@ def supported_action(action, older, newer):
     return "none"
 
 
-def add_rows(db, ceiling, after=0, reverse=False):
+def add_pages(db, ceiling, after=0, reverse=False):
     cursor = ceiling + 1 if reverse else after
     while True:
         if reverse:
@@ -119,15 +119,50 @@ def add_rows(db, ceiling, after=0, reverse=False):
             rows = db.execute("SELECT rowid,memory_id FROM history WHERE event='ADD' AND rowid>? AND rowid<=? ORDER BY rowid LIMIT 128", (cursor, ceiling)).fetchall()
         if not rows:
             return
-        for row in rows:
-            yield row
+        yield rows
         cursor = rows[-1][0]
 
 
-def gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists, gist_every):
+def owned_add_rows(db, ceiling, client, collection, user, after=0, reverse=False):
+    from mem0.configs.base import MemoryItem
+
+    # Keep the projection used by Memory.get, including which fields it promotes.
+    promoted = ("user_id", "agent_id", "run_id", "actor_id", "role", "attributed_to", "expiration_date")
+    core = {"data", "hash", "created_at", "updated_at", "id", "text_lemmatized", *promoted}
+    for rows in add_pages(db, ceiling, after=after, reverse=reverse):
+        points = {point.id: point for point in client.retrieve(
+            collection_name=collection, ids=[ident for _, ident in rows], with_payload=True, with_vectors=False,
+        )}
+        # The history, not Qdrant's reply, supplies order and duplicate rows.
+        for rowid, ident in rows:
+            point = points.get(ident)
+            if point is None and isinstance(ident, str):
+                # The reply may spell a requested UUID in canonical form.
+                try:
+                    point = points.get(str(UUID(ident)))
+                except ValueError:
+                    pass
+            if point is None:
+                yield rowid, ident, None
+                continue
+            payload = point.payload
+            item = MemoryItem(
+                id=point.id, memory=payload.get("data", ""), hash=payload.get("hash"),
+                created_at=payload.get("created_at"), updated_at=payload.get("updated_at"),
+                metadata=None, score=None,
+            ).model_dump()
+            item.update({key: payload[key] for key in promoted if key in payload})
+            meta = {key: value for key, value in payload.items() if key not in core}
+            if meta:
+                item["metadata"] = meta
+            del point, payload
+            yield rowid, ident, get_owned(item, user)
+        del points  # Drop the raw page before requesting the next one.
+
+
+def gist_pending(memory, client, db, user, agent, counts, ceiling, dry_run, gists, gist_every):
     checkpoint = 0
-    for _, ident in add_rows(db, ceiling, reverse=True):
-        item = get_owned(memory, ident, user)
+    for _, _, item in owned_add_rows(db, ceiling, client, memory.collection_name, user, reverse=True):
         if item and metadata(item).get("kind") == "gist":
             ids = metadata(item).get("source_ids", [])
             if not isinstance(ids, list) or not ids:
@@ -138,8 +173,7 @@ def gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists, gist_
                     checkpoint = max(checkpoint, row[0])
             break
     batch = []
-    for rowid, ident in add_rows(db, ceiling, after=checkpoint):
-        item = get_owned(memory, ident, user)
+    for rowid, ident, item in owned_add_rows(db, ceiling, client, memory.collection_name, user, after=checkpoint):
         if not item:
             continue
         first = db.execute("SELECT min(rowid) FROM history WHERE event='ADD' AND memory_id=?", (ident,)).fetchone()[0]
@@ -207,6 +241,10 @@ def run(path, counts, floor, override, dry_run, marks, gists, gist_every):
             self.absent_collection_attempted = True
             raise ValueError("collection-absent")
 
+        def create_payload_index(self, *args, **kwargs):
+            # Mem0 tries to ensure indexes even when the collection exists.
+            raise ValueError("dry-run-index-write-refused")
+
     class ExistingIndexClient(QdrantClient):
         def create_payload_index(self, collection_name, field_name, *args, **kwargs):
             try:
@@ -232,8 +270,7 @@ def run(path, counts, floor, override, dry_run, marks, gists, gist_every):
     oss = {**oss, "vector_store": {**store, "config": {**settings, "client": client}}}
     memory = Memory.from_config(oss)
     agent = config.get("agent_id")
-    for rowid, ident in add_rows(db, ceiling):
-        item = get_owned(memory, ident, user)
+    for rowid, ident, item in owned_add_rows(db, ceiling, client, memory.collection_name, user):
         if not item or metadata(item).get("kind") == "gist" or metadata(item).get("nap_judged") is True:
             continue
         first = db.execute("SELECT min(rowid) FROM history WHERE event='ADD' AND memory_id=?", (ident,)).fetchone()[0]
@@ -254,7 +291,8 @@ def run(path, counts, floor, override, dry_run, marks, gists, gist_every):
             history_row = db.execute("SELECT min(rowid) FROM history WHERE event='ADD' AND memory_id=?", (other_id,)).fetchone()
             if not history_row or history_row[0] is None or history_row[0] >= rowid:
                 continue
-            other = get_owned(memory, other_id, user)
+            # A fresh read sees any marks this pass has already written.
+            other = get_owned(memory.get(other_id), user)
             if not other or metadata(other).get("kind") == "gist" or metadata(other).get("nap_state") in ("folded", "stale"):
                 continue
             if dry_run and any(mark["older_id"] == other_id for mark in marks):
@@ -313,7 +351,7 @@ def run(path, counts, floor, override, dry_run, marks, gists, gist_every):
         item["metadata"] = {**metadata(item), "nap_judged": True}
         counts["judged"] += 1
     if gist_every > 0 and counts["unresolved"] == 0:
-        gist_pending(memory, db, user, agent, counts, ceiling, dry_run, gists, gist_every)
+        gist_pending(memory, client, db, user, agent, counts, ceiling, dry_run, gists, gist_every)
     db.close()
 
 
