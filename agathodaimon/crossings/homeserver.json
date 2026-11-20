@@ -886,6 +886,8 @@
       "DELETE /api/v1/network/dhcp/reservations/{reservation_id}",
       "DELETE /api/v1/network/firewall/children/{mac}",
       "POST /api/v1/access/pin/mode",
+      "POST /api/v1/config/patch",
+      "POST /api/v1/config/set",
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
       "POST /api/v1/interactables/{id}/unsilence",

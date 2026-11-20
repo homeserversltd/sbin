@@ -17,7 +17,7 @@
   "sclerite": {
     "name": "all",
     "features": {
-      "desktop": {
+      "all": {
         "band": false,
         "administrative": {
           "routes": [
