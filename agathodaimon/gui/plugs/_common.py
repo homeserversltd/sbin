@@ -164,7 +164,7 @@ def _refusal_signal(receipt: dict[str, Any]) -> str:
 
 
 def _receipt_ok(receipt: dict[str, Any]) -> bool:
-    return receipt.get("ok") is True
+    return receipt.get("ok") is True and receipt.get("doorSignal", "none") == "none"
 
 def _bool(value: Any) -> bool:
     if isinstance(value, str):
