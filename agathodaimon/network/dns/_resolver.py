@@ -20,9 +20,10 @@ class ResolverControl:
     BLOCKLIST = Path("/etc/unbound/blocklist.conf")
     CHECKCONF = "/usr/sbin/unbound-checkconf"
     PRESETS = {
-        "quad9": ["9.9.9.9", "149.112.112.112"],
-        "cloudflare": ["1.1.1.1", "1.0.0.1"],
-        "google": ["8.8.8.8", "8.8.4.4"],
+        "quad9": (["9.9.9.9", "149.112.112.112"], "dns.quad9.net"),
+        "cloudflare": (["1.1.1.1", "1.0.0.1"], "cloudflare-dns.com"),
+        "cloudflare-family": (["1.1.1.3", "1.0.0.3"], "family.cloudflare-dns.com"),
+        "google": (["8.8.8.8", "8.8.4.4"], "dns.google"),
     }
     _BLOCKLIST = re.compile(r'^(?P<indent>[ \t]*)(?P<comment>#\s*)?include:\s*["\']?/etc/unbound/blocklist\.conf["\']?(?P<tail>\s*(?:#.*)?)$', re.M)
     _TOP = re.compile(r'^[A-Za-z][A-Za-z0-9-]*:\s*(?:#.*)?$', re.M)
@@ -100,8 +101,8 @@ class ResolverControl:
     def _forward_values(text: str) -> tuple[list[str], bool]:
         start, end = ResolverControl._forward_section(text)
         section = text[start:end]
-        addresses = re.findall(r'^\s*forward-addr:\s+([^\s#]+)', section, re.M)
-        dot = bool(re.search(r'^\s*forward-tls-upstream:\s+yes\s*(?:#.*)?$', section, re.M | re.I))
+        addresses = re.findall(r'^\s*forward-addr:\s+([^\s#]+(?:#[^\s#]+)?)', section, re.M)
+        dot = bool(re.search(r'^\s*forward-(?:tls|ssl)-upstream:\s+yes\s*(?:#.*)?$', section, re.M | re.I))
         return addresses, dot
 
     def status(self) -> dict[str, Any]:
@@ -147,9 +148,9 @@ class ResolverControl:
         if isinstance(preset, str) and custom is None:
             if preset not in self.PRESETS:
                 raise DnsError("resolver-upstream-preset-invalid")
-            addresses = self.PRESETS[preset]
+            addresses, tls_name = self.PRESETS[preset]
         elif preset is None and isinstance(custom, list) and custom:
-            addresses = custom
+            addresses, tls_name = custom, None
         else:
             raise DnsError("resolver-upstream-input-invalid")
         if len(addresses) > 8 or any(not isinstance(value, str) for value in addresses):
@@ -166,7 +167,10 @@ class ResolverControl:
         before = self._read()
         start, end = self._forward_section(before)
         lines = ["forward-zone:", '    name: "."', f'    forward-tls-upstream: {"yes" if dot else "no"}']
-        lines.extend(f'    forward-addr: {address}{"@853" if dot else ""}' for address in canonical)
+        suffix = "@853" if dot else ""
+        if dot and tls_name:
+            suffix += f"#{tls_name}"
+        lines.extend(f'    forward-addr: {address}{suffix}' for address in canonical)
         after = before[:start] + "\n".join(lines) + "\n" + before[end:]
         self._install(before, after)
         return {"ok": True, "action": "upstream", "upstreams": canonical, "dnsOverTls": dot, "mutationPerformed": before != after, "reload": "reloaded", "firstMissingSignal": "none"}
