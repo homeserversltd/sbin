@@ -52,11 +52,30 @@ def _slash_target(raw_path: str) -> Path | None:
     target = path / "index.py"
     return target if target.is_file() else None
 
+def echo_undeclared(envelope: dict) -> dict:
+    """A no-main guest declares no payload, flags or rooms of its own."""
+    for container in (envelope, envelope.get("payload")):
+        if not isinstance(container, dict):
+            continue
+        flags = container.get("flags")
+        exousia = flags.get("exousia") if isinstance(flags, dict) else None
+        if any(name in carrier for carrier in (container, flags, exousia)
+               if isinstance(carrier, dict) for name in ("pin", "oldPin", "newPin")):
+            # The clone has its own two-file staff kit, not the host package.
+            from _envelope import KERNEL_KEYS
+
+            projected = {key: {} if isinstance(envelope[key], (dict, list)) else envelope[key]
+                         for key in KERNEL_KEYS if key in envelope}
+            projected["flags"] = {"exousia": {"pin": "[REDACTED]"}}
+            return projected
+    return envelope
+
+
 def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None) -> int:
     mod = _load(path)
     fn = getattr(mod, "main", None)
     if fn is None:
-        print(json.dumps({"schema":"agathodaimon.cli.read.v1","path":str(path.parent.relative_to(ROOT)),"ok":True,"envelope":envelope,"mutationPerformed":False}))
+        print(json.dumps({"schema":"agathodaimon.cli.read.v1","path":str(path.parent.relative_to(ROOT)),"ok":True,"envelope":echo_undeclared(envelope),"mutationPerformed":False}))
         return 0
     original_stdin = sys.stdin
     try:

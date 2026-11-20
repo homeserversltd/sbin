@@ -231,10 +231,15 @@ def _hand_options(words: list[str]) -> dict:
 
 
 def _contains_secret_name(value):
-    if isinstance(value, dict):
-        return any(key in _HAND_SECRET_NAMES or _contains_secret_name(child) for key, child in value.items())
-    if isinstance(value, list):
-        return any(_contains_secret_name(child) for child in value)
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            if not _HAND_SECRET_NAMES.isdisjoint(item):
+                return True
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
     return False
 
 
@@ -692,6 +697,22 @@ def _dry_run_argv(envelope: dict | None, argv: list[str] | None) -> list[str] | 
     return argv
 
 
+def _stop_has_no_act(path: Path, envelope: dict | None = None) -> int:
+    answer = {"path": path.relative_to(ROOT).as_posix(), "ok": False,
+              "firstMissingSignal": "agathodaimon-stop-has-no-act", "mutationPerformed": False}
+    if envelope is not None:
+        answer["envelope"] = _envelope.echo_undeclared(envelope)
+    print(json.dumps(answer))
+    return 2
+
+
+def _stop_raised(exc: Exception, code: int = 1) -> int:
+    # An exception does not tell us whether the stop had already acted.
+    print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-stop-raised",
+                      "exceptionType": type(exc).__name__}))
+    return code
+
+
 def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None, argv: list[str] | None = None) -> int:
     if not _dry_run_admits(path, envelope, argv):
         return 2
@@ -706,27 +727,28 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
                 with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
                     mod = _load(path)
                 fn = getattr(mod, "main", None)
-                if fn is None:
-                    raise ValueError("missing main")
-                code = int(fn([]) or 0)
-        except (Exception, SystemExit):
+                code = None if fn is None else int(fn([]) or 0)
+        except SystemExit:
             print(json.dumps({"schema": "agathodaimon.cli.envelope.v1", "ok": False,
                               "error": "agathodaimon-envelope-invocation-failed",
                               "firstMissingSignal": "agathodaimon-envelope-invocation-failed"}, separators=(",", ":")))
             return 2
+        except Exception as exc:
+            return _stop_raised(exc, 2)
         finally:
             sys.stdin = original_stdin
+        if code is None:
+            return _stop_has_no_act(path.parent, envelope)
         print(output.getvalue(), end="")
         return code
     argv = _dry_run_argv(envelope, argv)
-    with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
-        mod = _load(path)
-    fn = getattr(mod, "main", None)
-    if fn is None:
-        print(json.dumps({"schema":"agathodaimon.cli.read.v1","path":str(path.parent.relative_to(ROOT)),"ok":True,"envelope":_envelope.echo_undeclared(envelope),"mutationPerformed":False}))
-        return 0
     original_stdin = sys.stdin
     try:
+        with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
+            mod = _load(path)
+        fn = getattr(mod, "main", None)
+        if fn is None:
+            return _stop_has_no_act(path.parent, envelope)
         sys.stdin = _EnvelopeStdin(raw_envelope if raw_envelope is not None else json.dumps(envelope))
         if argv is not None:
             try:
@@ -747,9 +769,8 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
                 raise
             command = transition.rstrip("/").rsplit("/", 1)[-1]
             return int(fn([command]) or 0)
-        except Exception as exc:
-            print(json.dumps({"schema": "agathodaimon.cli.envelope.v1", "ok": False, "error": str(exc), "mutationPerformed": False}))
-            return 1
+    except Exception as exc:
+        return _stop_raised(exc)
     finally:
         sys.stdin = original_stdin
 
@@ -1630,19 +1651,26 @@ def _main(argv, folder, seats):
             if unwrapped:
                 wrapped_argv_pin, _pin = _take_envelope_pin(argv_envelope)
                 _pin = None
-                args[1] = json.dumps(argv_envelope, separators=(",", ":"))
-        if isinstance(argv_envelope, dict):
             payload_check = argv_envelope.get("payload")
             if isinstance(payload_check, dict):
                 from agathodaimon._envelope import _REDACTED_PIN
                 flags = payload_check.get("flags")
-                exousia = flags.get("exousia") if isinstance(flags, dict) else None
-                if isinstance(exousia, dict) and exousia.get("pin") == _REDACTED_PIN:
-                    payload_check = copy.deepcopy(payload_check)
-                    payload_check["flags"]["exousia"].pop("pin")
+                if isinstance(flags, dict):
+                    exousia = flags.get("exousia")
+                    if isinstance(exousia, dict) and exousia.get("pin") == _REDACTED_PIN:
+                        # Copy only the carrier path: a deep copy would recurse before the walk.
+                        carrier = dict(exousia)
+                        carrier.pop("pin")
+                        payload_check = {**payload_check, "flags": {**flags, "exousia": carrier}}
             if _contains_secret_name(payload_check):
                 _front_answer("invalid-or-forbidden-long-option", "options")
                 return 2
+            if unwrapped:
+                try:
+                    args[1] = json.dumps(argv_envelope, separators=(",", ":"))
+                except RecursionError:
+                    _front_answer("invalid-envelope-json", "parse-envelope")
+                    return 2
     if _transmission_keys_json_argv(args):
         return _refuse_administrative("transmission-keys-stdin-required")
     caduceus_root = os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0
@@ -1879,11 +1907,15 @@ def _main(argv, folder, seats):
     fn = None
     if not trace_present:
         # Preserve the ordinary primitive path's eager import/refusal ordering.
-        mod = _load(path / "index.py")
-        fn = getattr(mod, "main", None)
+        try:
+            mod = _load(path / "index.py")
+            fn = getattr(mod, "main", None)
+        except Exception as exc:
+            _stamp_target = cli_target
+            return _stop_raised(exc)
         if fn is None:
-            print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False}))
-            return 0
+            _stamp_target = cli_target
+            return _stop_has_no_act(path)
     admitted = _administrative_pin_admits(
         cli_target, remainder, envelope, pin_required, caduceus_root,
         pin_present, pin, publication,
@@ -1894,19 +1926,21 @@ def _main(argv, folder, seats):
 
     def invoke_module() -> int:
         nonlocal mod, fn
-        if mod is None:
-            with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
-                mod = _load(path / "index.py")
-            fn = getattr(mod, "main", None)
-        if fn is None:
-            print(json.dumps({"schema":"agathodaimon.read.v1","path":str(path.relative_to(ROOT)),"ok":True,"mutationPerformed":False}))
-            return 0
         try:
-            return int(fn(remainder) or 0)
-        except TypeError as exc:
-            if "positional argument" not in str(exc) and "positional arguments" not in str(exc):
-                raise
-            return int(fn() or 0)
+            if mod is None:
+                with _load_trace.span("agathodaimon.staff.import", source_state="dynamic-module"):
+                    mod = _load(path / "index.py")
+                fn = getattr(mod, "main", None)
+            if fn is None:
+                return _stop_has_no_act(path)
+            try:
+                return int(fn(remainder) or 0)
+            except TypeError as exc:
+                if "positional argument" not in str(exc) and "positional arguments" not in str(exc):
+                    raise
+                return int(fn() or 0)
+        except Exception as exc:
+            return _stop_raised(exc)
 
     _stamp_target = cli_target
     return _load_trace.run_cli(envelope, _trace_operation(cli_target, remainder), invoke_module)
