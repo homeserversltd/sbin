@@ -14,7 +14,8 @@ def main(argv=None):
         devices, names = _device_projection()
         receipt = {"ok": True, "actuator": "network.identity.device_list", "action": "device_list", "result": devices, "service_names": names, "mutationPerformed": False, "firstMissingSignal": "none"}
     except (DhcpError, DnsError, IdentityError, _envelope.EnvelopeError) as exc:
-        receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}
+        signal = getattr(exc, "signal", None) or f"identity-device-list-failed:{type(exc).__name__}"
+        receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": signal}
     if request is not None:
         receipt = _envelope.attach(receipt, request)
     print(json.dumps(receipt, separators=(",", ":")))

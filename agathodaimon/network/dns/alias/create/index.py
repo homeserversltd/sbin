@@ -5,18 +5,23 @@ from agathodaimon.network.dns import _mutate
 from agathodaimon.network.dns._manager import DnsError, DnsManager
 
 
+def _failure(exc):
+    signal = getattr(exc, "signal", None) or f"dns-alias-create-failed:{type(exc).__name__}"
+    return {"ok": False, "mutationPerformed": False, "firstMissingSignal": signal}
+
+
 def main(argv=None):
     try:
         request = _envelope.read_fields('label', 'hostname')
     except _envelope.EnvelopeError as exc:
-        receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}
+        receipt = _failure(exc)
     else:
         try:
             if not all(isinstance(request.payload.get(key), str) for key in ('label', 'hostname')):
                 raise DnsError("dns-input-invalid")
             receipt = _mutate.alias(DnsManager(), "create", request.payload.get('label'), request.payload.get('hostname'))
         except (DnsError, OSError) as exc:
-            receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}
+            receipt = _failure(exc)
         receipt = _envelope.attach(receipt, request)
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1

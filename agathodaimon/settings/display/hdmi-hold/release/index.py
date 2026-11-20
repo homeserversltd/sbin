@@ -9,6 +9,7 @@ def main(argv=None):
         result = manager.execute("release", request.payload)
         result = _envelope.attach(result, request)
     except (_envelope.EnvelopeError, ValueError, OSError) as error:
-        result = {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}
+        signal = getattr(error, "signal", None) or f"hdmi-hold-release-failed:{type(error).__name__}"
+        result = {"ok": False, "firstMissingSignal": signal, "mutationPerformed": False}
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("ok") else 1

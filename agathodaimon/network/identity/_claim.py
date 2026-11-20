@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agathodaimon import _load_trace
-from agathodaimon._nidus.lock import IDENTITY_LOCK, IDENTITY_LOCK_PATH, held, identity_lock_path
+from agathodaimon._nidus.lock import IDENTITY_LOCK, held, identity_lock_path
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager, normalize_mac
 from agathodaimon.network.dns._manager import DnsError, DnsManager
 from agathodaimon.lib.receipts import emit
@@ -24,7 +24,6 @@ class IdentityError(RuntimeError):
 class IdentityClaimCoordinator:
     """Lock-held, compensating composition of existing DHCP and DNS membranes."""
 
-    LOCK_PATH = IDENTITY_LOCK_PATH
     JOURNAL_DIR = Path("/var/lib/caduceus/journals/network-identity")
     RESOLVER_GATEWAY_ADDRESS = "192.168.123.1"
 

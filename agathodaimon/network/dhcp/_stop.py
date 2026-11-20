@@ -1,6 +1,7 @@
 """Envelope and receipt handling for fixed DHCP stops."""
 import json
 from agathodaimon import _envelope
+from agathodaimon._nidus.lock import IDENTITY_LOCK, IdentityLockUnavailable
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
 
@@ -29,6 +30,12 @@ def run(request, act, fields=(), boundary=False):
             receipt["mutationPerformed"] = manager.mutation_performed
         if boundary:
             receipt["active_leases_count"] = len(manager.get_leases())
+    except IdentityLockUnavailable:
+        receipt = {
+            "ok": False,
+            "mutationPerformed": manager.mutation_performed if manager else False,
+            "firstMissingSignal": f"identity-lock-unavailable:{IDENTITY_LOCK}",
+        }
     except DhcpError as exc:
         receipt = {"ok": False, "mutationPerformed": manager.mutation_performed if manager else False, "firstMissingSignal": str(exc)}
     receipt = _envelope.attach(receipt, request)

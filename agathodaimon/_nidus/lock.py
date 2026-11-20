@@ -15,7 +15,6 @@ _locks: dict[str, threading.RLock] = {}
 _depth: dict[str, int] = {}
 _paths: dict[str, Path] = {}
 IDENTITY_LOCK = "network-identity-claim"
-IDENTITY_LOCK_PATH = Path("/var/lib/caduceus") / f"{IDENTITY_LOCK}.lock"
 
 
 def identity_lock_path(path: str | Path | None = None) -> Path:
