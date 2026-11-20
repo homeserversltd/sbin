@@ -1,6 +1,7 @@
 """HDMI held-link stop."""
 import json
 from agathodaimon import _envelope
+from agathodaimon._nidus.refusal import named_signal
 from agathodaimon.settings.display import _hdmi_hold as manager
 
 def main(argv=None):
@@ -9,7 +10,7 @@ def main(argv=None):
         result = manager.execute("release", request.payload)
         result = _envelope.attach(result, request)
     except (_envelope.EnvelopeError, ValueError, OSError) as error:
-        signal = getattr(error, "signal", None) or f"hdmi-hold-release-failed:{type(error).__name__}"
+        signal = named_signal(error, "hdmi-hold-release")
         result = {"ok": False, "firstMissingSignal": signal, "mutationPerformed": False}
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("ok") else 1

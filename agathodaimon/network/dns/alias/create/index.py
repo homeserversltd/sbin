@@ -1,12 +1,13 @@
 """DNS alias create: label, hostname."""
 import json
 from agathodaimon import _envelope
+from agathodaimon._nidus.refusal import named_signal
 from agathodaimon.network.dns import _mutate
 from agathodaimon.network.dns._manager import DnsError, DnsManager
 
 
 def _failure(exc):
-    signal = getattr(exc, "signal", None) or f"dns-alias-create-failed:{type(exc).__name__}"
+    signal = named_signal(exc, "dns-alias-create")
     return {"ok": False, "mutationPerformed": False, "firstMissingSignal": signal}
 
 

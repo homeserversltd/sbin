@@ -1,6 +1,7 @@
 """Read the fused identity roster."""
 import json
 from agathodaimon import _envelope
+from agathodaimon._nidus.refusal import named_signal
 from agathodaimon.network.dhcp._manager import DhcpError
 from agathodaimon.network.dns._manager import DnsError
 from agathodaimon.network.identity._claim import IdentityError
@@ -14,7 +15,7 @@ def main(argv=None):
         devices, names = _device_projection()
         receipt = {"ok": True, "actuator": "network.identity.device_list", "action": "device_list", "result": devices, "service_names": names, "mutationPerformed": False, "firstMissingSignal": "none"}
     except (DhcpError, DnsError, IdentityError, _envelope.EnvelopeError) as exc:
-        signal = getattr(exc, "signal", None) or f"identity-device-list-failed:{type(exc).__name__}"
+        signal = named_signal(exc, "identity-device-list")
         receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": signal}
     if request is not None:
         receipt = _envelope.attach(receipt, request)
