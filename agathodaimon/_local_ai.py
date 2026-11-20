@@ -622,9 +622,17 @@ def main(verb: str, args=None) -> int:
         signal = str(error) if isinstance(error, (LocalAIError, EnvelopeError)) else "local-ai-observation-failed:" + type(error).__name__
         reply = {"ok": False, "firstMissingSignal": signal, "mutationPerformed": attempted}
     if action == "apply":
-        # Canonical Log Line: the deed only, never config, model bytes or a body.
-        print(json.dumps({"who": "agathodaimon", "verb": "local-ai-slot-apply", "target": reply.get("unit", "model-slot"),
-                          "outcome": "ok" if reply["ok"] else "failed", "duration_ms": int((time.monotonic() - started) * 1000),
-                          "signal": reply.get("firstMissingSignal", "none")}, separators=(",", ":")), file=sys.stderr)
+        # Send the deed only, never config, model bytes or a body.
+        try:
+            from agathodaimon import _deed
+
+            _deed.send(
+                "sbin", "local-ai-slot-apply", reply["ok"],
+                target=reply.get("unit", "model-slot"),
+                duration_ms=int((time.monotonic() - started) * 1000),
+                signal=reply.get("firstMissingSignal", "none"),
+            )
+        except Exception:
+            print("caduceus-deed-post-failed", file=sys.stderr)
     print(json.dumps(attach(reply, request) if request is not None else reply, separators=(",", ":")))
     return 0 if reply.get("ok", True) else 1
