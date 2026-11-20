@@ -55,7 +55,7 @@ def _merge_share(receipt, reply):
 
 def _restore(receipt, target):
     try:
-        reply = _shares.rebuild(exclude_mountpoints=())
+        reply = _shares.rebuild(exclude_mountpoints=(), force_reload=True)
         _merge_share(receipt, reply)
         ok = isinstance(reply, dict) and reply.get("ok") is True
         rows = reply.get("shares", []) if isinstance(reply, dict) else []
@@ -63,8 +63,7 @@ def _restore(receipt, target):
             isinstance(row, dict) and row.get("path") == target for row in rows)
         included = reply.get("includedBySmbConf") if isinstance(reply, dict) else None
         reloaded = reply.get("reloaded") if isinstance(reply, dict) else None
-        changed = reply.get("changed") if isinstance(reply, dict) else None
-        confirmed = ok and present and (included is False or (included is True and (changed is True and reloaded is True)))
+        confirmed = ok and present and (included is False or (included is True and reloaded is True))
         receipt["sharesRestored"] = confirmed
         receipt["shareRestoreIncluded"] = included
         if not confirmed:
