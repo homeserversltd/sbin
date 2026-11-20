@@ -1,0 +1,24 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": true,
+  "sclerite": {
+    "name": "nas",
+    "features": {
+      "nas": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/settings/samba/on"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/settings/samba/on"
+          ]
+        }
+      }
+    }
+  }
+}

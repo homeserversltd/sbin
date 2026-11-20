@@ -49,7 +49,7 @@ def _single_value(output: str, accepted: set[str], signal: str) -> str:
     return values[0]
 
 
-def _unit_status(name: str, unit: str) -> dict[str, Any]:
+def _load_state(name: str, unit: str) -> str:
     load_result = _run(
         [SYSTEMCTL, "show", "--property=LoadState", "--value", unit],
         f"agathodaimon-settings-samba-{name}-load-state-launch-failed",
@@ -58,12 +58,15 @@ def _unit_status(name: str, unit: str) -> dict[str, Any]:
         raise ObservationFailure(
             f"agathodaimon-settings-samba-{name}-load-state-command-failed"
         )
-    load_state = _single_value(
+    return _single_value(
         load_result.stdout,
         LOAD_STATES | {"not-found"},
         f"agathodaimon-settings-samba-{name}-load-state-unusable",
     )
-    if load_state == "not-found":
+
+
+def _unit_status(name: str, unit: str) -> dict[str, Any]:
+    if _load_state(name, unit) == "not-found":
         # Only an explicit LoadState=not-found proves the fixed unit absent.
         return {
             "unit": unit,
