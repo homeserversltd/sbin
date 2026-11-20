@@ -1,1 +1,14 @@
-{"children":["bind","verify","change","reset-default","forgejo-credential"]}
+{
+  "children": ["bind", "verify", "change", "reset-default", "forgejo-credential"],
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": false,
+        "administrative": {
+          "routes": ["POST /api/v1/access/pin/mode"]
+        }
+      }
+    }
+  }
+}

@@ -13,7 +13,7 @@
         "administrative": {
           "band": false,
           "verbs": [],
-          "routes": []
+          "routes": ["/api/v1/cert/trust-fetch"]
         }
       }
     }

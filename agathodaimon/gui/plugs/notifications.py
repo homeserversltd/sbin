@@ -265,12 +265,12 @@ def read_model() -> dict[str, Any]:
     return model
 
 
-def _trust_fetch(server: str, renew: bool) -> str:
-    request = urllib.request.Request(
-        CADUCEUS_URL + "/api/v1/cert/trust-fetch",
-        data=json.dumps({"server": server, "platform": "linux", "renew": renew}).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"}, method="POST")
-    try:
+def _trust_fetch(server: str, renew: bool, gate: _ActionGate, prompt: Callable[[], str | None]) -> str:
+    def post() -> tuple[int, dict[str, Any]]:
+        request = urllib.request.Request(
+            CADUCEUS_URL + "/api/v1/cert/trust-fetch",
+            data=json.dumps({"server": server, "platform": "linux", "renew": renew}).encode("utf-8"),
+            headers=gate._headers(), method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             response = opener.open(request, timeout=30)
@@ -284,11 +284,17 @@ def _trust_fetch(server: str, renew: bool) -> str:
         receipt = json.loads(raw)
         if not isinstance(receipt, dict):
             raise ValueError("invalid receipt")
+        return status, receipt
+
+    try:
+        status, receipt = gate._attended(post, prompt)
         if status < 400 and receipt.get("ok") is True:
             return ""
         signal = _text(receipt.get("firstMissingSignal", receipt.get("first_missing_signal")))
         if signal and signal != "none":
             return "Could not update trust: " + signal.replace("-", " ").replace("_", " ") + "."
+    except RuntimeError as error:
+        return str(error)
     except (OSError, ValueError, urllib.error.URLError):
         pass
     return "Could not update HomeServer trust. Try again."
@@ -326,7 +332,7 @@ class _ActionGate:
         if pin is None:
             raise RuntimeError("PIN entry cancelled")
         try:
-            receipt = self._post("/api/v1/exousia/open", {
+            _, receipt = self._post("/api/v1/exousia/open", {
                 "pin": pin, "documentId": self.document, "documentIncarnation": self.document,
             }, attend=False)
         finally:
@@ -338,21 +344,26 @@ class _ActionGate:
             raise RuntimeError("Admin Mode unavailable")
         self.attendance = attendance
 
-    def _post(self, path: str, payload: dict[str, Any] | None = None, attend: bool = True) -> dict[str, Any]:
-        # Never through an environment proxy: the PIN and attendance stay on this body.
+    def _headers(self, attend: bool = True) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if attend:
             headers["x-caduceus-document"] = self.document
             if self.attendance:
                 headers["x-caduceus-attendance"] = self.attendance
+        return headers
+
+    def _post(self, path: str, payload: dict[str, Any] | None = None,
+              attend: bool = True) -> tuple[int, dict[str, Any]]:
+        # Never through an environment proxy: the PIN and attendance stay on this body.
         data = json.dumps(payload if payload is not None else {}).encode("utf-8")
-        request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=headers, method="POST")
+        request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=self._headers(attend), method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
             response = opener.open(request, timeout=120)
         except urllib.error.HTTPError as error:
             response = error
         with response:
+            status = response.code
             raw = response.read(256 * 1024)
         try:
             value = json.loads(raw)
@@ -360,22 +371,27 @@ class _ActionGate:
             raise RuntimeError("Caduceus returned an unreadable receipt") from error
         if not isinstance(value, dict):
             raise RuntimeError("Caduceus returned an invalid receipt")
-        return value
+        return status, value
+
+    def _attended(self, post: Callable[[], tuple[int, dict[str, Any]]],
+                  prompt: Callable[[], str | None]) -> tuple[int, dict[str, Any]]:
+        with self.lock:
+            status, receipt = post()
+            if not _receipt_ok(receipt) and _signal(receipt) in ADMIN_SIGNALS:
+                self.attendance = ""
+                self._open(prompt)
+                return post()
+            return status, receipt
 
     def run(self, ident: str, verb: str, prompt: Callable[[], str | None]) -> dict[str, Any]:
         path = f"{NOTIFICATIONS_DOOR}/{urllib.parse.quote(ident, safe='')}/{urllib.parse.quote(verb, safe='')}"
-        with self.lock:
-            try:
-                receipt = self._post(path)
-                if not _receipt_ok(receipt) and _signal(receipt) in ADMIN_SIGNALS:
-                    self.attendance = ""
-                    self._open(prompt)
-                    receipt = self._post(path)
-            except RuntimeError:
-                raise
-            except Exception as error:  # transport failures (OSError, http.client) surface on the card
-                raise RuntimeError("Caduceus is unavailable") from error
-            return receipt
+        try:
+            _, receipt = self._attended(lambda: self._post(path), prompt)
+        except RuntimeError:
+            raise
+        except Exception as error:  # transport failures (OSError, http.client) surface on the card
+            raise RuntimeError("Caduceus is unavailable") from error
+        return receipt
 
 
 def _watch(widget: Any, render: Callable[[dict[str, Any]], None]) -> Callable[..., None]:
@@ -617,7 +633,7 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
                         return False
 
                     def run() -> None:
-                        failure = _trust_fetch(trust["server"], trust["state"] == "renew")
+                        failure = _trust_fetch(trust["server"], trust["state"] == "renew", gate, prompt_pin)
                         GLib.idle_add(complete, read_model(), failure)
 
                     threading.Thread(target=run, daemon=True).start()
