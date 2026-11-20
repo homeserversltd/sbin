@@ -4,6 +4,8 @@
   "bands": [
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
+    "appliance/power/poweroff",
+    "appliance/power/reboot",
     "appliance/restart",
     "appliance/restartable",
     "appliance/service",
@@ -631,6 +633,8 @@
   ],
   "routes": [
     "/api/v1/access/sudo/mode",
+    "/api/v1/appliance/power/poweroff",
+    "/api/v1/appliance/power/reboot",
     "/api/v1/appliance/restart-listed",
     "/api/v1/appliance/restartable",
     "/api/v1/appliance/service/:service/disable",
@@ -777,6 +781,8 @@
   ],
   "administrative": {
     "bands": [
+      "appliance/power/poweroff",
+      "appliance/power/reboot",
       "appliance/restart",
       "appliance/restartable",
       "appliance/service",
@@ -1067,6 +1073,8 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
+      "/api/v1/appliance/power/poweroff",
+      "/api/v1/appliance/power/reboot",
       "/api/v1/appliance/restart-listed",
       "/api/v1/appliance/restartable",
       "/api/v1/appliance/service/:service/disable",

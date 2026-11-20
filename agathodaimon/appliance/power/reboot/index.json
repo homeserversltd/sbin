@@ -1,0 +1,24 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": true,
+  "sclerite": {
+    "name": "gateway",
+    "features": {
+      "gateway": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/appliance/power/reboot"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/appliance/power/reboot"
+          ]
+        }
+      }
+    }
+  }
+}
