@@ -460,7 +460,7 @@
   ],
   "routes": [
     "/api/v1/access/sudo/mode",
-    "/api/v1/appliance/restart",
+    "/api/v1/appliance/restart-listed",
     "/api/v1/appliance/restartable",
     "/api/v1/appliance/service/:service/disable",
     "/api/v1/appliance/service/:service/enable",
@@ -805,7 +805,7 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
-      "/api/v1/appliance/restart",
+      "/api/v1/appliance/restart-listed",
       "/api/v1/appliance/restartable",
       "/api/v1/appliance/service/:service/disable",
       "/api/v1/appliance/service/:service/enable",

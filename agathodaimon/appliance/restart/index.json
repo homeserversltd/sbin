@@ -9,13 +9,13 @@
         "band": true,
         "verbs": [],
         "routes": [
-          "/api/v1/appliance/restart"
+          "/api/v1/appliance/restart-listed"
         ],
         "administrative": {
           "band": true,
           "verbs": [],
           "routes": [
-            "/api/v1/appliance/restart"
+            "/api/v1/appliance/restart-listed"
           ]
         }
       }

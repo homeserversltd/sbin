@@ -434,7 +434,7 @@
   ],
   "routes": [
     "/api/v1/access/sudo/mode",
-    "/api/v1/appliance/restart",
+    "/api/v1/appliance/restart-listed",
     "/api/v1/appliance/restartable",
     "/api/v1/cert/bundle/download",
     "/api/v1/cert/status",
@@ -703,7 +703,7 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
-      "/api/v1/appliance/restart",
+      "/api/v1/appliance/restart-listed",
       "/api/v1/appliance/restartable",
       "/api/v1/hermes/dashboard-login",
       "/api/v1/network/bandwidth/measure",
