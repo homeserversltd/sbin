@@ -1,13 +1,24 @@
 {
   "children": [],
+  "payload_fields": [
+    {"name": "role", "meaning": "Seat the configured NAS layout for an attached role (primary or backup)."}
+  ],
   "sclerite": {
     "name": "nas",
     "features": {
       "nas": {
         "band": true,
         "verbs": [["nas", "seat"]],
-        "routes": [],
-        "administrative": {"band": true, "verbs": [], "routes": []}
+        "routes": [
+          "/api/v1/storage/nas/seat"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/storage/nas/seat"
+          ]
+        }
       }
     }
   }

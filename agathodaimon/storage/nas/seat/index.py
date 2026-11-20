@@ -1,14 +1,16 @@
-"""Explicitly seat the configured layout on an attached NAS role."""
+"""Seat the configured NAS layout for an attached role (primary or backup)."""
 from __future__ import annotations
 
+import io
 import json
+import sys
 import time
 from typing import Any, Sequence
 
-from _envelope import EnvelopeError, attach as attach_envelope
+from _envelope import EnvelopeError, attach as attach_envelope, read_fields
 from agathodaimon.storage.nas import deed
-from agathodaimon.storage.nas.folders.index import _attached_info, _observe_layout, _raw_config, _read_request
-from agathodaimon.storage.nas.runtime import Refusal, _role_info, guarded_drive
+from agathodaimon.storage.nas.folders.index import _attached_info, _observe_layout, _raw_config
+from agathodaimon.storage.nas.runtime import MAX_INPUT, ROLE, Refusal, _role_info, guarded_drive
 from agathodaimon.storage.nas.setup._setup import _apply_permissions, _load_config, _seed_portal_layout
 
 
@@ -44,7 +46,8 @@ def dispatch(request: Any) -> dict[str, Any]:
     receipt = _failure("agathodaimon-nas-not-complete", "request", role if isinstance(role, str) else None)
     try:
         if "role" not in request.payload:
-            raise Refusal("agathodaimon-nas-invalid-envelope", "request")
+            receipt["could_change_to"] = {"role": list(ROLE)}
+            raise Refusal("agathodaimon-nas-role-missing", "request")
         _role_info(role)
         _seat(role, receipt)
     except Refusal as failure:
@@ -59,6 +62,18 @@ def dispatch(request: Any) -> dict[str, Any]:
     if receipt["mutationPerformed"] or attempted:
         deed.finish("nas-seat", "nas-" + role, receipt, started, request=request.intent_id)
     return attach_envelope(receipt, request)
+
+
+def _read_request():
+    raw = sys.stdin.buffer.read(MAX_INPUT + 1)
+    if not raw or len(raw) > MAX_INPUT:
+        raise ValueError("request-size-invalid")
+    previous = sys.stdin
+    try:
+        sys.stdin = io.StringIO(raw.decode("utf-8"))
+        return read_fields("role")
+    finally:
+        sys.stdin = previous
 
 
 def main(argv: Sequence[str] | None = None) -> int:
