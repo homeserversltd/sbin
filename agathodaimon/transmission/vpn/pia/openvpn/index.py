@@ -150,6 +150,8 @@ def _write_files(endpoint: dict[str, Any], username: str, password: str
             f"route {address} 255.255.255.255 net_gateway\n"
             "redirect-gateway def1\n"
             "nobind\nresolv-retry infinite\npersist-key\npersist-tun\n"
+            'pull-filter ignore "ping-restart"\n'
+            "ping-exit 60\n"
             "auth-nocache\ntls-client\nremote-cert-tls server\n"
             f"verify-x509-name {hostname} name\n"
             f"auth-user-pass {mapped_auth}\nca {ca_file}\n"
