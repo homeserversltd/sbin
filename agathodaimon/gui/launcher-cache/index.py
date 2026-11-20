@@ -3,20 +3,17 @@
 
 from __future__ import annotations
 
-import contextlib
+import json
 import os
 import re
 import shlex
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
-from agathodaimon.lib.receipts.index import emit
-from agathodaimon.face._shared import owner_home, refresh_launcher_cache
+from agathodaimon.face._shared import refresh_launcher_cache
 
 DEFAULT_OWNER_HOME = "/home/owner"
-DEFAULT_RECEIPT_ROOT = "/var/lib/caduceus/receipts"
 REFRESH_STDERR_MAX_LINES = 20
 REFRESH_STDERR_MAX_CHARS = 4096
 _SECRET_ASSIGNMENT = re.compile(
@@ -106,26 +103,6 @@ def refresh_command() -> list[str] | None:
     return command
 
 
-def _write_apply_receipt(receipt: dict) -> bool:
-    run_id = uuid.uuid4().hex
-    receipt_path = (
-        Path(os.environ.get("CADUCEUS_RECEIPT_ROOT", DEFAULT_RECEIPT_ROOT))
-        / run_id
-        / "run.json"
-    )
-    try:
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with receipt_path.open("x", encoding="utf-8") as stream:
-            with contextlib.redirect_stdout(stream):
-                emit({**receipt, "run_id": run_id})
-            stream.flush()
-            os.fsync(stream.fileno())
-    except (OSError, TypeError, ValueError):
-        print("caduceus-receipt-write-failed", file=sys.stderr)
-        return False
-    return True
-
-
 def _apply() -> int:
     before: str | None = None
     before_blocker: str | None = None
@@ -134,15 +111,11 @@ def _apply() -> int:
     refresh_error: str | None = None
     refresh_exit: int | None = None
     refresh_stderr_tail: str | None = None
-    touched_paths: list[str] = []
-    steps: list[dict] = []
 
     try:
         before = state()
-        steps.append({"name": "observe-before", "outcome": "succeeded", "state": before})
     except (OSError, ValueError) as error:
         before_blocker = str(error)
-        steps.append({"name": "observe-before", "outcome": "failed"})
 
     try:
         command = refresh_command()
@@ -150,75 +123,30 @@ def _apply() -> int:
             native = refresh_launcher_cache(owner_home())
             refresh_exit = native["exit"]
             refresh_stderr_tail = bounded_stderr_tail(native.get("stderr"))
-            refresh_step = {
-                "name": "owner-scoped-refresh",
-                "outcome": "succeeded" if refresh_exit == 0 else "failed",
-                "exit": refresh_exit,
-                "steps": native["steps"],
-            }
         else:
             result = subprocess.run(command, check=False, capture_output=True)
             refresh_exit = result.returncode
             refresh_stderr_tail = bounded_stderr_tail(result.stderr)
-            refresh_step = {
-                "name": "owner-scoped-refresh",
-                "outcome": "succeeded" if refresh_exit == 0 else "failed",
-                "exit": refresh_exit,
-            }
-        if refresh_stderr_tail is not None:
-            refresh_step["stderr_tail"] = refresh_stderr_tail
-        steps.append(refresh_step)
     except (OSError, ValueError) as error:
         refresh_error = str(error)
-        steps.append({"name": "owner-scoped-refresh", "outcome": "failed"})
 
     try:
         final = state()
-        steps.append({"name": "observe-after", "outcome": "succeeded", "state": final})
     except (OSError, ValueError) as error:
         final_blocker = str(error)
-        steps.append({"name": "observe-after", "outcome": "failed"})
-
-    if refresh_exit == 0 and final == "Empty":
-        touched_paths.append(str(cache_directory()))
 
     changed = before != final if before is not None and final is not None else None
-    converged = final == "Empty"
-    receipt = {
-        "schema": "agathodaimon.launcher-cache.apply.v1",
-        "kernel": "caduceus.staff.v1",
-        "routine": "agathodaimon.gui.launcher-cache",
-        "target": {
-            "cache_directory": str(cache_directory()),
-            "refresh_script": str(refresh_script()),
-        },
-        "flags": {"apply": True},
-        "ok": (
-            before_blocker is None
-            and refresh_error is None
-            and refresh_exit == 0
-            and final_blocker is None
-            and converged
-        ),
-        "changed": changed,
-        "touched_paths": touched_paths,
-        "observed": (
-            {"state": before}
-            if before is not None
-            else {"state": None, "blocker": before_blocker or "launcher-cache-observation-failed"}
-        ),
-        "could_change": {"state": "Empty", "path": str(cache_directory())},
-        "attempt": {"attempted": True, "steps": steps},
-        "final": (
-            {"state": final, "converged": converged}
-            if final is not None
-            else {"state": None, "converged": False, "blocker": final_blocker}
-        ),
-    }
-    receipt_written = _write_apply_receipt(receipt)
+    if before_blocker is not None:
+        signal = "launcher-cache-observation-failed"
+    elif refresh_error is not None or refresh_exit != 0:
+        signal = "launcher-cache-refresh-failed"
+    elif final_blocker is not None:
+        signal = "launcher-cache-readback-failed"
+    elif final != "Empty":
+        signal = "launcher-cache-not-converged"
+    else:
+        signal = "none"
 
-    if final is not None:
-        print(final)
     if before_blocker is not None:
         print(before_blocker, file=sys.stderr)
     if refresh_error is not None:
@@ -231,21 +159,26 @@ def _apply() -> int:
         print("launcher cache remains missing or stale after refresh", file=sys.stderr)
     if final_blocker is not None:
         print(final_blocker, file=sys.stderr)
-    return 0 if receipt["ok"] and receipt_written else 1
+    ok = signal == "none"
+    print(json.dumps({"ok": ok, "firstMissingSignal": signal, "changed": changed}))
+    return 0 if ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if args == ["--check"]:
         try:
-            print(state())
-            return 0
+            observed = state()
         except (OSError, ValueError) as error:
             print(str(error), file=sys.stderr)
+            print(json.dumps({"ok": False, "firstMissingSignal": "launcher-cache-observation-failed"}))
             return 1
+        print(json.dumps({"ok": True, "firstMissingSignal": "none", "observed": {"state": observed}}))
+        return 0
     if args == ["--apply"]:
         return _apply()
     print("usage: launcher-cache --check|--apply", file=sys.stderr)
+    print(json.dumps({"ok": False, "firstMissingSignal": "gui-launcher-cache-arguments-invalid"}))
     return 2
 
 
