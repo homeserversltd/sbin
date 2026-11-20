@@ -223,6 +223,11 @@ def dispatch(request: Any) -> dict[str, Any]:
         cleanup_readback: dict[str, Any] = {}
         if face is not None:
             try:
+                rt.close_namespace_output(cleanup_failures)
+            except Exception:
+                cleanup_failures.append({"signal": "transmission-namespace-output-close-failed",
+                                         "step": "namespace-output-close"})
+            try:
                 face.teardown()
             except Exception as failure:
                 signal_name = failure.signal_name if isinstance(failure, rt.TransmissionError) else "transmission-vpn-teardown-failed"

@@ -1287,10 +1287,7 @@ def _enable_host_forwarding_and_nat(wan: str) -> None:
     )
 
 
-def teardown_namespace() -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """Fail closed, remove the hold's network and run files, and read back once."""
-    failures: list[dict[str, Any]] = []
-
+def _namespace_cleanup_probes(failures: list[dict[str, Any]]):
     def fail(step: str, cause: str = "failed", **facts: Any) -> None:
         failures.append({"step": step, "signal": f"transmission-{step}-{cause}", **facts})
 
@@ -1335,9 +1332,15 @@ def teardown_namespace() -> tuple[dict[str, Any], list[dict[str, Any]]]:
             return None
         return any(row[key] == name for row in items)
 
-    netns_list = (IP, "-j", "netns", "list")
-    link_list = (IP, "-j", "link", "show")
-    namespace_before = present("namespace-teardown-preflight", netns_list, "name", VPN_NAMESPACE)
+    return fail, command, rows, present
+
+
+def close_namespace_output(failures: list[dict[str, Any]], *,
+                           preflight_step: str = "namespace-output-close-preflight",
+                           flush_step: str = "namespace-output-close") -> tuple[bool | None, int | None]:
+    """Close and verify the VPN namespace's output chain before removing routes or links."""
+    fail, command, rows, present = _namespace_cleanup_probes(failures)
+    namespace_before = present(preflight_step, (IP, "-j", "netns", "list"), "name", VPN_NAMESPACE)
     output_rules_after_flush = None
     if namespace_before is not False:
         family, table, chain = _NAMESPACE_OUTPUT_CHAIN
@@ -1348,8 +1351,8 @@ def teardown_namespace() -> tuple[dict[str, Any], list[dict[str, Any]]]:
         close_output = (f"add table {family} {table}; add chain {target} "
                         "{ type filter hook output priority 0; policy drop; }; "
                         f"flush chain {target}")
-        if command("namespace-output-flush", *nft_inside, close_output) is not None:
-            step = "namespace-output-flush-readback"
+        if command(flush_step, *nft_inside, close_output) is not None:
+            step = f"{flush_step}-readback"
             nft_rows = rows(step, *nft_inside, "-j", "list", "chain", family, table, chain, key="nftables")
             if nft_rows is not None:
                 output_rules_after_flush = sum("rule" in row for row in nft_rows)
@@ -1360,6 +1363,17 @@ def teardown_namespace() -> tuple[dict[str, Any], list[dict[str, Any]]]:
                              and item.get("policy") == "drop" for row in nft_rows)
                 if not closed or output_rules_after_flush:
                     fail(step, "mismatch")
+    return namespace_before, output_rules_after_flush
+
+
+def teardown_namespace() -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fail closed, remove the hold's network and run files, and read back once."""
+    failures: list[dict[str, Any]] = []
+    fail, command, rows, present = _namespace_cleanup_probes(failures)
+    netns_list = (IP, "-j", "netns", "list")
+    link_list = (IP, "-j", "link", "show")
+    namespace_before, output_rules_after_flush = close_namespace_output(
+        failures, preflight_step="namespace-teardown-preflight", flush_step="namespace-output-flush")
 
     # List, never flush, the host ruleset. Only these marker/chain pairs belong to us.
     host_rows = rows("host-rules-teardown-readback", NFT, "-j", "-a", "list", "ruleset", key="nftables")

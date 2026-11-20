@@ -1,9 +1,12 @@
-"""Stop the native Transmission unit and verify the VPN namespace is gone."""
+"""Stop the native Transmission unit and verify the VPN namespace and host veth are gone."""
 from __future__ import annotations
 
+import json
+import subprocess
 import time
 from typing import Any
 
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.transmission import runtime as rt
 
 
@@ -19,6 +22,19 @@ def _tunnel_present(interface: str) -> tuple[bool, bool]:
     if not isinstance(interface, str) or not rt._IFACE_RE.fullmatch(interface):
         raise rt.TransmissionError("transmission-provider-interface-invalid", "final-readback")
     return True, bool(rt._link_data(rt.VPN_NAMESPACE, interface))
+
+
+def _host_veth_present() -> bool:
+    # An unsuccessful single-device lookup would not prove absence.
+    try:
+        reply = nidus_run(rt.command_argv((rt.IP, "-j", "link", "show")), timeout=5)
+        links = json.loads(reply.stdout) if reply.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, UnicodeError, json.JSONDecodeError, rt.TransmissionError):
+        links = None
+    if not isinstance(links, list) or any(
+            not isinstance(link, dict) or not isinstance(link.get("ifname"), str) for link in links):
+        raise rt.TransmissionError("transmission-down-host-veth-readback-failed", "final-readback")
+    return any(link["ifname"] == rt.HOST_VETH for link in links)
 
 
 def dispatch(request: Any) -> dict[str, Any]:
@@ -77,6 +93,9 @@ def dispatch(request: Any) -> dict[str, Any]:
                     and hold_state in _TERMINAL_NONACTIVE_STATES):
                 if namespace_present:
                     raise rt.TransmissionError("transmission-down-namespace-preserved", "final-readback", final)
+                final["hostVethPresent"] = _host_veth_present()
+                if final["hostVethPresent"]:
+                    raise rt.TransmissionError("transmission-down-host-veth-preserved", "final-readback", final)
                 break
             if time.monotonic() >= deadline:
                 raise rt.TransmissionError("transmission-down-readback-timeout", "final-readback", final)
@@ -84,13 +103,15 @@ def dispatch(request: Any) -> dict[str, Any]:
         result["nativeState"] = native_state
         result["holdState"] = hold_state
         result["namespacePreserved"] = namespace_present
+        result["hostVethPresent"] = final["hostVethPresent"]
         rt._stamp(result, "hold", {"unit": hold_unit, "stateBefore": hold_before},
                   [hold_unit] if hold_before not in _TERMINAL_NONACTIVE_STATES else [],
                   "read-hold-state-without-direct-stop", {"state": hold_state})
 
         rung = "final-readback"
-        rt._stamp(result, "final-readback", {"namespacePresent": namespace_present}, False,
-                  "read-terminal-units-and-namespace-absent", final)
+        rt._stamp(result, "final-readback", {"namespacePresent": namespace_present,
+                                            "hostVethPresent": final["hostVethPresent"]}, False,
+                  "read-terminal-units-namespace-and-host-veth-absent", final)
         result["ok"] = True
         result["firstMissingSignal"] = "none"
         return rt.finish(result, request)
