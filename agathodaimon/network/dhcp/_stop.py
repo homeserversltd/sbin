@@ -4,12 +4,16 @@ from agathodaimon import _envelope
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
 
+ADD_FIELDS = ("hw_address", "ip_address", "hostname")
+RENAME_FIELDS = ("identifier", "hostname")
+
+
 def run(request, act, fields=(), boundary=False):
     manager = None
     try:
         values = [request.payload.get(name) for name in fields]
         for name, value in zip(fields, values):
-            if name in ("ip_address", "hostname") and value is None:
+            if fields == ADD_FIELDS and name in ("ip_address", "hostname") and value is None:
                 continue
             if name == "max_reservations":
                 if isinstance(value, bool) or not isinstance(value, int):
@@ -19,8 +23,10 @@ def run(request, act, fields=(), boundary=False):
         manager = DhcpManager()
         result = act(manager, *values)
         receipt = {"ok": True, "result": result, "firstMissingSignal": "none"}
-        if fields in (("hw_address", "ip_address", "hostname"), ("identifier",)):
+        if fields in (ADD_FIELDS, ("identifier",), RENAME_FIELDS):
             receipt["changed"] = manager.changed
+        if fields == RENAME_FIELDS:
+            receipt["mutationPerformed"] = manager.mutation_performed
         if boundary:
             receipt["active_leases_count"] = len(manager.get_leases())
     except DhcpError as exc:

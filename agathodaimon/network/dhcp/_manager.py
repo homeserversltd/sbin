@@ -407,6 +407,36 @@ class DhcpManager:
         self.update_config(config)
         return {"hw-address": matches.get("hw-address", ""), "ip-address": new_ip, "hostname": matches.get("hostname", "")}
 
+    @identity_locked
+    def update_reservation_hostname(self, identifier: str, hostname: str) -> dict[str, Any]:
+        from agathodaimon.network.dns._manager import DnsError, DnsManager
+
+        self.changed = False
+        self.mutation_performed = False
+        try:
+            DnsManager.canonical_name(hostname)
+        except DnsError as exc:
+            raise DhcpError(str(exc)) from exc
+
+        if not identifier:
+            raise DhcpError("reservation not found")
+        config = self.get_config()
+        mac = identifier.lower()
+        matches = [
+            item for subnet in self._subnets(config) for item in subnet.get("reservations", [])
+            if isinstance(item, dict)
+            and (str(item.get("hw-address") or "").lower() == mac or item.get("ip-address") == identifier)
+        ]
+        if not matches:
+            raise DhcpError("reservation not found")
+        if len(matches) != 1:
+            raise DhcpError("reservation identifier is ambiguous")
+        reservation = matches[0]
+        if reservation.get("hostname") != hostname:
+            reservation["hostname"] = hostname
+            self.update_config(config)
+        return reservation
+
     def get_leases(self) -> list[dict[str, Any]]:
         trace_active = _load_trace.context_active()
         request: UrlRequest | None = None
