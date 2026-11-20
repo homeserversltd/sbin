@@ -1,0 +1,24 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": true,
+  "sclerite": {
+    "name": "pid2-unit",
+    "features": {
+      "pid2-unit": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/appliance/restart"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/appliance/restart"
+          ]
+        }
+      }
+    }
+  }
+}

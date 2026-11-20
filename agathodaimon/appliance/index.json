@@ -3,6 +3,8 @@
     "factory-fallback",
     "harmonia-press",
     "journal-vacuum",
+    "restart",
+    "restartable",
     "service",
     "sudo-passwordless"
   ]

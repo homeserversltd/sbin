@@ -4,6 +4,8 @@
   "bands": [
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
+    "appliance/restart",
+    "appliance/restartable",
     "appliance/service",
     "appliance/service/disable",
     "appliance/service/enable",
@@ -432,6 +434,8 @@
   ],
   "routes": [
     "/api/v1/access/sudo/mode",
+    "/api/v1/appliance/restart",
+    "/api/v1/appliance/restartable",
     "/api/v1/cert/bundle/download",
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
@@ -511,6 +515,8 @@
   ],
   "administrative": {
     "bands": [
+      "appliance/restart",
+      "appliance/restartable",
       "appliance/service",
       "appliance/service/disable",
       "appliance/service/enable",
@@ -697,6 +703,8 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
+      "/api/v1/appliance/restart",
+      "/api/v1/appliance/restartable",
       "/api/v1/hermes/dashboard-login",
       "/api/v1/network/bandwidth/measure",
       "/api/v1/settings/appearance",
