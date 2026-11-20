@@ -75,12 +75,10 @@ def _render(shares):
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
-def _reload_samba(receipt):
-    receipt["mutationPerformed"] = True
+def _reload_samba():
     result = runtime._run([runtime.SYSTEMCTL, "reload", "smbd.service"], step="reload")
     if result.returncode:
         raise runtime.Refusal("agathodaimon-drive-shares-reload-failed", "reload", result.returncode)
-    receipt["reloaded"] = True
 
 
 def _write_config(data, receipt, included):
@@ -97,7 +95,7 @@ def _write_config(data, receipt, included):
     cause = None
     try:
         parts = write([{"path": runtime.runtime_path(FILE), "candidate": data, "mode": 0o644}],
-                      check=check, reload=(lambda: _reload_samba(receipt)) if included else None,
+                      check=check, reload=_reload_samba if included else None,
                       readback=readback)
     except WriteError as failure:
         parts, cause = failure.parts, failure.cause
@@ -107,10 +105,11 @@ def _write_config(data, receipt, included):
                    could_change_to={"files": parts["could_change_to"]},
                    attempt=parts["attempt"],
                    changed=any(row["before"] != row["after"] for row in parts["observed"]))
-    # A completed replacement counts as an act even if the bytes were restored.
-    if any(row["step"] == "restore" or (row["step"] == "replace" and row["outcome"] == "ok")
+    # Count the act even after compensation, but distinguish reloading the restored bytes.
+    if any(row["step"] in {"reload", "restore"} or (row["step"] == "replace" and row["outcome"] == "ok")
            for row in steps):
         receipt["mutationPerformed"] = True
+    receipt["reloaded"] = cause is None and any(row["step"] == "reload" for row in steps)
     if isinstance(cause, runtime.Refusal):
         raise cause from None
     if cause is not None:
@@ -163,7 +162,9 @@ def rebuild(exclude_mountpoints=(), *, force_reload=False):
                 _write_config(rendered, receipt, included)
             elif included and force_reload:
                 # Removal still needs confirmation when its candidate was already seated.
-                _reload_samba(receipt)
+                receipt["mutationPerformed"] = True
+                _reload_samba()
+                receipt["reloaded"] = True
                 receipt["steps"].append({"step": "reload", "outcome": "ok"})
             receipt["pruned"] = _opened._forget_many(dead)
             if receipt["pruned"]:
