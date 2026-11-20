@@ -2517,8 +2517,11 @@ def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
         if feed_path is not None:
             feed_text = Path(feed_path).read_text(encoding="utf-8")
         else:
+            argv = ["/usr/local/bin/harmonia", "interactable", "list", "--json"]
+            if os.geteuid() != 0:
+                argv = ["sudo", "-n", *argv]
             feed_text = subprocess.run(
-                ["sudo", "-n", "/usr/local/bin/harmonia", "interactable", "list", "--json"],
+                argv,
                 check=True, capture_output=True, text=True,
             ).stdout
         feed = json.loads(feed_text)
