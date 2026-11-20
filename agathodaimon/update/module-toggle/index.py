@@ -12,8 +12,10 @@ import json
 import os
 import re
 import stat
+import sys
 import tempfile
 from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -241,14 +243,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agathodaimon-harmonia-module-toggle")
     parser.add_argument("module_or_command", help="a module id, or 'list'")
     parser.add_argument("state", nargs="?", choices=("on", "off"))
-    args = parser.parse_args(argv)
-    if args.module_or_command == "list":
-        if args.state is not None:
-            parser.error("list takes no state")
-        value = list_disabled()
-    elif args.state is None:
-        parser.error("module toggles require on or off")
+    # Keep the front door's transition retry when no argv was supplied in an envelope.
+    argument_sets = [argv]
+    if argv == [] and isinstance(sys.stdin, StringIO):
+        from agathodaimon._envelope import SCHEMA
+
+        try:
+            request = json.loads(sys.stdin.getvalue())
+        except (ValueError, RecursionError):
+            request = None
+        if isinstance(request, dict) and request.get("schema") == SCHEMA:
+            transition, payload = request.get("transition"), request.get("payload")
+            supplied = payload.get("args") if isinstance(payload, dict) else None
+            explicit_args = isinstance(supplied, list) and all(isinstance(arg, str) for arg in supplied)
+            if isinstance(transition, str) and not explicit_args:
+                argument_sets.append([transition.rstrip("/").rsplit("/", 1)[-1]])
+    for arguments in argument_sets:
+        try:
+            args = parser.parse_args(arguments)
+            if args.module_or_command == "list" and args.state is not None:
+                parser.error("list takes no state")
+            if args.module_or_command != "list" and args.state is None:
+                parser.error("module toggles require on or off")
+            break
+        except SystemExit as exc:
+            if exc.code == 0:
+                return 0
+            if exc.code != 2:
+                raise
     else:
+        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-update-module-toggle-arguments-invalid",
+                          "mutationPerformed": False}))
+        return 2
+    if args.module_or_command == "list":
+        value = list_disabled()
+    else:
+        assert args.state is not None  # parser.error above rejects a missing state
         value = toggle(args.module_or_command, args.state)
     print(json.dumps(value, sort_keys=True))
     return 0 if value["ok"] else 1

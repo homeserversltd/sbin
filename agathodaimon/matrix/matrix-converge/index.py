@@ -103,7 +103,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--config-url", default=os.environ.get("CADUCEUS_CONFIG_URL", "http://127.0.0.1:3014"))
     parser.add_argument("--state-root", type=Path, default=Path(os.environ.get("CADUCEUS_MATRIX_STATE_ROOT", "/var/lib/harmonia/state")))
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code == 0:
+            return 0
+        if exc.code != 2:
+            raise
+        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-matrix-matrix-converge-arguments-invalid",
+                          "mutationPerformed": False}))
+        return 2
     value = converge(args.plan, args.config_url.rstrip("/"), args.state_root)
     print(json.dumps(value, sort_keys=True)); return 0 if value["ok"] else 1
 

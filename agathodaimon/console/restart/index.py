@@ -49,7 +49,18 @@ def restart(degree):
 
 
 def main(argv:Sequence[str]|None=None):
-    parser=argparse.ArgumentParser(prog="agathodaimon-console-restart"); parser.add_argument("degree",nargs="*",metavar="{stream|seat}"); args=parser.parse_args(argv); degree=args.degree[0] if len(args.degree)==1 else None
+    parser=argparse.ArgumentParser(prog="agathodaimon-console-restart"); parser.add_argument("degree",nargs="*",metavar="{stream|seat}")
+    try:
+        args=parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code == 0:
+            return 0
+        if exc.code != 2:
+            raise
+        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-console-restart-arguments-invalid",
+                          "mutationPerformed": False}))
+        return 2
+    degree=args.degree[0] if len(args.degree)==1 else None
     if len(args.degree)>1: degree="<multiple-degrees>"
     if not args.degree and not sys.stdin.isatty():
         try:

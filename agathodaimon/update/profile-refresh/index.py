@@ -89,7 +89,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agathodaimon-harmonia-profile-refresh")
     action = parser.add_mutually_exclusive_group(); action.add_argument("--install", action="store_true"); action.add_argument("--uninstall", action="store_true"); action.add_argument("--refresh", action="store_true")
     parser.add_argument("--plan", action="store_true"); parser.add_argument("--profile"); parser.add_argument("--unit-dir", type=Path, default=Path("/etc/systemd/system")); parser.add_argument("--source", type=Path, default=Path("/fulcrum/attachments/harmonia-monad")); parser.add_argument("--harmonia", default="/usr/local/bin/harmonia"); parser.add_argument("--config", type=Path, default=Path("/etc/harmonia")); parser.add_argument("--state", type=Path, default=Path("/var/lib/harmonia"))
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code == 0:
+            return 0
+        if exc.code != 2:
+            raise
+        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-update-profile-refresh-arguments-invalid",
+                          "mutationPerformed": False}))
+        return 2
     try:
         value = install(args.unit_dir, args.plan) if args.install else uninstall(args.unit_dir, args.plan) if args.uninstall else refresh(selected(args.profile), args.plan, args.source, args.harmonia, args.config, args.state)
     except ValueError as error: value = {"ok": False, "firstMissingSignal": str(error)}

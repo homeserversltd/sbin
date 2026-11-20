@@ -313,7 +313,16 @@ def scan_games(runners):
 
 def _sync_main():
     parser = argparse.ArgumentParser(description='Sync configured RetroArch and DOSBox ROM folders and artwork')
-    parser.parse_args()
+    try:
+        parser.parse_args()
+    except SystemExit as exc:
+        if exc.code == 0:
+            return 0
+        if exc.code != 2:
+            raise
+        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-games-sync-arguments-invalid",
+                          "mutationPerformed": False}))
+        return 2
     runners = json.loads(RUNNERS_PATH.read_text())
     games, blocked_payloads = scan_games(runners)
     artwork = [
@@ -330,8 +339,7 @@ def main(argv=None):
     previous = sys.argv
     try:
         sys.argv = [previous[0], *(argv or [])]
-        _sync_main()
-        return 0
+        return _sync_main() or 0
     finally:
         sys.argv = previous
 

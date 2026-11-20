@@ -70,7 +70,16 @@ def main(args=None):
     parser = argparse.ArgumentParser(prog="local-ai nap")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--user-id")
-    options = parser.parse_args(args or [])
+    try:
+        options = parser.parse_args(args or [])
+    except SystemExit as exc:
+        if exc.code == 0:
+            return 0
+        if exc.code != 2:
+            raise
+        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-local-ai-nap-arguments-invalid",
+                          "mutationPerformed": False}))
+        return 2
     request = None
     if not sys.stdin.isatty():
         raw = sys.stdin.read()

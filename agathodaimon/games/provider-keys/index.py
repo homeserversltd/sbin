@@ -17,6 +17,10 @@ SUPPORTED_KEYS = ("THEGAMESDB_API_KEY", "SCREENSCRAPER_API_KEY")
 DEFAULT_PATH = Path("/etc/arch-game-sync/providers.env")
 
 
+class _PayloadRequired(ValueError):
+    pass
+
+
 def provider_path() -> Path:
     return DEFAULT_PATH
 
@@ -73,7 +77,7 @@ def _request(value: Mapping[str, Any]) -> Mapping[str, Any]:
             raise ValueError("missing envelope kernel keys: " + ",".join(missing))
         payload = value.get("payload")
         if not isinstance(payload, Mapping) or not payload:
-            raise ValueError("provider request payload required")
+            raise _PayloadRequired("provider request payload required")
         return payload
     return value
 
@@ -149,6 +153,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise ValueError("save input must be a JSON object")
                 envelope = _request(loaded)
             result = _save(_payload(envelope))
+    except _PayloadRequired as exc:
+        print(json.dumps({"ok": False, "error": str(exc),
+                          "firstMissingSignal": "agathodaimon-provider-keys-payload-required",
+                          "mutationPerformed": False}, sort_keys=True))
+        return 2
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(json.dumps({"ok":False,"error":str(exc),"mutationPerformed":False}, sort_keys=True))
         return 1

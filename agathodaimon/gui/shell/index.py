@@ -597,13 +597,29 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agathodaimon-gui-settings")
     parser.add_argument("--standalone-plug", metavar="ID")
     parser.add_argument("--self-check", action="store_true")
-    args = parser.parse_args(argv)
+
+    def refuse_arguments() -> int:
+        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-gui-shell-arguments-invalid",
+                          "mutationPerformed": False}))
+        return 2
+
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code == 0:
+            return 0
+        if exc.code != 2:
+            raise
+        return refuse_arguments()
     if args.self_check:
         return self_check()
     try:
         registry = discover_plugs()
         if args.standalone_plug is not None and args.standalone_plug not in registry:
-            parser.error(f"unknown plug: {args.standalone_plug}")
+            try:
+                parser.error(f"unknown plug: {args.standalone_plug}")
+            except SystemExit:
+                return refuse_arguments()
         return run_application(registry, args.standalone_plug)
     except (ImportError, ValueError) as error:
         print(f"agathodaimon-gui-settings: {error}", file=sys.stderr)
