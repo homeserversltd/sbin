@@ -29,7 +29,7 @@ if str(ROOT.parent) not in sys.path: sys.path.insert(0, str(ROOT.parent))
 from agathodaimon import _envelope
 sys.modules["_envelope"] = _envelope
 from agathodaimon._envelope import appliance_runtime_path
-from agathodaimon.carapace import normalize_profile
+from agathodaimon.carapace import _load_feature_tree, _resolve_profile, normalize_profile
 from agathodaimon import _load_trace
 from agathodaimon._seat import ForeignSeat, read_seats
 _stamp_target = None
@@ -1014,6 +1014,9 @@ def _refuse_crossing(profile: str, requested: str) -> int:
 
 
 def _admit_caduceus_crossing(args: list[str]) -> bool:
+    # The warm crossing daemon also enters here before calling main().
+    if _refuse_unlit_gateway_stop(args):
+        return False
     profile, profile_ok = _profile_for_crossing()
     form, request_key, requested, first_is_lib = _crossing_request(args)
     resolved_target = _crossing_resolved_target(args) if form == "verb" else None
@@ -1142,6 +1145,76 @@ def _cli_target(args: list[str]) -> tuple[str | None, list[str]]:
     except (OSError, json.JSONDecodeError, ValueError):
         return None, []
     return path.relative_to(ROOT).as_posix(), remainder
+
+
+def _unlit_family_stop(args: list[str], family: str) -> Path | None:
+    """Find a requested stop whose own feature requires the family and is unlit."""
+    if not args or args[0].startswith("--"):
+        return None
+    slash = "/" in args[0]
+    try:
+        if slash:
+            if len(args) > 2 or args[1:] == ["--help"]:
+                return None
+            target = _slash_target(args[0])
+            if target is None:
+                return None
+            path = target.parent if target.is_file() else target
+            remainder = []
+        else:
+            band, remainder = _cli_target(args)
+            if band is None or remainder == ["--help"]:
+                return None
+            path = ROOT / band
+        declaration = _index(path)
+        if not isinstance(declaration, dict):
+            return None
+        has_index = (path / "index.py").is_file()
+        if not has_index and "serve" not in declaration:
+            return None
+        sclerite = declaration.get("sclerite")
+        feature = sclerite.get("name") if isinstance(sclerite, dict) else None
+        if not isinstance(feature, str):
+            return None
+        profile, profile_ok = _profile_for_crossing()
+        if not profile_ok or profile == "specula":
+            return None
+        tree = _load_feature_tree()
+        features = tree["features"]
+        if feature not in features:
+            return None
+        pending, visited = [feature], set()
+        while pending:
+            name = pending.pop()
+            if name == family:
+                break
+            if name not in visited:
+                visited.add(name)
+                pending.extend(features[name]["requires"])
+        else:
+            return None
+        if feature in _resolve_profile(profile, tree):
+            return None
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, RecursionError):
+        # An unreadable declaration is not evidence that the feature is unlit.
+        return None
+    if not slash and not remainder and has_index and declaration.get("children"):
+        # A fused noun without an act request still lists its children. On
+        # empty stdin there is nothing to consume; otherwise we answer here.
+        try:
+            if sys.stdin.isatty() or not sys.stdin.read(1):
+                return None
+        except (AttributeError, OSError, UnicodeError):
+            return None
+    return path
+
+
+def _refuse_unlit_gateway_stop(args: list[str]) -> bool:
+    path = _unlit_family_stop(args, "gateway")
+    if path is None:
+        return False
+    _front_answer("not-the-gateway", "profile-feature", path)
+    return True
 
 
 def _transmission_keys_json_argv(args: list[str]) -> bool:
@@ -1679,6 +1752,8 @@ def _main(argv, folder, seats):
             return 1
         for name in ("SUDO_USER", "SUDO_UID", "SUDO_GID", "SUDO_COMMAND"):
             os.environ.pop(name, None)
+    elif _refuse_unlit_gateway_stop(args):
+        return 1
     # A JSON-argv request may carry a forbidden PIN and a dry-run field. Give
     # the target's dry-run refusal precedence without exposing either value.
     if len(args) == 2 and "/" in args[0] and args[1].lstrip().startswith("{"):
