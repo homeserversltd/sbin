@@ -248,13 +248,185 @@ def build_manager_widget(plug: dict[str, Any], program: str) -> Any:
     return page
 
 
+_SWAY_ONLY_SIGNALS = {"sway-session-unavailable", "unsupported:sway-session-unavailable"}
+_SWAY_ONLY_REASON = "Changes apply on Sway machines"
+_SLIDER_WRITE_INTERVAL_US = 300_000
+_SLIDER_SETTLE_MS = 150
+
+
+class _LiveSlider:
+    """Coalesce GTK motion into serial writes; read back once the hand is idle."""
+
+    def __init__(self, Gtk: Any, Gdk: Any, GLib: Any, spec: dict[str, Any], send: Any, refresh: Any):
+        self.glib = GLib
+        self.send = send
+        self.refresh = refresh
+        self.digits = int(spec.get("digits", 0))
+        lower, upper = float(spec["minimum"]), float(spec["maximum"])
+        step = float(spec.get("step", 1))
+        page = float(spec.get("page", step * 10))
+        self.scale = scale = Gtk.Scale.new(Gtk.Orientation.HORIZONTAL, Gtk.Adjustment(
+            value=lower, lower=lower, upper=upper, step_increment=step, page_increment=page,
+        ))
+        scale.set_hexpand(True)
+        scale.set_valign(Gtk.Align.CENTER)
+        scale.set_size_request(280, -1)
+        scale.set_focusable(True)
+        scale.set_digits(self.digits)
+        scale.set_draw_value(True)
+        scale.update_property([Gtk.AccessibleProperty.LABEL], [spec["title"]])
+        marks = []
+        for item in spec.get("marks", ()):
+            value, label = (item["value"], item.get("label")) if isinstance(item, dict) else (item, None)
+            scale.add_mark(value, Gtk.PositionType.BOTTOM, GLib.markup_escape_text(label) if label else None)
+            marks.append(value)
+        self.snap_marks = marks if spec.get("snap") else []
+
+        self.dragging = self.drag_changed = False
+        self.held_keys: set[int] = set()
+        self.pending = self.in_flight = self.readback_pending = False
+        self.send_source = self.settle_source = self.last_send = 0
+
+        # Observe the pointer stream without claiming Gtk.Range's native drag gesture.
+        pointer = Gtk.EventControllerLegacy.new()
+        pointer.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        pointer.connect("event", self._pointer_event, Gdk)
+        scale.add_controller(pointer)
+
+        keys = Gtk.EventControllerKey.new()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        moves = {getattr(Gdk, "KEY_" + prefix + key): delta for prefix in ("", "KP_")
+                 for key, delta in (("Left", -step), ("Right", step), ("Up", step), ("Down", -step),
+                                    ("Page_Up", page), ("Page_Down", -page))}
+        keys.connect("key-pressed", self._key_pressed, moves)
+        keys.connect("key-released", self._key_released)
+        focus = Gtk.EventControllerFocus.new()
+
+        def focus_in(_focus: Any) -> None:
+            # The shell captures Page Up/Down for scrolling. Take them only while
+            # this scale owns focus, before the shell's window controller.
+            root = scale.get_root()
+            if isinstance(root, Gtk.Window) and keys.get_widget() is None:
+                root.add_controller(keys)
+
+        def focus_out(_widget: Any) -> None:
+            root = keys.get_widget()
+            if root is not None:
+                root.remove_controller(keys)
+            self.held_keys.clear()
+            self._advance()
+
+        def unmapped(widget: Any) -> None:
+            self.dragging = self.drag_changed = False
+            focus_out(widget)
+
+        focus.connect("enter", focus_in)
+        focus.connect("leave", focus_out)
+        scale.add_controller(focus)
+        scale.connect("unmap", unmapped)
+
+    @property
+    def held(self) -> bool:
+        return self.dragging or bool(self.held_keys)
+
+    @property
+    def protected(self) -> bool:
+        return self.held or self.pending or self.in_flight or bool(self.settle_source)
+
+    def wire_value(self, value: float) -> int | float:
+        return round(value, self.digits) if self.digits else round(value)
+
+    def moved(self) -> None:
+        self.pending = True
+        self.drag_changed |= self.dragging
+        if not self.held:
+            if self.settle_source:
+                self.glib.source_remove(self.settle_source)
+            self.settle_source = self.glib.timeout_add(_SLIDER_SETTLE_MS, self._settled)
+        self._advance()
+
+    def _settled(self) -> bool:
+        self.settle_source = 0
+        self._advance()
+        return False
+
+    def _advance(self) -> None:
+        if self.pending and not self.in_flight and not self.send_source:
+            until = self.last_send + _SLIDER_WRITE_INTERVAL_US - self.glib.get_monotonic_time()
+            delay = max(0, (until + 999) // 1000)
+            self.send_source = self.glib.timeout_add(delay, self._flush)
+        if self.readback_pending and not self.protected:
+            self.readback_pending = False
+            self.refresh()
+
+    def _flush(self) -> bool:
+        self.send_source = 0
+        self.pending = False
+        if self.scale.is_sensitive() and self.send(self.wire_value(self.scale.get_value())):
+            self.last_send = self.glib.get_monotonic_time()
+            self.in_flight = True
+        self._advance()
+        return False
+
+    def complete(self, ok: bool) -> None:
+        self.in_flight = False
+        if ok:
+            self.readback_pending = True
+            self._advance()
+        else:
+            self.discard()
+
+    def discard(self) -> None:
+        if self.send_source:
+            self.glib.source_remove(self.send_source)
+        if self.settle_source:
+            self.glib.source_remove(self.settle_source)
+        self.send_source = self.settle_source = 0
+        self.pending = self.readback_pending = self.drag_changed = False
+
+    def _pointer_event(self, controller: Any, event: Any, Gdk: Any) -> bool:
+        # PyGObject 3.50 can marshal the signal argument as None. The
+        # controller exposes the concrete Gdk event during dispatch.
+        if event is None:
+            event = controller.get_current_event()
+        if event is None:
+            return False
+        event_type = event.get_event_type()
+        if not self.dragging and event_type in (Gdk.EventType.BUTTON_PRESS, Gdk.EventType.TOUCH_BEGIN):
+            self.dragging, self.drag_changed = True, False
+        elif event_type in (Gdk.EventType.BUTTON_RELEASE, Gdk.EventType.TOUCH_END, Gdk.EventType.TOUCH_CANCEL,
+                            Gdk.EventType.GRAB_BROKEN) and self.dragging:
+            self.dragging = False
+            released = event_type in (Gdk.EventType.BUTTON_RELEASE, Gdk.EventType.TOUCH_END)
+            if released and self.drag_changed and self.snap_marks and self.scale.is_sensitive():
+                value = self.scale.get_value()
+                self.scale.set_value(min(self.snap_marks, key=lambda mark: abs(mark - value)))
+            self.drag_changed = False
+            self._advance()
+        return False
+
+    def _key_pressed(self, controller: Any, keyval: int, keycode: int, _mods: Any, moves: dict[int, float]) -> bool:
+        root = controller.get_widget()
+        if keyval not in moves or root is None or root.get_focus() is not self.scale or not self.scale.is_sensitive():
+            return False
+        self.held_keys.add(keycode)
+        # Keyboard editing keeps the declared step/page even on a drag-snap scale.
+        self.scale.set_value(self.wire_value(self.scale.get_value() + moves[keyval]))
+        return True
+
+    def _key_released(self, _controller: Any, _keyval: int, keycode: int, _mods: Any) -> None:
+        if keycode in self.held_keys:
+            self.held_keys.remove(keycode)
+            self._advance()
+
+
 def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, specs: list[dict[str, Any]], *, required_route: str | None = None, mutation_method: str = "PATCH", page: Any = None) -> Any:
     """Build one receipt-backed settings pane over its admitted Caduceus door."""
     import gi
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk
+    from gi.repository import Adw, Gdk, GLib, Gtk
 
     if page is None:
         page = _page(Adw, plug)
@@ -270,6 +442,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     getters: dict[str, Any] = {}
     setters: dict[str, Any] = {}
     static_signals: dict[str, str] = {}
+    readonly_signals: dict[str, str] = {}
+    sliders: dict[str, _LiveSlider] = {}
     action_fields: set[str] = set()
     choices: dict[str, dict[str, Any]] = {}
     numeric_choices = {spec["field"] for spec in specs
@@ -296,6 +470,18 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         if signal:
             selectable_subtitle(status)
 
+    def show_readonly(field: str, signal: str) -> None:
+        state["status"].pop(field, None)
+        if signal in _SWAY_ONLY_SIGNALS:
+            show_status(field, _SWAY_ONLY_REASON)
+        else:
+            show_status(field, "Can't be changed from Settings yet", GLib.markup_escape_text(signal))
+
+    def set_control_sensitive(field: str, enabled: bool) -> None:
+        # Keep a slider's info button available when its value is read-only.
+        control = sliders[field].scale if field in sliders else rows[field]
+        control.set_sensitive(enabled)
+
     def clear_saved(field: str, generation: int) -> bool:
         if status_generation.get(field) == generation and state["status"].get(field) == "Saved":
             state["status"].pop(field, None)
@@ -321,6 +507,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         absent_reasons[field] = spec.get("absent", "Can't be changed from Settings yet")
         kind = spec.get("kind", "entry")
         title = spec["title"]
+        if spec.get("underline_title"):
+            title = "<u>" + GLib.markup_escape_text(title) + "</u>"
         signal = spec.get("signal", "")
         event_source = None
         if kind == "action":
@@ -351,6 +539,25 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             getters[field] = (lambda item=row: int(item.get_value())) if digits == 0 else row.get_value
             setters[field] = lambda value, item=row, default=float(spec.get("minimum", 0.0)): item.set_value(_number(value, default))
             changed_signal = "notify::value"
+        elif kind == "slider":
+            row = Adw.ActionRow(title=title)
+            slider = _LiveSlider(Gtk, Gdk, GLib, spec,
+                                 lambda value, key=field: send_slider(key, value),
+                                 lambda key=field: refresh(key))
+            sliders[field] = slider
+            event_source = scale = slider.scale
+            row.add_suffix(scale)
+
+            def set_slider(value: Any, item: Any = scale, target: Any = row) -> None:
+                adjustment = item.get_adjustment()
+                number = _number(value, adjustment.get_lower())
+                in_range = adjustment.get_lower() <= number <= adjustment.get_upper()
+                target.set_subtitle("" if in_range else f"Current value: {number:g}")
+                item.set_draw_value(in_range)
+                item.set_value(number)
+
+            setters[field] = set_slider
+            changed_signal = "value-changed"
         elif kind == "combo":
             options = spec["options"]
             typed = bool(options) and isinstance(options[0], dict)
@@ -381,7 +588,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             changed_signal = "apply"
         add_info(row, spec.get("info"))
         rows[field] = row
-        row.set_sensitive(False)
+        set_control_sensitive(field, False)
         group.add(row)
         if kind == "choice":
             combo = Adw.ComboRow(title=title)
@@ -410,7 +617,20 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             unavailable.set_visible(True)
 
         def on_changed(_row: Any, _param: Any = None, selected: str = field) -> None:
-            if not state["hydrated"] or state["hydrating"] or selected in state["busy"] or selected in static_signals:
+            if (not state["hydrated"] or state["hydrating"] or selected in state["busy"]
+                    or selected in static_signals or selected in readonly_signals):
+                return
+            if selected in sliders:
+                slider = sliders[selected]
+                if not slider.scale.is_sensitive():
+                    return
+                if status_rows[selected].get_visible():
+                    status_generation[selected] += 1
+                    state["status"].pop(selected, None)
+                    show_status(selected)
+                rows[selected].set_subtitle("")
+                slider.scale.set_draw_value(True)
+                slider.moved()
                 return
             previous = state["values"].get(selected)
             value = getters[selected]()
@@ -442,17 +662,22 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             combo.connect("notify::selected", on_changed)
         if kind in ("entry", "choice"):
             def on_entry_changed(_row: Any, selected: str = field) -> None:
-                if state["hydrated"] and not state["hydrating"] and selected not in state["busy"]:
+                if (state["hydrated"] and not state["hydrating"] and selected not in state["busy"]
+                        and selected not in readonly_signals):
                     status_generation[selected] += 1
                     state["status"].pop(selected, None)
                     show_status(selected)
             row.connect("changed", on_entry_changed)
 
-    def apply_values(values: dict[str, Any], options: dict[str, Any], message_field: str | None = None) -> None:
+    def apply_values(values: dict[str, Any], options: dict[str, Any], readonly: dict[str, Any], message_field: str | None) -> None:
+        previously_readonly = set(readonly_signals)
+        readonly_signals.clear()
+        readonly_signals.update((field, signal) for field, signal in readonly.items()
+                                if field in rows and isinstance(signal, str) and signal)
         state["hydrating"] = True
         try:
             for field, choice in choices.items():
-                if field in state["busy"]:
+                if field in state["busy"] and field not in readonly_signals:
                     continue
                 raw = options.get(field)
                 offered = [item for item in raw if isinstance(item, dict) and "value" in item and isinstance(item.get("label"), str)] if isinstance(raw, list) else []
@@ -481,27 +706,60 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     getters[field] = entry.get_text
                     setters[field] = lambda value, item=entry: item.set_text("" if value is None else str(value))
             for field, row in rows.items():
-                available = (field in action_fields or (field in values and values[field] is not None)
+                slider = sliders.get(field)
+                readonly_signal = readonly_signals.get(field)
+                value = values.get(field)
+                if slider and value is not None:
+                    number = _number(value, math.nan)
+                    value = number if math.isfinite(number) else None
+                if slider and slider.protected and not readonly_signal:
+                    if field == message_field:
+                        slider.readback_pending = True
+                    continue
+                defer_value = bool(slider and readonly_signal and (slider.held or slider.in_flight))
+                if slider and readonly_signal:
+                    slider.discard()
+                    slider.dragging = False
+                    slider.held_keys.clear()
+                available = (field in action_fields or value is not None
                              or (field in choices and row is choices[field]["combo"]))
-                show_unavailable = not available and field not in static_signals
+                show_unavailable = not available and (field not in static_signals or bool(readonly_signal))
                 row.set_visible(not show_unavailable)
                 if show_unavailable:
-                    unavailable_rows[field].set_subtitle(absent_reasons[field])
+                    unavailable_rows[field].set_subtitle("" if readonly_signal else absent_reasons[field])
                     show_status(field)
                 unavailable_rows[field].set_visible(show_unavailable)
-                if available and field not in state["busy"]:
-                    setters[field](values.get(field))
-                    state["values"][field] = getters[field]()
+                previous = state["values"].get(field)
+                if available and not defer_value and (field not in state["busy"] or readonly_signal):
+                    setters[field](value)
+                    state["values"][field] = value if slider else getters[field]()
+                if readonly_signal:
+                    show_readonly(field, readonly_signal)
+                    set_control_sensitive(field, False)
+                    if slider and defer_value and not slider.in_flight:
+                        GLib.idle_add(refresh)
+                    continue
                 if field in static_signals:
-                    show_status(field, "Can't be changed from Settings yet", static_signals[field])
-                    row.set_sensitive(False)
+                    signal = static_signals[field]
+                    if signal in _SWAY_ONLY_SIGNALS:
+                        show_readonly(field, signal)
+                    else:
+                        show_status(field, "Can't be changed from Settings yet", signal)
+                    set_control_sensitive(field, False)
                 elif not available:
-                    row.set_sensitive(False)
+                    set_control_sensitive(field, False)
                 else:
-                    row.set_sensitive(field not in state["busy"])
+                    set_control_sensitive(field, field not in state["busy"])
+                    if field in previously_readonly:
+                        show_status(field)
                     if field == message_field:
-                        show_status(field, state["status"].get(field, "Saved"))
-                        GLib.timeout_add_seconds(3, clear_saved, field, status_generation[field])
+                        if slider and slider.wire_value(state["values"][field]) != previous:
+                            show_status(field, "Not saved", "settings-readback-mismatch")
+                        else:
+                            if slider:
+                                state["status"][field] = "Saved"
+                            show_status(field, state["status"].get(field, "Saved"))
+                            GLib.timeout_add_seconds(3, clear_saved, field, status_generation[field])
         finally:
             state["hydrating"] = False
 
@@ -514,7 +772,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 row.set_visible(False)
                 show_status(field)
                 unavailable_rows[field].set_visible(False)
-                row.set_sensitive(False)
+                set_control_sensitive(field, False)
             read_error.set_subtitle(signal)
             read_error.set_visible(True)
             selectable_subtitle(read_error)
@@ -522,7 +780,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         read_error.set_visible(False)
         state["hydrated"] = True
         options = receipt.get("options")
-        apply_values(receipt["values"], options if isinstance(options, dict) else {}, message_field)
+        readonly = receipt.get("readonly")
+        apply_values(receipt["values"], options if isinstance(options, dict) else {},
+                     readonly if isinstance(readonly, dict) else {}, message_field)
         return False
 
     def read_door(generation: int, message_field: str | None = None) -> None:
@@ -547,33 +807,59 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         threading.Thread(target=read_door, args=(generation, message_field), daemon=True).start()
         return False
 
-    def finish_mutation(field: str, previous: Any, receipt: dict[str, Any] | None, error: str | None) -> bool:
+    def send_slider(field: str, value: int | float) -> bool:
+        previous = state["values"].get(field)
+        if field in static_signals or field in readonly_signals or value == previous:
+            return False
+        threading.Thread(target=mutate, args=(field, value, previous), daemon=True).start()
+        return True
+
+    def finish_mutation(field: str, value: Any, previous: Any, receipt: dict[str, Any] | None, error: str | None) -> bool:
         state["busy"].discard(field)
-        row = rows[field]
+        slider = sliders.get(field)
+        if field in readonly_signals:
+            if slider:
+                slider.complete(False)
+            refresh()
+            return False
         if error is not None:
+            if slider:
+                slider.complete(False)
             state["hydrating"] = True
             try:
                 setters[field](previous)
                 show_status(field, "Not saved", error)
-                row.set_sensitive(True)
+                set_control_sensitive(field, True)
             finally:
                 state["hydrating"] = False
             return False
         assert receipt is not None
         if _receipt_ok(receipt):
+            if slider:
+                state["values"][field] = value
+                slider.complete(True)
+                return False
             state["status"][field] = "Saved"
             refresh(field)
             return False
         signal = _refusal_signal(receipt) or "Setting refused"
+        staff_signal = _signal(receipt)
+        sway_only = signal in _SWAY_ONLY_SIGNALS or staff_signal in _SWAY_ONLY_SIGNALS
+        if slider:
+            slider.complete(False)
         state["hydrating"] = True
         try:
             setters[field](previous)
-            show_status(field, "Not saved", signal)
-            if _signal(receipt).startswith(("unsupported:", "privilege:")):
-                static_signals[field] = _signal(receipt)
-                row.set_sensitive(False)
+            if sway_only:
+                static_signals[field] = staff_signal if staff_signal in _SWAY_ONLY_SIGNALS else signal
+                show_readonly(field, static_signals[field])
             else:
-                row.set_sensitive(True)
+                show_status(field, "Not saved", signal)
+                if staff_signal.startswith(("unsupported:", "privilege:")):
+                    static_signals[field] = staff_signal
+            if slider and field in static_signals:
+                slider.dragging = False
+            set_control_sensitive(field, field not in static_signals)
         finally:
             state["hydrating"] = False
         return False
@@ -581,9 +867,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     def mutate(field: str, value: Any, previous: Any) -> None:
         try:
             receipt = _request(path, mutation_method, {field: value})
-            GLib.idle_add(finish_mutation, field, previous, receipt, None)
+            GLib.idle_add(finish_mutation, field, value, previous, receipt, None)
         except RuntimeError as error:
-            GLib.idle_add(finish_mutation, field, previous, None, str(error))
+            GLib.idle_add(finish_mutation, field, value, previous, None, str(error))
 
     refresh()
     return page
