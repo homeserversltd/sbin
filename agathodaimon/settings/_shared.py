@@ -468,22 +468,7 @@ class Receipt(_SettingsReceipt):
             from agathodaimon.settings import _parity
             if not _parity.backends.select_backend():
                 raise ValueError("unsupported:" + SWAY_SESSION_UNAVAILABLE)
-        if kind != "input":
-            super().__init__(kind, fields)
-            return
-        # Input returns the existing nested receipt inline, without a run file.
-        self.kind, self.fields = kind, fields
-        self.backups, self._saved, self.commands = [], {}, []
-        self.changed = False
-
-    def finish(self, ok: bool, changed: bool = False, error: str | None = None) -> dict[str, Any]:
-        if self.kind != "input":
-            return super().finish(ok, changed, error)
-        metadata = {"ok": ok, "changed": bool(changed), "kind": self.kind, "fields": self.fields,
-                    "backups": self.backups, "commands": self.commands}
-        if ok:
-            return {"ok": True, "changed": bool(changed), "receiptPath": None, "receipt": metadata}
-        return {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
+        super().__init__(kind, fields)
 
     def restore_backups(self) -> None:
         from agathodaimon.settings import _sway_overrides
