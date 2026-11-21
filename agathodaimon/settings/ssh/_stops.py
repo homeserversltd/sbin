@@ -112,18 +112,25 @@ def _command(commands, argv, signal):
         raise ssh.Refusal(signal) from None
 
 
-def _sshd(path, flag, commands, signal):
+def _sshd(path, flag, commands, signal, *, parse_if_no_privsep=False):
     tool = ssh.SSHD if path == LIVE_CONFIG else _scratch_tool(path, 'sshd')
     result = _command(commands, [tool, flag, '-f', str(path)], signal)
+    if (parse_if_no_privsep and flag == '-t' and result.returncode != 0
+            and result.stderr.strip() == 'Missing privilege separation directory: /run/sshd'):
+        # An inactive service may not have its runtime directory. Validate the
+        # configuration without creating that directory or checking host keys.
+        result = _command(commands, [tool, '-G', '-f', str(path)], signal)
     ssh._must(result, signal)
     return result.stdout
 
 
-def _write_auth(path, original, updated, commands, *, reload=None, after=None, check_current=True):
+def _write_auth(path, original, updated, commands, *, validator=None, reload=None, after=None, check_current=True):
     validated = False
 
     def validate():
-        if path == LIVE_CONFIG:
+        if validator is not None:
+            validator()
+        elif path == LIVE_CONFIG:
             commands.extend(ssh._validate())
         else:
             _sshd(path, '-t', commands, 'agathodaimon-ssh-exposure-config-invalid')

@@ -65,8 +65,14 @@ def _change(desired, receipt):
         unit, state = _unit_state(call)
         receipt['observed'] = {'value': receipt['from'], 'unit': unit, 'activeState': state}
         active = state == 'active'
+
+        def validate():
+            stops._sshd(path, '-t', commands, 'agathodaimon-ssh-exposure-config-invalid',
+                        parse_if_no_privsep=not active)
+
         try:
-            parts = stops._write_auth(path, original, updated, commands, reload=reload if active else None,
+            parts = stops._write_auth(path, original, updated, commands, validator=validate,
+                                      reload=reload if active else None,
                                       after=effective_readback if active else None)
         except WriteError as failure:
             parts = failure.parts
