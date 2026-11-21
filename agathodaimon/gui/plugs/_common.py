@@ -295,9 +295,10 @@ class _LiveSlider:
 
         keys = Gtk.EventControllerKey.new()
         keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-        moves = {getattr(Gdk, "KEY_" + prefix + key): delta for prefix in ("", "KP_")
-                 for key, delta in (("Left", -step), ("Right", step), ("Up", step), ("Down", -step),
-                                    ("Page_Up", page), ("Page_Down", -page))}
+        moves = {getattr(Gdk, "KEY_" + prefix + key): (delta, snap_move) for prefix in ("", "KP_")
+                 for key, delta, snap_move in (("Left", -step, "previous"), ("Right", step, "next"),
+                                               ("Up", step, "next"), ("Down", -step, "previous"),
+                                               ("Page_Up", page, "last"), ("Page_Down", -page, "first"))}
         keys.connect("key-pressed", self._key_pressed, moves)
         keys.connect("key-released", self._key_released)
         focus = Gtk.EventControllerFocus.new()
@@ -405,13 +406,25 @@ class _LiveSlider:
             self._advance()
         return False
 
-    def _key_pressed(self, controller: Any, keyval: int, keycode: int, _mods: Any, moves: dict[int, float]) -> bool:
+    def _key_pressed(self, controller: Any, keyval: int, keycode: int, _mods: Any,
+                     moves: dict[int, tuple[float, str]]) -> bool:
         root = controller.get_widget()
         if keyval not in moves or root is None or root.get_focus() is not self.scale or not self.scale.is_sensitive():
             return False
         self.held_keys.add(keycode)
-        # Keyboard editing keeps the declared step/page even on a drag-snap scale.
-        self.scale.set_value(self.wire_value(self.scale.get_value() + moves[keyval]))
+        value = self.scale.get_value()
+        delta, snap_move = moves[keyval]
+        if not self.snap_marks:
+            value = self.wire_value(value + delta)
+        elif snap_move == "previous":
+            value = max((mark for mark in self.snap_marks if mark < value), default=value)
+        elif snap_move == "next":
+            value = min((mark for mark in self.snap_marks if mark > value), default=value)
+        elif snap_move == "first":
+            value = min(self.snap_marks)
+        else:
+            value = max(self.snap_marks)
+        self.scale.set_value(value)
         return True
 
     def _key_released(self, _controller: Any, _keyval: int, keycode: int, _mods: Any) -> None:
