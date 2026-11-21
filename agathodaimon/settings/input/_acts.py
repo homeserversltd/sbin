@@ -17,6 +17,7 @@ _SWAY_FIELDS = {"accel_profile", "left_handed", "disable_while_typing", "pointer
 _HYPR_FIELDS = {
     "keyboard_layout": (("input", "kb_layout"),),
     "keyboard_variant": (("input", "kb_variant"),),
+    "key_repeat": (("input", "repeat_rate"),),
     "repeat_delay_ms": (("input", "repeat_delay"),),
     "pointer_speed": (("input", "sensitivity"),),
     "scroll_factor": (("input", "scroll_factor"),),
@@ -61,8 +62,11 @@ def _hypr_value(field: str, raw: str, *, lua: bool) -> Any:
         except ValueError:
             return None
         return value if math.isfinite(value) else None
-    if field == "repeat_delay_ms":
-        return int(raw) if re.fullmatch(r"[0-9]{1,9}", raw) else None
+    if field in {"key_repeat", "repeat_delay_ms"}:
+        if not re.fullmatch(r"[0-9]{1,9}", raw):
+            return None
+        # The legacy key_repeat projection carries the declared rate as text.
+        return raw if field == "key_repeat" else int(raw)
     if field in {"natural_scroll", "tap_to_click", "left_handed", "disable_while_typing"}:
         return {"true": True, "false": False}.get(raw.lower())
     if lua:
