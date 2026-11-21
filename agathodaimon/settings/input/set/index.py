@@ -1,4 +1,4 @@
-"""Set input settings using the selected backend."""
+"""Set input settings on the owner's live Sway session."""
 import json
 from agathodaimon._envelope import EnvelopeError, attach, read
 from agathodaimon.settings import _shared

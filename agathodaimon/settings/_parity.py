@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import pwd
 import re
@@ -9,7 +10,7 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from agathodaimon.settings import _shared, _sway_overrides
 from agathodaimon.settings.display import backends
@@ -141,7 +142,19 @@ def _set_keyboard(field: str, value: Any, receipt: _shared.Receipt) -> None:
     _sway_overrides.replace_block(begin, end, [f"input type:keyboard {key} {text}\n"], receipt, "keyboard-override-invalid")
 
 
+def _scroll_factor(raw: Any) -> float | None:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    try:
+        number = float(raw)
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
 def _input_scalar(field: str, raw: Any) -> Any:
+    if field == "scroll_factor":
+        return _scroll_factor(raw)
     if field in {"left_handed", "disable_while_typing", "natural_scroll", "tap_to_click"}:
         if isinstance(raw, bool): return raw
         if raw in ("enabled", "disabled"): return raw == "enabled"
@@ -157,13 +170,13 @@ def _input_scalar(field: str, raw: Any) -> Any:
     return None
 
 
-def _declared_input(path: Path) -> dict[tuple[str, str], Any]:
+def _declared_input(lines: Iterable[str]) -> dict[tuple[str, str], Any]:
     keys = {"pointer_accel": "pointer_speed", "accel_profile": "accel_profile",
             "left_handed": "left_handed", "dwt": "disable_while_typing",
-            "natural_scroll": "natural_scroll", "tap": "tap_to_click"}
+            "natural_scroll": "natural_scroll", "tap": "tap_to_click", "scroll_factor": "scroll_factor"}
     result: dict[tuple[str, str], Any] = {}
     active = None
-    for line in _shared.ini_read(path):
+    for line in lines:
         code = line.split("#", 1)[0].strip()
         opening = re.fullmatch(r"input\s+type:(pointer|touchpad)\s*\{\s*", code)
         if opening:
@@ -187,22 +200,20 @@ def _declared_input(path: Path) -> dict[tuple[str, str], Any]:
     return result
 
 
-def sway_input_values() -> tuple[dict[str, Any], dict[str, str]]:
+def sway_input_values(selected: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
     values: dict[str, Any] = {key: None for key in _shared.FIELDS["input"]}
     sources = {key: "none" for key in values}
-    base = _declared_input(_shared.home() / ".config/sway/conf.d/input.conf")
-    override = _declared_input(_keyboard_path())
+    base = _declared_input(_shared.ini_read(_shared.home() / ".config/sway/conf.d/input.conf"))
+    override = _declared_input(_shared.ini_read(_keyboard_path()))
     devices: list[Any] = []
-    selected = backends.select_backend()
-    if selected:
-        socket = str(selected["socket"])
-        argv, runtime, _ = backends._sway_argv(socket, ["-t", "get_inputs"])
-        result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
-        try:
-            raw_devices = json.loads(result.get("stdout", "")) if result.get("ok") else []
-            if isinstance(raw_devices, list): devices = raw_devices
-        except (TypeError, ValueError):
-            pass
+    socket = str(selected["socket"])
+    argv, runtime, _ = backends._sway_argv(socket, ["-t", "get_inputs"])
+    result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
+    try:
+        raw_devices = json.loads(result.get("stdout", "")) if result.get("ok") else []
+        if isinstance(raw_devices, list): devices = raw_devices
+    except (TypeError, ValueError):
+        pass
     fields = (("accel_profile", "accel_profile"), ("left_handed", "left_handed"),
               ("disable_while_typing", "dwt"), ("natural_scroll", "natural_scroll"),
               ("tap_to_click", "tap"), ("pointer_speed", "accel_speed"))
@@ -218,6 +229,22 @@ def sway_input_values() -> tuple[dict[str, Any], dict[str, str]]:
             value = next((mapping[(kind, field)] for kind in kinds if (kind, field) in mapping), None)
             if value is not None:
                 values[field], sources[field] = value, source
+                break
+
+    begin, end = _input_markers("scroll_factor")
+    scroll_override = _declared_input(_sway_overrides.read_block(begin, end) or [])
+    scroll_key = ("pointer", "scroll_factor")
+    for device in devices:
+        if isinstance(device, dict) and device.get("type") == "pointer":
+            raw = device.get("scroll_factor")
+            value = _scroll_factor(raw) if isinstance(raw, (int, float)) else None
+            if value is not None:
+                values["scroll_factor"], sources["scroll_factor"] = value, "device"
+                break
+    else:
+        for mapping, source in ((scroll_override, "override"), (base, "declared")):
+            if scroll_key in mapping:
+                values["scroll_factor"], sources["scroll_factor"] = mapping[scroll_key], source
                 break
     return values, sources
 
@@ -241,8 +268,12 @@ def sway_cursor_override() -> tuple[str, int] | None:
 def _sway_cursor(theme: str, size: int, receipt: _shared.Receipt) -> None:
     selected = backends.select_backend()
     if not selected: raise ValueError("sway-session-unavailable")
+    sway_command(selected, f"seat * xcursor_theme {json.dumps(theme)} {size}", receipt, "sway-cursor-failed")
+
+
+def sway_command(selected: dict[str, Any], command: str, receipt: _shared.Receipt, failure: str) -> None:
     socket = str(selected["socket"])
-    argv, runtime, _ = backends._sway_argv(socket, [f"seat * xcursor_theme {json.dumps(theme)} {size}"])
+    argv, runtime, _ = backends._sway_argv(socket, [command])
     result = backends._bounded_command(argv, runtime=runtime, socket_path=socket)
     receipt.commands.append({"argv": argv, "returncode": result.get("returncode")})
     try:
@@ -250,7 +281,7 @@ def _sway_cursor(theme: str, size: int, receipt: _shared.Receipt) -> None:
     except (TypeError, ValueError):
         replies = []
     if not result.get("ok") or not isinstance(replies, list) or not replies or any(not isinstance(x, dict) or x.get("success") is not True for x in replies):
-        raise ValueError("sway-cursor-failed")
+        raise ValueError(failure)
 
 
 def set_sway_cursor(theme: str, size: int, receipt: _shared.Receipt) -> None:
@@ -264,8 +295,18 @@ def set_sway_cursor(theme: str, size: int, receipt: _shared.Receipt) -> None:
         _sway_cursor(theme, size, receipt)
 
 
-def _set_input(field: str, value: Any, receipt: _shared.Receipt) -> None:
-    if field == "accel_profile":
+def _input_markers(field: str) -> tuple[str, str]:
+    return f"# settings-input-{field}-begin\n", f"# settings-input-{field}-end\n"
+
+
+def input_block(field: str, value: Any) -> tuple[str, str, list[str]]:
+    if field == "scroll_factor":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("invalid:scroll_factor:number-required")
+        if not 0.1 <= value <= 10:
+            raise ValueError("invalid:scroll_factor:range")
+        settings = [("pointer", "scroll_factor", str(value))]
+    elif field == "accel_profile":
         if not isinstance(value, str) or value not in {"flat", "adaptive"}: raise ValueError("invalid:accel_profile")
         settings = [("pointer", "accel_profile", value), ("touchpad", "accel_profile", value)]
     elif field == "pointer_speed":
@@ -279,10 +320,8 @@ def _set_input(field: str, value: Any, receipt: _shared.Receipt) -> None:
         settings = [(kind, key, rendered) for kind in kinds]
     else:
         raise ValueError("unsupported:" + field)
-    if not backends.select_backend() and os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") != "1":
-        raise ValueError("sway-session-unavailable")
-    begin, end = f"# settings-input-{field}-begin\n", f"# settings-input-{field}-end\n"
-    _sway_overrides.replace_block(begin, end, [f"input type:{kind} {key} {val}\n" for kind, key, val in settings], receipt, "input-override-invalid")
+    begin, end = _input_markers(field)
+    return begin, end, [f"input type:{kind} {key} {val}\n" for kind, key, val in settings]
 
 
 def _set_region(field: str, value: Any, receipt: _shared.Receipt) -> None:

@@ -22,7 +22,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
     "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan"),
     "appearance": ("color_scheme", "accent_color", "wallpaper", "icon_theme", "cursor_theme", "font", "cursor_size", "font_size", "text_scale"),
     "sound": ("output_device", "input_device", "volume", "input_volume", "muted", "card_profile", "test_tone"),
-    "input": ("keyboard_layout", "keyboard_variant", "key_repeat", "repeat_delay_ms", "repeat_interval_ms", "natural_scroll", "tap_to_click", "pointer_speed", "accel_profile", "left_handed", "disable_while_typing"),
+    "input": ("keyboard_layout", "keyboard_variant", "key_repeat", "repeat_delay_ms", "repeat_interval_ms", "natural_scroll", "tap_to_click", "pointer_speed", "accel_profile", "left_handed", "disable_while_typing", "scroll_factor"),
     "keyboard": ("keyboard_layout", "repeat_rate", "repeat_delay"),
     "region": ("locale", "measurement_units"),
     "energy": ("screen_off_seconds", "sleep_seconds", "power_button_action"),
@@ -47,6 +47,8 @@ MIME_KEYS = {
 OWNER_USER = "owner"
 OWNER_HOME = Path("/home/owner")
 OWNER_SESSION_TOOLS = {"pactl", "wpctl", "hyprctl", "dunstctl", "xdg-settings", "gsettings", "pw-play", "paplay"}
+SWAY_SESSION_UNAVAILABLE = "sway-session-unavailable"
+CURSOR_FIELDS = {"cursor_size", "cursor_theme"}
 
 
 def home() -> Path:
@@ -59,7 +61,6 @@ def paths() -> dict[str, Path]:
     root = home() / ".config"
     return {
         "display": root / "hypr/monitors.conf",
-        "input": root / "hypr/input.conf",
         "appearance": root / "gtk-3.0/settings.ini",
         "notifications": root / "dunst/dunstrc",
         "default-apps": root / "mimeapps.list",
@@ -144,6 +145,27 @@ def monitor_orientation(value: Any) -> int:
 
 
 
+def hypr_lua_lines(path: Path) -> list[str]:
+    # Strip Lua comments, not comment-like text inside quoted strings.
+    tokens = r'''--\[(=*)\[.*?\]\1\]|--[^\n]*|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*' '''.strip()
+    text = re.sub(tokens, lambda match: (" " + "\n" * match[0].count("\n")) if match[0].startswith("--") else match[0],
+                  "".join(ini_read(path)), flags=re.DOTALL)
+    return text.splitlines()
+
+
+def _hypr_cursor_size() -> int | None:
+    directory = home() / ".config/hypr"
+    lua = re.compile(r'''\s*hl\.env\(\s*(["'])XCURSOR_SIZE\1\s*,\s*(["'])([0-9]{1,9})\2\s*\)\s*;?\s*''')
+    env = re.compile(r"\s*env\s*=\s*XCURSOR_SIZE\s*,\s*([0-9]{1,9})\s*(?:#.*)?")
+    for lines, pattern, group in ((hypr_lua_lines(directory / "hyprland.lua"), lua, 3),
+                                  (ini_read(directory / "envs.conf"), env, 1)):
+        for line in reversed(lines):
+            match = pattern.fullmatch(line.rstrip("\r\n"))
+            if match and int(match[group]) > 0:
+                return int(match[group])
+    return None
+
+
 def get_values(kind: str) -> dict[str, Any]:
     values: dict[str, Any] = {field: None for field in FIELDS[kind]}
     p = paths()
@@ -193,6 +215,10 @@ def get_values(kind: str) -> dict[str, Any]:
         if _parity.backends.select_backend():
             cursor = _parity.sway_cursor_override()
             if cursor is not None: values["cursor_theme"], values["cursor_size"] = cursor
+        else:
+            cursor_size = _hypr_cursor_size()
+            if cursor_size is not None:
+                values["cursor_size"] = cursor_size
         if isinstance(values["font"], str):
             match = re.search(r"\s+(\d+(?:\.\d+)?)$", values["font"])
             if match: values["font_size"] = float(match.group(1))
@@ -208,17 +234,8 @@ def get_values(kind: str) -> dict[str, Any]:
         good, out, _ = command(["pactl", "get-sink-mute", "@DEFAULT_SINK@"]) ; values["muted"] = ("yes" in out.lower()) if good else None
         _, values["card_profile"] = _default_card()
     elif kind == "input":
-        devices = hypr_json("devices") or {}
-        keyboard = (devices.get("keyboards") or [{}])[0]
-        lines = ini_read(p[kind])
-        block = _brace_block(lines, "input")
-        values["keyboard_layout"] = keyboard.get("active_keymap") or keyboard.get("xkb_layout")
-        values["keyboard_variant"] = keyboard.get("xkb_variant")
-        if block is not None:
-            values["keyboard_layout"] = values["keyboard_layout"] or _brace_get(lines, block, "kb_layout")
-            values["keyboard_variant"] = values["keyboard_variant"] or _brace_get(lines, block, "kb_variant")
-            for field, key, nested in (("key_repeat", "repeat_rate", None), ("repeat_delay_ms", "repeat_delay", None), ("natural_scroll", "natural_scroll", "touchpad"), ("tap_to_click", "tap-to-click", "touchpad"), ("pointer_speed", "sensitivity", None), ("scroll_factor", "scroll_factor", None)):
-                values[field] = _brace_get(lines, block, key, nested)
+        from agathodaimon.settings.input._acts import read_values
+        return read_values()["values"]
     elif kind == "notifications":
         lines = ini_read(p[kind]); values["enabled"] = p[kind].is_file()
         good, out, _ = command(["dunstctl", "is-paused"]); values["do_not_disturb"] = ("true" in out.lower()) if good else None
@@ -265,62 +282,6 @@ def monitor_edit(receipt: Receipt, field: str, value: Any) -> None:
     if not good: raise ValueError("command-failed:"+field)
     lines[i]=m.group(1)+spec+(m.group(3) or ""); receipt.replace(path,"".join(lines).encode())
 
-def _brace_block(lines: list[str], name: str, start: int = 0) -> tuple[int, int] | None:
-    depth = 0; begin = None
-    for i in range(start, len(lines)):
-        code = lines[i].split("#", 1)[0]
-        if begin is None:
-            if re.search(r"^\s*" + re.escape(name) + r"\s*\{", code):
-                begin, depth = i, code.count("{") - code.count("}")
-        else:
-            depth += code.count("{") - code.count("}")
-            if depth <= 0: return begin, i
-    return (begin, begin) if begin is not None and depth <= 0 else None
-
-def _brace_set(lines: list[str], bounds: tuple[int,int], keys: tuple[str,...], value: str, nested: str | None = None) -> bool:
-    first,last = bounds
-    if nested:
-        child = _brace_block(lines, nested, first+1)
-        if child is None or child[1] > last: return False
-        first,last = child
-    for i in range(first+1,last):
-        m=re.match(r"^(\s*)([-\w]+)(\s*=\s*)(.*?)(\r?\n)?$",lines[i])
-        if m and m.group(2) in keys:
-            lines[i]=f"{m.group(1)}{m.group(2)}{m.group(3)}{value}{m.group(5) or ''}"
-            return True
-    indent=re.match(r"^(\s*)",lines[last]).group(1)+"    "
-    nl="\r\n" if lines[last].endswith("\r\n") else "\n"
-    lines.insert(last,f"{indent}{keys[0]} = {value}{nl}")
-    return True
-
-def _brace_get(lines: list[str], bounds: tuple[int,int], key: str, nested: str | None = None) -> str | None:
-    first,last=bounds
-    if nested:
-        child=_brace_block(lines,nested,first+1)
-        if child is None or child[1] > last: return None
-        first,last=child
-    for line in lines[first+1:last]:
-        code=line.split("#",1)[0]
-        match=re.match(r"^\s*"+re.escape(key)+r"\s*=\s*(.*?)\s*$",code)
-        if match: return match.group(1).strip()
-    return None
-
-def hypr_set(receipt: Receipt, field: str, value: str) -> None:
-    require("hyprctl", field); path=paths()["input"]; original=path.read_bytes() if path.exists() else b""
-    lines=ini_read(path); block=_brace_block(lines,"input")
-    keymap={"keyboard_layout":("kb_layout",),"keyboard_variant":("kb_variant",),"key_repeat":("repeat_rate",),"repeat_delay_ms":("repeat_delay",),"pointer_speed":("sensitivity",),"scroll_factor":("scroll_factor",)}
-    if block is None: raise ValueError("unsupported:"+field)
-    if field in keymap: ok=_brace_set(lines,block,keymap[field],value)
-    elif field == "natural_scroll": ok=_brace_set(lines,block,("natural_scroll",),value,"touchpad")
-    elif field == "tap_to_click": ok=_brace_set(lines,block,("tap-to-click",),value,"touchpad")
-    else: raise ValueError("unsupported:"+field)
-    if not ok: raise ValueError("unsupported:"+field)
-    if not receipt.replace(path,"".join(lines).encode()): return
-    argv=["hyprctl","reload"]; good,_,result=command(argv); receipt.commands.append({"argv":argv,"returncode":result.returncode})
-    if not good:
-        receipt.rollback(path,original); receipt.commands.append({"argv":["rollback",str(path)],"returncode":0})
-        raise ValueError("command-failed:"+field)
-
 def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
     if field not in FIELDS[kind]: raise ValueError("unsupported:"+field)
     if kind == "display":
@@ -339,42 +300,40 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
             if field == "cursor_size":
                 if int(value) != value or not 8 <= value <= 256: raise ValueError("invalid:cursor_size")
                 require("gsettings", field)
+                import ast
                 from agathodaimon.settings import _parity
-                if _parity.backends.select_backend():
-                    import ast
-                    dry_run = os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1"
-                    theme = get_values("appearance").get("cursor_theme")
-                    if not isinstance(theme, str) or not theme:
-                        good_theme, raw_theme, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"])
-                        try:
-                            theme = ast.literal_eval(raw_theme) if good_theme else None
-                        except (SyntaxError, ValueError):
-                            theme = None
-                    if not isinstance(theme, str) or not theme:
-                        theme = "default"
-                    good_old, old_size, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-size"])
-                    if not dry_run and (not good_old or not old_size.isdigit()):
-                        raise ValueError("cursor-size-observation-failed")
-                    cmd = ["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", str(int(value))]
-                    if dry_run:
-                        receipt.commands.append({"argv": cmd, "dryRun": True})
-                    else:
-                        good, _, result = command(cmd)
-                        receipt.commands.append({"argv": cmd, "returncode": result.returncode})
-                        if not good: raise ValueError("command-failed:cursor_size")
+                dry_run = os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1"
+                theme = get_values("appearance").get("cursor_theme")
+                if not isinstance(theme, str) or not theme:
+                    good_theme, raw_theme, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"])
                     try:
-                        _parity.set_sway_cursor(theme, int(value), receipt)
-                    except Exception as error:
-                        receipt.restore_backups()
-                        if not dry_run:
-                            rollback = ["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", old_size]
-                            restored, _, result = command(rollback)
-                            receipt.commands.append({"argv": rollback, "returncode": result.returncode})
-                            if not restored: raise ValueError("cursor-gsettings-rollback-failed") from error
-                        raise
-                    receipt.changed = True
-                    return
-                gkey, gval = "cursor-size", str(int(value))
+                        theme = ast.literal_eval(raw_theme) if good_theme else None
+                    except (SyntaxError, ValueError):
+                        theme = None
+                if not isinstance(theme, str) or not theme:
+                    theme = "default"
+                good_old, old_size, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-size"])
+                if not dry_run and (not good_old or not old_size.isdigit()):
+                    raise ValueError("cursor-size-observation-failed")
+                cmd = ["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", str(int(value))]
+                if dry_run:
+                    receipt.commands.append({"argv": cmd, "dryRun": True})
+                else:
+                    good, _, result = command(cmd)
+                    receipt.commands.append({"argv": cmd, "returncode": result.returncode})
+                    if not good: raise ValueError("command-failed:cursor_size")
+                try:
+                    _parity.set_sway_cursor(theme, int(value), receipt)
+                except Exception as error:
+                    receipt.restore_backups()
+                    if not dry_run:
+                        rollback = ["gsettings", "set", "org.gnome.desktop.interface", "cursor-size", old_size]
+                        restored, _, result = command(rollback)
+                        receipt.commands.append({"argv": rollback, "returncode": result.returncode})
+                        if not restored: raise ValueError("cursor-gsettings-rollback-failed") from error
+                    raise
+                receipt.changed = True
+                return
             elif field == "text_scale":
                 if not 0.5 <= value <= 3: raise ValueError("invalid:text_scale")
                 gkey, gval = "text-scaling-factor", str(float(value))
@@ -398,8 +357,8 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
         gkey={"color_scheme":"color-scheme","icon_theme":"icon-theme","cursor_theme":"cursor-theme","font":"font-name"}[field]; gval=("prefer-dark" if val=="1" else "prefer-light") if field=="color_scheme" else val
         require("gsettings", field)
         from agathodaimon.settings import _parity
-        sway = field == "cursor_theme" and _parity.backends.select_backend()
-        if sway:
+        set_cursor = field == "cursor_theme"
+        if set_cursor:
             import ast
             good_old, old_theme, _ = command(["gsettings", "get", "org.gnome.desktop.interface", "cursor-theme"])
             try:
@@ -411,7 +370,7 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
                 raise ValueError("cursor-theme-observation-failed")
         cmd=["gsettings","set","org.gnome.desktop.interface",gkey,gval]; good,_,result=command(cmd); receipt.commands.append({"argv":cmd,"returncode":result.returncode})
         if not good: raise ValueError("command-failed:"+field)
-        if sway:
+        if set_cursor:
             try:
                 _parity.set_sway_cursor(gval, size, receipt)
             except Exception as error:
@@ -448,9 +407,6 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
         commands={"volume":["pactl","set-sink-volume","@DEFAULT_SINK@",val],"input_volume":["pactl","set-source-volume","@DEFAULT_SOURCE@",val],"muted":["pactl","set-sink-mute","@DEFAULT_SINK@",val],"output_device":["pactl","set-default-sink",val],"input_device":["pactl","set-default-source",val]}; cmd=commands[field]; good,_,result=command(cmd); receipt.commands.append({"argv":cmd,"returncode":result.returncode})
         if not good: raise ValueError("command-failed:"+field)
         return
-    if kind == "input":
-        if field == "repeat_interval_ms": raise ValueError("unsupported:repeat_interval_ms")
-        val=("true" if boolean(value,field) else "false") if field in ("natural_scroll","tap_to_click") else str(scalar(value,field)); hypr_set(receipt,field,val); return
     if kind == "notifications":
         if field != "do_not_disturb": raise ValueError("unsupported:"+field)
         require("dunstctl",field); val="true" if boolean(value,field) else "false"; cmd=["dunstctl","set-paused",val]; good,_,result=command(cmd); receipt.commands.append({"argv":cmd,"returncode":result.returncode})
@@ -501,6 +457,43 @@ def _failed_settings_receipt(receipt: Receipt, error: Exception) -> dict[str, An
     return result
 
 
-from agathodaimon.settings._receipt import Receipt
+from agathodaimon.settings._receipt import Receipt as _SettingsReceipt
+
+
+class Receipt(_SettingsReceipt):
+    def __init__(self, kind: str, fields: list[str]) -> None:
+        # Refuse the whole non-Sway cursor request before allocating a legacy
+        # settings receipt or changing another field in a mixed request.
+        if kind == "appearance" and CURSOR_FIELDS.intersection(fields):
+            from agathodaimon.settings import _parity
+            if not _parity.backends.select_backend():
+                raise ValueError("unsupported:" + SWAY_SESSION_UNAVAILABLE)
+        if kind != "input":
+            super().__init__(kind, fields)
+            return
+        # Input returns the existing nested receipt inline, without a run file.
+        self.kind, self.fields = kind, fields
+        self.backups, self._saved, self.commands = [], {}, []
+        self.changed = False
+
+    def finish(self, ok: bool, changed: bool = False, error: str | None = None) -> dict[str, Any]:
+        if self.kind != "input":
+            return super().finish(ok, changed, error)
+        metadata = {"ok": ok, "changed": bool(changed), "kind": self.kind, "fields": self.fields,
+                    "backups": self.backups, "commands": self.commands}
+        if ok:
+            return {"ok": True, "changed": bool(changed), "receiptPath": None, "receipt": metadata}
+        return {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
+
+    def restore_backups(self) -> None:
+        from agathodaimon.settings import _sway_overrides
+        target = _sway_overrides.path()
+        if target in self._saved:
+            metadata = next(item for item in self.backups if item["path"] == str(target))
+            _sway_overrides.restore_backup(target, self._saved[target], metadata)
+            del self._saved[target]
+        super().restore_backups()
+
+
 from agathodaimon.settings._ini import ini_read, ini_get, ini_set, set_file_value
 from agathodaimon.settings._cmd import run_command, owner_session_command, _default_card
