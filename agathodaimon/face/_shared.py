@@ -13,6 +13,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import replace
@@ -2218,11 +2219,41 @@ _COMPONENT_CHOOSER_SCOPE = "agathodaimon-face-default-applications.scope"
 
 
 def _component_chooser_argv() -> list[str]:
-    for host in ("systemsettings", "kcmshell6"):
+    for host in ("kcmshell6", "systemsettings"):
         executable = _owner_utility(host)
         if executable is not None:
             return [executable, _COMPONENT_CHOOSER]
     raise FaceError("face-app-kcm-host-absent", program=_COMPONENT_CHOOSER)
+
+
+@contextmanager
+def _component_chooser_launch(argv: list[str], environment: dict[str, str]):
+    if Path(argv[0]).name == "kcmshell6":
+        # The standalone KCM does not forward to System Settings. Its helpers belong to the owner bus.
+        yield argv
+        return
+
+    # System Settings registers one instance per bus. A bus without activation directories
+    # prevents forwarding without starting private copies of the owner's desktop services.
+    runner = _owner_utility("dbus-run-session")
+    if runner is None:
+        raise FaceError("face-app-kcm-session-runner-absent", program=_COMPONENT_CHOOSER)
+    account = _owner()
+    runtime = _runtime_dir(account)
+    accessibility = runtime / "at-spi/bus"
+    if _is_live_owned_socket(accessibility, account, runtime):
+        environment["AT_SPI_BUS_ADDRESS"] = f"unix:path={accessibility}"
+    with tempfile.NamedTemporaryFile(mode="w", dir=runtime, prefix=".agathodaimon-kcm-") as config:
+        if os.geteuid() == 0:
+            os.fchown(config.fileno(), account.pw_uid, account.pw_gid)
+        config.write(
+            '<busconfig><type>session</type>'
+            f'<listen>unix:tmpdir={runtime}</listen><auth>EXTERNAL</auth>'
+            '<policy context="default"><allow send_destination="*"/>'
+            '<allow receive_sender="*"/><allow own="*"/></policy></busconfig>'
+        )
+        config.flush()
+        yield [runner, f"--config-file={config.name}", "--", *argv]
 
 
 def _component_chooser_scope_active(environment: Mapping[str, str]) -> bool:
@@ -2256,49 +2287,70 @@ def _component_chooser_pid(argv: Sequence[str]) -> int | None:
     return None
 
 
+def _component_chooser_sway_window(pid: int, environment: Mapping[str, str], *, standalone: bool) -> bool:
+    pending = [_sway_json("get_tree", environment)]
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, dict):
+            continue
+        if node.get("pid") == pid:
+            if node.get("app_id") == _COMPONENT_CHOOSER or (
+                not standalone and (node.get("app_id") or node.get("window"))
+            ):
+                return True
+        pending.extend(node.get("nodes") or ())
+        pending.extend(node.get("floating_nodes") or ())
+    return False
+
+
+def _component_chooser_stop(environment: Mapping[str, str]) -> None:
+    result = owner_run(["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE], environment)
+    if result.returncode != 0 or _component_chooser_scope_active(environment):
+        raise FaceError("face-app-stop-failed", signal_exit=result.returncode)
+
+
 def _toggle_component_chooser() -> Mapping[str, Any]:
     environment, socket_source = owner_session_environment(discover=False)
-    with _runtime_lock(f"agathodaimon-face-app-{_COMPONENT_CHOOSER}.lock") as (fd, lock_path):
-        marked = _lock_state(fd)
+    with _runtime_lock(f"agathodaimon-face-app-{_COMPONENT_CHOOSER}.lock") as (_, lock_path):
         pid = None
-        # The launch may share an executable with other KDE windows. Own only this scope.
+        # The lock serializes presses, but only this dedicated scope determines whether to close.
         if _component_chooser_scope_active(environment):
-            if not marked:
-                raise FaceError("face-app-kcm-scope-in-use")
-            result = owner_run(["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE], environment)
-            if result.returncode != 0 or _component_chooser_scope_active(environment):
-                raise FaceError("face-app-stop-failed", running=True, signal_exit=result.returncode)
-            running = False
+            _component_chooser_stop(environment)
         else:
-            if marked:
-                _write_lock_state(fd, False)
             argv = _component_chooser_argv()
-            session_runner = _owner_utility("dbus-run-session")
-            if session_runner is None:
-                raise FaceError("face-app-kcm-session-runner-absent", program=_COMPONENT_CHOOSER)
             environment, socket_source = owner_session_environment(
-                discover=True, prefer_direct_keys=("WAYLAND_DISPLAY",),
+                require_wayland=True, prefer_direct_keys=("WAYLAND_DISPLAY",),
             )
-            # System Settings is unique per bus and would otherwise forward to an unrelated window.
-            process, _ = owner_spawn([session_runner, "--", *argv], environment, scope=_COMPONENT_CHOOSER_SCOPE)
-            for _ in range(20):
-                if process.poll() is not None:
-                    break
-                pid = _component_chooser_pid(argv)
-                if pid is not None:
-                    break
-                time.sleep(0.1)
+            if "DBUS_SESSION_BUS_ADDRESS" not in environment:
+                raise FaceError("face-app-kcm-owner-bus-unavailable", program=_COMPONENT_CHOOSER)
+            standalone = Path(argv[0]).name == "kcmshell6"
+            with _component_chooser_launch(argv, environment) as launch:
+                process, _ = owner_spawn(launch, environment, scope=_COMPONENT_CHOOSER_SCOPE)
+                previous = None
+                for _ in range(30):
+                    if process.poll() is not None:
+                        break
+                    observed = _component_chooser_pid(argv)
+                    if observed is not None:
+                        if "SWAYSOCK" in environment:
+                            try:
+                                ready = _component_chooser_sway_window(observed, environment, standalone=standalone)
+                            except FaceError:
+                                break
+                        else:
+                            ready = observed == previous
+                        if ready:
+                            pid = observed
+                            break
+                    previous = observed
+                    time.sleep(0.1)
             if pid is None:
                 if _component_chooser_scope_active(environment):
-                    result = owner_run(["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE], environment)
-                    if result.returncode != 0 or _component_chooser_scope_active(environment):
-                        raise FaceError("face-app-stop-failed", signal_exit=result.returncode)
+                    _component_chooser_stop(environment)
                 raise FaceError("face-app-process-not-observed", program=_COMPONENT_CHOOSER, running=False)
-            running = True
-        _write_lock_state(fd, running)
         return {
             "ok": True, "firstMissingSignal": "none", "changed": True,
-            "program": _COMPONENT_CHOOSER, "running": running, "lock_path": str(lock_path),
+            "program": _COMPONENT_CHOOSER, "running": pid is not None, "lock_path": str(lock_path),
             "socket_source": socket_source,
             **({"pid": pid} if pid is not None else {}),
         }
