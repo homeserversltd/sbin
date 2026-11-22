@@ -30,7 +30,7 @@ def build_widget():
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk
+    from gi.repository import Adw, GLib, Gtk, Pango
 
     page = _common._page(Adw, PLUG)
     group = _common._group(Adw, page, "")
@@ -75,13 +75,20 @@ def build_widget():
     base_subtitles = {row: row.get_subtitle() for row in (*controls.values(), screen_readonly)}
     outcomes = {}
 
-    def selectable_subtitle(widget, enabled):
+    def style_subtitle(widget, detail_at):
         child = widget.get_first_child()
         while child is not None:
             if isinstance(child, Gtk.Label) and child.has_css_class("subtitle"):
-                child.set_selectable(enabled)
+                attributes = None
+                if detail_at is not None:
+                    attributes = Pango.AttrList()
+                    small = Pango.attr_scale_new(0.83)
+                    small.start_index = detail_at
+                    attributes.insert(small)
+                child.set_attributes(attributes)
+                child.set_selectable(detail_at is not None)
             else:
-                selectable_subtitle(child, enabled)
+                style_subtitle(child, detail_at)
             child = child.get_next_sibling()
 
     def paint_outcome(field):
@@ -101,11 +108,11 @@ def build_widget():
                 label = row.get_model().get_string(row.get_selected())
             alternate_value.set_label(label or "Unavailable")
             row = alternate
-        subtitle = GLib.markup_escape_text(message)
-        if signal:
-            subtitle += "\n<small>" + GLib.markup_escape_text(signal) + "</small>"
-        row.set_subtitle(subtitle)
-        selectable_subtitle(row, bool(signal))
+        # Keep options and signals literal. ComboRow disables Pango markup
+        # by default; style only the signal's byte range on the subtitle label.
+        row.set_use_markup(False)
+        row.set_subtitle(message + "\n" + signal if signal else message)
+        style_subtitle(row, len((message + "\n").encode()) if signal else None)
 
     def show_outcome(field, message, signal="", *, temporary=False):
         token = object()
