@@ -1,9 +1,9 @@
 {
   "children": [],
   "sclerite": {
-    "name": "all",
+    "name": "linker",
     "features": {
-      "all": {
+      "linker": {
         "band": true,
         "verbs": [
           [

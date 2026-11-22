@@ -3,9 +3,9 @@
   "children": [],
   "mutation_allowed": false,
   "sclerite": {
-    "name": "all",
+    "name": "gateway",
     "features": {
-      "all": {
+      "gateway": {
         "band": true,
         "verbs": [],
         "routes": [],

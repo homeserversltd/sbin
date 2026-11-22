@@ -4,22 +4,12 @@
   "sclerite": {
     "name": "unbound",
     "features": {
-      "all": {
+      "unbound": {
         "band": true,
         "verbs": [],
         "routes": [
           "/api/v1/network/dns/read"
         ],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
-      },
-      "unbound": {
-        "band": true,
-        "verbs": [],
-        "routes": [],
         "administrative": {
           "band": false,
           "verbs": [],

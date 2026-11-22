@@ -7,7 +7,6 @@
         "band": true,
         "verbs": [],
         "routes": [
-          "/api/v1/cert/bundle/download",
           "/api/v1/cert/status"
         ],
         "administrative": {
@@ -15,6 +14,9 @@
           "verbs": [],
           "routes": []
         }
+      },
+      "gateway": {
+        "routes": ["/api/v1/cert/bundle/download"]
       }
     }
   }

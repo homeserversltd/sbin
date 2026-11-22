@@ -2,9 +2,9 @@
   "hand": "envelope",
   "children": [],
   "sclerite": {
-    "name": "all",
+    "name": "firewall",
     "features": {
-      "all": {
+      "firewall": {
         "band": true,
         "verbs": [],
         "routes": [],

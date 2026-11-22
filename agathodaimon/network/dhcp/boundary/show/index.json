@@ -5,16 +5,6 @@
   "sclerite": {
     "name": "kea",
     "features": {
-      "all": {
-        "band": true,
-        "verbs": [],
-        "routes": [],
-        "administrative": {
-          "band": false,
-          "verbs": [],
-          "routes": []
-        }
-      },
       "kea": {
         "band": true,
         "verbs": [],

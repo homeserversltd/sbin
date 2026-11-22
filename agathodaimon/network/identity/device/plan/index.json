@@ -4,16 +4,10 @@
   "sclerite": {
     "name": "kea",
     "features": {
-      "all": {
-        "band": true,
-        "verbs": [],
-        "routes": ["/api/v1/network/identity/device/plan"],
-        "administrative": {"band": false, "verbs": [], "routes": []}
-      },
       "kea": {
         "band": true,
         "verbs": [],
-        "routes": [],
+        "routes": ["/api/v1/network/identity/device/plan"],
         "administrative": {"band": false, "verbs": [], "routes": []}
       }
     }

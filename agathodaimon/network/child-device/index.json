@@ -8,13 +8,12 @@
     "whitelist"
   ],
   "sclerite": {
-    "name": "all",
+    "name": "firewall",
     "features": {
-      "all": {
+      "firewall": {
         "band": false,
         "verbs": [],
         "routes": [
-          "/api/v1/network/device/wake",
           "/api/v1/settings/child-device"
         ],
         "administrative": {
@@ -22,6 +21,9 @@
           "verbs": [],
           "routes": []
         }
+      },
+      "settings": {
+        "routes": ["/api/v1/network/device/wake"]
       }
     }
   }

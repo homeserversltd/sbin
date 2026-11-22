@@ -3,9 +3,9 @@
   "children": [],
   "dry-run": true,
   "sclerite": {
-    "name": "portals",
+    "name": "gateway",
     "features": {
-      "portals": {
+      "gateway": {
         "band": true,
         "verbs": [],
         "routes": [],

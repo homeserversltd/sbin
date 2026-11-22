@@ -2,15 +2,6 @@
   "children": ["observed", "list", "register", "unregister", "whitelist"],
   "sclerite": {
     "features": {
-      "all": {
-        "administrative": {"band": false, "routes": [], "verbs": []},
-        "band": false,
-        "routes": [
-          "/api/v1/network/firewall/children",
-          "/api/v1/network/firewall/children/:mac/whitelist"
-        ],
-        "verbs": []
-      },
       "firewall": {
         "administrative": {"band": false, "routes": [], "verbs": []},
         "band": false,
