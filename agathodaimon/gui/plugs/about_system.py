@@ -101,7 +101,7 @@ def _graphics_title(device: str) -> str:
     # Use positive model/family evidence; vendors (and drivers) can span both kinds.
     model = device.casefold()
     if model.startswith("nvidia corporation "):
-        if re.search(r"\b(?:geforce (?:rtx|gtx)|rtx [a-z]?\d{3,4})\b", model):
+        if re.search(r"\b(?:geforce (?:rtx|gtx|gt)|rtx [a-z]?\d{3,4})\b", model):
             return "Graphics card"
     elif model.startswith("intel corporation "):
         if re.search(r"\b(?:dg[12]|battlemage|arc [ab]\d{3}m?|iris xe max)\b", model):
