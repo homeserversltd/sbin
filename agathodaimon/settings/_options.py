@@ -13,6 +13,32 @@ def _choices(items):
     return [{"value": value, "label": label} for value, label in items if value and label]
 
 
+_POWER_PROFILE_LABELS = {"power-saver": "Power saver", "balanced": "Balanced", "performance": "Performance"}
+
+
+def power_profiles() -> tuple[str | None, list[dict[str, str | bool]]]:
+    # Do not start a stopped service just by opening Settings.
+    running, _, _ = _shared.command(["systemctl", "is-active", "--quiet", "power-profiles-daemon.service"])
+    if not running:
+        return None, []
+    listed, text, _ = _shared.command(["powerprofilesctl", "list"])
+    names = dict.fromkeys(re.findall(r"(?m)^[ \t]*\*?[ \t]*([a-z][a-z0-9-]*):[ \t]*$", text)) if listed else {}
+    if not names:
+        return None, []
+    got, current, _ = _shared.command(["powerprofilesctl", "get"])
+    if not got or current not in names:
+        return None, []
+    platform = (Path("/sys/firmware/acpi/platform_profile").is_file()
+                or any(Path("/sys/class/platform-profile").glob("*/profile")))
+    choices = _choices((name, _POWER_PROFILE_LABELS.get(name, name.replace("-", " ").capitalize()))
+                       for name in names)
+    if not platform:
+        for choice in choices:
+            # The door preserves extra properties of an accepted choice.
+            choice["cpu_only"] = True
+    return current, choices
+
+
 def _sound(devices):
     ok, text, _ = _shared.command(["pactl", "-f", "json", "list", devices])
     if ok:

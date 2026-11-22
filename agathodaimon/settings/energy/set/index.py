@@ -6,7 +6,7 @@ from agathodaimon.settings import _parity, _shared
 
 def main(argv=None):
     try:
-        request = read(known_fields=('screen_off_seconds', 'power_button_action'))
+        request = read(known_fields=_shared.FIELDS["energy"])
         source = request.value.get("payload", {}) if request.envelope else request.value
         if not isinstance(source, dict):
             source = {}

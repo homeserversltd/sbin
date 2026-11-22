@@ -10,10 +10,11 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
-from agathodaimon.settings import _shared, _sway_overrides
+from agathodaimon.settings import _options, _shared, _sway_overrides
 from agathodaimon.settings.display import backends
+from agathodaimon.settings.energy import _hardware, screen_idle
 from agathodaimon.settings._sway import _sway_reload
 
 
@@ -87,41 +88,83 @@ def _region_values() -> dict[str, Any]:
     return values
 
 
-def _energy_values() -> dict[str, Any]:
-    from agathodaimon.settings.energy.screen_idle import read_seconds
-    try:
-        screen_off = read_seconds(_shared.home())
-    except ValueError:
-        screen_off = None
-    values: dict[str, Any] = {"screen_off_seconds": screen_off, "sleep_seconds": None, "power_button_action": None}
+_POWER_BUTTON_ACTIONS = {"poweroff", "suspend", "ignore"}
+
+
+def _logind_action(key: str) -> str | None:
     if _etc() == Path("/etc"):
-        ok, out = _command(["busctl", "--system", "get-property", "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", "HandlePowerKey"])
+        ok, out = _command(["busctl", "--system", "get-property", "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager", key])
         if ok:
             try:
                 items = shlex.split(out)
-                if len(items) == 2 and items[0] == "s" and items[1] in {"poweroff", "suspend", "ignore"}:
-                    values["power_button_action"] = items[1]
+                if len(items) == 2 and items[0] == "s" and re.fullmatch(r"[a-z][a-z0-9-]*", items[1]):
+                    return items[1]
             except ValueError:
                 pass
-        return values
-    candidates = sorted((_etc() / "systemd/logind.conf.d").glob("*.conf"))
-    lines = []
-    for path in [_etc() / "systemd/logind.conf", *candidates]:
-        lines += _shared.ini_read(path)
-    active = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            active = stripped == "[Login]"
-        if active:
-            match = re.match(r"^\s*HandlePowerKey\s*=\s*(\w+)\s*(?:#.*)?$", line)
-            if match:
-                values["power_button_action"] = match.group(1)
-    return values
+        return None
+    value = None
+    systemd = _etc() / "systemd"
+    for path in [systemd / "logind.conf", *sorted((systemd / "logind.conf.d").glob("*.conf"))]:
+        active = False
+        for line in _shared.ini_read(path):
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                active = stripped == "[Login]"
+            if active:
+                match = re.fullmatch(rf"{key}\s*=\s*([a-z][a-z0-9-]*)\s*(?:#.*)?", stripped)
+                if match:
+                    value = match.group(1)
+    return value
+
+
+def _screen_environment() -> dict[str, str] | None:
+    from agathodaimon.face import _shared as face
+    try:
+        environment, _ = face.owner_session_environment(
+            home=_shared.home(), require_sway=True, require_wayland=True,
+            prefer_direct_keys=("SWAYSOCK", "WAYLAND_DISPLAY"),
+        )
+    except face.FaceError:
+        return None
+    return environment
+
+
+def read_energy() -> dict[str, Any]:
+    readonly: dict[str, str] = {}
+    screen_off = None
+    if _screen_environment() is not None:
+        try:
+            screen_off = screen_idle.read_seconds(_shared.home())
+        except ValueError:
+            pass
+    else:
+        readonly["screen_off_seconds"] = _shared.SWAY_SESSION_UNAVAILABLE
+        if backends._owner_processes("hypridle"):
+            screen_off = _hardware.hypridle_screen_off(_shared.home())
+    power_key = _logind_action("HandlePowerKey")
+    values: dict[str, Any] = {"screen_off_seconds": screen_off, "sleep_seconds": None,
+                              "power_button_action": power_key if power_key in _POWER_BUTTON_ACTIONS else None}
+    battery = _hardware.battery_values()
+    if battery:
+        values.update(battery, lid_action=_logind_action("HandleLidSwitch"))
+        readonly.update(dict.fromkeys(_hardware.SYSTEM_FIELDS, "system-owned"))
+    conservation_mode = _hardware.conservation_mode()
+    if conservation_mode is not None:
+        values["charge_limit"] = _hardware.charge_limit(conservation_mode)
+    result: dict[str, Any] = {"values": values}
+    profile, choices = _options.power_profiles()
+    if profile is not None:
+        values["power_profile"] = profile
+        result["options"] = {"power_profile": choices}
+    if readonly:
+        result["readonly"] = readonly
+    return result
 
 
 def get_values(kind: str) -> dict[str, Any]:
-    return {"keyboard": _keyboard_values, "region": _region_values, "energy": _energy_values}[kind]()
+    if kind == "energy":
+        return read_energy()["values"]
+    return {"keyboard": _keyboard_values, "region": _region_values}[kind]()
 
 
 
@@ -345,19 +388,11 @@ def _set_region(field: str, value: Any, receipt: _shared.Receipt) -> None:
     receipt.changed = True
 
 
-def _restart_screen_idle(seconds: int, receipt: _shared.Receipt) -> str:
-    launcher = str(Path(__file__).resolve().parent.parent / "caduceus-screen-idle")
-    if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
-        receipt.commands.extend([{"argv": ["pkill", "-u", _shared.OWNER_USER, "-x", "swayidle"], "dryRun": True},
-                                 {"argv": [launcher], "dryRun": True, "spawn": seconds > 0}])
-        return "dry-run"
+_SCREEN_IDLE_LAUNCHER = str(Path(__file__).resolve().parent.parent / "caduceus-screen-idle")
+
+
+def _restart_screen_idle(seconds: int, environment: dict[str, str], receipt: _shared.Receipt) -> None:
     from agathodaimon.face import _shared as face
-    try:
-        environment, _ = face.owner_session_environment(require_sway=True, require_wayland=True)
-    except face.FaceError as error:
-        if error.signal in {"owner-sway-socket-unavailable", "owner-wayland-socket-unavailable"}:
-            return "runner-starts-next-sway-session"
-        raise
     uid = str(pwd.getpwnam(_shared.OWNER_USER).pw_uid)
     check = ["pgrep", "-u", uid, "-x", "swayidle"]
     stop = ["pkill", "-u", uid, "-x", "swayidle"]
@@ -373,50 +408,167 @@ def _restart_screen_idle(seconds: int, receipt: _shared.Receipt) -> str:
         if time.monotonic() >= deadline: raise ValueError("swayidle-stop-timeout")
         time.sleep(0.05)
     if seconds:
-        face.owner_spawn([launcher], environment)
-        receipt.commands.append({"argv": [launcher], "spawned": True})
+        face.owner_spawn([_SCREEN_IDLE_LAUNCHER], environment)
+        receipt.commands.append({"argv": [_SCREEN_IDLE_LAUNCHER], "spawned": True})
         deadline = time.monotonic() + 3
         while not observed():
             if time.monotonic() >= deadline: raise ValueError("swayidle-start-timeout")
             time.sleep(0.05)
-    return "runner-restarted" if seconds else "runner-stopped"
 
 
-def _set_energy(field: str, value: Any, receipt: _shared.Receipt) -> str | None:
-    if field == "sleep_seconds":
-        raise ValueError("energy-idle-consumer-absent")
+def _set_power_profile(value: str, receipt: _shared.Receipt) -> None:
+    ok, _ = _command(["powerprofilesctl", "set", value], receipt)
+    if not ok:
+        raise ValueError("power-profile-set-failed")
+    ok, current = _command(["powerprofilesctl", "get"], receipt)
+    if not ok or current != value:
+        raise ValueError("power-profile-readback-mismatch")
+
+
+def _restore_power_profile(value: str, receipt: _shared.Receipt) -> None:
+    ok, current = _command(["powerprofilesctl", "get"], receipt)
+    if not ok or current != value:
+        _set_power_profile(value, receipt)
+
+
+def _restore_charge_limit(path: Path, value: bool) -> None:
+    if _hardware.charge_limit(path) is not value:
+        _hardware.write_charge_limit(path, value)
+
+
+def _reload_logind(receipt: _shared.Receipt) -> None:
+    ok, _ = _command(["systemctl", "kill", "-s", "HUP", "systemd-logind"], receipt)
+    if not ok:
+        raise ValueError("logind-reload-failed")
+
+
+def _set_energy(field: str, value: Any, environment: dict[str, str] | None,
+                receipt: _shared.Receipt | None, preview: list[dict[str, Any]],
+                undo: list[Callable[[], None]]) -> None:
     if field == "screen_off_seconds":
+        if environment is None:
+            raise ValueError("unsupported:" + _shared.SWAY_SESSION_UNAVAILABLE)
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 86400:
             raise ValueError("invalid:screen_off_seconds")
         path = _shared.home() / ".config/sway/screen-idle.json"
         payload = (json.dumps({"screen_off_seconds": value}) + "\n").encode()
-        receipt.backup(path)
+        if receipt is None:
+            preview.extend([{"write": str(path), "contents": payload.decode(), "dryRun": True},
+                            {"argv": ["pkill", "-u", _shared.OWNER_USER, "-x", "swayidle"], "dryRun": True},
+                            {"argv": [_SCREEN_IDLE_LAUNCHER], "dryRun": True, "spawn": value > 0}])
+            return
         receipt.replace(path, payload)
         if path.stat().st_mode & 0o777 != 0o644:
+            receipt.backup(path)
             os.chmod(path, 0o644)
             receipt.changed = True
         if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
             owner = pwd.getpwnam(_shared.OWNER_USER)
             if (path.stat().st_uid, path.stat().st_gid) != (owner.pw_uid, owner.pw_gid):
+                receipt.backup(path)
                 os.chown(path, owner.pw_uid, owner.pw_gid)
                 receipt.changed = True
-        return _restart_screen_idle(value, receipt)
-    if not isinstance(value, str) or value not in {"poweroff", "suspend", "ignore"}:
+        # The saved seat will be restored before this callback reads it.
+        undo.append(lambda: _restart_screen_idle(screen_idle.read_seconds(_shared.home()), environment, receipt))
+        _restart_screen_idle(value, environment, receipt)
+        return
+    if field == "power_profile":
+        if not isinstance(value, str):
+            raise ValueError("invalid:power_profile")
+        active, choices = _options.power_profiles()
+        if active is None:
+            raise ValueError("unsupported:power-profiles-daemon-unavailable")
+        if not any(choice["value"] == value for choice in choices):
+            raise ValueError("invalid:power_profile")
+        if active == value:
+            return
+        if receipt is None:
+            preview.append({"argv": ["powerprofilesctl", "set", value], "dryRun": True})
+            return
+        undo.append(lambda: _restore_power_profile(active, receipt))
+        _set_power_profile(value, receipt)
+        receipt.changed = True
+        return
+    if field == "charge_limit":
+        enabled = _shared.boolean(value, field)
+        sysfs = _hardware.conservation_mode()
+        if sysfs is None:
+            raise ValueError("unsupported:charge_limit")
+        original = _hardware.charge_limit(sysfs)
+        if original is None:
+            raise ValueError("charge-limit-unreadable")
+        mode = "1" if enabled else "0"
+        drop_in = _etc() / _hardware.CHARGE_LIMIT_DROP_IN
+        rule = f"w {sysfs} - - - - {mode}\n"
+        if drop_in.is_symlink():
+            raise ValueError("charge-limit-drop-in-is-symlink")
+        if receipt is None:
+            preview.extend([{"write": str(drop_in), "contents": rule, "dryRun": True},
+                            {"write": str(sysfs), "contents": mode, "dryRun": True}])
+            return
+        receipt.replace(drop_in, rule.encode())
+        if drop_in.read_bytes() != rule.encode():
+            raise ValueError("charge-limit-drop-in-readback-mismatch")
+        if original is not enabled:
+            undo.append(lambda: _restore_charge_limit(sysfs, original))
+            _hardware.write_charge_limit(sysfs, enabled)
+            receipt.changed = True
+        return
+    if field != "power_button_action":
+        raise ValueError("unsupported:" + field)
+    if not isinstance(value, str) or value not in _POWER_BUTTON_ACTIONS:
         raise ValueError("invalid:power_button_action")
     path = _etc() / "systemd/logind.conf.d/60-appliance-power.conf"
-    changed = receipt.replace(path, f"[Login]\nHandlePowerKey={value}\n".encode())
-    argv = ["systemctl", "kill", "-s", "HUP", "systemd-logind"]
-    if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
-        if changed: receipt.commands.append({"argv": argv, "dryRun": True})
-        if _energy_values()["power_button_action"] != value: raise ValueError("logind-power-key-shadowed")
+    text = f"[Login]\nHandlePowerKey={value}\n"
+    if receipt is None:
+        preview.extend([{"write": str(path), "contents": text, "dryRun": True},
+                        {"argv": ["systemctl", "kill", "-s", "HUP", "systemd-logind"], "dryRun": True}])
         return
-    if changed:
-        ok, _ = _command(argv, receipt)
-        if not ok:
-            raise ValueError("logind-reload-failed")
-    observed = _energy_values()["power_button_action"]
+    if receipt.replace(path, text.encode()):
+        undo.append(lambda: _reload_logind(receipt))
+        _reload_logind(receipt)
+    observed = _logind_action("HandlePowerKey")
     if observed is None: raise ValueError("logind-power-key-observation-failed")
     if observed != value: raise ValueError("logind-power-key-shadowed")
+
+
+def _write_energy(changes: dict[str, Any]) -> dict[str, Any]:
+    for field in changes:
+        if field in _hardware.SYSTEM_FIELDS:
+            raise ValueError("unsupported:system-owned")
+        if field == "sleep_seconds":
+            raise ValueError("energy-idle-consumer-absent")
+    environment = _screen_environment() if "screen_off_seconds" in changes else None
+    if "screen_off_seconds" in changes and environment is None:
+        raise ValueError("unsupported:" + _shared.SWAY_SESSION_UNAVAILABLE)
+    preview: list[dict[str, Any]] = []
+    undo: list[Callable[[], None]] = []
+    if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
+        for field, value in changes.items():
+            _set_energy(field, value, environment, None, preview, undo)
+        return {"ok": True, "changed": False, "mutationPerformed": False, "dryRun": True, "commands": preview,
+                "receipt": {"kind": "energy", "fields": list(changes), "ok": True,
+                            "changed": False, "backups": [], "commands": preview}}
+    receipt = _shared.Receipt("energy", list(changes))
+    try:
+        for field, value in changes.items():
+            _set_energy(field, value, environment, receipt, preview, undo)
+        return receipt.finish(True, receipt.changed)
+    except Exception as error:
+        mutated = receipt.changed or bool(undo)
+        failures = []
+        try:
+            receipt.restore_backups()
+        except Exception as rollback_error:
+            failures.append(str(rollback_error))
+        for restore in reversed(undo):
+            try:
+                restore()
+            except Exception as rollback_error:
+                failures.append(str(rollback_error))
+        signal = ":".join(["rollback-failed", *failures, str(error)]) if failures else str(error)
+        failure = receipt.finish(False, error=signal)
+        raise _shared.ReceiptFailure(signal, failure["receipt"], bool(failures) and mutated) from error
 
 
 def _set(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
@@ -425,17 +577,13 @@ def _set(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
     for field in changes:
         if field not in _shared.FIELDS[kind]:
             raise ValueError("unsupported:" + field)
-        if kind == "energy" and field == "sleep_seconds":
-            raise ValueError("energy-idle-consumer-absent")
+    if kind == "energy":
+        return _write_energy(changes)
     receipt = _shared.Receipt(kind, list(changes))
     reload_attempted = False
-    screen_attempted = False
-    note = None
     try:
         for field, value in changes.items():
-            if kind == "energy" and field == "screen_off_seconds": screen_attempted = True
-            result = {"keyboard": _set_keyboard, "region": _set_region, "energy": _set_energy}[kind](field, value, receipt)
-            if isinstance(result, str): note = result
+            {"keyboard": _set_keyboard, "region": _set_region}[kind](field, value, receipt)
         if kind == "keyboard" and receipt.changed:
             if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
                 receipt.commands.append({"argv": ["swaymsg", "reload"], "dryRun": True})
@@ -443,8 +591,6 @@ def _set(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
                 reload_attempted = True
                 _sway_reload(receipt)
         answer = receipt.finish(True, receipt.changed)
-        if note is not None:
-            answer["note"] = note
         if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
             answer.update(dryRun=True, commands=receipt.commands)
         return answer
@@ -455,16 +601,9 @@ def _set(kind: str, changes: dict[str, Any]) -> dict[str, Any]:
             receipt.restore_backups()
             if reload_attempted:
                 _sway_reload(receipt)
-            if kind == "energy" and mutated and "power_button_action" in changes and os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") != "1":
-                ok, _ = _command(["systemctl", "kill", "--signal=HUP", "systemd-logind"], receipt)
-                if not ok: raise ValueError("logind-rollback-reload-failed")
-            if screen_attempted and any(cmd.get("argv", [None])[0] == "pkill" for cmd in receipt.commands) and os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") != "1":
-                from agathodaimon.settings.energy.screen_idle import read_seconds
-                _restart_screen_idle(read_seconds(_shared.home()), receipt)
             uncertain = False
         except Exception as rollback_error:
             signal = "rollback-failed:" + str(rollback_error) + ":" + signal
-            runtime_attempted = screen_attempted and any(cmd.get("argv", [None])[0] == "pkill" and not cmd.get("dryRun") for cmd in receipt.commands)
-            uncertain = mutated or runtime_attempted
+            uncertain = mutated
         failure = receipt.finish(False, error=signal)
         raise _shared.ReceiptFailure(signal, failure["receipt"], uncertain) from error

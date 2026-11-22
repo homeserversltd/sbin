@@ -7,7 +7,7 @@ from agathodaimon.settings import _parity
 def main(argv=None):
     try:
         request = read(known_fields=())
-        result = {"ok": True, "values": _parity.get_values("energy"), "mutationPerformed": False}
+        result = {"ok": True, "mutationPerformed": False, **_parity.read_energy()}
         result = attach(result, request)
     except (EnvelopeError, ValueError) as error:
         result = {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}
