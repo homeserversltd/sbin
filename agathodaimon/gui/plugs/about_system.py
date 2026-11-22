@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import socket
 from agathodaimon.carapace import normalize_profile
 
@@ -21,6 +22,9 @@ PLUG = {"id": "about-system", "title": "About System", "icon": "help-about-symbo
 
 PRODUCTS = {"hometv": "HomeTV", "homeconsole": "HomeConsole", "homeserver": "HomeServer"}
 
+_PCI_ADDRESS = re.compile(r"(?:[0-9a-f]{4,8}:)?[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]", re.IGNORECASE)
+_DISPLAY_CLASSES = {"vga compatible controller", "xga compatible controller", "3d controller", "display controller"}
+
 
 def _os_release() -> dict[str, str]:
     fields = {}
@@ -38,8 +42,12 @@ def _uptime() -> str:
         return ""
     days, rest = divmod(seconds, 86400)
     hours, rest = divmod(rest, 3600)
-    parts = [f"{days} days" if days else "", f"{hours} hours" if hours else "", f"{rest // 60} mins"]
-    return ", ".join(part for part in parts if part)
+    minutes = rest // 60
+    return ", ".join(
+        f"{count} {unit}{'' if count == 1 else 's'}"
+        for count, unit in ((days, "day"), (hours, "hour"), (minutes, "min"))
+        if count or unit == "min"
+    )
 
 
 def _meminfo() -> str:
@@ -88,11 +96,49 @@ def _cpu() -> str:
     return platform.processor()
 
 
-def _gpu() -> str:
-    for line in _command("lspci").splitlines():
-        if any(kind in line for kind in ("VGA", "3D controller", "Display controller")):
-            return line.split(": ", 1)[-1]
-    return ""
+def _graphics_title(device: str) -> str:
+    # A PCI display class says what the device does, not how it is fitted.
+    # Use positive model/family evidence; vendors (and drivers) can span both kinds.
+    model = device.casefold()
+    if model.startswith("nvidia corporation "):
+        if re.search(r"\b(?:geforce (?:rtx|gtx)|rtx [a-z]?\d{3,4})\b", model):
+            return "Graphics card"
+    elif model.startswith("intel corporation "):
+        if re.search(r"\b(?:dg[12]|battlemage|arc [ab]\d{3}m?|iris xe max)\b", model):
+            return "Graphics card"
+        if re.search(r"\b(?:u?hd graphics|iris (?:plus|xe) graphics)\b", model):
+            return "Integrated graphics"
+    elif model.startswith("advanced micro devices, inc."):
+        if re.search(r"\b(?:raphael|raven ridge|picasso|renoir|cezanne|rembrandt|phoenix|radeon 610m)\b", model):
+            return "Integrated graphics"
+        if re.search(r"\bradeon rx \d{3,4}m?\b", model):
+            return "Graphics card"
+    return "Graphics"
+
+
+def _graphics() -> list[tuple[str, str]]:
+    controllers = []
+    for line in _command("lspci", "-Dnn").splitlines():
+        fields = line.split(maxsplit=1)
+        if len(fields) != 2 or not _PCI_ADDRESS.fullmatch(fields[0]):
+            continue
+        address, description = fields
+        pci_class, separator, device = description.partition(":")
+        if not separator:
+            continue
+        pci_class = pci_class.strip().casefold()
+        # Class 03 is display. Accept plain class names when IDs are omitted.
+        code = re.search(r"\[([0-9a-f]{4})\]$", pci_class)
+        if not (code[1].startswith("03") if code else pci_class in _DISPLAY_CLASSES):
+            continue
+        if address.count(":") == 1:
+            address = f"0000:{address}"
+        slot = tuple(int(part, 16) for part in re.split(r"[:.]", address))
+        device = device.strip()
+        if not re.search(r"\bDevice \[", device):
+            device = re.sub(r" \[[0-9a-f]{4}:[0-9a-f]{4}\](?= \(rev |$)", "", device)
+        controllers.append((slot, device))
+    return [(_graphics_title(device), device) for _, device in sorted(controllers)] or [("Graphics", "")]
 
 
 def _wm() -> str:
@@ -128,10 +174,11 @@ def _local_ip() -> str:
 def _groups(Gdk) -> list[tuple[str, list[tuple[str, str]]]]:
     release = _os_release()
     profile = _json("/etc/appliance/profile.json")
+    born = profile.get("born_at")
     return [
         ("Appliance", [
             ("Product", PRODUCTS.get(normalize_profile(profile.get("profile")), str(profile.get("profile") or ""))),
-            ("Born", str(profile.get("born_at") or "")[:10]),
+            ("Born", born.strip()[:10] if isinstance(born, str) else ""),
             ("Hostname", socket.gethostname()),
             ("Local IP", _local_ip()),
         ]),
@@ -145,7 +192,7 @@ def _groups(Gdk) -> list[tuple[str, list[tuple[str, str]]]]:
         ("Hardware", [
             ("Model", _host()),
             ("Processor", _cpu()),
-            ("Graphics", _gpu()),
+            *_graphics(),
             ("Memory", _meminfo()),
             ("Disk (/)", _disk()),
             ("Resolution", _resolution(Gdk)),
@@ -157,7 +204,7 @@ def build_widget():
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gdk, Gtk
+    from gi.repository import Adw, Gdk, Gtk, Pango
 
     page = _page(Adw, PLUG)
     for title, facts in _groups(Gdk):
@@ -169,10 +216,19 @@ def build_widget():
         rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, hexpand=True)
         rows.add_css_class("boxed-list")
         for key, value in facts:
-            row = Adw.ActionRow(title=key)
-            value_label = Gtk.Label(label=value or "Unavailable", xalign=1)
+            row = Gtk.ListBoxRow(activatable=False, selectable=False)
+            columns = Gtk.Box(spacing=12, margin_start=12, margin_end=12, margin_top=8, margin_bottom=8)
+            # The title gets spare width and can wrap only between words.
+            columns.append(Gtk.Label(label=key, xalign=0, hexpand=True, wrap=True, wrap_mode=Pango.WrapMode.WORD))
+            missing = "Not recorded on this device" if key == "Born" else "Not available on this device"
+            value_label = Gtk.Label(
+                label=value if value.strip() else missing,
+                xalign=1, justify=Gtk.Justification.RIGHT,
+                wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=30,
+            )
             value_label.add_css_class("dim-label")
-            row.add_suffix(value_label)
+            columns.append(value_label)
+            row.set_child(columns)
             rows.append(row)
         line.append(heading)
         line.append(rows)
