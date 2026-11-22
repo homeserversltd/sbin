@@ -32,6 +32,8 @@ def _describe_chooser(row, _property):
         row.set_subtitle("Use KDE’s Default Applications to pick any installed app or type a command.")
     elif subtitle == "face-app-kcm-host-absent":
         row.set_subtitle("KDE’s Default Applications isn’t installed on this device.\n" + subtitle)
+    elif subtitle in {"face-app-kcm-window-not-observed", "face-app-kcm-window-observation-unavailable"}:
+        row.set_subtitle("Couldn’t open the KDE Default Applications window.\n" + subtitle)
 
 
 def build_widget():
