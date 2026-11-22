@@ -1,13 +1,15 @@
 """Caduceus-backed keyboard shortcuts with a read-only fallback."""
 from __future__ import annotations
 
+import glob
+import json
 import os
 import re
 import threading
 from pathlib import Path
 
 try:
-    from ._common import _read, _page, _group, _row, _request, _receipt_ok
+    from ._common import _read, _page, _group, _request, _receipt_ok
 except ImportError:
     import importlib.util as _importlib_util
     _common_spec = _importlib_util.spec_from_file_location(
@@ -17,16 +19,54 @@ except ImportError:
     import sys as _sys
     _sys.modules["_common"] = _common_module
     _common_spec.loader.exec_module(_common_module)
-    from _common import _read, _page, _group, _row, _request, _receipt_ok
+    from _common import _read, _page, _group, _request, _receipt_ok
 
 PLUG = {"id": "shortcuts", "title": "Shortcuts", "icon": "preferences-desktop-keyboard-shortcuts-symbolic", "order": 70, "parent": None}
 
+_MEDIA_KEYS = {
+    "XF86AudioRaiseVolume": "Volume Up", "XF86AudioLowerVolume": "Volume Down",
+    "XF86AudioMute": "Mute", "XF86AudioMicMute": "Microphone Mute",
+    "XF86AudioPlay": "Play", "XF86AudioPause": "Pause", "XF86AudioStop": "Stop",
+    "XF86AudioNext": "Next Track", "XF86AudioPrev": "Previous Track",
+    "XF86AudioForward": "Fast Forward", "XF86AudioRewind": "Rewind",
+    "XF86AudioMedia": "Media", "XF86AudioPlayPause": "Play/Pause",
+}
+_KEY_NAMES = {
+    "mod4": "Super", "super": "Super", "mod1": "Alt", "alt": "Alt",
+    "control": "Ctrl", "ctrl": "Ctrl", "mod5": "AltGr", "shift": "Shift",
+    "return": "Enter", "kp_enter": "Keypad Enter", "space": "Space", "tab": "Tab",
+    "iso_left_tab": "Back Tab", "escape": "Esc", "delete": "Delete", "print": "Print Screen",
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right",
+    "page_up": "Page Up", "page_down": "Page Down", "button1": "Left Mouse Button",
+    "mouse:272": "Left Mouse Button", "mouse:273": "Right Mouse Button",
+    "mouse:274": "Middle Mouse Button",
+    **{key.lower(): label for key, label in _MEDIA_KEYS.items()},
+    "xf86monbrightnessup": "Brightness Up", "xf86monbrightnessdown": "Brightness Down",
+    "xf86kbdbrightnessup": "Keyboard Brightness Up", "xf86kbdbrightnessdown": "Keyboard Brightness Down",
+    "xf86touchpadtoggle": "Toggle Touchpad", "xf86wlan": "Wi-Fi",
+    "xf86calculator": "Calculator", "xf86poweroff": "Power Off", "xf86sleep": "Sleep",
+}
+
+
+def _key_name(part: str) -> str:
+    lower = part.lower()
+    if lower in _KEY_NAMES:
+        return _KEY_NAMES[lower]
+    if lower.startswith("xf86") and len(part) > 4:
+        return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", part[4:])
+    return part.upper() if len(part) == 1 and part.isalpha() else part
+
+
+def _key_parts(keys: str) -> list[str]:
+    return [_key_name(part.strip()) for part in keys.split("+") if part.strip()]
+
+
+def _last_key(keys: str) -> str:
+    return keys.rsplit("+", 1)[-1].strip()
+
 
 def human_keys(keys: str) -> str:
-    names = {"Mod4": "Super", "Mod1": "Alt", "Control": "Ctrl",
-             "Mod5": "AltGr", "Return": "Enter"}
-    return "+".join(names.get(part, part.upper() if len(part) == 1 and part.isalpha() else part)
-                    for part in keys.split("+"))
+    return "+".join(_key_parts(keys))
 
 
 def fold_bindings(bindings):
@@ -53,14 +93,36 @@ def _binding_keys(binding):
     return keys if isinstance(keys, str) else ""
 
 
-def _group_presentation(bindings):
-    keys = "\n".join(human_keys(_binding_keys(item)) or "(unbound)" for item in bindings)
+_GROUP_TITLES = ("Windows", "Workspaces", "Media and volume", "Apps and launchers", "Screenshots", "Other")
+_ACTION_KINDS = {
+    "Screenshots": r"\bscreenshot\b|\bscreen capture\b",
+    "Workspaces": r"\bworkspaces?\b",
+    "Media and volume": r"\b(?:volume|mute|unmute|track|play|pause|media)\b",
+    "Windows": r"\bwindows?\b|\bfull ?screen\b",
+    "Apps and launchers": r"^(?:open|launch|start)\b|\b(?:launcher|terminal)\b",
+}
+
+
+def _binding_kind(members):
+    name = members[0].get("name")
+    for kind, pattern in _ACTION_KINDS.items():
+        if isinstance(name, str) and re.search(pattern, name, re.I):
+            return kind
+    for item in members:
+        default = item.get("default_keys")
+        key = _last_key(default if isinstance(default, str) else _binding_keys(item))
+        if key.lower().startswith("xf86audio"):
+            return "Media and volume"
+    return "Other"
+
+
+def _command_caption(bindings):
     commands = list(dict.fromkeys(item.get("command") for item in bindings
                                   if isinstance(item.get("command"), str) and item.get("command")))
     overridden = [human_keys(_binding_keys(item)) or "(unbound)" for item in bindings
                   if item.get("overridden") is True]
     details = commands + (["Overridden: " + ", ".join(overridden)] if overridden else [])
-    return keys, " · ".join(details)
+    return " · ".join(details)
 
 
 def _logical_lines(text: str):
@@ -193,85 +255,239 @@ def _sway_bindings(paths: list[Path], *, detailed: bool = False):
     return bindings
 
 
-def _plain_row(Adw, title: str, subtitle: str = ""):
-    row = _row(Adw, title, subtitle)
-    row.set_use_markup(False)
-    return row
+_HYPR_COMMAND_NAMES = {
+    "dolphin": "Open files", "kitty": "Open terminal", "uwsm app -- kitty": "Open terminal",
+    "fuzzel --show drun": "Open app launcher", "kate": "Open text editor",
+    "killactive": "Close window", "window.close": "Close window",
+    "fullscreen": "Full screen on or off", "window.fullscreen": "Full screen on or off",
+    "resizewindow": "Resize window with the mouse", "window.drag": "Move window with the mouse",
+}
 
 
-def _read_only_rows(Adw, Gtk, group):
+def _hypr_action_name(keys: str, dispatcher: str, args: str) -> str:
+    key = _last_key(keys)
+    if key.lower().startswith("xf86"):
+        return _key_name(key)
+    if dispatcher == "exec":
+        if "/api/v1/face/bar" in args:
+            return "Show or hide the bar"
+        if "/api/v1/face/screenshot" in args:
+            mode = re.search(r'"mode"\s*:\s*"(\w+)"', args)
+            return {"area": "Screenshot of an area", "full": "Screenshot of the full screen",
+                    "window": "Screenshot of the focused window"}.get(mode[1] if mode else "", "Take a screenshot")
+        if args.endswith("alt-tab.sh forward"):
+            return "Next window"
+        if args.endswith("alt-tab.sh backward"):
+            return "Previous window"
+        if args.endswith("/asr-ptt"):
+            return "Push to talk"
+        return _HYPR_COMMAND_NAMES.get(args, "")
+    if dispatcher in {"workspace", "movetoworkspace", "focus", "window.move"}:
+        workspace = re.search(r'\bworkspace\s*=\s*"?([\w+-]+)', args)
+        target = workspace[1] if workspace else args if dispatcher in {"workspace", "movetoworkspace"} else ""
+        if target:
+            moving = dispatcher in {"movetoworkspace", "window.move"}
+            if target in {"e-1", "e+1"}:
+                direction = "next" if target == "e+1" else "previous"
+                return f"Move window to {direction} workspace" if moving else f"{direction.title()} workspace"
+            return f"Move window to workspace {target}" if moving else f"Workspace {target}"
+    if dispatcher in {"movefocus", "movewindow", "focus", "window.move"}:
+        direction = re.search(r'\bdirection\s*=\s*"(\w+)"', args)
+        direction = direction[1] if direction else {"u": "up", "d": "down", "l": "left", "r": "right"}.get(args, "")
+        if direction:
+            verb = "Focus" if dispatcher in {"focus", "movefocus"} else "Move"
+            return f"{verb} window {direction}"
+        if dispatcher == "movewindow" and key.startswith("mouse:"):
+            return "Move window with the mouse"
+    if dispatcher in {"window.resize", "resizeactive"}:
+        delta = re.findall(r"-?\d+", args)
+        if len(delta) == 2 and all(len(d) < 10 for d in delta):
+            x, y = map(int, delta)
+            size = "narrower" if x < 0 else "wider" if x > 0 else "shorter" if y < 0 else "taller"
+            return f"Make window {size}"
+        if not args and key.startswith("mouse:"):
+            return "Resize window with the mouse"
+    return _HYPR_COMMAND_NAMES.get(dispatcher, "")
+
+
+def _hypr_row(keys: str, dispatcher: str, args: str, command: str, name: str = ""):
+    return {"keys": keys, "name": name or _hypr_action_name(keys, dispatcher, args), "command": command}
+
+
+_LUA_STRING = r'"(?:[^"\\]|\\.)*"'
+_LUA_BIND = re.compile(rf'\s*hl\.bind\s*\(\s*({_LUA_STRING})\s*,\s*hl\.dsp\.([\w.]+)'
+                       rf'\s*\(((?:{_LUA_STRING}|[^"()])*)\)\s*(?:,\s*\{{[^}}]*\}}\s*)?\)\s*;?\s*')
+
+
+def _hypr_lua_bindings(path: Path):
+    """Read literal binds in the shipped Lua root; never evaluate the config."""
+    from agathodaimon.settings._shared import hypr_lua_lines
+
+    strings = {}
     rows = []
-    sway_dir = Path.home() / ".config" / "sway"
-    if "SWAYSOCK" in os.environ or sway_dir.exists():
+    for line in hypr_lua_lines(path):
+        try:
+            var = re.fullmatch(rf'\s*local\s+(\w+)\s*=\s*({_LUA_STRING})\s*;?\s*', line)
+            if var:
+                strings[var[1]] = json.loads(var[2])
+                continue
+            unbind = re.fullmatch(rf'\s*hl\.unbind\s*\(\s*({_LUA_STRING})\s*\)\s*;?\s*', line)
+            if unbind:
+                key = json.loads(unbind[1])
+                rows = [row for row in rows if row["keys"] != key]
+                continue
+            bind = _LUA_BIND.fullmatch(line)
+            if not bind:
+                continue
+            keys, dispatcher, args = json.loads(bind[1]), bind[2], bind[3].strip()
+            command = f"hl.dsp.{dispatcher}({args})"
+            if dispatcher == "exec_cmd":
+                literal = re.fullmatch(rf'(?:(\w+)\s*\.\.\s*)?({_LUA_STRING})', args)
+                if literal and (literal[1] is None or literal[1] in strings):
+                    args = strings.get(literal[1], "") + json.loads(literal[2])
+                    dispatcher, command = "exec", "exec " + args
+            rows.append(_hypr_row(keys, dispatcher, args, command))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
+def _hypr_conf_bindings(root: Path):
+    """Legacy hyprlang: read the actual source chain rather than orphan fragments."""
+    variables = {}
+    active = set()
+    rows = []
+
+    def visit(path):
+        try:
+            path = path.resolve()
+            if path in active or not path.is_file():
+                return
+        except (OSError, RuntimeError):
+            return
+        active.add(path)
+        for line in _logical_lines(_read(str(path))):
+            line = re.split(r'(?<!#)#(?!#)', line, 1)[0].replace("##", "#")
+            keyword, equal, value = line.partition("=")
+            keyword, value = keyword.strip(), value.strip()
+            if not equal:
+                continue
+            if keyword.startswith("$"):
+                variables[keyword[1:]] = value
+                continue
+            value = _expand(value, variables)
+            if keyword == "source":
+                source = path.parent / os.path.expanduser(value)
+                for included in sorted(glob.glob(str(source))):
+                    visit(Path(included))
+            elif re.fullmatch(r'bind[a-z]*|unbind', keyword):
+                described = "d" in keyword[4:]
+                parts = [part.strip() for part in value.split(",", 4 if described else 3)]
+                if len(parts) < 2 or not parts[1]:
+                    continue
+                mods, key, *action = parts
+                modifiers = re.split(r'[\s_]+', mods.upper()) if mods else []
+                keys = "+".join([*modifiers, key])
+                if keyword == "unbind":
+                    rows[:] = [row for row in rows if row["keys"] != keys]
+                    continue
+                name = action.pop(0) if described and action else ""
+                if action and action[0]:
+                    dispatcher, *args = action
+                    rows.append(_hypr_row(keys, dispatcher, args[0] if args else "", " ".join(action), name))
+        active.remove(path)
+
+    visit(root)
+    return rows
+
+
+def _local_bindings(message):
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "").lower().split(":")
+    sway_socket = os.environ.get("SWAYSOCK")
+    sway = "sway" in desktop or bool(sway_socket and Path(sway_socket).is_socket())
+    hypr = config / "hypr"
+    lua, conf = hypr / "hyprland.lua", hypr / "hyprland.conf"
+    if not sway and ("hyprland" in desktop or os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")
+                     or lua.is_file() or conf.is_file()):
+        bindings = _hypr_lua_bindings(lua) if lua.is_file() else _hypr_conf_bindings(conf)
+        return bindings, ("Shortcuts are read-only here and can be changed on Sway machines." if bindings else
+                          "No Hyprland shortcuts could be read; shortcuts can be changed on Sway machines.")
+    if message:
+        sway_dir = config / "sway"
         paths = [sway_dir / "config", *sorted((sway_dir / "conf.d").glob("*.conf"))]
         bindings = [{"keys": keys, "name": name, "command": command}
                     for keys, name, command in _sway_bindings(paths)]
-        for members in fold_bindings(bindings):
-            name = members[0].get("name") or "(no name)"
-            keys, subtitle = _group_presentation(members)
-            row = _plain_row(Adw, name, subtitle)
-            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22, valign=Gtk.Align.START)
-            key_label.add_css_class("monospace")
-            row.add_prefix(key_label)
-            group.add(row)
-            rows.append(row)
-    else:
-        text = _read("~/.config/hypr/bindings.conf").strip()
-        for line in text.splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                row = _plain_row(Adw, line)
-                group.add(row)
-                rows.append(row)
-    if not rows:
-        row = _row(Adw, "not configured")
-        group.add(row)
-        rows.append(row)
-    return rows
+        return bindings, message
+    return [], "Sway did not report any shortcuts." if sway else "No keyboard shortcuts were found on this machine."
 
 
 def build_widget():
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gdk, GLib, Gtk
+    from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
     page = _page(Adw, PLUG)
-    fallback_group = _group(Adw, page, "")
-    editable_group = _group(Adw, page, "")
-    editable_group.set_visible(False)
-    _read_only_rows(Adw, Gtk, fallback_group)
-    fallback_status = Adw.ActionRow(title="Shortcut editing", subtitle="Checking Caduceus door…")
-    fallback_status.set_sensitive(False)
-    fallback_group.add(fallback_status)
+    notice = _group(Adw, page, "")
+    notice.set_description("Reading shortcuts…")
 
     settings_path = "/api/v1/settings/shortcuts"
 
-    def finish_read(bindings, message):
-        if message:
-            editable_group.set_visible(False)
-            fallback_group.set_visible(True)
-            fallback_status.set_subtitle(message)
-            return False
+    def show_binding(row, caps, members):
+        detail = _command_caption(members)
+        row.set_subtitle(f"<tt>{GLib.markup_escape_text(detail)}</tt>" if detail else "")
+        row.set_tooltip_text(detail or None)
+        while (child := caps.get_first_child()) is not None:
+            caps.remove(child)
+        # Use Adwaita's stock keycap styling with our display-only key names.
+        # Libadwaita 1.8 moved the style from GtkShortcutLabel's CSS node to its own.
+        node = "shortcut-label" if hasattr(Adw, "ShortcutLabel") else "shortcut"
+        for binding in members:
+            parts = _key_parts(_binding_keys(binding))
+            if not parts:
+                caps.append(Gtk.Label(label="Unbound", halign=Gtk.Align.END, css_classes=["dim-label"]))
+                continue
+            chord = Gtk.Box(css_name=node, spacing=4, halign=Gtk.Align.END)
+            for index, part in enumerate(parts):
+                if index:
+                    chord.append(Gtk.Label(label="+", css_classes=["dim-label"]))
+                chord.append(Gtk.Label(label=part, css_classes=["keycap"]))
+            caps.append(chord)
 
+    def show_status(label, text):
+        label.set_text(text)
+        label.set_tooltip_text(text)
+        label.set_visible(bool(text))
+
+    def finish_read(bindings, message):
+        notice.set_description(message or "")
+        notice.set_visible(bool(message))
+        classified = {title: [] for title in _GROUP_TITLES}
         for members in fold_bindings(bindings):
+            classified[_binding_kind(members)].append(members)
+        groups = {kind: _group(Adw, page, kind) for kind, actions in classified.items() if actions}
+
+        for kind, members in ((kind, members) for kind, actions in classified.items() for members in actions):
             name = members[0].get("name")
-            title = name.strip() if isinstance(name, str) and name.strip() else "(no name)"
-            keys, subtitle = _group_presentation(members)
-            row = _plain_row(Adw, title, subtitle)
-            key_label = Gtk.Label(label=keys, xalign=0, width_chars=22, valign=Gtk.Align.START)
-            key_label.add_css_class("monospace")
-            row.add_prefix(key_label)
-            status_label = Gtk.Label(label="", xalign=1)
+            title = name.strip() if isinstance(name, str) and name.strip() else "Unnamed shortcut"
+            row = Adw.ActionRow(title=GLib.markup_escape_text(title), use_markup=True, subtitle_lines=1,
+                                focusable=True)
+            row.connect("notify::has-focus", lambda focused, _: focused.set_subtitle_lines(0 if focused.has_focus() else 1))
+            caps = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER,
+                           margin_top=6, margin_bottom=6)
+            status_label = Gtk.Label(xalign=0, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                                     lines=2, max_width_chars=18, ellipsize=Pango.EllipsizeMode.END,
+                                     visible=False, css_classes=["caption"])
             row.add_suffix(status_label)
+            row.add_suffix(caps)
+            show_binding(row, caps, members)
             activity = {"busy": False}
             editable = any(binding.get("editable") is True for binding in members)
+            row.set_activatable(editable)
             if editable:
-                row.set_activatable(True)
-                row.set_focusable(True)
-
                 def open_editor(_row, selected_members=members, selected_row=row,
-                                selected_keys=key_label, selected_status=status_label,
+                                selected_keys=caps, selected_status=status_label,
                                 action_title=title, selected_activity=activity):
                     if selected_activity["busy"]:
                         return
@@ -290,7 +506,6 @@ def build_widget():
                     content.append(Gtk.Label(label="Press the new keys…", xalign=0))
                     capture_entry = Gtk.Entry()
                     capture_entry.set_editable(False)
-                    capture_entry.set_placeholder_text("Press the new keys…")
                     content.append(capture_entry)
                     reset_button = dialog.add_button("Reset to default", Gtk.ResponseType.APPLY)
                     dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
@@ -385,7 +600,7 @@ def build_widget():
                         if not isinstance(original, str):
                             original = ""
                         selected_activity["busy"] = True
-                        selected_status.set_text("Saving…")
+                        show_status(selected_status, "Saving…")
                         threading.Thread(
                             target=post_change,
                             args=(selected_members, selected, selected_row, selected_keys, selected_status, selected_activity,
@@ -406,26 +621,19 @@ def build_widget():
                     capture_entry.grab_focus()
 
                 row.connect("activated", open_editor)
-            editable_group.add(row)
-
-        if not bindings:
-            editable_group.add(_row(Adw, "not configured"))
-        fallback_group.set_visible(False)
-        editable_group.set_visible(True)
+            groups[kind].add(row)
         return False
 
-    def finish_change(members, binding, row, key_label, status_label, activity, default_keys, to_keys,
+    def finish_change(members, binding, row, caps, status_label, activity, default_keys, to_keys,
                       receipt, error):
         if error:
-            status_label.set_text("Caduceus unavailable")
+            show_status(status_label, "Settings could not reach the shortcut service.")
         elif _receipt_ok(receipt):
             current_keys = default_keys if to_keys is None else to_keys
             binding["keys"] = current_keys
             binding["overridden"] = current_keys != default_keys
-            keys, subtitle = _group_presentation(members)
-            key_label.set_text(keys)
-            row.set_subtitle(subtitle)
-            status_label.set_text("Reset to default" if to_keys is None else "Saved")
+            show_binding(row, caps, members)
+            show_status(status_label, "Reset to default" if to_keys is None else "Saved")
         else:
             signal = receipt.get("firstMissingSignal", receipt.get("first_missing_signal", ""))
             if isinstance(signal, str) and signal.startswith("shortcuts-key-taken:"):
@@ -442,11 +650,11 @@ def build_widget():
                     "sway-reload-failed": "Sway could not apply the shortcut",
                     "sway-session-unavailable": "Sway is not available",
                 }.get(signal, "Change refused")
-            status_label.set_text(message)
+            show_status(status_label, message)
         activity["busy"] = False
         return False
 
-    def post_change(members, binding, row, key_label, status_label, activity, default_keys, to_keys):
+    def post_change(members, binding, row, caps, status_label, activity, default_keys, to_keys):
         try:
             receipt = _request(
                 settings_path,
@@ -454,21 +662,26 @@ def build_widget():
                 {"from": default_keys, "to": to_keys},
             )
             GLib.idle_add(
-                finish_change, members, binding, row, key_label, status_label, activity,
+                finish_change, members, binding, row, caps, status_label, activity,
                 default_keys, to_keys, receipt, None,
             )
         except RuntimeError:
             GLib.idle_add(
-                finish_change, members, binding, row, key_label, status_label, activity,
+                finish_change, members, binding, row, caps, status_label, activity,
                 default_keys, to_keys, None, "unavailable",
             )
+
+    def deliver(bindings, message=None):
+        if not bindings:
+            bindings, message = _local_bindings(message)
+        GLib.idle_add(finish_read, bindings, message)
 
     def read_settings():
         try:
             doors = _request("/api/v1/doors")
             routes = doors.get("routes")
             if not isinstance(routes, list) or settings_path not in routes:
-                GLib.idle_add(finish_read, None, "Read-only: shortcut editing is unavailable")
+                deliver(None, "Shortcut editing is not available on this machine.")
                 return
             receipt = _request(settings_path)
             values = receipt.get("values")
@@ -476,11 +689,11 @@ def build_widget():
             if not _receipt_ok(receipt) or not isinstance(bindings, list) or not all(
                 isinstance(binding, dict) for binding in bindings
             ):
-                GLib.idle_add(finish_read, None, "Shortcut settings unavailable")
+                deliver(None, "Settings could not read the current shortcuts.")
                 return
-            GLib.idle_add(finish_read, bindings, None)
+            deliver(bindings)
         except RuntimeError:
-            GLib.idle_add(finish_read, None, "Caduceus unavailable")
+            deliver(None, "Settings could not reach the shortcut service.")
 
     threading.Thread(target=read_settings, daemon=True).start()
     return page
