@@ -97,8 +97,8 @@ def build_widget():
             for row, value in zip(rows, values):
                 if value is not None:
                     row.add_suffix(Gtk.Label(label=value, valign=Gtk.Align.CENTER,
-                                             wrap=True, max_width_chars=32,
-                                             justify=Gtk.Justification.RIGHT))
+                                             wrap=True, width_chars=min(len(value), 32),
+                                             max_width_chars=32, justify=Gtk.Justification.RIGHT))
         return GLib.SOURCE_REMOVE
 
     def read():
