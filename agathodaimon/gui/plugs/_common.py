@@ -239,15 +239,6 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str) -> No
     threading.Thread(target=discover, daemon=True).start()
 
 
-def build_manager_widget(plug: dict[str, Any], program: str) -> Any:
-    import gi
-    gi.require_version("Adw", "1")
-    from gi.repository import Adw
-    page = _page(Adw, plug)
-    add_manager_row(page, plug["title"], "Open", program)
-    return page
-
-
 _SWAY_ONLY_SIGNALS = {"sway-session-unavailable", "unsupported:sway-session-unavailable"}
 _SWAY_ONLY_REASON = "Changes apply on Sway machines"
 _SLIDER_WRITE_INTERVAL_US = 300_000
