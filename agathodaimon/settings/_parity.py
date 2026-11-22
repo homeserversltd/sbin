@@ -539,7 +539,8 @@ def _plan_energy_file(field: str, value: Any, environment: dict[str, str] | None
             return observed
 
         return _EnergyFile({"path": drop_in, "candidate": rule.encode()}, apply_charge,
-                           lambda: _restore_charge_limit(sysfs, original), read_charge, reconcile=True)
+                           lambda: _restore_charge_limit(sysfs, original), read_charge,
+                           reconcile=original is not enabled)
     if field != "power_button_action":
         raise ValueError("unsupported:" + field)
     if not isinstance(value, str) or value not in _POWER_BUTTON_ACTIONS:
@@ -653,6 +654,7 @@ def _write_energy(changes: dict[str, Any]) -> dict[str, Any]:
         if files:
             parts = write([plan.edit for plan in files.values()], check=check, verify=verify,
                           reload=reload, readback=readback)
+            parts["attempt"]["attempted"] |= bool(undo)
             parts["attempt"]["readback"] = live
         else:
             readback()
@@ -661,6 +663,7 @@ def _write_energy(changes: dict[str, Any]) -> dict[str, Any]:
         cause = error.cause if isinstance(error, WriteError) else error
         if isinstance(error, WriteError):
             parts = error.parts
+            parts["attempt"]["attempted"] |= bool(undo)
         failures = [named_signal(item, "settings-energy") for item in error.restore_errors] if isinstance(error, WriteError) else []
         for restore in reversed(undo):
             try:

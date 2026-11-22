@@ -55,7 +55,7 @@ def build_widget():
     # If an edited control becomes unavailable, its refusal still needs a
     # selectable subtitle; an insensitive widget can't receive text selection.
     unavailable = {field: value_row(row.get_title()) for field, row in controls.items()}
-    read_status = Adw.ActionRow(title="Reading Energy & Power…")
+    read_status = Adw.ActionRow(title="Reading Energy & Power…", use_markup=False)
     fields_by_row = {row: field for field, row in controls.items()}
     for row in (power_button, profile, screen, screen_readonly, sleep, level, battery, charge_limit, lid):
         row.set_visible(False)
