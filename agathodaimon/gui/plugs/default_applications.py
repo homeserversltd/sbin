@@ -20,31 +20,15 @@ for spec in SPECS:
     spec["kind"] = "choice"
 
 
-def _descendants(widget):
-    for child in widget:
-        yield child
-        yield from _descendants(child)
-
-
-def _describe_chooser(row, _property):
-    subtitle = row.get_subtitle()
-    if subtitle == "Ready":
-        row.set_subtitle("Use KDE’s Default Applications to pick any installed app or type a command.")
-    elif subtitle == "face-app-kcm-host-absent":
-        row.set_subtitle("KDE’s Default Applications isn’t installed on this device.\n" + subtitle)
-    elif subtitle in {"face-app-kcm-window-not-observed", "face-app-kcm-window-observation-unavailable"}:
-        row.set_subtitle("Couldn’t open the KDE Default Applications window.\n" + subtitle)
-
-
 def build_widget():
     page = build_settings_widget(PLUG, "default-apps", "", SPECS)
-    from gi.repository import Adw
-
-    title = "Another application"
-    add_manager_row(page, title, "Choose…", "kcm_componentchooser")
-    # The shared helper owns availability and action feedback and doesn't return the row.
-    for row in _descendants(page):
-        if isinstance(row, Adw.ActionRow) and row.get_title() == title:
-            row.connect("notify::subtitle", _describe_chooser)
-            break
+    add_manager_row(
+        page, "Another application", "Choose…", "kcm_componentchooser",
+        resting_sentence="Use KDE's Default Applications to pick any installed app or type a command.",
+        refusal_sentences={
+            "face-app-kcm-host-absent": "KDE's Default Applications isn't installed on this device.",
+            "face-app-kcm-window-not-observed": "Couldn't open the KDE Default Applications window.",
+            "face-app-kcm-window-observation-unavailable": "Couldn't open the KDE Default Applications window.",
+        },
+    )
     return page

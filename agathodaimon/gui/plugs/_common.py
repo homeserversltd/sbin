@@ -179,8 +179,11 @@ def _number(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
-def add_manager_row(page: Any, title: str, button_text: str, program: str) -> None:
-    """Ask the admitted face door to toggle a manager, then show its receipt."""
+def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
+                    resting_sentence: str = "", refusal_sentences: dict[str, str] | None = None) -> None:
+    """Toggle a native app and show the outcome on the row that asked."""
+    from http.client import HTTPException
+
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
@@ -188,14 +191,38 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str) -> No
 
     group = Adw.PreferencesGroup()
     page.add(group)
-    row = Adw.ActionRow(title=title, subtitle="Checking Caduceus door…")
+    row = Adw.ActionRow(title=title, subtitle="Checking if this app can be opened…")
     button = Gtk.Button(label=button_text, valign=Gtk.Align.CENTER)
     button.set_sensitive(False)
     row.add_suffix(button)
     group.add(row)
 
+    def find_subtitle(widget: Any) -> Any:
+        for child in widget:
+            if isinstance(child, Gtk.Label) and child.has_css_class("subtitle"):
+                return child
+            found = find_subtitle(child)
+            if found is not None:
+                return found
+        return None
+
+    subtitle_label = find_subtitle(row)
+    refusal_sentences = refusal_sentences or {}
+    running = False
+    outcome_timer = 0
+
+    def set_message(message: str, signal: str = "") -> None:
+        subtitle = GLib.markup_escape_text(message)
+        if signal:
+            # Keep the sentence at the normal subtitle size; only the signal is smaller.
+            subtitle += "\n<small>" + GLib.markup_escape_text(signal) + "</small>"
+        row.set_subtitle(subtitle)
+        if subtitle_label is not None:
+            subtitle_label.set_selectable(bool(signal))
+
     def checked(message: str, enabled: bool) -> bool:
-        row.set_subtitle(message)
+        set_message(message)
+        row.set_sensitive(enabled)
         button.set_sensitive(enabled)
         return False
 
@@ -204,9 +231,30 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str) -> No
             doors = _request("/api/v1/doors")
             routes = doors.get("routes")
             present = isinstance(routes, list) and "/api/v1/face/app" in routes
-            GLib.idle_add(checked, "Ready" if present else "Manager door unavailable", present)
-        except RuntimeError as error:
-            GLib.idle_add(checked, str(error), False)
+            message = resting_sentence if present else "This app can't be opened from Settings on this device."
+            GLib.idle_add(checked, message, present)
+        except (RuntimeError, OSError, HTTPException):
+            GLib.idle_add(checked, "Couldn't check whether this app can be opened.", False)
+
+    def clear_outcome() -> bool:
+        nonlocal outcome_timer
+        outcome_timer = 0
+        set_message(resting_sentence)
+        return False
+
+    def finished(receipt: dict[str, Any] | None) -> bool:
+        nonlocal running, outcome_timer
+        if receipt is not None and not _receipt_ok(receipt):
+            signal = _refusal_signal(receipt)
+            set_message(refusal_sentences.get(signal, "Couldn't open or close this app."), signal)
+        elif receipt is not None and isinstance(reported := receipt.get("running"), bool):
+            running = reported
+            set_message("Opened" if running else "Closed")
+            outcome_timer = GLib.timeout_add(3000, clear_outcome)
+        else:
+            set_message("Couldn't tell whether this app opened or closed.")
+        button.set_sensitive(True)
+        return False
 
     def toggle() -> None:
         try:
@@ -219,20 +267,20 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str) -> No
             except urllib.error.HTTPError as error:
                 raw = error.read(256 * 1024)
             receipt = json.loads(raw)
-            if not isinstance(receipt, dict):
-                raise ValueError("invalid receipt")
-            if receipt.get("ok") is True:
-                running = receipt.get("running")
-                message = "Opened" if running is True else "Closed" if running is False else "Request completed"
-            else:
-                message = _refusal_signal(receipt) or "Manager request refused"
-        except (OSError, urllib.error.URLError, ValueError, UnicodeDecodeError) as error:
-            message = f"Manager unavailable: {error}"
-        GLib.idle_add(checked, message, True)
+        except (OSError, ValueError, HTTPException):
+            receipt = None
+        GLib.idle_add(finished, receipt if isinstance(receipt, dict) else None)
 
     def on_click(_button: Any) -> None:
+        nonlocal outcome_timer
+        if not button.is_sensitive():
+            return
+        if outcome_timer:
+            GLib.source_remove(outcome_timer)
+            outcome_timer = 0
         button.set_sensitive(False)
-        row.set_subtitle("Waiting for Caduceus receipt…")
+        # There is no read of the app's running state before the first press.
+        set_message("Closing…" if running else "Opening…")
         threading.Thread(target=toggle, daemon=True).start()
 
     button.connect("clicked", on_click)
