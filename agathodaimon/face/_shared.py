@@ -477,11 +477,15 @@ def _root_process_run(
     )
 
 
-def owner_spawn(argv: Sequence[str], environment: Mapping[str, str]) -> tuple[subprocess.Popen, int | None]:
+def owner_spawn(
+    argv: Sequence[str], environment: Mapping[str, str], *, scope: str | None = None,
+) -> tuple[subprocess.Popen, int | None]:
     # Birth the whole app tree inside the owner's user manager, never in the staff unit's cgroup:
     # a staff restart kills its cgroup, and Chromium's zygotes and GPU process died with it.
-    scoped = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--slice=app.slice", "--", *argv]
-    command, outer = owner_session_command(scoped, environment)
+    scoped = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--slice=app.slice"]
+    if scope is not None:
+        scoped.append(f"--unit={scope}")
+    command, outer = owner_session_command([*scoped, "--", *argv], environment)
     try:
         process = subprocess.Popen(
             command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -2209,6 +2213,67 @@ def bar(payload: dict[str, Any]) -> Mapping[str, Any]:
     }
 
 
+_COMPONENT_CHOOSER = "kcm_componentchooser"
+_COMPONENT_CHOOSER_SCOPE = "agathodaimon-face-default-applications.scope"
+
+
+def _component_chooser_argv() -> list[str]:
+    for host in ("systemsettings", "kcmshell6"):
+        executable = _owner_utility(host)
+        if executable is not None:
+            return [executable, _COMPONENT_CHOOSER]
+    raise FaceError("face-app-kcm-host-absent", program=_COMPONENT_CHOOSER)
+
+
+def _component_chooser_running(environment: Mapping[str, str]) -> bool:
+    result = owner_run(
+        ["systemctl", "--user", "show", "--property=ActiveState", "--value", _COMPONENT_CHOOSER_SCOPE],
+        environment, timeout=2,
+    )
+    state = result.stdout.strip()
+    if result.returncode != 0 or state not in {"active", "inactive", "failed"}:
+        raise FaceError("face-app-kcm-scope-state-unavailable")
+    return state == "active"
+
+
+def _toggle_component_chooser() -> Mapping[str, Any]:
+    environment, socket_source = owner_session_environment(discover=False)
+    with _runtime_lock(f"agathodaimon-face-app-{_COMPONENT_CHOOSER}.lock") as (fd, lock_path):
+        marked = _lock_state(fd)
+        # The launch may share an executable with other KDE windows. Own only this scope.
+        if _component_chooser_running(environment):
+            if not marked:
+                raise FaceError("face-app-kcm-scope-in-use")
+            result = owner_run(["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE], environment)
+            if result.returncode != 0 or _component_chooser_running(environment):
+                raise FaceError("face-app-stop-failed", running=True, signal_exit=result.returncode)
+            running = False
+        else:
+            if marked:
+                _write_lock_state(fd, False)
+            argv = _component_chooser_argv()
+            environment, socket_source = owner_session_environment(
+                discover=True, prefer_direct_keys=("WAYLAND_DISPLAY",),
+            )
+            process, _ = owner_spawn(argv, environment, scope=_COMPONENT_CHOOSER_SCOPE)
+            running = False
+            for _ in range(10):
+                if process.poll() is not None:
+                    break
+                if _component_chooser_running(environment):
+                    running = True
+                    break
+                time.sleep(0.1)
+            if not running:
+                raise FaceError("face-app-process-not-observed", program=_COMPONENT_CHOOSER, running=False)
+        _write_lock_state(fd, running)
+        return {
+            "ok": True, "firstMissingSignal": "none", "changed": True,
+            "program": _COMPONENT_CHOOSER, "running": running, "lock_path": str(lock_path),
+            "socket_source": socket_source,
+        }
+
+
 def app(payload: dict[str, Any]) -> Mapping[str, Any]:
     program = _require_string(payload, "id", "face-app-id-required")
     action = _require_string(payload, "action", "face-app-action-required")
@@ -2216,6 +2281,8 @@ def app(payload: dict[str, Any]) -> Mapping[str, Any]:
         raise FaceError("face-app-id-invalid")
     if action != "toggle":
         raise FaceError("face-app-action-invalid")
+    if program == _COMPONENT_CHOOSER:
+        return _toggle_component_chooser()
     account = _owner()
     environment, socket_source = owner_session_environment(discover=False)
     lock_name = f"agathodaimon-face-app-{program}.lock"
