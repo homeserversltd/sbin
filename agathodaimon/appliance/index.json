@@ -3,6 +3,7 @@
     "factory-fallback",
     "harmonia-press",
     "journal-vacuum",
+    "log-level",
     "power",
     "restart",
     "restartable",

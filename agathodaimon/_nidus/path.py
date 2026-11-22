@@ -10,6 +10,7 @@ _RUNTIME_PATHS = {
     "identity-lock": (Path("/var/lib/caduceus/network-identity-claim.lock"), ("var", "lib", "caduceus", "network-identity-claim.lock")),
     "profile": (Path("/etc/appliance/profile.json"), ("etc", "appliance", "profile.json")),
     "seats": (Path("/opt/caduceus/source/schema"), ("opt", "caduceus", "source", "schema")),
+    "units": (Path("/etc/systemd/system"), ("etc", "systemd", "system")),
     "model-engine": (Path("/usr/local/bin/llama-server"), ("usr", "local", "bin", "llama-server")),
     "skeleton": (Path("/root/key/skeleton.key"), ("root", "key", "skeleton.key")),
 }

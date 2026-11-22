@@ -4,6 +4,7 @@
   "bands": [
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
+    "appliance/log-level",
     "appliance/service",
     "appliance/service/disable",
     "appliance/service/enable",
