@@ -2429,24 +2429,55 @@ def _component_chooser_window_reader(
     )
 
 
-def _component_chooser_stop(environment: Mapping[str, str]) -> None:
+def _component_chooser_kill_scope_cgroup() -> None:
+    uid = _owner().pw_uid
+    scope = (Path("/sys/fs/cgroup/user.slice") / f"user-{uid}.slice" / f"user@{uid}.service"
+             / "app.slice" / _COMPONENT_CHOOSER_SCOPE)
+    # The fixed cgroup of this owner's dedicated scope is the only kernel fallback.
+    try:
+        fd = os.open(scope / "cgroup.kill", os.O_WRONLY | os.O_NOFOLLOW)
+        try:
+            os.write(fd, b"1")
+        finally:
+            os.close(fd)
+    except OSError:
+        pass  # A collected or unavailable cgroup is resolved by the final scope read.
+
+
+def _component_chooser_stop(
+    environment: Mapping[str, str], *, pending_launch: subprocess.Popen | None = None,
+) -> None:
+    def dispatch_finished() -> bool:
+        return pending_launch is None or pending_launch.poll() is not None
+
     stop = ["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE]
     result = owner_run(stop, environment, timeout=3)
-    if result.returncode == 0:
+    if result.returncode == 0 and dispatch_finished():
         return  # A blocking StopUnit job completed; this does not depend on a working show.
+    if pending_launch is not None and pending_launch.poll() is None:
+        # An unseen launcher might not have registered the scope yet. Stop that child
+        # before accepting that the scope is absent, so it cannot start after refusal.
+        try:
+            pending_launch.terminate()
+        except OSError:
+            pass
     # If graceful stop stalls, finish the stop of this scope only, within the crossing's reserve.
     owner_run(
         ["systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL", _COMPONENT_CHOOSER_SCOPE],
         environment, timeout=1,
     )
     result = owner_run(stop, environment, timeout=2)
-    if result.returncode == 0:
+    if result.returncode == 0 and dispatch_finished():
         return
-    try:
-        if _component_chooser_scope_state(environment) == "inactive":
-            return  # A collected transient scope answers not loaded to stop, inactive to show.
-    except FaceError:
-        pass
+    _component_chooser_kill_scope_cgroup()
+    deadline = time.monotonic() + 1.5
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            if dispatch_finished() and _component_chooser_scope_state(environment, timeout=min(0.75, remaining)) == "inactive":
+                return  # Even if stop or kill could not be reached, the scope is gone.
+        except FaceError:
+            pass
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
     raise FaceError("face-app-stop-failed", signal_exit=result.returncode)
 
 
@@ -2472,6 +2503,8 @@ def _toggle_component_chooser() -> Mapping[str, Any]:
                 raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE, program=_COMPONENT_CHOOSER, running=False)
             missing = "face-app-kcm-window-not-observed"
             launch_attempted = False
+            scope_seen = False
+            process = None
             try:
                 with _component_chooser_launch(argv, environment) as launch:
                     if time.monotonic() >= deadline:
@@ -2484,21 +2517,24 @@ def _toggle_component_chooser() -> Mapping[str, Any]:
                         try:
                             observed = _component_chooser_pid(argv)
                             remaining = deadline - time.monotonic()
+                            scope_seen = scope_seen or observed is not None
                             if observed is not None and remaining > 0:
                                 mapped = observe_window(observed, min(1.25, remaining))
                                 missing = "face-app-kcm-window-not-observed"
                         except (ValueError, OSError, RecursionError, subprocess.TimeoutExpired):
                             missing = _COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE
                         if observed is not None and mapped and time.monotonic() < deadline and process.poll() is None:
-                            if _component_chooser_scope_state(environment) == "active" and process.poll() is None:
-                                pid = observed
-                                break
+                            pid = observed
+                            break
                         time.sleep(min(0.1, max(0, deadline - time.monotonic())))
                     if pid is None:
                         raise FaceError(missing, program=_COMPONENT_CHOOSER, running=False)
+                    # Mapping ended the observer wait. Scope custody is a separate confirmation.
+                    if _component_chooser_scope_state(environment) != "active" or process.poll() is not None:
+                        raise FaceError(missing, program=_COMPONENT_CHOOSER, running=False)
             except Exception:
                 if launch_attempted:
-                    _component_chooser_stop(environment)
+                    _component_chooser_stop(environment, pending_launch=None if scope_seen else process)
                 raise
         return {
             "ok": True, "firstMissingSignal": "none", "changed": True,
