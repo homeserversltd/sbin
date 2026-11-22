@@ -660,7 +660,10 @@ def build_widget() -> Any:
         latest_failed = _latest_run_failed(data["history"]) if data["history_ready"] else None
         headline = "Update status unavailable"
         style = "error"
-        if data["status_ready"] and data["interactables_ready"] and data["history_ready"]:
+        if data["history_ready"] and not data["history"]:
+            headline = "No update runs recorded yet"
+            style = ""
+        elif data["status_ready"] and data["interactables_ready"] and data["history_ready"]:
             if latest_failed is True:
                 headline = "Last update failed"
                 style = "error"
@@ -679,7 +682,7 @@ def build_widget() -> Any:
         if style:
             headline_label.add_css_class(style)
         if headline == "Up to date":
-            icon_name, icon_style = "emblem-ok-symbolic", "success"
+            icon_name, icon_style = "object-select-symbolic", "success"
         elif style == "error":
             icon_name, icon_style = "dialog-error-symbolic", "error"
         else:
