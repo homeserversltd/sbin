@@ -4,6 +4,7 @@ from __future__ import annotations
 import configparser
 import json
 import re
+import shlex
 from pathlib import Path
 
 from agathodaimon.settings import _shared
@@ -136,8 +137,22 @@ def _themes():
     return {'icon_theme': _choices(icons), 'cursor_theme': _choices(cursors)}
 
 
-def _applications():
+def _exec_basename(command):
+    lexer = shlex.shlex(command, posix=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ''
+    try:
+        program = lexer.get_token()
+    except ValueError:
+        return ''
+    return Path(program).name if program else ''
+
+
+def _applications(current_values=None):
     result = {key: [] for key in _shared.MIME_KEYS}
+    current = current_values or {}
+    wanted = {current.get(field) for field in result}
+    current_labels = {}
     seen = set()
     for root in (_shared.home() / '.local/share/applications', Path('/usr/share/applications')):
         if not root.is_dir():
@@ -149,10 +164,13 @@ def _applications():
             seen.add(desktop_id)
             try:
                 entry = _ini(path, 'Desktop Entry')
-                if entry.get('Type') != 'Application' or entry.get('NoDisplay', '').lower() == 'true' or entry.get('Hidden', '').lower() == 'true':
+                if entry.get('Type') != 'Application':
                     continue
                 label = entry.get('Name', '').strip()
-                if not label:
+                # A current default can be named even when it is not a regular choice.
+                if desktop_id in wanted:
+                    current_labels[desktop_id] = label or _exec_basename(entry.get('Exec', ''))
+                if not label or entry.get('NoDisplay', '').lower() == 'true' or entry.get('Hidden', '').lower() == 'true':
                     continue
                 mimes = set(entry.get('MimeType', '').split(';'))
                 categories = set(entry.get('Categories', '').split(';'))
@@ -161,6 +179,11 @@ def _applications():
                         result[field].append((desktop_id, label))
             except (OSError, UnicodeError, configparser.Error):
                 continue
+    for field, entries in result.items():
+        desktop_id = current.get(field)
+        label = current_labels.get(desktop_id)
+        if label and all(value != desktop_id for value, _ in entries):
+            entries.append((desktop_id, label))
     return {field: _choices(entries) for field, entries in result.items()}
 
 
@@ -169,7 +192,7 @@ def _timezones():
     return _choices((zone, zone.replace('_', ' ')) for zone in text.splitlines()) if ok else []
 
 
-def options(kind):
+def options(kind, *, current_values=None):
     """Failures and empty enumerations leave the relevant field absent."""
     readers = {
         'sound': {'output_device': lambda: _sound('sinks'), 'input_device': lambda: _sound('sources')},
@@ -180,7 +203,7 @@ def options(kind):
     result = {}
     if kind in ('appearance', 'default-apps'):
         try:
-            result = _themes() if kind == 'appearance' else _applications()
+            result = _themes() if kind == 'appearance' else _applications(current_values)
         except Exception:
             return {}
     else:
