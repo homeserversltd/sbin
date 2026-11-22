@@ -2227,13 +2227,51 @@ def _component_chooser_argv() -> list[str]:
     raise FaceError("face-app-kcm-host-absent", program=_COMPONENT_CHOOSER)
 
 
+def _component_chooser_accessibility_bus(environment: Mapping[str, str]) -> str | None:
+    from urllib.parse import unquote_to_bytes
+
+    bus = environment.get("DBUS_SESSION_BUS_ADDRESS")
+    utility = _owner_utility("busctl")
+    if not bus or utility is None:
+        return None
+    try:
+        result = owner_run(
+            [utility, f"--address={bus}", "--auto-start=no", "--timeout=1s", "--json=short",
+             "call", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Bus", "GetAddress"],
+            environment, timeout=1.5,
+        )
+        if result.returncode != 0:
+            return None
+        reply = json.loads(result.stdout)
+        if not isinstance(reply, dict) or reply.get("type") != "s":
+            return None
+        data = reply.get("data")
+        if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], str):
+            return None
+        address = data[0]
+        # Pin one local socket, not a list that could fall through to an unchecked address.
+        match = re.fullmatch(
+            r"unix:path=((?:[-0-9A-Za-z_/.*]|%[0-9A-Fa-f]{2})+)(?:,guid=[0-9A-Fa-f]{32})?", address,
+        )
+        if not match:
+            return None
+        account = _owner()
+        path = Path(os.fsdecode(unquote_to_bytes(match[1])))
+        if _is_live_owned_socket(path, account, _runtime_dir(account)):
+            return address
+    except (ValueError, OSError, RecursionError):
+        pass
+    return None
+
+
 @contextmanager
 def _component_chooser_launch(argv: list[str], environment: dict[str, str]):
     account = _owner()
     runtime = _runtime_dir(account)
-    accessibility = runtime / "at-spi/bus"
-    if _is_live_owned_socket(accessibility, account, runtime):
-        environment["AT_SPI_BUS_ADDRESS"] = f"unix:path={accessibility}"
+    environment.pop("AT_SPI_BUS_ADDRESS", None)
+    accessibility = _component_chooser_accessibility_bus(environment)
+    if accessibility is not None:
+        environment["AT_SPI_BUS_ADDRESS"] = accessibility
     if Path(argv[0]).name == "kcmshell6":
         # The standalone KCM does not forward to System Settings. Its helpers belong to the owner bus.
         yield argv
@@ -2257,15 +2295,25 @@ def _component_chooser_launch(argv: list[str], environment: dict[str, str]):
         yield [runner, f"--config-file={config.name}", "--", *argv]
 
 
-def _component_chooser_scope_active(environment: Mapping[str, str]) -> bool:
+def _component_chooser_scope_state(environment: Mapping[str, str], *, timeout: float = 0.75) -> str:
     result = owner_run(
         ["systemctl", "--user", "show", "--property=ActiveState", "--value", _COMPONENT_CHOOSER_SCOPE],
-        environment, timeout=2,
+        environment, timeout=timeout,
     )
     state = result.stdout.strip()
-    if result.returncode != 0 or state not in {"active", "inactive", "failed"}:
+    if result.returncode != 0 or state not in {"active", "inactive", "failed", "activating", "deactivating"}:
         raise FaceError("face-app-kcm-scope-state-unavailable")
-    return state == "active"
+    return state
+
+
+def _component_chooser_scope_active(environment: Mapping[str, str]) -> bool:
+    deadline = time.monotonic() + 2
+    while (remaining := deadline - time.monotonic()) > 0:
+        state = _component_chooser_scope_state(environment, timeout=min(0.75, remaining))
+        if state not in {"activating", "deactivating"}:
+            return state == "active"
+        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+    raise FaceError("face-app-kcm-scope-state-unavailable")
 
 
 def _component_chooser_pid(argv: Sequence[str]) -> int | None:
@@ -2288,8 +2336,37 @@ def _component_chooser_pid(argv: Sequence[str]) -> int | None:
     return None
 
 
-def _component_chooser_sway_window(pid: int, environment: Mapping[str, str], *, standalone: bool) -> bool:
-    tree = _sway_json("get_tree", environment)
+def _component_chooser_sway_window(
+    pid: int, environment: Mapping[str, str], *, standalone: bool, timeout: float,
+) -> bool:
+    # The whole query must be bounded by the remaining opening time, not a per-read IPC timeout.
+    deadline = time.monotonic() + timeout
+    get_tree = 4
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        def arm_timeout() -> None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE)
+            connection.settimeout(remaining)
+
+        def read_exact(length: int) -> bytes:
+            data = bytearray()
+            while len(data) < length:
+                arm_timeout()
+                chunk = connection.recv(length - len(data))
+                if not chunk:
+                    raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE)
+                data.extend(chunk)
+            return bytes(data)
+
+        arm_timeout()
+        connection.connect(environment["SWAYSOCK"])
+        arm_timeout()
+        connection.sendall(_SWAY_IPC_MAGIC + struct.pack("=II", 0, get_tree))
+        magic, length, reply_type = struct.unpack("=6sII", read_exact(_SWAY_IPC_HEADER_SIZE))
+        if magic != _SWAY_IPC_MAGIC or reply_type != get_tree or length > _SWAY_IPC_MAX_REPLY_BYTES:
+            raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE)
+        tree = json.loads(read_exact(length))
     if not isinstance(tree, dict):
         raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE)
     pending = [tree]
@@ -2302,21 +2379,20 @@ def _component_chooser_sway_window(pid: int, environment: Mapping[str, str], *, 
                 not standalone and (node.get("app_id") or node.get("window"))
             ):
                 return True
-        pending.extend(node.get("nodes") or ())
-        pending.extend(node.get("floating_nodes") or ())
+        for key in ("nodes", "floating_nodes"):
+            children = node.get(key)
+            if isinstance(children, list):
+                pending.extend(children)
     return False
 
 
 def _component_chooser_hypr_window(
-    pid: int, utility: str, environment: Mapping[str, str], *, standalone: bool,
+    pid: int, utility: str, environment: Mapping[str, str], *, standalone: bool, timeout: float,
 ) -> bool:
-    result = owner_run([utility, "-j", "clients"], environment, timeout=0.5)
+    result = owner_run([utility, "-j", "clients"], environment, timeout=timeout)
     if result.returncode != 0:
         raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE)
-    try:
-        windows = json.loads(result.stdout)
-    except ValueError:
-        raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE) from None
+    windows = json.loads(result.stdout)
     if not isinstance(windows, list):
         raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE)
     return any(
@@ -2329,9 +2405,11 @@ def _component_chooser_hypr_window(
 
 def _component_chooser_window_reader(
     environment: Mapping[str, str], *, standalone: bool,
-) -> Callable[[int], bool] | None:
+) -> Callable[[int, float], bool] | None:
     if "SWAYSOCK" in environment:
-        return lambda pid: _component_chooser_sway_window(pid, environment, standalone=standalone)
+        return lambda pid, timeout: _component_chooser_sway_window(
+            pid, environment, standalone=standalone, timeout=timeout,
+        )
     utility = _owner_utility("hyprctl")
     if utility is None:
         return None
@@ -2346,16 +2424,35 @@ def _component_chooser_window_reader(
     ):
         return None
     observer = {**environment, "HYPRLAND_INSTANCE_SIGNATURE": signature}
-    return lambda pid: _component_chooser_hypr_window(pid, utility, observer, standalone=standalone)
+    return lambda pid, timeout: _component_chooser_hypr_window(
+        pid, utility, observer, standalone=standalone, timeout=timeout,
+    )
 
 
 def _component_chooser_stop(environment: Mapping[str, str]) -> None:
-    result = owner_run(["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE], environment)
-    if result.returncode != 0 or _component_chooser_scope_active(environment):
-        raise FaceError("face-app-stop-failed", signal_exit=result.returncode)
+    stop = ["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE]
+    result = owner_run(stop, environment, timeout=3)
+    if result.returncode == 0:
+        return  # A blocking StopUnit job completed; this does not depend on a working show.
+    # If graceful stop stalls, finish the stop of this scope only, within the crossing's reserve.
+    owner_run(
+        ["systemctl", "--user", "kill", "--kill-whom=all", "--signal=SIGKILL", _COMPONENT_CHOOSER_SCOPE],
+        environment, timeout=1,
+    )
+    result = owner_run(stop, environment, timeout=2)
+    if result.returncode == 0:
+        return
+    try:
+        if _component_chooser_scope_state(environment) == "inactive":
+            return  # A collected transient scope answers not loaded to stop, inactive to show.
+    except FaceError:
+        pass
+    raise FaceError("face-app-stop-failed", signal_exit=result.returncode)
 
 
 def _toggle_component_chooser() -> Mapping[str, Any]:
+    # Leave time inside the 30 s staff crossing for a blocking stop and its escalation.
+    deadline = time.monotonic() + 18
     environment, socket_source = owner_session_environment(discover=False)
     with _runtime_lock(f"agathodaimon-face-app-{_COMPONENT_CHOOSER}.lock") as (_, lock_path):
         pid = None
@@ -2374,26 +2471,35 @@ def _toggle_component_chooser() -> Mapping[str, Any]:
             if observe_window is None:
                 raise FaceError(_COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE, program=_COMPONENT_CHOOSER, running=False)
             missing = "face-app-kcm-window-not-observed"
-            with _component_chooser_launch(argv, environment) as launch:
-                process, _ = owner_spawn(launch, environment, scope=_COMPONENT_CHOOSER_SCOPE)
-                deadline = time.monotonic() + 3
-                while time.monotonic() < deadline:
-                    if process.poll() is not None:
-                        break
-                    observed = _component_chooser_pid(argv)
-                    if observed is not None:
+            launch_attempted = False
+            try:
+                with _component_chooser_launch(argv, environment) as launch:
+                    if time.monotonic() >= deadline:
+                        raise FaceError(missing, program=_COMPONENT_CHOOSER, running=False)
+                    launch_attempted = True
+                    process, _ = owner_spawn(launch, environment, scope=_COMPONENT_CHOOSER_SCOPE)
+                    while process.poll() is None and time.monotonic() < deadline:
+                        observed = None
+                        mapped = False
                         try:
-                            if observe_window(observed):
+                            observed = _component_chooser_pid(argv)
+                            remaining = deadline - time.monotonic()
+                            if observed is not None and remaining > 0:
+                                mapped = observe_window(observed, min(1.25, remaining))
+                                missing = "face-app-kcm-window-not-observed"
+                        except (ValueError, OSError, RecursionError, subprocess.TimeoutExpired):
+                            missing = _COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE
+                        if observed is not None and mapped and time.monotonic() < deadline and process.poll() is None:
+                            if _component_chooser_scope_state(environment) == "active" and process.poll() is None:
                                 pid = observed
                                 break
-                        except FaceError:
-                            missing = _COMPONENT_CHOOSER_OBSERVER_UNAVAILABLE
-                            break
-                    time.sleep(0.1)
-            if pid is None:
-                if _component_chooser_scope_active(environment):
+                        time.sleep(min(0.1, max(0, deadline - time.monotonic())))
+                    if pid is None:
+                        raise FaceError(missing, program=_COMPONENT_CHOOSER, running=False)
+            except Exception:
+                if launch_attempted:
                     _component_chooser_stop(environment)
-                raise FaceError(missing, program=_COMPONENT_CHOOSER, running=False)
+                raise
         return {
             "ok": True, "firstMissingSignal": "none", "changed": True,
             "program": _COMPONENT_CHOOSER, "running": pid is not None, "lock_path": str(lock_path),
