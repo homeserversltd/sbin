@@ -2225,7 +2225,7 @@ def _component_chooser_argv() -> list[str]:
     raise FaceError("face-app-kcm-host-absent", program=_COMPONENT_CHOOSER)
 
 
-def _component_chooser_running(environment: Mapping[str, str]) -> bool:
+def _component_chooser_scope_active(environment: Mapping[str, str]) -> bool:
     result = owner_run(
         ["systemctl", "--user", "show", "--property=ActiveState", "--value", _COMPONENT_CHOOSER_SCOPE],
         environment, timeout=2,
@@ -2236,41 +2236,71 @@ def _component_chooser_running(environment: Mapping[str, str]) -> bool:
     return state == "active"
 
 
+def _component_chooser_pid(argv: Sequence[str]) -> int | None:
+    uid = _owner().pw_uid
+    command = b"\x00".join(map(os.fsencode, argv)) + b"\x00"
+    executable = os.path.realpath(argv[0])
+    scope_suffix = f"/{_COMPONENT_CHOOSER_SCOPE}".encode("ascii")
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            if entry.stat().st_uid != uid or os.readlink(entry / "exe") != executable:
+                continue
+            if not any(line.endswith(scope_suffix) for line in (entry / "cgroup").read_bytes().splitlines()):
+                continue
+            if (entry / "cmdline").read_bytes() == command:
+                return int(entry.name)
+        except OSError:  # The process may have exited between observations.
+            continue
+    return None
+
+
 def _toggle_component_chooser() -> Mapping[str, Any]:
     environment, socket_source = owner_session_environment(discover=False)
     with _runtime_lock(f"agathodaimon-face-app-{_COMPONENT_CHOOSER}.lock") as (fd, lock_path):
         marked = _lock_state(fd)
+        pid = None
         # The launch may share an executable with other KDE windows. Own only this scope.
-        if _component_chooser_running(environment):
+        if _component_chooser_scope_active(environment):
             if not marked:
                 raise FaceError("face-app-kcm-scope-in-use")
             result = owner_run(["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE], environment)
-            if result.returncode != 0 or _component_chooser_running(environment):
+            if result.returncode != 0 or _component_chooser_scope_active(environment):
                 raise FaceError("face-app-stop-failed", running=True, signal_exit=result.returncode)
             running = False
         else:
             if marked:
                 _write_lock_state(fd, False)
             argv = _component_chooser_argv()
+            session_runner = _owner_utility("dbus-run-session")
+            if session_runner is None:
+                raise FaceError("face-app-kcm-session-runner-absent", program=_COMPONENT_CHOOSER)
             environment, socket_source = owner_session_environment(
                 discover=True, prefer_direct_keys=("WAYLAND_DISPLAY",),
             )
-            process, _ = owner_spawn(argv, environment, scope=_COMPONENT_CHOOSER_SCOPE)
-            running = False
-            for _ in range(10):
+            # System Settings is unique per bus and would otherwise forward to an unrelated window.
+            process, _ = owner_spawn([session_runner, "--", *argv], environment, scope=_COMPONENT_CHOOSER_SCOPE)
+            for _ in range(20):
                 if process.poll() is not None:
                     break
-                if _component_chooser_running(environment):
-                    running = True
+                pid = _component_chooser_pid(argv)
+                if pid is not None:
                     break
                 time.sleep(0.1)
-            if not running:
+            if pid is None:
+                if _component_chooser_scope_active(environment):
+                    result = owner_run(["systemctl", "--user", "stop", _COMPONENT_CHOOSER_SCOPE], environment)
+                    if result.returncode != 0 or _component_chooser_scope_active(environment):
+                        raise FaceError("face-app-stop-failed", signal_exit=result.returncode)
                 raise FaceError("face-app-process-not-observed", program=_COMPONENT_CHOOSER, running=False)
+            running = True
         _write_lock_state(fd, running)
         return {
             "ok": True, "firstMissingSignal": "none", "changed": True,
             "program": _COMPONENT_CHOOSER, "running": running, "lock_path": str(lock_path),
             "socket_source": socket_source,
+            **({"pid": pid} if pid is not None else {}),
         }
 
 
