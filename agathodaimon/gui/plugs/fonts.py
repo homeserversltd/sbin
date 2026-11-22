@@ -109,14 +109,19 @@ def build_widget():
             status_row.set_title("No installed fonts found.")
         else:
             page.remove(status)
-            ordered = [root for root in roots if root in groups] + sorted(groups.keys() - roots.keys())
+            system = Path("/usr/share/fonts")
+            added = Path("/usr/local/share/fonts")
+            owner_roots = [root for root in roots if root not in (system, added)]
+            ordered = (*owner_roots, added, *sorted(groups.keys() - roots.keys()), system)
             for root in ordered:
+                if root not in groups:
+                    continue
                 group = Adw.PreferencesGroup(title=roots.get(root, str(root)))
                 for family in sorted(groups[root], key=lambda name: (name.casefold(), name)):
                     styles, folders = groups[root][family]
                     row = Adw.ActionRow(
                         title=family, subtitle="\n".join(str(folder) for folder in sorted(folders)),
-                        use_markup=False, activatable=False, focusable=False,
+                        use_markup=False, activatable=False, focusable=True,
                     )
                     count = len(styles)
                     description = f"{count} {'style' if count == 1 else 'styles'}" if count else "0 named styles"
@@ -124,6 +129,9 @@ def build_widget():
                     label.add_css_class("dim-label")
                     row.add_suffix(label)
                     group.add(row)
+                    if row.get_index() == 0:
+                        # The shell should enter the first row, not the group's list box.
+                        row.get_parent().set_focusable(False)
                 page.add(group)
         return GLib.SOURCE_REMOVE
 
