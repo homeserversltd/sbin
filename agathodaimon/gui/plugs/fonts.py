@@ -25,23 +25,61 @@ def _font_roots(data_home: Path) -> dict[Path, str]:
     return roots
 
 
+def _configured_roots() -> set[Path]:
+    """Read Fontconfig's active config files, without scanning or loading fonts."""
+    from ctypes import CDLL, c_char_p, c_void_p
+
+    try:
+        fc = CDLL("libfontconfig.so.1")  # The same library fc-list already needs.
+    except OSError:
+        return set()
+
+    fc.FcInitLoadConfig.argtypes, fc.FcInitLoadConfig.restype = [], c_void_p
+    fc.FcConfigGetFontDirs.argtypes, fc.FcConfigGetFontDirs.restype = [c_void_p], c_void_p
+    fc.FcStrListNext.argtypes, fc.FcStrListNext.restype = [c_void_p], c_char_p
+    fc.FcStrListDone.argtypes, fc.FcStrListDone.restype = [c_void_p], None
+    fc.FcConfigDestroy.argtypes, fc.FcConfigDestroy.restype = [c_void_p], None
+
+    config = fc.FcInitLoadConfig()
+    if not config:
+        return set()
+    try:
+        # The config-only handle has the declared roots, but not their scanned subdirectories.
+        dirs = fc.FcConfigGetFontDirs(config)
+        if not dirs:
+            return set()
+        try:
+            return {Path(raw.decode("utf-8", errors="replace"))
+                    for raw in iter(lambda: fc.FcStrListNext(dirs), None) if raw}
+        finally:
+            fc.FcStrListDone(dirs)
+    finally:
+        fc.FcConfigDestroy(config)
+
+
 def _installed_fonts(roots: dict[Path, str]) -> FontGroups:
     # Use primary names, not their aliases or localized spellings. Unquote data
     # with shlex, never a shell, so spaces and punctuation in paths stay intact.
-    fmt = r"%{file|shescape} %{family[0]|shescape} %{style[0]|shescape}\n"
+    fmt = "%{file|shescape} %{family[0]|shescape} %{style[0]|shescape}\n"
     result = subprocess.run(
         ["fc-list", "-f", fmt, ":", "file", "family", "style"],
         check=True, capture_output=True, encoding="utf-8", errors="replace", timeout=10,
     )
     fields = iter(shlex.split(result.stdout))
+    configured: set[Path] | None = None
     groups: FontGroups = {}
     for filename, family, style in zip(fields, fields, fields, strict=True):
         if not filename or not family:
             continue
         folder = Path(filename).parent
-        # Walk child to parent to choose the most specific known root. When
-        # Fontconfig reports a file elsewhere, its containing folder is the group.
-        root = next((path for path in (folder, *folder.parents) if path in roots), folder)
+        # Keep the standard groups together. Otherwise match the nearest declared
+        # root, or show the file's containing folder when no declaration covers it.
+        ancestors = (folder, *folder.parents)
+        root = next((path for path in ancestors if path in roots), None)
+        if root is None:
+            if configured is None:
+                configured = _configured_roots()
+            root = next((path for path in ancestors if path in configured), folder)
         styles, folders = groups.setdefault(root, {}).setdefault(family, (set(), set()))
         if style:
             styles.add(style)
