@@ -1,6 +1,7 @@
 """Keyboard, region and power settings exposed through the staff crossing."""
 from __future__ import annotations
 
+import grp
 import json
 import math
 import os
@@ -9,9 +10,12 @@ import re
 import shlex
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from agathodaimon._nidus.refusal import named_signal
+from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.settings import _options, _shared, _sway_overrides
 from agathodaimon.settings.display import backends
 from agathodaimon.settings.energy import _hardware, screen_idle
@@ -391,27 +395,31 @@ def _set_region(field: str, value: Any, receipt: _shared.Receipt) -> None:
 _SCREEN_IDLE_LAUNCHER = str(Path(__file__).resolve().parent.parent / "caduceus-screen-idle")
 
 
+def _screen_idle_running(environment: dict[str, str]) -> bool:
+    from agathodaimon.face import _shared as face
+    uid = str(pwd.getpwnam(_shared.OWNER_USER).pw_uid)
+    result = face.owner_run(["pgrep", "-u", uid, "-x", "swayidle"], environment)
+    if result.returncode not in (0, 1):
+        raise ValueError("swayidle-observation-failed")
+    return result.returncode == 0
+
+
 def _restart_screen_idle(seconds: int, environment: dict[str, str], receipt: _shared.Receipt) -> None:
     from agathodaimon.face import _shared as face
     uid = str(pwd.getpwnam(_shared.OWNER_USER).pw_uid)
-    check = ["pgrep", "-u", uid, "-x", "swayidle"]
     stop = ["pkill", "-u", uid, "-x", "swayidle"]
     result = face.owner_run(stop, environment)
     receipt.commands.append({"argv": stop, "returncode": result.returncode})
     if result.returncode not in (0, 1): raise ValueError("swayidle-stop-failed")
-    def observed() -> bool:
-        result = face.owner_run(check, environment)
-        if result.returncode not in (0, 1): raise ValueError("swayidle-observation-failed")
-        return result.returncode == 0
     deadline = time.monotonic() + 3
-    while observed():
+    while _screen_idle_running(environment):
         if time.monotonic() >= deadline: raise ValueError("swayidle-stop-timeout")
         time.sleep(0.05)
     if seconds:
         face.owner_spawn([_SCREEN_IDLE_LAUNCHER], environment)
         receipt.commands.append({"argv": [_SCREEN_IDLE_LAUNCHER], "spawned": True})
         deadline = time.monotonic() + 3
-        while not observed():
+        while not _screen_idle_running(environment):
             if time.monotonic() >= deadline: raise ValueError("swayidle-start-timeout")
             time.sleep(0.05)
 
@@ -442,9 +450,40 @@ def _reload_logind(receipt: _shared.Receipt) -> None:
         raise ValueError("logind-reload-failed")
 
 
-def _set_energy(field: str, value: Any, environment: dict[str, str] | None,
-                receipt: _shared.Receipt | None, preview: list[dict[str, Any]],
-                undo: list[Callable[[], None]]) -> None:
+def _confirm_power_key(expected: str) -> str:
+    # HUP dispatch can return before logind has parsed the new file.
+    deadline = time.monotonic() + 2
+    while True:
+        observed = _logind_action("HandlePowerKey")
+        if observed is not None and observed == expected:
+            return observed
+        if time.monotonic() >= deadline:
+            raise ValueError("logind-power-key-observation-failed" if observed is None else "logind-power-key-shadowed")
+        time.sleep(0.05)
+
+
+@dataclass
+class _EnergyFile:
+    edit: dict[str, Any]
+    apply: Callable[[], None]
+    restore: Callable[[], None]
+    readback: Callable[[], Any]
+    reconcile: bool = False
+
+
+def _plan_power_profile(value: Any) -> tuple[str, str] | None:
+    if not isinstance(value, str):
+        raise ValueError("invalid:power_profile")
+    active, choices = _options.power_profiles()
+    if active is None:
+        raise ValueError("unsupported:power-profiles-daemon-unavailable")
+    if not any(choice["value"] == value for choice in choices):
+        raise ValueError("invalid:power_profile")
+    return (active, value) if active != value else None
+
+
+def _plan_energy_file(field: str, value: Any, environment: dict[str, str] | None,
+                      receipt: _shared.Receipt | None, preview: list[dict[str, Any]]) -> _EnergyFile | None:
     if field == "screen_off_seconds":
         if environment is None:
             raise ValueError("unsupported:" + _shared.SWAY_SESSION_UNAVAILABLE)
@@ -457,38 +496,20 @@ def _set_energy(field: str, value: Any, environment: dict[str, str] | None,
                             {"argv": ["pkill", "-u", _shared.OWNER_USER, "-x", "swayidle"], "dryRun": True},
                             {"argv": [_SCREEN_IDLE_LAUNCHER], "dryRun": True, "spawn": value > 0}])
             return
-        receipt.replace(path, payload)
-        if path.stat().st_mode & 0o777 != 0o644:
-            receipt.backup(path)
-            os.chmod(path, 0o644)
-            receipt.changed = True
-        if os.geteuid() == 0 and _shared.home() == _shared.OWNER_HOME:
-            owner = pwd.getpwnam(_shared.OWNER_USER)
-            if (path.stat().st_uid, path.stat().st_gid) != (owner.pw_uid, owner.pw_gid):
-                receipt.backup(path)
-                os.chown(path, owner.pw_uid, owner.pw_gid)
-                receipt.changed = True
-        # The saved seat will be restored before this callback reads it.
-        undo.append(lambda: _restart_screen_idle(screen_idle.read_seconds(_shared.home()), environment, receipt))
-        _restart_screen_idle(value, environment, receipt)
-        return
-    if field == "power_profile":
-        if not isinstance(value, str):
-            raise ValueError("invalid:power_profile")
-        active, choices = _options.power_profiles()
-        if active is None:
-            raise ValueError("unsupported:power-profiles-daemon-unavailable")
-        if not any(choice["value"] == value for choice in choices):
-            raise ValueError("invalid:power_profile")
-        if active == value:
-            return
-        if receipt is None:
-            preview.append({"argv": ["powerprofilesctl", "set", value], "dryRun": True})
-            return
-        undo.append(lambda: _restore_power_profile(active, receipt))
-        _set_power_profile(value, receipt)
-        receipt.changed = True
-        return
+        owner = pwd.getpwnam(_shared.OWNER_USER)
+        edit = {"path": path, "candidate": payload, "mode": 0o644,
+                "owner": (owner.pw_name, grp.getgrgid(owner.pw_gid).gr_name)}
+
+        def read_screen():
+            seconds = screen_idle.read_seconds(_shared.home())
+            running = _screen_idle_running(environment)
+            if seconds != value or running != bool(seconds):
+                raise ValueError("screen-idle-readback-mismatch")
+            return {"seconds": seconds, "swayidle": running}
+
+        return _EnergyFile(edit, lambda: _restart_screen_idle(value, environment, receipt),
+                           lambda: _restart_screen_idle(screen_idle.read_seconds(_shared.home()), environment, receipt),
+                           read_screen, reconcile=True)
     if field == "charge_limit":
         enabled = _shared.boolean(value, field)
         sysfs = _hardware.conservation_mode()
@@ -506,14 +527,19 @@ def _set_energy(field: str, value: Any, environment: dict[str, str] | None,
             preview.extend([{"write": str(drop_in), "contents": rule, "dryRun": True},
                             {"write": str(sysfs), "contents": mode, "dryRun": True}])
             return
-        receipt.replace(drop_in, rule.encode())
-        if drop_in.read_bytes() != rule.encode():
-            raise ValueError("charge-limit-drop-in-readback-mismatch")
-        if original is not enabled:
-            undo.append(lambda: _restore_charge_limit(sysfs, original))
-            _hardware.write_charge_limit(sysfs, enabled)
-            receipt.changed = True
-        return
+        def apply_charge():
+            if original is not enabled:
+                _hardware.write_charge_limit(sysfs, enabled)
+                receipt.changed = True
+
+        def read_charge():
+            observed = _hardware.charge_limit(sysfs)
+            if observed is not enabled:
+                raise ValueError("charge-limit-readback-mismatch")
+            return observed
+
+        return _EnergyFile({"path": drop_in, "candidate": rule.encode()}, apply_charge,
+                           lambda: _restore_charge_limit(sysfs, original), read_charge, reconcile=True)
     if field != "power_button_action":
         raise ValueError("unsupported:" + field)
     if not isinstance(value, str) or value not in _POWER_BUTTON_ACTIONS:
@@ -524,12 +550,15 @@ def _set_energy(field: str, value: Any, environment: dict[str, str] | None,
         preview.extend([{"write": str(path), "contents": text, "dryRun": True},
                         {"argv": ["systemctl", "kill", "-s", "HUP", "systemd-logind"], "dryRun": True}])
         return
-    if receipt.replace(path, text.encode()):
-        undo.append(lambda: _reload_logind(receipt))
+    original_key = _logind_action("HandlePowerKey")
+
+    def restore_key():
         _reload_logind(receipt)
-    observed = _logind_action("HandlePowerKey")
-    if observed is None: raise ValueError("logind-power-key-observation-failed")
-    if observed != value: raise ValueError("logind-power-key-shadowed")
+        if original_key is not None:
+            _confirm_power_key(original_key)
+
+    return _EnergyFile({"path": path, "candidate": text.encode()}, lambda: _reload_logind(receipt),
+                       restore_key, lambda: _confirm_power_key(value))
 
 
 def _write_energy(changes: dict[str, Any]) -> dict[str, Any]:
@@ -542,33 +571,109 @@ def _write_energy(changes: dict[str, Any]) -> dict[str, Any]:
     if "screen_off_seconds" in changes and environment is None:
         raise ValueError("unsupported:" + _shared.SWAY_SESSION_UNAVAILABLE)
     preview: list[dict[str, Any]] = []
-    undo: list[Callable[[], None]] = []
-    if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1":
+    dry_run = os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") == "1"
+    receipt = None if dry_run else _shared.Receipt("energy", list(changes))
+    files: dict[str, _EnergyFile] = {}
+    profile = None
+    try:
         for field, value in changes.items():
-            _set_energy(field, value, environment, None, preview, undo)
+            if field == "power_profile":
+                profile = _plan_power_profile(value)
+                if dry_run and profile is not None:
+                    preview.append({"argv": ["powerprofilesctl", "set", profile[1]], "dryRun": True})
+            else:
+                plan = _plan_energy_file(field, value, environment, receipt, preview)
+                if plan is not None:
+                    files[field] = plan
+    except Exception as error:
+        if receipt is not None:
+            failed = receipt.finish(False, error=str(error))
+            raise _shared.ReceiptFailure(str(error), failed["receipt"]) from error
+        raise
+    if receipt is None:
         return {"ok": True, "changed": False, "mutationPerformed": False, "dryRun": True, "commands": preview,
                 "receipt": {"kind": "energy", "fields": list(changes), "ok": True,
                             "changed": False, "backups": [], "commands": preview}}
-    receipt = _shared.Receipt("energy", list(changes))
-    try:
-        for field, value in changes.items():
-            _set_energy(field, value, environment, receipt, preview, undo)
-        return receipt.finish(True, receipt.changed)
-    except Exception as error:
-        mutated = receipt.changed or bool(undo)
+
+    undo: list[Callable[[], None]] = []
+    parts: dict[str, Any] = {}
+    result: dict[str, Any] = {}
+    live: dict[str, Any] = {}
+    apply_pending = replaced = False
+
+    def check():
+        for plan in files.values():
+            plan.edit["path"].parent.mkdir(parents=True, exist_ok=True)
+
+    def verify():
+        nonlocal apply_pending
+        for field, plan in files.items():
+            if plan.edit["path"].read_bytes() != plan.edit["candidate"]:
+                signal = "charge-limit-drop-in-readback-mismatch" if field == "charge_limit" else f"energy-file-readback-mismatch:{field}"
+                raise ValueError(signal)
+        apply_pending = True
+
+    def reload():
+        nonlocal apply_pending, replaced
+        if apply_pending:
+            apply_pending = False
+            replaced = True
+            for plan in files.values():
+                plan.apply()
+            return
+        # Nidus restores the original files before calling us again, even if
+        # verify failed before the first reload. Try every live restoration.
         failures = []
-        try:
-            receipt.restore_backups()
-        except Exception as rollback_error:
-            failures.append(str(rollback_error))
+        for plan in reversed(list(files.values())):
+            try:
+                plan.restore()
+            except Exception as error:
+                failures.append(named_signal(error, "settings-energy"))
+        if failures:
+            raise ValueError(":".join(failures))
+
+    def readback():
+        if not replaced:
+            # The nidus skips reload for identical bytes. Reconcile the sysfs
+            # value and the swayidle consumer even when their files agree.
+            for plan in files.values():
+                if plan.reconcile:
+                    undo.append(plan.restore)
+                    plan.apply()
+        for field, plan in files.items():
+            live[field] = plan.readback()
+        result.update(receipt.finish(True, replaced or receipt.changed))
+
+    try:
+        if profile is not None:
+            old, new = profile
+            undo.append(lambda: _restore_power_profile(old, receipt))
+            _set_power_profile(new, receipt)
+            receipt.changed = True
+        if files:
+            parts = write([plan.edit for plan in files.values()], check=check, verify=verify,
+                          reload=reload, readback=readback)
+            parts["attempt"]["readback"] = live
+        else:
+            readback()
+        return {**parts, **result}
+    except Exception as error:
+        cause = error.cause if isinstance(error, WriteError) else error
+        if isinstance(error, WriteError):
+            parts = error.parts
+        failures = [named_signal(item, "settings-energy") for item in error.restore_errors] if isinstance(error, WriteError) else []
         for restore in reversed(undo):
             try:
                 restore()
             except Exception as rollback_error:
-                failures.append(str(rollback_error))
-        signal = ":".join(["rollback-failed", *failures, str(error)]) if failures else str(error)
+                failures.append(named_signal(rollback_error, "settings-energy"))
+        signal = named_signal(cause, "settings-energy")
+        if failures:
+            signal = ":".join(["rollback-failed", *failures, signal])
+        if parts:
+            parts["final_receipt"] = {"ok": False, "firstMissingSignal": signal}
         failure = receipt.finish(False, error=signal)
-        raise _shared.ReceiptFailure(signal, failure["receipt"], bool(failures) and mutated) from error
+        return {**parts, **failure, "changed": False, "mutationPerformed": bool(failures)}
 
 
 def _set(kind: str, changes: dict[str, Any]) -> dict[str, Any]:

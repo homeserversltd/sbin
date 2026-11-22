@@ -50,20 +50,75 @@ def build_widget():
     level, level_value = value_row("Battery level")
     battery, battery_value = value_row("Battery state")
     lid, lid_value = value_row("Lid action", "Set by the system")
-    status = Adw.ActionRow(title="Reading Energy & Power…")
-    rows = (power_button, profile, screen, screen_readonly, sleep, level, battery, charge_limit, lid)
-    for row in rows:
-        row.set_visible(False)
-        group.add(row)
-    group.add(status)
-
     combos = {"power_button_action": power_button, "power_profile": profile, "screen_off_seconds": screen}
     controls = {**combos, "charge_limit": charge_limit}
+    # If an edited control becomes unavailable, its refusal still needs a
+    # selectable subtitle; an insensitive widget can't receive text selection.
+    unavailable = {field: value_row(row.get_title()) for field, row in controls.items()}
+    read_status = Adw.ActionRow(title="Reading Energy & Power…")
+    fields_by_row = {row: field for field, row in controls.items()}
+    for row in (power_button, profile, screen, screen_readonly, sleep, level, battery, charge_limit, lid):
+        row.set_visible(False)
+        group.add(row)
+        if row in fields_by_row:
+            alternate, _ = unavailable[fields_by_row[row]]
+            alternate.set_visible(False)
+            group.add(alternate)
+    group.add(read_status)
+
     choice_values = {}
     editable = set()
     values = {}
     busy = False
-    tv = _common._json("/etc/appliance/profile.json").get("profile") in {"tv", "hometv", "homesi"}
+    last_read = None
+    tv = _common._json("/etc/appliance/profile.json").get("profile") in {"tv", "hometv"}
+    base_subtitles = {row: row.get_subtitle() for row in (*controls.values(), screen_readonly)}
+    outcomes = {}
+
+    def selectable_subtitle(widget, enabled):
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Label) and child.has_css_class("subtitle"):
+                child.set_selectable(enabled)
+            else:
+                selectable_subtitle(child, enabled)
+            child = child.get_next_sibling()
+
+    def paint_outcome(field):
+        readonly_screen = field == "screen_off_seconds" and screen_readonly.get_visible()
+        row = screen_readonly if readonly_screen else controls[field]
+        message, signal, _ = outcomes.get(field, (base_subtitles[row], "", None))
+        alternate, alternate_value = unavailable[field]
+        needs_alternate = bool(signal) and not readonly_screen and field not in editable
+        alternate.set_visible(needs_alternate)
+        if not readonly_screen:
+            row.set_visible(not needs_alternate and (field != "charge_limit" or field in values))
+        if needs_alternate:
+            current = values.get(field)
+            if field == "charge_limit":
+                label = ("On" if current else "Off") if isinstance(current, bool) else "Unavailable"
+            else:
+                label = row.get_model().get_string(row.get_selected())
+            alternate_value.set_label(label or "Unavailable")
+            row = alternate
+        subtitle = GLib.markup_escape_text(message)
+        if signal:
+            subtitle += "\n<small>" + GLib.markup_escape_text(signal) + "</small>"
+        row.set_subtitle(subtitle)
+        selectable_subtitle(row, bool(signal))
+
+    def show_outcome(field, message, signal="", *, temporary=False):
+        token = object()
+        outcomes[field] = (message, signal, token)
+        paint_outcome(field)
+        if temporary:
+            def dismiss():
+                if outcomes.get(field, (None, None, None))[2] is token:
+                    del outcomes[field]
+                    paint_outcome(field)
+                return False
+
+            GLib.timeout_add(3000, dismiss)
 
     def set_choices(field, entries, current, missing="Unavailable", *, extra_label=None):
         entries = list(entries)
@@ -77,16 +132,9 @@ def build_widget():
         if current is not None and len(ids) > 1:
             editable.add(field)
 
-    def hydrate(reply, field, desired, accepted):
-        nonlocal busy, values
+    def hydrate(reply):
+        nonlocal values
         editable.clear()
-        if not _common._receipt_ok(reply) or not isinstance(reply.get("values"), dict):
-            for row in rows:
-                row.set_visible(False)
-            status.set_title("Couldn't read Energy & Power")
-            status.set_visible(True)
-            busy = False
-            return False
         values = reply["values"]
         readonly = reply.get("readonly")
         readonly = readonly if isinstance(readonly, dict) else {}
@@ -101,9 +149,9 @@ def build_widget():
         set_choices("power_profile", [(item["value"], item["label"]) for item in offered],
                     profile_value if isinstance(profile_value, str) else None)
         if not offered or profile_value is None:
-            profile.set_subtitle("The power profile service is unavailable")
+            base_subtitles[profile] = "The power profile service is unavailable"
         else:
-            profile.set_subtitle("This setting only affects the processor" if any(item.get("cpu_only") is True for item in offered) else "")
+            base_subtitles[profile] = "This setting only affects the processor" if any(item.get("cpu_only") is True for item in offered) else ""
         power_button.set_visible(True)
         profile.set_visible(True)
 
@@ -114,7 +162,7 @@ def build_widget():
         screen.set_visible(not reason)
         screen_readonly.set_visible(bool(reason))
         if reason:
-            screen_readonly.set_subtitle(_common._SWAY_ONLY_REASON if reason in _common._SWAY_ONLY_SIGNALS else "Set by the system")
+            base_subtitles[screen_readonly] = _common._SWAY_ONLY_REASON if reason in _common._SWAY_ONLY_SIGNALS else "Set by the system"
             screen_value.set_label(_screen_label(seconds) if seconds is not None else "Unavailable")
         else:
             set_choices("screen_off_seconds", _SCREEN_TIMES, seconds, "Current timeout unavailable",
@@ -137,16 +185,42 @@ def build_widget():
         limit = values.get("charge_limit")
         if isinstance(limit, bool):
             charge_limit.set_active(limit)
-            charge_limit.set_subtitle("Reduces the maximum battery charge")
+            base_subtitles[charge_limit] = "Reduces the maximum battery charge"
             editable.add("charge_limit")
         else:
-            charge_limit.set_subtitle("Couldn't read the charge limit")
+            base_subtitles[charge_limit] = "Couldn't read the charge limit"
         editable.difference_update(readonly)
         for key, control in controls.items():
             control.set_sensitive(key in editable)
+            paint_outcome(key)
+
+    def complete(reply, field, desired, patch_reply):
+        nonlocal busy, last_read
+        read_ok = _common._receipt_ok(reply) and isinstance(reply.get("values"), dict)
+        if read_ok:
+            last_read = reply
+        if last_read is None:
+            read_status.set_title("Couldn't read Energy & Power")
+            read_status.set_visible(True)
+            busy = False
+            return False
+        read_status.set_visible(False)
+        hydrate(last_read)
         if field is not None:
-            status.set_title("Saved" if accepted and field not in readonly and values.get(field) == desired else "Not saved")
-        status.set_visible(field is not None)
+            signal = _common._refusal_signal(patch_reply)
+            staff_signal = _common._signal(patch_reply)
+            if not _common._receipt_ok(patch_reply):
+                if signal in _common._SWAY_ONLY_SIGNALS or staff_signal in _common._SWAY_ONLY_SIGNALS:
+                    message = _common._SWAY_ONLY_REASON + "."
+                else:
+                    message = "Couldn't save this setting." if read_ok else "Couldn't save or confirm this setting."
+                show_outcome(field, message, signal)
+            elif not read_ok:
+                show_outcome(field, "Couldn't confirm the current setting.")
+            elif field not in editable or values.get(field) != desired:
+                show_outcome(field, "The device didn't keep this change.", "settings-readback-mismatch")
+            else:
+                show_outcome(field, "Saved", temporary=True)
         busy = False
         return False
 
@@ -158,14 +232,13 @@ def build_widget():
         for control in controls.values():
             control.set_sensitive(False)
         if field is not None:
-            status.set_title("Saving…")
-            status.set_visible(True)
+            show_outcome(field, "Saving…")
 
         def work():
-            accepted = False
+            patch_reply = {}
             if field is not None:
                 try:
-                    accepted = _common._receipt_ok(_common._request(_PATH, "PATCH", {field: desired}))
+                    patch_reply = _common._request(_PATH, "PATCH", {field: desired})
                 except RuntimeError:
                     pass
             try:
@@ -176,7 +249,7 @@ def build_widget():
                 reply = _common._request(_PATH)
             except RuntimeError:
                 reply = {}
-            GLib.idle_add(hydrate, reply, field, desired, accepted)
+            GLib.idle_add(complete, reply, field, desired, patch_reply)
 
         threading.Thread(target=work, daemon=True).start()
 
