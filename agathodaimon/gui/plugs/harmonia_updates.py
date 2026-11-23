@@ -190,10 +190,15 @@ def _receipt_error(receipt: Any, fallback: str) -> str:
     return fallback
 
 
-def _parse_finished_at(value: Any) -> datetime | None:
+def _parse_finished_at(value: Any, *, unix_seconds: bool = False) -> datetime | None:
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
+    if unix_seconds and text.isdecimal():
+        try:
+            return datetime.fromtimestamp(int(text), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:
@@ -208,13 +213,27 @@ def _parse_finished_at(value: Any) -> datetime | None:
         return None
 
 
-def _local_time(value: Any) -> str:
-    parsed = _parse_finished_at(value)
+def _local_time(value: Any, *, minutes: bool = False, unix_seconds: bool = False) -> str:
+    parsed = _parse_finished_at(value, unix_seconds=unix_seconds)
     if parsed is None:
-        return "Time unavailable"
+        return "" if minutes else "Time unavailable"
+    if minutes:
+        try:
+            return parsed.astimezone().strftime("%Y-%m-%d %H:%M")
+        except (OverflowError, OSError, ValueError):
+            return ""
     local = parsed.astimezone()
     rendered = local.strftime("%Y-%m-%d %H:%M:%S %Z").strip()
     return rendered or local.isoformat(timespec="seconds")
+
+
+def _interactable_time_line(item: dict[str, Any]) -> str:
+    parts = []
+    if changed := _local_time(item.get("reference_changed_at"), minutes=True):
+        parts.append(f"Changed by HomeServer {changed}")
+    if seen := _local_time(item.get("created_at"), minutes=True, unix_seconds=True):
+        parts.append(f"Seen here {seen}")
+    return " · ".join(parts)
 
 
 def _run_sort_key(run: dict[str, Any]) -> tuple[int, float]:
@@ -510,6 +529,8 @@ def build_widget() -> Any:
         title.set_focusable(False)
         title.add_css_class("title-4")
         card.append(title)
+        if times := _interactable_time_line(item):
+            append_message(card, times)
         diff = item.get("diff")
         rows = diff_rows(diff) if isinstance(diff, str) and diff else []
         if isinstance(diff, str) and diff:
