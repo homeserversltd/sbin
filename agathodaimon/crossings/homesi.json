@@ -32,6 +32,8 @@
     "face/volume",
     "face/workspace",
     "hermes/dashboard-login",
+    "keyman/newkey",
+    "keyman/secret/put",
     "local-ai/card",
     "local-ai/edition",
     "local-ai/library",
@@ -193,6 +195,10 @@
     [
       "hermes",
       "dashboard-login"
+    ],
+    [
+      "keyman",
+      "newkey"
     ],
     [
       "local-ai",
@@ -405,6 +411,7 @@
     "/api/v1/interactables/:id/run",
     "/api/v1/interactables/:id/silence",
     "/api/v1/interactables/:id/unsilence",
+    "/api/v1/keyman/secret",
     "/api/v1/local-ai/card",
     "/api/v1/local-ai/edition",
     "/api/v1/local-ai/library",
@@ -466,6 +473,8 @@
       "exousia/change",
       "exousia/reset-default",
       "hermes/dashboard-login",
+      "keyman/newkey",
+      "keyman/secret/put",
       "local-ai/slot",
       "network/wifi/connection/forget",
       "network/wifi/connection/ipv4/set",
@@ -523,6 +532,10 @@
       [
         "hermes",
         "dashboard-login"
+      ],
+      [
+        "keyman",
+        "newkey"
       ],
       [
         "local-ai",
@@ -650,6 +663,7 @@
       "POST /api/v1/interactables/{id}/run",
       "POST /api/v1/interactables/{id}/silence",
       "POST /api/v1/interactables/{id}/unsilence",
+      "POST /api/v1/keyman/secret",
       "POST /api/v1/network/device/wifi/connect",
       "POST /api/v1/network/device/wifi/disconnect",
       "POST /api/v1/network/device/wifi/forget",

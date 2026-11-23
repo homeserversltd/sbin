@@ -1,6 +1,7 @@
 {
   "children": [
-    "newkey"
+    "newkey",
+    "secret"
   ],
   "sclerite": {
     "name": "all",

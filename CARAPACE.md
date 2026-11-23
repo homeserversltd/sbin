@@ -45,7 +45,7 @@ and prerequisites add derived features without adding profile-band lists:
   `linker`, `transmission`, `tailscale`; gateway implications add `gateway`,
   `nft`, `firewall`, and `identity`, while NAS derives its `luks` and `xfs`
   prerequisites.
-- `homesi`: `thyrsus`, `desktop`, `sway`, `pactl`, `gtk4`, `nmcli`,
+- `homesi`: `thyrsus`, `keyman`, `desktop`, `sway`, `pactl`, `gtk4`, `nmcli`,
   `local-ai`, `pid2-unit`.
 - `homeconsole`: `sway`, `pactl`, `desktop`, `nmcli`, `games`, `sddm`,
   `console-restart`.

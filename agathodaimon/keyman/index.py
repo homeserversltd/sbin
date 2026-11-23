@@ -2,7 +2,7 @@
 from __future__ import annotations
 import json
 
-VERBS = ["newkey"]
+VERBS = ["newkey", "secret"]
 
 
 def main(argv=None):
