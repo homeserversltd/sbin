@@ -102,6 +102,10 @@ def _staff_envelope(path: str, payload: dict[str, Any] | None = None) -> dict[st
     return envelope
 
 
+class _HTTPRefusal(RuntimeError):
+    """The door returned a 4xx without a usable refusal receipt."""
+
+
 def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None,
              *, headers: dict[str, str] | None = None) -> dict[str, Any]:
     refused = None
@@ -113,25 +117,26 @@ def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = No
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read(256 * 1024)
         except urllib.error.HTTPError as error:
-            refused = error.code
+            if 400 <= error.code < 500:
+                refused = f'Caduceus refused with HTTP {error.code}'
             with error:
                 raw = error.read(256 * 1024)
         try:
             value = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            message = (f'Caduceus refused with HTTP {refused}' if refused is not None
-                       else 'Caduceus returned an unreadable receipt')
-            raise RuntimeError(message) from error
+            raise RuntimeError('Caduceus returned an unreadable receipt') from error
         if not isinstance(value, dict):
-            if refused is not None:
-                raise RuntimeError(f'Caduceus refused with HTTP {refused}')
             raise RuntimeError('Caduceus returned an invalid receipt')
+        if refused is not None and (_receipt_ok(value) or not _refusal_signal(value)):
+            raise RuntimeError(refused)
         return value
-    except (OSError, HTTPException) as error:
-        raise RuntimeError('Caduceus is unavailable') from error
-    except RuntimeError:
-        raise
     except Exception as error:
+        if refused is not None:
+            raise _HTTPRefusal(refused) from error
+        if isinstance(error, (OSError, HTTPException)):
+            raise RuntimeError('Caduceus is unavailable') from error
+        if isinstance(error, RuntimeError):
+            raise
         raise RuntimeError('Caduceus request failed') from error
 
 
@@ -634,26 +639,36 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         else:
             show_status(field, "Can't be changed from Settings yet", signal)
 
+    def set_labels_sensitive(row: Any, enabled: bool) -> None:
+        # A parent made insensitive disables its help button too. Disable
+        # the native setting labels separately where help is still useful.
+        for label in _children_of_type(row, Gtk.Label):
+            if label.has_css_class("title") or label.has_css_class("subtitle"):
+                label.set_sensitive(enabled)
+
     def set_control_sensitive(field: str, enabled: bool) -> None:
         # Keep a slider's info button available when its value is read-only.
         if field in sliders:
             sliders[field].scale.set_sensitive(enabled)
             rows[field].set_focusable(enabled)
             rows[field].set_sensitive(enabled or field in help_fields)
+            if field in help_fields:
+                set_labels_sensitive(rows[field], enabled)
         else:
             rows[field].set_sensitive(enabled)
 
     def lock_editing(field: str, locked: bool) -> None:
-        row = rows[field]
         # Lock the action, not the focus widget. Buttons use the pending
         # dispatch guard; sliders have their own in-flight coalescer.
-        if isinstance(row, Adw.ComboRow):
-            model = row.get_model()
-            row.set_activatable(not locked and model is not None and model.get_n_items() > 1)
-        elif isinstance(row, Adw.SwitchRow):
-            row.set_activatable(not locked)
-        elif isinstance(row, Gtk.Editable):
-            row.set_editable(not locked)
+        choice = choices.get(field)
+        for row in (choice["entry"], choice["combo"]) if choice else (rows[field],):
+            if isinstance(row, Adw.ComboRow):
+                model = row.get_model()
+                row.set_activatable(not locked and model is not None and model.get_n_items() > 1)
+            elif isinstance(row, Adw.SwitchRow):
+                row.set_activatable(not locked)
+            elif isinstance(row, Gtk.Editable):
+                row.set_editable(not locked)
 
     def field_at(focus: Any) -> str | None:
         return next((field for field, row in rows.items()
@@ -701,10 +716,6 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         state["status"][field] = "Saved"
         show_status(field, "Saved")
         GLib.timeout_add_seconds(3, clear_saved, field, status_generation[field])
-
-    def forget_lost_reply(field: str) -> None:
-        lost_replies.pop(field, None)
-        late_reads.discard(field)
 
     def add_info(row: Any, info: Any) -> None:
         if not isinstance(info, str) or not info.strip():
@@ -828,7 +839,10 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         unavailable = Adw.ActionRow(title=title, subtitle=absent_reasons[field],
                                     focusable=False, activatable=False, selectable=False)
         add_info(unavailable, spec.get("info"))
-        unavailable.set_sensitive(field in help_fields)
+        if field in help_fields:
+            set_labels_sensitive(unavailable, False)
+        else:
+            unavailable.set_sensitive(False)
         unavailable.set_visible(False)
         unavailable_rows[field] = unavailable
         group.add(unavailable)
@@ -846,8 +860,10 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 return
             if selected in pending:
                 # A direct switch/pick change can bypass row activation (for
-                # example by touching its suffix). Keep the visible first pick.
-                if selected not in action_buttons and getters[selected]() != pending[selected]:
+                # example by touching its suffix). Keep the value on display.
+                moving = sliders.get(selected)
+                displayed = moving.scale.get_value if moving else getters.get(selected)
+                if selected not in action_buttons and displayed is not None and displayed() != pending[selected]:
                     state["hydrating"] = True
                     try:
                         setters[selected](pending[selected])
@@ -860,7 +876,6 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 slider = sliders[selected]
                 if not slider.scale.is_sensitive():
                     return
-                forget_lost_reply(selected)
                 if status_rows[selected].get_visible():
                     status_generation[selected] += 1
                     state["status"].pop(selected, None)
@@ -886,7 +901,6 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     show_status(selected, "Not saved", "not a number")
                     return
                 value = int(number) if number.is_integer() else number
-            forget_lost_reply(selected)
             status_generation[selected] += 1
             state["status"].pop(selected, None)
             row = rows[selected]
@@ -909,7 +923,6 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 if ((state["hydrated"] or selected in returned_fields)
                         and not state["hydrating"] and selected not in pending
                         and selected not in readonly_signals):
-                    forget_lost_reply(selected)
                     status_generation[selected] += 1
                     state["status"].pop(selected, None)
                     show_status(selected)
@@ -926,7 +939,16 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         wanted, signal = attempt
         confirmed = field not in action_buttons and actual is not None and actual == wanted
         if confirmed or field in late_reads:
-            forget_lost_reply(field)
+            lost_replies.pop(field)
+            late_reads.discard(field)
+            pending.pop(field, None)
+            lock_editing(field, False)
+        elif writable:
+            # Paint what the first GET actually saw, but keep new input on
+            # this field gated until the bounded late read has had its turn.
+            slider = sliders.get(field)
+            pending[field] = slider.scale.get_value() if slider else getters[field]()
+            lock_editing(field, True)
         if writable and confirmed:
             show_saved(field)
         elif writable or not (field in readonly_signals or field in static_signals):
@@ -943,7 +965,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         state["hydrating"] = True
         try:
             for field, choice in choices.items():
-                if field in pending:
+                if field in pending and field not in lost_replies:
                     continue
                 raw = options.get(field)
                 offered = [item for item in raw if isinstance(item, dict) and "value" in item and isinstance(item.get("label"), str)] if isinstance(raw, list) else []
@@ -974,7 +996,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     getters[field] = entry.get_text
                     setters[field] = lambda value, item=entry: item.set_text("" if value is None else str(value))
             for field, row in rows.items():
-                if field in pending:
+                if field in pending and field not in lost_replies:
                     reveal_row(field)
                     set_control_sensitive(field, True)
                     show_status(field, "Saving…")
@@ -985,7 +1007,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 if slider and value is not None:
                     number = _number(value, math.nan)
                     value = number if math.isfinite(number) else None
-                if slider and slider.protected and not readonly_signal:
+                if slider and slider.protected and not readonly_signal and field not in lost_replies:
                     # A prior bad read may have hidden the slider. Recover
                     # its visibility without hydrating over the held value.
                     reveal_row(field)
@@ -1077,10 +1099,10 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         # One fresh GET can follow multiple successful PATCHes. A superseded
         # GET leaves their rows pending for the newer read's completion.
         for field in awaiting_read:
-            if field in pending:
+            if field in pending and field not in lost_replies:
                 pending.pop(field)
                 lock_editing(field, False)
-        settled = awaiting_read | slider_reads | (lost_replies.keys() - pending.keys())
+        settled = awaiting_read | slider_reads | lost_replies.keys()
         if error is not None or receipt is None or not _receipt_ok(receipt) or not isinstance(receipt.get("values"), dict):
             return fail_read(error or (_refusal_signal(receipt) if receipt is not None else "") or "Settings read refused", settled)
         options = receipt.get("options")
@@ -1122,19 +1144,20 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
 
     def send_slider(field: str, value: int | float) -> bool:
         previous = state["values"].get(field)
-        if field in static_signals or field in readonly_signals or value == previous:
+        if field in static_signals or field in readonly_signals or field in pending or value == previous:
             return False
         slider_reads.discard(field)
         start_mutation(field, value, previous)
         return True
 
     def recheck_lost_reply(field: str, attempt: tuple[Any, str]) -> bool:
-        if lost_replies.get(field) is attempt and group.get_mapped():
+        if lost_replies.get(field) is attempt:
             late_reads.add(field)
             refresh()
         return False
 
-    def finish_mutation(field: str, value: Any, previous: Any, receipt: dict[str, Any] | None, error: str | None) -> bool:
+    def finish_mutation(field: str, value: Any, previous: Any, receipt: dict[str, Any] | None,
+                        error: str | None, http_refusal: str) -> bool:
         slider = sliders.get(field)
         if receipt is not None and _receipt_ok(receipt):
             if slider:
@@ -1148,7 +1171,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             awaiting_read.add(field)
             refresh()
             return False
-        refusal = _refusal_signal(receipt) if receipt is not None else ""
+        refusal = _refusal_signal(receipt) if receipt is not None else http_refusal
         staff_signal = _signal(receipt) if receipt is not None else ""
         if (error != "settings-worker-start-failed" and not refusal and not staff_signal
                 and (receipt is None or receipt.get("ok") is not False)):
@@ -1157,8 +1180,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             attempt = lost_replies[field] = (value, error or "")
             if slider:
                 slider.complete(False)
-            else:
-                awaiting_read.add(field)
+                pending[field] = slider.scale.get_value()
             refresh()
             GLib.timeout_add(_LOST_REPLY_RECHECK_MS, recheck_lost_reply, field, attempt)
             return False
@@ -1198,8 +1220,17 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         return False
 
     def start_mutation(field: str, value: Any, previous: Any) -> None:
-        _background(GLib, lambda: _request(path, mutation_method, {field: value}),
-                    lambda receipt, error: finish_mutation(field, value, previous, receipt, error))
+        def write() -> tuple[dict[str, Any] | None, str]:
+            try:
+                return _request(path, mutation_method, {field: value}), ""
+            except _HTTPRefusal as refusal:
+                return None, str(refusal)
+
+        def finish(result: tuple[dict[str, Any] | None, str] | None, error: str | None) -> bool:
+            receipt, refusal = result if result is not None else (None, "")
+            return finish_mutation(field, value, previous, receipt, error, refusal)
+
+        _background(GLib, write, finish)
 
     listbox = read_error.get_parent()
     if isinstance(listbox, Gtk.ListBox):
