@@ -5,11 +5,16 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import UTC, datetime
 from http.client import HTTPConnection, HTTPException
 from importlib import import_module
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+# The private reader also runs from this file in a supervised process.
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon._nidus.write import WriteError
@@ -19,6 +24,8 @@ from agathodaimon.settings.datetime import _bar_clock, _zone_mode
 _household = import_module("agathodaimon.settings.datetime.household-time._household")
 _LOCAL_TIME = "%Y-%m-%d %H:%M"
 _AUTOMATIC_TIME_ON = "unsupported:automatic-time-on"
+_HOUSE_FETCH_SECONDS = 2.0
+_HOUSE_BODY_MAX = 65536
 
 
 def _properties(*args):
@@ -52,16 +59,28 @@ def read_values():
             "time_server": server or None, "last_sync": _last_sync()}
 
 
-def _fresh_house_zone():
-    # The household zone is a LAN fact, not a per-device GeoIP lookup.
-    connection = HTTPConnection("home.arpa", 3014, timeout=2)
+def _read_house_state() -> bytes:
+    """Read only in the supervised child, never under the zone-mode lock."""
+    connection = HTTPConnection("home.arpa", 3014)
     try:
         connection.request("GET", "/api/v1/time/state", headers={"Accept": "application/json"})
         response = connection.getresponse()
         if response.status != 200:
-            return None
-        body = response.read(65537)
-        if len(body) > 65536:
+            return b""
+        body = response.read(_HOUSE_BODY_MAX + 1)
+        return body if len(body) <= _HOUSE_BODY_MAX else b""
+    finally:
+        connection.close()
+
+
+def _fresh_house_zone() -> tuple[str, datetime] | None:
+    # One timeout covers DNS, connect, headers and the body. run() kills
+    # and reaps the direct child even if name resolution never returns.
+    argv = [sys.executable, "-I", "-B", str(Path(__file__).resolve()), "--read-house-state"]
+    try:
+        body = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=_HOUSE_FETCH_SECONDS, check=True).stdout
+        if not body:
             return None
         document = json.loads(body)
         if not isinstance(document, dict) or document.get("ok") is False:
@@ -72,11 +91,9 @@ def _fresh_house_zone():
         until = _household.parse_stamp(state.get("valid_until"))
         if until is None or until.tzinfo is None or until <= datetime.now(UTC):
             return None
-        return _household.validated_timezone(state.get("timezone"))
-    except (OSError, HTTPException, ValueError, RecursionError):
+        return _household.validated_timezone(state.get("timezone")), until
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
         return None
-    finally:
-        connection.close()
 
 
 def _zoneinfo(value):
@@ -210,6 +227,7 @@ def set_values(changes):
     receipt = None
     try:
         house_server = _prepare(changes)
+        house_fact = _fresh_house_zone() if changes.get("automatic_timezone") is True and not house_server else None
         with _zone_mode.locked():
             clock = _clock() if changes.keys() & {"timezone", "ntp_enabled", "local_time"} else {}
             wall = None
@@ -219,7 +237,8 @@ def set_values(changes):
                 wall = _wall_time(changes["local_time"])
             if "timezone" in changes or "automatic_timezone" in changes:
                 _zone_mode.read_mode()  # A broken config must not leave a hand-set zone half applied.
-            house_zone = _fresh_house_zone() if changes.get("automatic_timezone") is True and not house_server else None
+            # The fact can expire while a local writer holds the lock.
+            house_zone = house_fact[0] if house_fact and house_fact[1] > datetime.now(UTC) else None
             wall_zone = _zoneinfo(changes.get("timezone") or house_zone or clock["timezone"]) if wall is not None else None
             instant = _utc_instant(wall, wall_zone) if wall is not None else None
             receipt = _shared.Receipt("datetime", list(changes))
@@ -235,3 +254,12 @@ def set_values(changes):
         changed = receipt is not None and receipt.changed
         return {"ok": False, "firstMissingSignal": _signal(error), "changed": changed,
                 "mutationPerformed": changed, "readback": readback}
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--read-house-state"]:
+        sys.exit(2)
+    try:
+        sys.stdout.buffer.write(_read_house_state())
+    except (OSError, HTTPException):
+        sys.exit(1)

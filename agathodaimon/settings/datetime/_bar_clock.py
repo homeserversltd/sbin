@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import stat
 import subprocess
 import sys
@@ -16,28 +15,85 @@ if __name__ == "__main__":
 from agathodaimon._nidus.write import WriteError, write
 
 FORMATS = {
-    "24h": ("{:%H:%M}  ", "{:%A, %B %d, %Y (%R)} "),
-    "12h": ("{:%I:%M %p}  ", "{:%A, %B %d, %Y (%I:%M %p)} "),
+    "24h": ("{:%H:%M} \uf017 ", "{:%A, %B %d, %Y (%R)} "),
+    "12h": ("{:%I:%M %p} \uf017 ", "{:%A, %B %d, %Y (%I:%M %p)} "),
 }
 ABSENT = "unsupported:bar-clock-override-absent"
 _INCLUDE = ".config/waybar/clock-override.json"
-_JSON_STRING = r'"(?:\\.|[^"\\])*"'
+_FILE_MAX = 1024 * 1024
+
+
+def _open_unlinked(path: Path) -> int:
+    # O_NOFOLLOW on the file alone leaves .config and waybar able to
+    # redirect a privileged read. Pin each parent before opening its child.
+    path = path.absolute()
+    if ".." in path.parts:
+        raise ValueError("bar-clock-path-invalid")
+    directory_flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open(path.anchor, directory_flags)
+    try:
+        for part in path.parts[1:-1]:
+            child = os.open(part, directory_flags, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        return os.open(path.name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
+    finally:
+        os.close(directory)
+
+
+def _strip_jsonc(raw: bytes) -> bytearray:
+    # A monotonically advancing scan: quoted bytes are never reconsidered
+    # as syntax, and an unterminated comment or string fails at its first scan.
+    data = bytearray(raw)
+    end, pos = len(data), 0
+    previous = comma = None
+    while pos < end:
+        token = data[pos]
+        if token == ord('"'):
+            pos += 1
+            while pos < end:
+                char = data[pos]
+                pos += 1
+                if char == ord('"'):
+                    break
+                if char == ord('\\'):
+                    pos += 1
+            else:
+                raise ValueError("bar-clock-jsonc-unclosed-string")
+            previous, comma = token, None
+            continue
+        if token == ord('/') and pos + 1 < end:
+            start = pos
+            if data[pos + 1] == ord('/'):
+                pos += 2
+                while pos < end and data[pos] not in b"\r\n":
+                    pos += 1
+            elif data[pos + 1] == ord('*'):
+                stop = data.find(b"*/", pos + 2)
+                if stop < 0:
+                    raise ValueError("bar-clock-jsonc-unclosed-comment")
+                pos = stop + 2
+            if pos != start:
+                data[start:pos] = b" " * (pos - start)
+                continue
+        if token not in b" \t\r\n":
+            if token in b"}]" and comma is not None:
+                data[comma] = ord(' ')
+            comma = pos if token == ord(',') and previous is not None and previous not in b"[{:," else None
+            previous = token
+        pos += 1
+    return data
 
 
 def _read(path: Path):
-    # Waybar reads JSONC, including comments and trailing commas. A quoted
-    # comment marker (e.g. in a format string) is not a comment.
-    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NONBLOCK), encoding="utf-8") as stream:
+    with os.fdopen(_open_unlinked(path), "rb") as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("bar-clock-not-a-regular-file")
-        text = stream.read(1024 * 1024 + 1)
-    if len(text) > 1024 * 1024:
+        raw = stream.read(_FILE_MAX + 1)
+    if len(raw) > _FILE_MAX:
         raise ValueError("bar-clock-file-too-large")
-    text = re.sub(_JSON_STRING + r"|//[^\r\n]*|/\*[\s\S]*?\*/",
-                  lambda m: m[0] if m[0].startswith('"') else " ", text)
-    text = re.sub(_JSON_STRING + r"|,(?=\s*[}\]])",
-                  lambda m: m[0] if m[0].startswith('"') else "", text)
-    return json.loads(text)
+    raw.decode("utf-8")  # Comments, too, must be UTF-8.
+    return json.loads(_strip_jsonc(raw).decode("utf-8"))
 
 
 def includes_override(home: Path) -> bool:
@@ -91,7 +147,7 @@ def _write_format(home: Path, name: str) -> dict:
         return dict(result, changed=False)
     primary, alt = FORMATS[name]
     value.setdefault("clock", {}).update({"format": primary, "format-alt": alt})
-    payload = (json.dumps(value, indent=2, ensure_ascii=True) + "\n").encode()
+    payload = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
     def reload_bar():
         argv = ["/usr/bin/pkill", "-USR2", "-u", str(os.geteuid()), "-x", "waybar"]
