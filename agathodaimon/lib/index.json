@@ -1,8 +1,6 @@
 {
   "children": [
-    "runner",
     "receipts",
-    "actuators",
     "attendance",
     "bind_derived",
     "sacred_credential",
