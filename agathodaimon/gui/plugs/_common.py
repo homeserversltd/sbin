@@ -213,6 +213,30 @@ def _focus(widget: Any) -> Any:
     return root.get_focus() if root is not None else None
 
 
+def _skip_disabled_rows(Gtk: Any, GObject: Any, box: Any, step: Any, count: int,
+                        extend: bool, modify: bool) -> None:
+    # GtkListBox's display-line move advances its cursor even if the next
+    # visible row rejects focus. Only take over when that row is unusable.
+    if step != Gtk.MovementStep.DISPLAY_LINES or count not in (-1, 1) or extend or modify:
+        return
+    row = _focus(box)
+    while row is not None and row.get_parent() != box:
+        if isinstance(row, Gtk.Popover):
+            return
+        row = row.get_parent()
+    skipped = False
+    while row is not None:
+        row = row.get_next_sibling() if count > 0 else row.get_prev_sibling()
+        if not isinstance(row, Gtk.ListBoxRow) or not row.get_mapped():
+            continue
+        if row.get_focusable() and row.is_sensitive():
+            if not skipped or row.grab_focus():
+                break
+        skipped = True
+    if skipped:
+        GObject.signal_stop_emission_by_name(box, "move-cursor")
+
+
 def _children_of_type(widget: Any, kind: Any) -> Any:
     child = widget.get_first_child()
     while child is not None:
@@ -547,7 +571,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gdk, GLib, Gtk
+    from gi.repository import Adw, Gdk, GLib, GObject, Gtk
 
     if page is None:
         page = _page(Adw, plug)
@@ -1177,6 +1201,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         _background(GLib, lambda: _request(path, mutation_method, {field: value}),
                     lambda receipt, error: finish_mutation(field, value, previous, receipt, error))
 
+    listbox = read_error.get_parent()
+    if isinstance(listbox, Gtk.ListBox):
+        listbox.connect("move-cursor", lambda *args: _skip_disabled_rows(Gtk, GObject, *args))
     read_error.connect("activated", lambda _row: refresh())
     refresh()
     return page
