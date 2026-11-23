@@ -363,7 +363,7 @@ def _stage_changed(receipt):
         value = receipt.get(key)
         if isinstance(value, bool):
             return value
-    return False
+    return None
 
 
 def _deed_target(routine_id):
@@ -379,7 +379,10 @@ def _stage_word(row, mutating):
     if not mutating:
         return "completed"
     receipt = row.get("receipt")
-    return "changed" if isinstance(receipt, dict) and _stage_changed(receipt) else "kept"
+    changed = _stage_changed(receipt) if isinstance(receipt, dict) else None
+    if changed is None:
+        return "completed"
+    return "changed" if changed else "kept"
 
 
 def _stage_deed(routine_id, row, word, signal, duration_ms):
@@ -391,7 +394,8 @@ def _stage_deed(routine_id, row, word, signal, duration_ms):
 
 def _chord_deed(routine_id, rows, mutating, ok, changed, signal, started):
     from agathodaimon._deed import send
-    word = "refused" if not ok else "changed" if changed else "kept"
+    word = ("refused" if not ok else "completed" if changed is None
+            else "changed" if changed else "kept")
     stages = [[row["stage_id"], _stage_word(row, is_write)]
               for row, is_write in zip(rows, mutating)]
     return send("sbin", "chord", ok, target=_deed_target(routine_id),
@@ -423,7 +427,9 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
     completed = {}
     failed = None
     signal = "none"
+    # Keep confirmed changes for the deed-failure guard even if the aggregate is unknown.
     changed = False
+    change_known = True
     payload = envelope.get("payload")
     dry_run = isinstance(payload, dict) and payload.get("dry-run") is True
     mutating_chord = _mutation_allowed(path) is not False
@@ -573,6 +579,10 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                                 and answered_stop.get("verb") == (parts[-1] if len(parts) > 1 else "")))
                     if not matches:
                         refusal = "chord-stage-receipt-schema-mismatch"
+                if is_write and phase not in ("observe", "reobserve"):
+                    stage_changed = _stage_changed(receipt) if refusal is None else None
+                    change_known = change_known and stage_changed is not None
+                    changed = changed or stage_changed is True
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
                     refusal = receipt.get("firstMissingSignal") or "chord-stage-refused"
                 if phase == "observe" and refusal is None:
@@ -583,8 +593,6 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                         refusal = "ouroboros-observe-shape-invalid"
                     elif empty is True:
                         settled_by = sid
-                if phase not in ("observe", "reobserve") and receipt is not None and _stage_changed(receipt) is True:
-                    changed = True
             except _ChordError as exc:
                 refusal = str(exc)
             except Exception:
@@ -626,7 +634,8 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
           all(row["outcome"] == "stage-completed" for row in rows[final_offset:]))
     if not dry_run and _mutation_allowed(path) is not False:
         try:
-            logged = _chord_deed(routine_id, rows, stage_mutating, ok, changed, signal, started)
+            logged = _chord_deed(routine_id, rows, stage_mutating, ok,
+                                 changed if change_known else None, signal, started)
         except (OSError, ValueError):
             logged = False
         if not logged and changed:
@@ -639,7 +648,9 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             row["receipt"] = _redact_declared({key: value for key, value in row["receipt"].items()
                                                if key not in {"raw_envelope", "envelope"}}, _HAND_SECRET_NAMES)
     answer = {"schema": "caduceus.chord.receipt.v1", "ok": ok, "routine_id": routine_id,
-              "request": request, "stages": rows, "failedStage": failed, "firstMissingSignal": signal, "changed": changed}
+              "request": request, "stages": rows, "failedStage": failed, "firstMissingSignal": signal}
+    if change_known:
+        answer["changed"] = changed
     if settled_by is not None:
         answer["settledBy"] = settled_by
     print(json.dumps(answer, separators=(",", ":")))
@@ -1670,7 +1681,9 @@ def _scoped_main(argv=None):
             target = _slash_target(_stamp_target)
             if target is not None and target.is_file() and _mutation_allowed(target.parent) is not False:
                 from agathodaimon._deed import send
-                word = "refused" if not answer["ok"] else "changed" if _stage_changed(answer) else "kept"
+                changed = _stage_changed(answer)
+                word = ("refused" if not answer["ok"] else "completed" if changed is None
+                        else "changed" if changed else "kept")
                 send("sbin", _stamp_target.rsplit("/", 1)[-1], answer["ok"],
                      target=_stamp_target.replace("/", "."), outcome=word,
                      signal=answer.get("firstMissingSignal") or "operation-failed",
