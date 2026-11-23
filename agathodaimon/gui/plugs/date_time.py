@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import re
 import threading
+import time
 from datetime import datetime, timezone
-from http.client import HTTPException
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import _common
@@ -13,18 +14,32 @@ PLUG = {"id": "date-time", "title": "Date & Time", "icon": "preferences-system-t
 _PATH = "/api/v1/settings/datetime"
 _CLOCK_LABELS = {"24h": "24-hour", "12h": "12-hour"}
 _WALL_TIME = "%Y-%m-%d %H:%M"
+_WALL_SHAPE = r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}"
 _AUTOMATIC_TIME_ON = "unsupported:automatic-time-on"
-_REFUSALS = {
+_STANDING = {
     "unsupported:homeserver-keeps-house-time": "Your HomeServer keeps the house's time.",
-    _AUTOMATIC_TIME_ON: "Turn off automatic date and time before setting the clock.",
     "unsupported:bar-clock-override-absent": "This device's clock format can't be changed from Settings.",
 }
+_REFUSALS = {
+    **_STANDING,
+    _AUTOMATIC_TIME_ON: "Automatic date and time is on. Turn it off to set the clock.",
+    "invalid:local_time:nonexistent": "The clocks change then and skip that time. Choose another time.",
+    "invalid:local_time:ambiguous": "The clocks change then and repeat that time. Choose another time.",
+}
+_UNCONFIRMED = "Couldn't confirm this change."
 
 
 def _request(method="GET", payload=None):
     try:
-        return _common._request(_PATH, method, payload)
-    except (RuntimeError, HTTPException):
+        if method == "PATCH":
+            # The door may hold the crossing for 180 seconds. Keep the same
+            # envelope, but give this write more time than a settings read.
+            reply = _common._direct_request(_PATH, method, _common._staff_envelope(_PATH, payload), timeout=185)
+        else:
+            reply = _common._request(_PATH)
+        return reply if isinstance(reply, dict) else {}
+    except Exception:
+        # Includes failures reading the body of an HTTP error, not just urlopen.
         return {}
 
 
@@ -47,13 +62,39 @@ def _zone(name):
     return None
 
 
+def _clock_text(local, mode):
+    if mode == "12h":
+        return f"{local.hour % 12 or 12:02d}:{local.minute:02d} {'AM' if local.hour < 12 else 'PM'}"
+    return local.strftime("%H:%M")
+
+
+def _wall_text(local, mode):
+    return f"{local.date().isoformat()} {_clock_text(local, mode)}"
+
+
+def _parse_wall(text, mode):
+    text = text.strip().upper()
+    if not re.fullmatch(_WALL_SHAPE + (r" (AM|PM)" if mode == "12h" else ""), text):
+        raise ValueError
+    if mode == "12h":
+        hour = int(text[11:13])
+        if not 1 <= hour <= 12:
+            raise ValueError
+        hour = hour % 12 + (12 if text.endswith("PM") else 0)
+        text = f"{text[:11]}{hour:02d}{text[13:16]}"
+    datetime.strptime(text, _WALL_TIME)
+    return text
+
+
 def _sync_status(values, now):
     if values.get("ntp_enabled") is False:
         return "Automatic time is off."
+    if values.get("ntp_enabled") is not True:
+        return "This device didn't report whether automatic time is on."
     if values.get("ntp_synchronized") is False:
         return "The clock hasn't synchronized yet."
     if values.get("ntp_synchronized") is not True:
-        return "Sync status is unavailable."
+        return "This device didn't report its sync status."
 
     server = values.get("time_server")
     if server == "home.arpa":
@@ -88,7 +129,18 @@ def build_widget():
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk, Pango
+    from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango
+
+    def descendant(widget, kind, css_class=None):
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, kind) and (not css_class or child.has_css_class(css_class)):
+                return child
+            found = descendant(child, kind, css_class)
+            if found is not None:
+                return found
+            child = child.get_next_sibling()
+        return None
 
     page = _common._page(Adw, PLUG)
     group = Adw.PreferencesGroup()
@@ -97,68 +149,102 @@ def build_widget():
         "automatic_timezone": Adw.SwitchRow(title="Automatic time zone", use_markup=False),
         "ntp_enabled": Adw.SwitchRow(title="Automatic date and time", use_markup=False),
     }
-    combos = {
-        "timezone": Adw.ComboRow(title="Time zone", use_markup=False),
-        "time_format": Adw.ComboRow(title="Clock", use_markup=False),
-    }
-    combos["timezone"].set_enable_search(True)
-    manual = Adw.ActionRow(title="Date and time", use_markup=False)
-    entry = Gtk.Entry(placeholder_text="YYYY-MM-DD HH:MM", width_chars=18, valign=Gtk.Align.CENTER)
-    entry.update_property([Gtk.AccessibleProperty.LABEL], ["New local date and time (YYYY-MM-DD HH:MM)"])
+    zone_picker = Adw.ComboRow(title="Time zone", use_markup=False, enable_search=True)
+    zone_picker.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject.__gtype__, None, "string"))
+    zone_picker.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+    # Adwaita supplies the filter and list; keep the search text and the filter
+    # in step on Escape, and allow Enter from the search entry itself.
+    popover = descendant(zone_picker, Gtk.Popover)
+    search = descendant(popover, Gtk.SearchEntry) if popover is not None else None
+    results = descendant(popover, Gtk.ListView) if popover is not None else None
+    if popover is not None and search is not None and results is not None:
+        def search_enter(widget):
+            widget.emit("search-changed")
+            model = results.get_model()
+            if model is not None and model.get_selected_item() is not None:
+                results.emit("activate", model.get_selected())
+
+        def search_escape(_controller, key, _code, _state):
+            if key != Gdk.KEY_Escape:
+                return False
+            if search.get_text():
+                search.set_text("")
+                search.emit("search-changed")
+                search.grab_focus()
+            else:
+                popover.popdown()
+            return True
+
+        keys = Gtk.EventControllerKey()
+        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        keys.connect("key-pressed", search_escape)
+        popover.add_controller(keys)
+        popover.connect("map", lambda _popover: search.grab_focus())
+        search.connect("activate", search_enter)
+
+    manual = Adw.ActionRow(title="Date and time", use_markup=False, focusable=True)
+    entry = Gtk.Entry(width_chars=21, valign=Gtk.Align.CENTER)
+    entry.update_property([Gtk.AccessibleProperty.LABEL], ["New local date and time"])
     button = Gtk.Button(label="Set", valign=Gtk.Align.CENTER)
     manual.add_suffix(entry)
     manual.add_suffix(button)
+
+    # A MenuButton keeps the current value out of the choices; a ComboRow
+    # auto-selects the first item and cannot present a null value honestly.
+    clock = Adw.ActionRow(title="Clock", use_markup=False)
+    clock_button = Gtk.MenuButton(valign=Gtk.Align.CENTER, always_show_arrow=True)
+    clock.add_suffix(clock_button)
+    clock.set_activatable_widget(clock_button)
+    clock_actions = Gio.SimpleActionGroup()
+    clock_action = Gio.SimpleAction.new("pick", GLib.VariantType.new("s"))
+    clock_actions.add_action(clock_action)
+    clock_button.insert_action_group("clock", clock_actions)
+
     controls = {
         "automatic_timezone": switches["automatic_timezone"],
-        "timezone": combos["timezone"],
+        "timezone": zone_picker,
         "ntp_enabled": switches["ntp_enabled"],
         "local_time": manual,
-        "time_format": combos["time_format"],
+        "time_format": clock,
     }
     alternatives = {}
     for field, row in controls.items():
         row.set_visible(False)
         group.add(row)
         if field != "local_time":
-            # A disabled ComboRow or SwitchRow cannot select text. Keep the
-            # value and refusal together in a stock read-only row in that case.
-            alternate = Adw.ActionRow(title=row.get_title(), use_markup=False)
+            # A locked control has a focusable, non-activatable twin so the
+            # owner can still read and select a refusal without acting again.
+            alternate = Adw.ActionRow(title=row.get_title(), use_markup=False, focusable=True)
             label = Gtk.Label(valign=Gtk.Align.CENTER)
             alternate.add_suffix(label)
             alternate.set_visible(False)
             group.add(alternate)
             alternatives[field] = (alternate, label)
-    read_status = Adw.ActionRow(title="Reading date and time…")
+    read_status = Adw.ActionRow(title="Reading date and time…", focusable=True)
     group.add(read_status)
 
-    values = {}
-    offered = {}
-    readonly = {}
-    locked = {}
-    selected_options = {}
-    outcomes = {}
+    values: dict[str, Any] = {}
+    offered: dict[str, dict[str, str]] = {}
+    readonly: dict[str, str] = {}
+    locked: dict[str, str] = {}
+    outcomes: dict[str, tuple[str, str]] = {}
     editable = set()
     zone = None
-    available = painting = reading = saving = manual_wait = False
-    revision = minute_source = 0
-
-    def subtitle_label(widget):
-        child = widget.get_first_child()
-        while child is not None:
-            if isinstance(child, Gtk.Label) and child.has_css_class("subtitle"):
-                return child
-            found = subtitle_label(child)
-            if found is not None:
-                return found
-            child = child.get_next_sibling()
-        return None
+    zone_entries: tuple[tuple[str, str], ...] = ()
+    clock_entries: tuple[tuple[str, str], ...] = ()
+    draft_basis = None
+    focus_return: str | None = None
+    pending: tuple[str, Any] | None = None
+    dirty = painting = reading = available = False
+    revision = minute_source = sync_source = 0
+    last_read = sync_until = 0.0
 
     def paint_subtitle(row, resting, message, signal):
         text = "\n".join(filter(None, (resting, message, signal)))
         if row.get_subtitle() == text:
             return
         row.set_subtitle(text)
-        label = subtitle_label(row)
+        label = descendant(row, Gtk.Label, "subtitle")
         if label is not None:
             attributes = None
             if signal:
@@ -170,104 +256,225 @@ def build_widget():
             label.set_selectable(bool(signal))
 
     def paint(now=None):
-        nonlocal painting
+        nonlocal painting, zone_entries, clock_entries, draft_basis, dirty, focus_return
         painting = True
         try:
             now = now or datetime.now(timezone.utc)
+            root = page.get_root()
+            focus = root.get_focus() if root is not None else None
+
+            def has_focus(widget, current=focus):
+                return current is not None and (current == widget or current.is_ancestor(widget))
+
+            display = dict(values)
+            if pending is not None:
+                display[pending[0]] = pending[1]
             follows_house = values.get("automatic_timezone")
-            manual_time = values.get("ntp_enabled") is False
+            manual_time = available and values.get("ntp_enabled") is False
+            blocked = {**readonly, **locked}
             named = {}
+            resting = {}
             editable.clear()
             for field, row in switches.items():
-                value = values.get(field)
+                value = display.get(field)
                 row.set_active(value is True)
                 if isinstance(value, bool):
                     named[field] = "On" if value else "Off"
                     editable.add(field)
                 else:
-                    named[field] = "Unavailable"
-            for field, row in combos.items():
-                value = values.get(field)
-                value = value if isinstance(value, str) else None
-                options = offered.get(field, {})
-                if field == "timezone":
-                    fallback = value.replace("_", " ") if value else "Unavailable"
-                else:
-                    fallback = _CLOCK_LABELS.get(value, "Not set") if value is not None else "Not set"
-                named[field] = options.get(value, fallback) if value is not None else fallback
-                entries = list(options.items())
-                if value not in options:
-                    entries.insert(0, (value, named[field]))
-                entries = tuple(entries)
-                if selected_options.get(field) != entries:
-                    selected_options[field] = entries
-                    row.set_model(Gtk.StringList.new([label for _, label in entries]))
-                row.set_selected(next(i for i, (key, _) in enumerate(entries) if key == value))
-                if options and (field == "time_format" or (zone is not None and follows_house is False)):
-                    editable.add(field)
-            if manual_time and zone is not None and not manual_wait:
-                editable.add("local_time")
-            blocked = {**readonly, **locked}
-            editable.difference_update(blocked)
-            if saving or not available:
-                editable.clear()
+                    named[field] = "Not reported"
+            resting["automatic_timezone"] = ("This device didn't report whether it follows the house."
+                                              if not isinstance(values.get("automatic_timezone"), bool) else "")
+            resting["ntp_enabled"] = _sync_status(values, now)
+
+            zone_options = offered.get("timezone", {})
+            zone_key = display.get("timezone")
+            zone_name = zone_options.get(zone_key, zone_key.replace("_", " ")) if isinstance(zone_key, str) and zone else "Not reported"
+            named["timezone"] = zone_name
+            zones = tuple(zone_options.items())
+            if zone is not None and isinstance(zone_key, str) and zone_key not in zone_options:
+                zones = ((zone_key, zone_name), *zones)
+            if zones != zone_entries:
+                zone_entries = zones
+                zone_picker.set_model(Gtk.StringList.new([label for _, label in zones]))
+            if zones:
+                index = next((i for i, (key, _) in enumerate(zones) if key == zone_key), 0)
+                if zone_picker.get_selected() != index:
+                    zone_picker.set_selected(index)
+            if zone is not None and follows_house is False and len(zones) > 1:
+                editable.add("timezone")
+
+            clock_format = display.get("time_format")
+            clock_reported = "time_format" in values
+            clocks = tuple(offered.get("time_format", {}).items())
+            if clocks != clock_entries:
+                clock_entries = clocks
+                menu = Gio.Menu()
+                for key, name in clocks:
+                    item = Gio.MenuItem.new(name, None)
+                    item.set_action_and_target_value("clock.pick", GLib.Variant("s", key))
+                    menu.append_item(item)
+                clock_button.set_menu_model(menu)
+            clock_name = "Not set" if clock_reported else "Not reported"
+            if isinstance(clock_format, str):
+                clock_name = dict(clocks).get(clock_format, _CLOCK_LABELS[clock_format])
+            named["time_format"] = clock_name
+            if clock_button.get_label() != clock_name:
+                clock_button.set_label(clock_name)
+            if clock_reported and clocks:
+                editable.add("time_format")
+            if not clock_reported:
+                resting["time_format"] = "This device didn't report its clock format."
+            elif not clocks:
+                resting["time_format"] = "This device doesn't offer clock formats."
 
             local = now.astimezone(zone) if zone is not None else None
-            clock = "%I:%M %p" if values.get("time_format") == "12h" else "%H:%M"
-            clock_text = local.strftime(clock) if local else ""
-            zone_text = f"Local time: {clock_text}" if local else "Local time is unavailable."
+            mode = values.get("time_format")
+            wall = _wall_text(local, mode) if local is not None else ""
+            shown_zone = _zone(zone_key) if pending is not None and pending[0] == "timezone" else zone
+            shown_time = now.astimezone(shown_zone) if shown_zone is not None else None
+            zone_text = (f"Local time: {_clock_text(shown_time, mode)}" if shown_time is not None
+                         else "This device didn't report a time zone.")
             if follows_house is True:
                 zone_text += " · Set by your house"
-            resting = {
-                "timezone": zone_text,
-                "ntp_enabled": _sync_status(values, now),
-                "local_time": f"Current date and time: {local:%Y-%m-%d} · {clock_text}" if local else "Local time is unavailable.",
-                "time_format": "Clock format is unavailable." if not offered.get("time_format") else "",
-            }
+            elif follows_house is not False and zone is not None:
+                zone_text += " · This device didn't report how the zone is set."
+            elif zone is not None and len(zones) <= 1:
+                zone_text += " · No other time zones were reported."
+            resting["timezone"] = zone_text
+            resting["local_time"] = f"Current date and time: {wall}" if wall else "This device didn't report a time zone."
+            if manual_time and local is not None:
+                editable.add("local_time")
+                basis = (zone, mode)
+                if pending is None and (basis != draft_basis or (not dirty and not has_focus(entry))):
+                    if basis != draft_basis:
+                        hint = "YYYY-MM-DD HH:MM AM/PM" if mode == "12h" else "YYYY-MM-DD HH:MM"
+                        entry.set_placeholder_text(hint)
+                        draft_basis, dirty = basis, False
+                    if entry.get_text() != wall:
+                        entry.set_text(wall)
+            else:
+                draft_basis = None
+
+            editable.difference_update(blocked)
+            if not available:
+                editable.clear()
+            busy_field = pending[0] if pending is not None else None
+            busy = busy_field is not None
+            for field, row in switches.items():
+                row.set_activatable(field in editable and not busy)
+            zone_picker.set_activatable("timezone" in editable and not busy)
+            clock.set_activatable("time_format" in editable and not busy)
+            clock_action.set_enabled("time_format" in editable and not busy)
+
+            # Take focus from a row only if it is disappearing. Ordinary saves
+            # use activatability and a dispatch gate, not widget sensitivity.
+            focused_field = None
+            visible_rows = {}
             for field, row in controls.items():
+                twin = alternatives.get(field)
+                if has_focus(row) or (twin is not None and has_focus(twin[0])):
+                    focused_field = field
                 enabled = field in editable
-                signal = blocked.get(field, "")
+                signal = blocked.get(field, "") if available else ""
                 message = _REFUSALS.get(signal, "This setting can't be changed on this device.") if signal else ""
                 message, signal = outcomes.get(field, (message, signal))
-                visible = bool(values) and (field != "local_time" or manual_time)
+                if busy_field == field:
+                    message, signal = "Saving…", ""
                 if field == "local_time":
+                    visible = manual_time
                     entry.set_sensitive(enabled)
+                    entry.set_editable(enabled and not busy)
                     button.set_sensitive(enabled)
-                    row.set_visible(visible)
                 else:
                     alternate, label = alternatives[field]
-                    show_alternate = visible and not enabled and (bool(signal) or named[field] == "Unavailable")
-                    alternate.set_visible(show_alternate)
-                    row.set_visible(visible and not show_alternate)
-                    row.set_sensitive(enabled)
-                    if show_alternate:
-                        label.set_label(named[field])
-                        row = alternate
-                paint_subtitle(row, resting.get(field, ""), message, signal)
+                    visible = available or field in outcomes
+                    if not enabled and visible:
+                        alternate.set_visible(True)
+                        label.set_label(named[field] if available else "")
+                        visible_rows[field] = alternate
+                    alternate.set_visible(visible and not enabled)
+                    visible = visible and enabled
+                row.set_visible(visible)
+                if visible:
+                    visible_rows[field] = row
+                if field in visible_rows:
+                    hide_sync = field == "ntp_enabled" and busy_field == field
+                    shown_text = resting.get(field, "") if available and not hide_sync else ""
+                    paint_subtitle(visible_rows[field], shown_text, message, signal)
+
+            if not available:
+                read_status.set_visible(True)
+            if focused_field is not None:
+                target = visible_rows.get(focused_field)
+                if target is None:
+                    if focused_field == "local_time":
+                        target = visible_rows.get("ntp_enabled")
+                    if target is None and not available:
+                        focus_return = focused_field
+                        target = read_status
+                if target is not None and root is not None and not has_focus(target, root.get_focus()):
+                    target.grab_focus()
+            elif available and has_focus(read_status) and focus_return is not None:
+                target = visible_rows.get(focus_return) or visible_rows.get("ntp_enabled")
+                if target is not None:
+                    target.grab_focus()
+                focus_return = None
+            read_status.set_visible(not available)
         finally:
             painting = False
 
     def hydrate(reply):
-        nonlocal values, zone, offered, readonly, available, manual_wait
-        available = _common._receipt_ok(reply) and isinstance(reply.get("values"), dict)
+        nonlocal values, zone, offered, readonly, available, last_read
+        last_read = time.monotonic()
+        actual = reply.get("values") if _common._receipt_ok(reply) else None
+        found_zone = _zone(actual.get("timezone")) if isinstance(actual, dict) else None
+        # Today's older reply still reports the zone and NTP switch. Missing
+        # optional fields get their own reasons, not guesses at current values.
+        available = isinstance(actual, dict) and (found_zone is not None or isinstance(actual.get("ntp_enabled"), bool))
         read_status.set_title("Couldn't read date and time settings.")
-        read_status.set_visible(not available)
-        if available:
-            values = reply["values"]
-            zone = _zone(values.get("timezone"))
-            options = reply.get("options")
-            offered = {field: _choices(options, field) for field in combos} if isinstance(options, dict) else {}
-            reasons = reply.get("readonly")
-            readonly = ({field: signal for field, signal in reasons.items() if isinstance(signal, str) and signal}
-                        if isinstance(reasons, dict) else {})
-            if values.get("ntp_enabled") is not False:
-                manual_wait = False
-                entry.set_text("")
-                outcomes.pop("local_time", None)
+        if not available or not isinstance(actual, dict):
+            values, offered, readonly, zone = {}, {}, {}, None
+            outcomes.clear()
+            return
+        values, zone = dict(actual), found_zone
+        mode = values.get("time_format")
+        if mode is not None and (not isinstance(mode, str) or mode not in _CLOCK_LABELS):
+            values.pop("time_format", None)
+        for field in ("automatic_timezone", "ntp_enabled", "ntp_synchronized"):
+            if not isinstance(values.get(field), bool):
+                values.pop(field, None)
+        options = reply.get("options")
+        offered = {field: _choices(options, field) for field in ("timezone", "time_format")} if isinstance(options, dict) else {}
+        reasons = reply.get("readonly")
+        readonly = ({field: signal for field, signal in reasons.items() if isinstance(signal, str) and signal}
+                    if isinstance(reasons, dict) else {})
+        if values.get("ntp_enabled") is not False:
+            outcomes.pop("local_time", None)
+
+    def background(work, complete):
+        def run():
+            result = None
+            try:
+                result = work()
+            except Exception:
+                pass
+            finally:
+                GLib.idle_add(complete, result)
+
+        started = False
+        try:
+            threading.Thread(target=run, daemon=True).start()
+            started = True
+        except Exception:
+            pass
+        finally:
+            if not started:
+                complete(None)
 
     def refresh():
         nonlocal reading
-        if reading or saving or manual_wait or not page.get_mapped():
+        if reading or pending is not None or not page.get_mapped():
             return
         reading = True
         started = revision
@@ -276,102 +483,142 @@ def build_widget():
             nonlocal reading
             if revision == started:
                 reading = False
-                hydrate(reply)
+                hydrate(reply or {})
                 paint()
             return GLib.SOURCE_REMOVE
 
-        def work():
-            GLib.idle_add(complete, _request())
+        background(_request, complete)
 
-        threading.Thread(target=work, daemon=True).start()
-
-    def outcome(field, message, signal="", delay=0):
+    def outcome(field, message, signal="", saved=False):
         notice = (message, signal)
         outcomes[field] = notice
-        if delay:
-            def dismiss():
-                nonlocal manual_wait, available
-                if outcomes.get(field) is notice:
-                    del outcomes[field]
-                    if field == "local_time" and manual_wait:
-                        manual_wait = False
-                        # Never re-enable the editor until this read confirms NTP is off.
-                        available = False
-                        paint()
-                        refresh()
-                    else:
-                        paint()
-                return GLib.SOURCE_REMOVE
 
-            GLib.timeout_add(delay, dismiss)
+        def dismiss():
+            if outcomes.get(field) is notice:
+                del outcomes[field]
+                paint()
+            return GLib.SOURCE_REMOVE
+
+        GLib.timeout_add(3000 if saved else 8000, dismiss)
+
+    def probe_sync():
+        nonlocal sync_source
+        if (not page.get_mapped() or not available or time.monotonic() >= sync_until
+                or values.get("ntp_enabled") is not True or values.get("ntp_synchronized") is True):
+            sync_source = 0
+            return GLib.SOURCE_REMOVE
+        refresh()
+        return GLib.SOURCE_CONTINUE
+
+    def stop_probe():
+        nonlocal sync_source
+        if sync_source:
+            GLib.source_remove(sync_source)
+            sync_source = 0
+
+    def can_save(field):
+        return not painting and pending is None and field in editable
 
     def save(field, value):
-        nonlocal saving, reading, revision
-        if painting or saving or field not in editable:
+        nonlocal pending, reading, revision
+        if not can_save(field):
             return
-        revision += 1  # An earlier refresh can't paint over the write's readback.
+        revision += 1  # Ignore a refresh that began before this write.
         reading = False
-        saving = True
-        outcome(field, "Saving…")
+        attempt = pending = (field, value)
+        outcomes.pop(field, None)
         paint()
 
-        def complete(patch, signal, reply):
-            nonlocal saving, manual_wait
-            if reply is not None:
-                hydrate(reply)
-            saving = False
-            if not _common._receipt_ok(patch):
-                if signal in _REFUSALS and signal != _AUTOMATIC_TIME_ON:
-                    locked[field] = signal
-                message = _REFUSALS.get(signal, "Couldn't save this setting.")
-                if field == "local_time" and signal:
-                    # A fresh read can hide the manual row when NTP came back
-                    # on. Disable its inputs and let the owner read the refusal.
-                    manual_wait = True
-                    outcome(field, message, signal, delay=8000)
-                else:
-                    outcome(field, message, signal)
-            elif not available:
-                outcome(field, "Couldn't confirm the current setting.")
-            elif field != "local_time" and values.get(field) != value:
-                outcome(field, "The device didn't keep this change.", "settings-readback-mismatch")
+        def complete(result):
+            nonlocal pending, draft_basis, sync_source, sync_until
+            if pending is not attempt:
+                return GLib.SOURCE_REMOVE
+            pending = None
+            patch, reply, read_at = result or ({}, {}, datetime.now(timezone.utc))
+            hydrate(reply)
+            signal = _refusal(patch) if not _common._receipt_ok(patch) else ""
+            if signal in _STANDING:
+                locked[field] = signal
+            destination = field
+            if field == "local_time":
+                draft_basis = None
+                if values.get("ntp_enabled") is not False:
+                    destination = "ntp_enabled"
+                # The GET has no local_time field. With a lost reply, only a
+                # native wall-clock match in the reported zone can confirm it.
+                confirmed = _common._receipt_ok(patch) or (
+                    zone is not None and values.get("ntp_enabled") is False
+                    and _wall_text(read_at.astimezone(zone), "24h") == value)
             else:
-                if field == "local_time":
-                    entry.set_text("")
-                outcome(field, "Saved", delay=3000)
+                confirmed = values.get(field) == value
+            if signal in _REFUSALS:
+                outcome(destination, _REFUSALS[signal], signal)
+            elif available and confirmed:
+                outcome(destination, "Time set." if destination != field else "Saved", saved=True)
+                if field == "ntp_enabled":
+                    stop_probe()
+                    if value is True and values.get("ntp_synchronized") is not True and page.get_mapped():
+                        sync_until = time.monotonic() + 60
+                        sync_source = GLib.timeout_add(15_000, probe_sync)
+            else:
+                outcome(destination, _UNCONFIRMED, signal)
             paint()
             return GLib.SOURCE_REMOVE
 
         def work():
             patch = _request("PATCH", {field: value})
-            signal = _refusal(patch) if not _common._receipt_ok(patch) else ""
-            reply = None if field == "local_time" and signal else _request()
-            GLib.idle_add(complete, patch, signal, reply)
+            reply = _request()
+            return patch, reply, datetime.now(timezone.utc)
 
-        threading.Thread(target=work, daemon=True).start()
+        background(work, complete)
 
     def switch_changed(row, _param, field):
-        if row.get_active() != values.get(field):
+        if painting or (row.get_active() == values.get(field) and pending is None):
+            return
+        if can_save(field):
             save(field, row.get_active())
+        else:
+            paint()
 
-    def choice_changed(row, _param, field):
+    def zone_changed(row, _param):
         index = row.get_selected()
-        entries = selected_options.get(field, ())
-        if index < len(entries):
-            value, _ = entries[index]
-            if value is not None and value != values.get(field):
-                save(field, value)
+        if painting or index >= len(zone_entries):
+            return
+        value, _ = zone_entries[index]
+        if can_save("timezone") and value != values.get("timezone"):
+            # The popover can unmap while GtkRoot still points at its search
+            # entry. Return keyboard focus to the visible picker before saving.
+            root = row.get_root()
+            focus = root.get_focus() if root is not None else None
+            if root is not None and (focus is None or (focus != row and focus.is_ancestor(row))):
+                row.grab_focus()
+            save("timezone", value)
+        elif pending is not None:
+            paint()
+
+    def clock_chosen(_action, parameter):
+        value = parameter.get_string()
+        if value in offered.get("time_format", {}) and value != values.get("time_format"):
+            save("time_format", value)
+
+    def clock_opened(widget, _param):
+        if widget.get_active() and not can_save("time_format"):
+            widget.popdown()
+
+    def entry_changed(_entry):
+        nonlocal dirty
+        if not painting:
+            dirty = True
 
     def set_time(_widget):
-        if "local_time" not in editable:
+        if not can_save("local_time"):
             return
-        value = entry.get_text()
+        mode = values.get("time_format")
         try:
-            if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}", value):
-                raise ValueError
-            datetime.strptime(value, _WALL_TIME)
+            value = _parse_wall(entry.get_text(), mode)
         except ValueError:
-            outcome("local_time", "Enter a valid date and time as YYYY-MM-DD HH:MM.")
+            example = "2026-11-23 04:30 PM" if mode == "12h" else "2026-11-23 16:30"
+            outcome("local_time", f"Enter a date and time like {example}.")
             paint()
             return
         save("local_time", value)
@@ -379,24 +626,33 @@ def build_widget():
     def minute():
         nonlocal minute_source
         now = datetime.now(timezone.utc)
-        paint(now)
-        refresh()
-        # Anchor each tick to the next wall-clock minute, not to page-open time.
+        # Re-arm before painting or reading. The local minute tick is not a GET.
         minute_source = GLib.timeout_add(60_000 - now.second * 1000 - now.microsecond // 1000, minute)
+        paint(now)
+        if not available or time.monotonic() - last_read >= 600:
+            refresh()
         return GLib.SOURCE_REMOVE
 
+    def shown(_page):
+        minute()
+        refresh()
+
     def unmapped(_page):
-        nonlocal minute_source
+        nonlocal minute_source, draft_basis
         if minute_source:
             GLib.source_remove(minute_source)
             minute_source = 0
+        stop_probe()
+        draft_basis = None
 
     for field, row in switches.items():
         row.connect("notify::active", switch_changed, field)
-    for field, row in combos.items():
-        row.connect("notify::selected", choice_changed, field)
+    zone_picker.connect("notify::selected", zone_changed)
+    clock_action.connect("activate", clock_chosen)
+    clock_button.connect("notify::active", clock_opened)
+    entry.connect("changed", entry_changed)
     entry.connect("activate", set_time)
     button.connect("clicked", set_time)
-    page.connect("map", lambda _page: minute())
+    page.connect("map", shown)
     page.connect("unmap", unmapped)
     return page
