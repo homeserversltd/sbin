@@ -262,6 +262,17 @@ def _put(name, about, value, secrets, receipt):
         os.close(directory)
 
 
+def _safe_refusal_signal(signal, secrets, *, deed=False):
+    # A submitted value can itself be a diagnostic. Keep the required namespace
+    # and use a fixed fallback rather than replaying such a value in the tail.
+    for candidate in (signal, _PREFIX + "refused", _PREFIX + "error"):
+        if deed and len(candidate) > 40:  # The hyalos sender's signal limit.
+            continue
+        if all(secret in _PREFIX or secret not in candidate for secret in secrets):
+            return candidate
+    return _PREFIX + "error"
+
+
 def main(argv=None):
     started = time.monotonic()
     receipt = {"ok": False, "firstMissingSignal": "none", "mutationPerformed": False,
@@ -290,12 +301,16 @@ def main(argv=None):
     except (OSError, ValueError, RecursionError):
         receipt["firstMissingSignal"] = _PREFIX + "config-unavailable"
 
-    # Scrub only caller-derived metadata, never the required wire grammar.
+    # Scrub caller-derived metadata without changing the wire field names.
     for key in ("name", "about"):
         safe = _scrub(receipt[key], secrets)
         receipt[key] = None if isinstance(safe, str) and any(secret in safe for secret in secrets) else safe
+    signal = receipt["firstMissingSignal"]
+    if not receipt["ok"]:
+        receipt["firstMissingSignal"] = _safe_refusal_signal(signal, secrets)
+        signal = _safe_refusal_signal(receipt["firstMissingSignal"], secrets, deed=True)
     from agathodaimon._deed import send
-    send("keyman", "secret-put", receipt["ok"], signal=receipt["firstMissingSignal"],
+    send("keyman", "secret-put", receipt["ok"], signal=signal,
          duration_ms=int((time.monotonic() - started) * 1000))
     # The slash stream bypasses the stdout wrapper. Use the front door's own
     # receipt stamper here too so that both invocation forms answer identically.
