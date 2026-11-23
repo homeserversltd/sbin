@@ -22,9 +22,9 @@ _STANDING = {
 }
 _REFUSALS = {
     **_STANDING,
-    _AUTOMATIC_TIME_ON: "Automatic date and time is on. Turn it off to set the clock.",
-    "invalid:local_time:nonexistent": "The clocks change then and skip that time. Choose another time.",
-    "invalid:local_time:ambiguous": "The clocks change then and repeat that time. Choose another time.",
+    _AUTOMATIC_TIME_ON: "The clock wasn't set because automatic date and time was on.",
+    "invalid:local_time:nonexistent": "The clocks change then and skip that time.",
+    "invalid:local_time:ambiguous": "The clocks change then and repeat that time.",
 }
 _UNCONFIRMED = "Couldn't confirm this change."
 
@@ -227,7 +227,7 @@ def build_widget():
     offered: dict[str, dict[str, str]] = {}
     readonly: dict[str, str] = {}
     locked: dict[str, str] = {}
-    outcomes: dict[str, tuple[str, str]] = {}
+    outcomes: dict[str, tuple[str, str, bool]] = {}
     editable = set()
     zone = None
     zone_entries: tuple[tuple[str, str], ...] = ()
@@ -371,6 +371,8 @@ def build_widget():
             # use activatability and a dispatch gate, not widget sensitivity.
             focused_field = None
             visible_rows = {}
+            if not available:
+                read_status.set_visible(True)
             for field, row in controls.items():
                 twin = alternatives.get(field)
                 if has_focus(row) or (twin is not None and has_focus(twin[0])):
@@ -378,11 +380,17 @@ def build_widget():
                 enabled = field in editable
                 signal = blocked.get(field, "") if available else ""
                 message = _REFUSALS.get(signal, "This setting can't be changed on this device.") if signal else ""
-                message, signal = outcomes.get(field, (message, signal))
+                message, signal, _saved = outcomes.get(field, (message, signal, False))
                 if busy_field == field:
                     message, signal = "Saving…", ""
                 if field == "local_time":
                     visible = manual_time
+                    if not visible and has_focus(manual):
+                        target = visible_rows.get("ntp_enabled")
+                        if target is None and not available:
+                            target = read_status
+                        if target is not None:
+                            target.grab_focus()
                     entry.set_sensitive(enabled)
                     entry.set_editable(enabled and not busy)
                     button.set_sensitive(enabled)
@@ -403,8 +411,6 @@ def build_widget():
                     shown_text = resting.get(field, "") if available and not hide_sync else ""
                     paint_subtitle(visible_rows[field], shown_text, message, signal)
 
-            if not available:
-                read_status.set_visible(True)
             if focused_field is not None:
                 target = visible_rows.get(focused_field)
                 if target is None:
@@ -435,7 +441,11 @@ def build_widget():
         read_status.set_title("Couldn't read date and time settings.")
         if not available or not isinstance(actual, dict):
             values, offered, readonly, zone = {}, {}, {}, None
-            outcomes.clear()
+            # A minute retry can fail while a save's failure is still being
+            # read. Keep its timer, but don't show old successes as current.
+            for field, notice in tuple(outcomes.items()):
+                if notice[2]:
+                    del outcomes[field]
             return
         values, zone = dict(actual), found_zone
         mode = values.get("time_format")
@@ -490,7 +500,7 @@ def build_widget():
         background(_request, complete)
 
     def outcome(field, message, signal="", saved=False):
-        notice = (message, signal)
+        notice = (message, signal, saved)
         outcomes[field] = notice
 
         def dismiss():
