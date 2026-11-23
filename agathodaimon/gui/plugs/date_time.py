@@ -29,6 +29,8 @@ _REFUSALS = {
 }
 _REFUSED = "The change didn't finish."
 _UNCONFIRMED = "Couldn't confirm this change."
+_TIME_SET = "Time set."
+_HAND_NOTICE_SECONDS = 2 * 60
 
 
 class _Write(NamedTuple):
@@ -38,11 +40,17 @@ class _Write(NamedTuple):
     hand_hint: str | None
 
 
+class _HeldHandNotice(NamedTuple):
+    words: tuple[str, str, bool]
+    deadline: float
+    expiry_source: int
+
+
 # The shell builds a new widget on return. The write and probe deadline
 # belong to the plug on the GTK thread; only the mapped page listens.
 _pending: _Write | None = None
 _write_listener: Callable | None = None
-_unshown_hand_notice: tuple[str, str, bool] | None = None
+_unshown_hand_notice: _HeldHandNotice | None = None
 _sync_until = 0.0
 
 
@@ -175,12 +183,38 @@ def _write_notice(attempt, patch, values, zone, read_at):
             accepted = bool(values) and values.get(attempt.field) == attempt.value
     if not accepted:
         return (_UNCONFIRMED, "", False), lost_reply
-    message = "Time set." if attempt.field == "local_time" and values.get("ntp_enabled") is not False else "Saved"
+    message = _TIME_SET if attempt.field == "local_time" and values.get("ntp_enabled") is not False else "Saved"
     return (message, "", True), lost_reply
 
 
-def _finish_save(attempt, result):
-    global _pending, _sync_until, _unshown_hand_notice
+def _take_hand_notice(glib):
+    global _unshown_hand_notice
+    held, _unshown_hand_notice = _unshown_hand_notice, None
+    if held is None:
+        return None
+    glib.source_remove(held.expiry_source)
+    # The setting can move wall time itself. Also count time spent suspended.
+    if time.clock_gettime(time.CLOCK_BOOTTIME) < held.deadline:
+        return held.words
+    return None
+
+
+def _hold_hand_notice(glib, words):
+    global _unshown_hand_notice
+    _take_hand_notice(glib)
+    deadline = time.clock_gettime(time.CLOCK_BOOTTIME) + _HAND_NOTICE_SECONDS
+
+    def expire():
+        global _unshown_hand_notice
+        _unshown_hand_notice = None
+        return glib.SOURCE_REMOVE
+
+    source = glib.timeout_add(_HAND_NOTICE_SECONDS * 1000, expire)
+    _unshown_hand_notice = _HeldHandNotice(words, deadline, source)
+
+
+def _finish_save(glib, attempt, result):
+    global _pending, _sync_until
     if _pending is not attempt:
         return False
     _pending = None
@@ -203,9 +237,8 @@ def _finish_save(attempt, result):
     if _write_listener is not None:
         _write_listener(attempt.field, reply, notice, lost_reply, restart_probe)
     elif attempt.field == "local_time":
-        # No widget owns the row now. Carry just the one unshown notice,
-        # never the reply, until the hand row is visible on a later visit.
-        _unshown_hand_notice = notice
+        # Keep only the words. The next visit reads which row they concern.
+        _hold_hand_notice(glib, notice)
     return False
 
 
@@ -339,7 +372,6 @@ def build_widget():
             label.set_selectable(bool(signal))
 
     def paint(now=None):
-        global _unshown_hand_notice
         nonlocal painting, zone_entries, clock_entries, focus_return, dirty
         painting = True
         try:
@@ -361,9 +393,6 @@ def build_widget():
             manual_time = available and values.get("ntp_enabled") is False
             if not manual_time:
                 dirty = False
-            elif _unshown_hand_notice is not None and _write_listener is write_finished and page.get_mapped():
-                notice, _unshown_hand_notice = _unshown_hand_notice, None
-                outcome("local_time", *notice)
             blocked = {**readonly, **locked}
             named = {}
             resting = {}
@@ -562,6 +591,8 @@ def build_widget():
                     if isinstance(reasons, dict) else {})
         if values.get("ntp_enabled") is not False:
             outcomes.pop("local_time", None)
+        if _write_listener is write_finished and page.get_mapped():
+            hand_outcome()
 
     def background(work, complete):
         def run():
@@ -603,12 +634,7 @@ def build_widget():
         return True
 
     def outcome(field, message, signal="", saved=False):
-        global _unshown_hand_notice
         notice = (message, signal, saved)
-        if field == "local_time" and values.get("ntp_enabled") is not False:
-            # Start the usual lifetime only when the hand row can show it.
-            _unshown_hand_notice = notice
-            return
         outcomes[field] = notice
 
         def dismiss():
@@ -618,6 +644,19 @@ def build_widget():
             return GLib.SOURCE_REMOVE
 
         GLib.timeout_add(3000 if saved else 8000, dismiss)
+
+    def hand_outcome(notice=None):
+        enabled = values.get("ntp_enabled")
+        if not isinstance(enabled, bool):
+            if notice is not None:
+                _hold_hand_notice(GLib, notice)
+            return
+        if notice is None:
+            notice = _take_hand_notice(GLib)
+        if notice is not None:
+            message, signal, saved = notice
+            field = "ntp_enabled" if enabled else "local_time"
+            outcome(field, _TIME_SET if enabled and saved else message, signal, saved)
 
     def can_probe():
         return (page.get_mapped() and available and time.monotonic() < _sync_until
@@ -662,7 +701,10 @@ def build_widget():
             locked[field] = signal
         if saved and field == "local_time":
             dirty = False
-        outcome(field, *notice)
+        if field == "local_time":
+            hand_outcome(notice)
+        else:
+            outcome(field, *notice)
         if restart_probe:
             stop_probe()
         resume_probe()
@@ -693,7 +735,7 @@ def build_widget():
             reply = _request()
             return patch, reply, datetime.now(timezone.utc)
 
-        background(work, lambda result: _finish_save(attempt, result))
+        background(work, lambda result: _finish_save(GLib, attempt, result))
 
     def switch_changed(row, _param, field):
         if painting or (row.get_active() == values.get(field) and _pending is None):
