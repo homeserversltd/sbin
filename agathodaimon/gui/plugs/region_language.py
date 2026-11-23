@@ -31,17 +31,18 @@ def _english_name(table: str, code: str | None) -> str | None:
     return None
 
 
-def _paper_and_weekday(locale_id: str) -> tuple[str | None, str | None]:
+def _paper_and_weekday(locale_id: str) -> tuple[str | None, str | None] | None:
+    """Read the locale's formats, or return None if glibc could not load it."""
     try:
         result = subprocess.run(
             ["locale", "-k", "LC_PAPER", "LC_TIME"], env={**os.environ, "LC_ALL": locale_id},
             capture_output=True, text=True, errors="replace", timeout=3, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return None, None
+        return None
     # An ungenerated locale can print C defaults with a warning and exit zero.
     if result.returncode or result.stderr:
-        return None, None
+        return None
     facts = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
     paper = _PAPER.get((facts.get("width", ""), facts.get("height", "")))
     # glibc's first_weekday is one-based relative to the week origin.
@@ -68,11 +69,14 @@ def _current_values() -> tuple[str | None, ...]:
     match = _LOCALE.fullmatch(locale_id) if isinstance(locale_id, str) and len(locale_id) <= 128 else None
     if match is None:
         return None, None, measurement, None, None
+    formats = _paper_and_weekday(match[0])
+    if formats is None:
+        return None, None, measurement, None, None
+    paper, weekday = formats
     language = _english_name("639-3", match[1])
     region = _english_name("3166-1", match[2])
     if language and region:
         language = f"{language} ({region})"
-    paper, weekday = _paper_and_weekday(match[0])
     return language, region, measurement, paper, weekday
 
 
@@ -81,7 +85,7 @@ def build_widget():
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk
+    from gi.repository import Adw, GLib, Gtk, Pango
 
     page = _page(Adw, PLUG)
     group = _group(Adw, page, "")
@@ -96,9 +100,11 @@ def build_widget():
         if page.get_root() is not None:
             for row, value in zip(rows, values):
                 if value is not None:
-                    row.add_suffix(Gtk.Label(label=value, valign=Gtk.Align.CENTER,
-                                             wrap=True, width_chars=min(len(value), 32),
-                                             max_width_chars=32, justify=Gtk.Justification.RIGHT))
+                    row.add_suffix(Gtk.Label(
+                        label=value, valign=Gtk.Align.CENTER, xalign=1,
+                        justify=Gtk.Justification.RIGHT, wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR,
+                        natural_wrap_mode=Gtk.NaturalWrapMode.NONE,
+                    ))
         return GLib.SOURCE_REMOVE
 
     def read():
