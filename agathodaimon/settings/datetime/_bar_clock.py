@@ -19,8 +19,13 @@ FORMATS = {
     "12h": ("{:%I:%M %p} \uf017 ", "{:%A, %B %d, %Y (%I:%M %p)} "),
 }
 ABSENT = "unsupported:bar-clock-override-absent"
+_INVALID = "datetime-bar-clock-override-invalid"
 _INCLUDE = ".config/waybar/clock-override.json"
 _FILE_MAX = 1024 * 1024
+
+
+class _MalformedDocument(ValueError):
+    """The bounded regular file was read, but its contents could not be parsed."""
 
 
 def _open_unlinked(path: Path) -> int:
@@ -86,14 +91,21 @@ def _strip_jsonc(raw: bytes) -> bytearray:
 
 
 def _read(path: Path):
-    with os.fdopen(_open_unlinked(path), "rb") as stream:
-        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+    fd = _open_unlinked(path)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise ValueError("bar-clock-not-a-regular-file")
-        raw = stream.read(_FILE_MAX + 1)
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(_FILE_MAX + 1)
+    finally:
+        os.close(fd)
     if len(raw) > _FILE_MAX:
         raise ValueError("bar-clock-file-too-large")
-    raw.decode("utf-8")  # Comments, too, must be UTF-8.
-    return json.loads(_strip_jsonc(raw).decode("utf-8"))
+    try:
+        raw.decode("utf-8")  # Comments, too, must be UTF-8.
+        return json.loads(_strip_jsonc(raw).decode("utf-8"))
+    except (ValueError, RecursionError) as error:
+        raise _MalformedDocument(_INVALID) from error
 
 
 def includes_override(home: Path) -> bool:
@@ -121,8 +133,10 @@ def _match(document) -> str | None:
     return next((name for name, patterns in FORMATS.items() if pair == patterns), None)
 
 
-def read_format(home: Path) -> str | None:
-    if not includes_override(home):
+def read_format(home: Path, *, included: bool | None = None) -> str | None:
+    if included is None:
+        included = includes_override(home)
+    if not included:
         return None
     try:
         return _match(_read(home / _INCLUDE))
@@ -136,18 +150,22 @@ def _write_format(home: Path, name: str) -> dict:
     path = home / _INCLUDE
     try:
         if not stat.S_ISREG(path.lstat().st_mode):
-            raise ValueError("datetime-bar-clock-override-invalid")
+            raise ValueError(_INVALID)
         value = _read(path)
-    except FileNotFoundError:
-        value = {}
-    if not isinstance(value, dict) or not isinstance(value.get("clock", {}), dict):
-        raise ValueError("datetime-bar-clock-override-invalid")
+    except (FileNotFoundError, _MalformedDocument):
+        value = None
+    clock = value.get("clock") if isinstance(value, dict) else None
+    if not isinstance(clock, dict) or not all(isinstance(clock.get(key), str) for key in ("format", "format-alt")):
+        clock = {}
+        value = {"clock": clock}
     result = {"time_format": name, "waybar_reload": "unchanged", "commands": []}
     if _match(value) == name:
         return dict(result, changed=False)
     primary, alt = FORMATS[name]
-    value.setdefault("clock", {}).update({"format": primary, "format-alt": alt})
-    payload = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    clock.update({"format": primary, "format-alt": alt})
+    # Escaped lone surrogates can survive json.loads. Escape those code
+    # points again without escaping the clock glyph or other valid Unicode.
+    payload = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8", errors="backslashreplace")
 
     def reload_bar():
         argv = ["/usr/bin/pkill", "-USR2", "-u", str(os.geteuid()), "-x", "waybar"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -12,8 +13,16 @@ from importlib import import_module
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-# The private reader also runs from this file in a supervised process.
+_HOUSE_FETCH_SECONDS = 2.0
+
+# Only the private reader owns this timer. Use kernel termination, not a
+# Python handler that could wait on DNS, and don't inherit a blocked alarm.
 if __name__ == "__main__":
+    if sys.argv[1:] != ["--read-house-state"]:
+        sys.exit(2)
+    signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    signal.setitimer(signal.ITIMER_REAL, _HOUSE_FETCH_SECONDS)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from agathodaimon._envelope import appliance_runtime_path
@@ -24,7 +33,6 @@ from agathodaimon.settings.datetime import _bar_clock, _zone_mode
 _household = import_module("agathodaimon.settings.datetime.household-time._household")
 _LOCAL_TIME = "%Y-%m-%d %H:%M"
 _AUTOMATIC_TIME_ON = "unsupported:automatic-time-on"
-_HOUSE_FETCH_SECONDS = 2.0
 _HOUSE_BODY_MAX = 65536
 
 
@@ -51,12 +59,35 @@ def _last_sync():
         return None
 
 
-def read_values():
+def _observe_values():
     clock = _clock()
     server = _properties("show-timesync", "-p", "ServerName").get("ServerName") if clock["ntp_enabled"] else None
-    return {**clock, "automatic_timezone": _zone_mode.read_mode() == "follow",
-            "time_format": _bar_clock.read_format(_shared.home()),
-            "time_server": server or None, "last_sync": _last_sync()}
+    home = _shared.home()
+    included = _bar_clock.includes_override(home)
+    values = {**clock, "automatic_timezone": _zone_mode.read_mode() == "follow",
+              "time_format": _bar_clock.read_format(home, included=included),
+              "time_server": server or None, "last_sync": _last_sync()}
+    return values, included
+
+
+def read_values():
+    return _observe_values()[0]
+
+
+def read_settings():
+    values, included = _observe_values()
+    readonly = {} if included else {"time_format": _bar_clock.ABSENT}
+    try:
+        house_server = _zone_mode.keeps_house_time()
+    except ValueError:
+        # A missing profile must not suppress the existing clock observation.
+        house_server = False
+    if house_server:
+        protected = ["timezone", "local_time"]
+        # A switch that is off can still be turned on on a HomeServer.
+        protected.extend(field for field in ("ntp_enabled", "automatic_timezone") if values[field])
+        readonly.update(dict.fromkeys(protected, _zone_mode.HOUSE_TIME_REFUSAL))
+    return values, readonly
 
 
 def _read_house_state() -> bytes:
@@ -64,11 +95,11 @@ def _read_house_state() -> bytes:
     connection = HTTPConnection("home.arpa", 3014)
     try:
         connection.request("GET", "/api/v1/time/state", headers={"Accept": "application/json"})
-        response = connection.getresponse()
-        if response.status != 200:
-            return b""
-        body = response.read(_HOUSE_BODY_MAX + 1)
-        return body if len(body) <= _HOUSE_BODY_MAX else b""
+        with connection.getresponse() as response:
+            if response.status != 200:
+                return b""
+            body = response.read(_HOUSE_BODY_MAX + 1)
+            return body if len(body) <= _HOUSE_BODY_MAX else b""
     finally:
         connection.close()
 
@@ -257,8 +288,6 @@ def set_values(changes):
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] != ["--read-house-state"]:
-        sys.exit(2)
     try:
         sys.stdout.buffer.write(_read_house_state())
     except (OSError, HTTPException):
