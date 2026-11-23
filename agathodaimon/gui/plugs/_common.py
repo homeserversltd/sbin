@@ -10,6 +10,7 @@ import threading
 import urllib.error
 import urllib.request
 import uuid
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any
 
@@ -103,31 +104,35 @@ def _staff_envelope(path: str, payload: dict[str, Any] | None = None) -> dict[st
 
 def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None,
              *, headers: dict[str, str] | None = None) -> dict[str, Any]:
-    data = json.dumps(_staff_envelope(path, payload)).encode('utf-8')
-    request_headers = {'Content-Type': 'application/json', **(headers or {})}
-    request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=request_headers, method=method)
-
+    refused = None
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read(256 * 1024)
-    except urllib.error.HTTPError as error:
-        raw = error.read(256 * 1024)
+        data = json.dumps(_staff_envelope(path, payload)).encode('utf-8')
+        request_headers = {'Content-Type': 'application/json', **(headers or {})}
+        request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=request_headers, method=method)
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                raw = response.read(256 * 1024)
+        except urllib.error.HTTPError as error:
+            refused = error.code
+            with error:
+                raw = error.read(256 * 1024)
         try:
             value = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise RuntimeError(f'Caduceus refused with HTTP {error.code}') from error
-        if isinstance(value, dict):
-            return value
-        raise RuntimeError(f'Caduceus refused with HTTP {error.code}') from error
-    except (OSError, urllib.error.URLError) as error:
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            message = (f'Caduceus refused with HTTP {refused}' if refused is not None
+                       else 'Caduceus returned an unreadable receipt')
+            raise RuntimeError(message) from error
+        if not isinstance(value, dict):
+            if refused is not None:
+                raise RuntimeError(f'Caduceus refused with HTTP {refused}')
+            raise RuntimeError('Caduceus returned an invalid receipt')
+        return value
+    except (OSError, HTTPException) as error:
         raise RuntimeError('Caduceus is unavailable') from error
-    try:
-        value = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise RuntimeError('Caduceus returned an unreadable receipt') from error
-    if not isinstance(value, dict):
-        raise RuntimeError('Caduceus returned an invalid receipt')
-    return value
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError('Caduceus request failed') from error
 
 
 def _direct_request(path: str, method: str = "GET", payload: dict[str, Any] | None = None,
@@ -179,11 +184,88 @@ def _number(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
+def _background(GLib: Any, work: Any, finish: Any) -> None:
+    """Give the GTK thread one completion even when the worker cannot start."""
+    def run() -> None:
+        result, signal = None, "settings-request-failed"
+        try:
+            result, signal = work(), None
+        except RuntimeError as error:
+            signal = str(error) or signal
+        except Exception:
+            pass
+        finally:
+            GLib.idle_add(finish, result, signal)
+
+    try:
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        # Queue this too: a slider records its in-flight state after dispatch.
+        GLib.idle_add(finish, None, "settings-worker-start-failed")
+
+
+def _inside(widget: Any, ancestor: Any) -> bool:
+    return widget is not None and (widget == ancestor or widget.is_ancestor(ancestor))
+
+
+def _focus(widget: Any) -> Any:
+    root = widget.get_root()
+    return root.get_focus() if root is not None else None
+
+
+def _child_of_type(widget: Any, kind: Any) -> Any:
+    child = widget.get_first_child()
+    while child is not None:
+        found = child if isinstance(child, kind) else _child_of_type(child, kind)
+        if found is not None:
+            return found
+        child = child.get_next_sibling()
+    return None
+
+
+def _combo_search(Gtk: Any, Gdk: Any, row: Any) -> None:
+    if not hasattr(row, "set_enable_search"):
+        return
+    row.set_expression(Gtk.PropertyExpression.new(Gtk.StringObject.__gtype__, None, "string"))
+    row.set_search_match_mode(Gtk.StringFilterMatchMode.SUBSTRING)
+    # Use the stock list, its selection and its activation path. GTK's string
+    # filter ignores case by default; Adwaita builds it from the expression.
+    popover = _child_of_type(row, Gtk.Popover)
+    if popover is None:
+        return
+    search = _child_of_type(popover, Gtk.SearchEntry)
+    results = _child_of_type(popover, Gtk.ListView)
+    if search is None or results is None:
+        return
+
+    def enter(entry: Any) -> None:
+        entry.emit("search-changed")  # Apply even the last, still debounced key.
+        selection = results.get_model()
+        if selection is not None and selection.get_selected_item() is not None:
+            results.emit("activate", selection.get_selected())
+
+    def escape(_keys: Any, key: int, _code: int, _mods: Any) -> bool:
+        if key != Gdk.KEY_Escape or not row.get_enable_search():
+            return False
+        if search.get_text():
+            search.set_text("")
+            search.emit("search-changed")
+            search.grab_focus()
+        else:
+            popover.popdown()
+        return True
+
+    keys = Gtk.EventControllerKey.new()
+    keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    keys.connect("key-pressed", escape)
+    popover.add_controller(keys)
+    popover.connect("map", lambda _popover: search.grab_focus() if row.get_enable_search() else None)
+    search.connect("activate", enter)
+
+
 def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
                     resting_sentence: str = "", refusal_sentences: dict[str, str] | None = None) -> None:
     """Toggle a native app and show the outcome on the row that asked."""
-    from http.client import HTTPException
-
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
@@ -208,7 +290,7 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
 
     subtitle_label = find_subtitle(row)
     refusal_sentences = refusal_sentences or {}
-    running = False
+    running = busy = False
     outcome_timer = 0
 
     def set_message(message: str, signal: str = "") -> None:
@@ -220,21 +302,17 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
         if subtitle_label is not None:
             subtitle_label.set_selectable(bool(signal))
 
-    def checked(message: str, enabled: bool) -> bool:
+    def checked(receipt: dict[str, Any] | None, error: str | None) -> bool:
+        routes = receipt.get("routes") if receipt is not None else None
+        enabled = isinstance(routes, list) and "/api/v1/face/app" in routes
+        if error is not None:
+            message = "Couldn't check whether this app can be opened."
+        else:
+            message = resting_sentence if enabled else "This app can't be opened from Settings on this device."
         set_message(message)
         row.set_sensitive(enabled)
         button.set_sensitive(enabled)
         return False
-
-    def discover() -> None:
-        try:
-            doors = _request("/api/v1/doors")
-            routes = doors.get("routes")
-            present = isinstance(routes, list) and "/api/v1/face/app" in routes
-            message = resting_sentence if present else "This app can't be opened from Settings on this device."
-            GLib.idle_add(checked, message, present)
-        except (RuntimeError, OSError, HTTPException):
-            GLib.idle_add(checked, "Couldn't check whether this app can be opened.", False)
 
     def clear_outcome() -> bool:
         nonlocal outcome_timer
@@ -242,8 +320,9 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
         set_message(resting_sentence)
         return False
 
-    def finished(receipt: dict[str, Any] | None) -> bool:
-        nonlocal running, outcome_timer
+    def finished(receipt: dict[str, Any] | None, _error: str | None) -> bool:
+        nonlocal running, busy, outcome_timer
+        busy = False
         if receipt is not None and not _receipt_ok(receipt):
             signal = _refusal_signal(receipt)
             set_message(refusal_sentences.get(signal, "Couldn't open or close this app."), signal)
@@ -253,38 +332,25 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
             outcome_timer = GLib.timeout_add(3000, clear_outcome)
         else:
             set_message("Couldn't tell whether this app opened or closed.")
-        button.set_sensitive(True)
         return False
 
-    def toggle() -> None:
-        try:
-            data = json.dumps({"id": program, "action": "toggle"}).encode("utf-8")
-            request = urllib.request.Request(CADUCEUS_URL + "/api/v1/face/app", data=data,
-                                             headers={"Content-Type": "application/json"}, method="POST")
-            try:
-                with urllib.request.urlopen(request, timeout=30) as response:
-                    raw = response.read(256 * 1024)
-            except urllib.error.HTTPError as error:
-                raw = error.read(256 * 1024)
-            receipt = json.loads(raw)
-        except (OSError, ValueError, HTTPException):
-            receipt = None
-        GLib.idle_add(finished, receipt if isinstance(receipt, dict) else None)
+    def toggle() -> dict[str, Any]:
+        return _direct_request("/api/v1/face/app", "POST", {"id": program, "action": "toggle"})
 
     def on_click(_button: Any) -> None:
-        nonlocal outcome_timer
-        if not button.is_sensitive():
+        nonlocal busy, outcome_timer
+        if busy or not button.is_sensitive():
             return
         if outcome_timer:
             GLib.source_remove(outcome_timer)
             outcome_timer = 0
-        button.set_sensitive(False)
+        busy = True
         # There is no read of the app's running state before the first press.
         set_message("Closing…" if running else "Opening…")
-        threading.Thread(target=toggle, daemon=True).start()
+        _background(GLib, toggle, finished)
 
     button.connect("clicked", on_click)
-    threading.Thread(target=discover, daemon=True).start()
+    _background(GLib, lambda: _request("/api/v1/doors"), checked)
 
 
 _SWAY_ONLY_SIGNALS = {"sway-session-unavailable", "unsupported:sway-session-unavailable"}
@@ -485,7 +551,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     group = _group(Adw, page, group_title)
     path = f"/api/v1/settings/{family}"
     discovery_path = "/api/v1/doors"
-    state: dict[str, Any] = {"hydrating": False, "hydrated": False, "read_generation": 0, "busy": set(), "values": {}, "status": {}}
+    state: dict[str, Any] = {"hydrating": False, "hydrated": False, "read_generation": 0, "values": {}, "status": {}}
     rows: dict[str, Any] = {}
     status_rows: dict[str, Any] = {}
     unavailable_rows: dict[str, Any] = {}
@@ -498,10 +564,13 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     sliders: dict[str, _LiveSlider] = {}
     action_fields: set[str] = set()
     choices: dict[str, dict[str, Any]] = {}
+    pending: dict[str, Any] = {}
+    awaiting_read: set[str] = set()
+    read_focus_field: str | None = None
     numeric_choices = {spec["field"] for spec in specs
                        if spec.get("kind") == "choice" and spec.get("number") is True}
 
-    read_error = Adw.ActionRow(title="Couldn't read these settings")
+    read_error = Adw.ActionRow(title="Couldn't read these settings", focusable=True, selectable=False)
     read_error.set_visible(False)
     group.add(read_error)
 
@@ -517,7 +586,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     def show_status(field: str, message: str = "", signal: str = "") -> None:
         status = status_rows[field]
         status.set_title(message)
-        status.set_subtitle(signal)
+        status.set_subtitle(GLib.markup_escape_text(signal))
         status.set_visible(bool(message))
         if signal:
             selectable_subtitle(status)
@@ -527,12 +596,34 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         if signal in _SWAY_ONLY_SIGNALS:
             show_status(field, _SWAY_ONLY_REASON)
         else:
-            show_status(field, "Can't be changed from Settings yet", GLib.markup_escape_text(signal))
+            show_status(field, "Can't be changed from Settings yet", signal)
 
     def set_control_sensitive(field: str, enabled: bool) -> None:
         # Keep a slider's info button available when its value is read-only.
         control = sliders[field].scale if field in sliders else rows[field]
         control.set_sensitive(enabled)
+
+    def lock_editing(field: str, locked: bool) -> None:
+        row = rows[field]
+        # Lock the action, not the focus widget. Buttons use the pending
+        # dispatch guard; sliders have their own in-flight coalescer.
+        if isinstance(row, Adw.ComboRow):
+            model = row.get_model()
+            row.set_activatable(not locked and model is not None and model.get_n_items() > 1)
+        elif isinstance(row, Adw.SwitchRow):
+            row.set_activatable(not locked)
+        elif isinstance(row, Gtk.Editable):
+            row.set_editable(not locked)
+
+    def field_at(focus: Any) -> str | None:
+        return next((field for field, row in rows.items()
+                     if any(_inside(focus, candidate) for candidate in (row, unavailable_rows[field], status_rows[field]))), None)
+
+    def focus_field(field: str) -> bool:
+        for candidate in (unavailable_rows[field], rows[field], status_rows[field]):
+            if candidate.get_mapped() and candidate.is_sensitive() and candidate.grab_focus():
+                return True
+        return False
 
     def clear_saved(field: str, generation: int) -> bool:
         if status_generation.get(field) == generation and state["status"].get(field) == "Saved":
@@ -616,6 +707,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             values = [item["value"] for item in options] if typed else [str(item) for item in options]
             labels = [item["label"] for item in options] if typed else values
             row = Adw.ComboRow(title=title, model=Gtk.StringList.new(labels))
+            _combo_search(Gtk, Gdk, row)
+            if hasattr(row, "set_enable_search"):
+                row.set_enable_search(len(values) > 20)
             aliases = {str(key): str(value) for key, value in spec.get("aliases", {}).items()}
             def get_combo(item: Any = row, choices: list[Any] = values) -> Any:
                 index = item.get_selected()
@@ -627,7 +721,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 if allow_unknown and selected not in choices:
                     choices.insert(0, selected)
                     names_list.insert(0, str(selected))
-                item.set_model(Gtk.StringList.new(names_list))
+                model = item.get_model()
+                if model is None or [model.get_string(i) for i in range(model.get_n_items())] != names_list:
+                    item.set_model(Gtk.StringList.new(names_list))
                 item.set_selected(choices.index(selected) if selected in choices else 0)
             getters[field] = get_combo
             setters[field] = set_combo
@@ -645,18 +741,19 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         if kind == "choice":
             combo = Adw.ComboRow(title=title)
             add_info(combo, spec.get("info"))
+            _combo_search(Gtk, Gdk, combo)
             combo.set_visible(False)
             combo.set_sensitive(False)
             group.add(combo)
             choices[field] = {"entry": row, "combo": combo, "values": [],
                               "empty_label": spec.get("absent", "No selection")}
-        status_row = Adw.ActionRow()
+        status_row = Adw.ActionRow(focusable=True, activatable=False, selectable=False)
         status_row.set_visible(False)
         status_rows[field] = status_row
         group.add(status_row)
-        unavailable = Adw.ActionRow(title=title, subtitle=absent_reasons[field])
+        unavailable = Adw.ActionRow(title=title, subtitle=absent_reasons[field],
+                                    focusable=True, activatable=False, selectable=False)
         add_info(unavailable, spec.get("info"))
-        unavailable.set_sensitive(bool(isinstance(spec.get("info"), str) and spec["info"].strip()))
         unavailable.set_visible(False)
         unavailable_rows[field] = unavailable
         group.add(unavailable)
@@ -669,8 +766,19 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             unavailable.set_visible(True)
 
         def on_changed(_row: Any, _param: Any = None, selected: str = field) -> None:
-            if (not state["hydrated"] or state["hydrating"] or selected in state["busy"]
-                    or selected in static_signals or selected in readonly_signals):
+            if not state["hydrated"] or state["hydrating"]:
+                return
+            if selected in pending:
+                # A direct switch/pick change can bypass row activation (for
+                # example by touching its suffix). Keep the visible first pick.
+                if selected not in action_fields and getters[selected]() != pending[selected]:
+                    state["hydrating"] = True
+                    try:
+                        setters[selected](pending[selected])
+                    finally:
+                        state["hydrating"] = False
+                return
+            if selected in static_signals or selected in readonly_signals:
                 return
             if selected in sliders:
                 slider = sliders[selected]
@@ -685,7 +793,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 slider.moved()
                 return
             previous = state["values"].get(selected)
-            value = getters[selected]()
+            pick = value = getters[selected]()
             if selected in choices and rows[selected] is choices[selected]["combo"] and value is None:
                 return
             if value == previous and selected not in action_fields:
@@ -703,25 +811,34 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 value = int(number) if number.is_integer() else number
             status_generation[selected] += 1
             state["status"].pop(selected, None)
-            show_status(selected)
-            state["busy"].add(selected)
-            rows[selected].set_sensitive(False)
+            row = rows[selected]
+            if isinstance(row, Adw.ComboRow):
+                focus = _focus(row)
+                # The picker's popover may have unmapped while GtkRoot
+                # still reports one of its children as the focus widget.
+                if focus is None or (_inside(focus, row) and not focus.get_mapped()):
+                    row.grab_focus()
+            pending[selected] = pick
+            lock_editing(selected, True)
             show_status(selected, "Saving…")
-            threading.Thread(target=mutate, args=(selected, value, previous), daemon=True).start()
+            start_mutation(selected, value, previous)
 
         (event_source if event_source is not None else row).connect(changed_signal, on_changed)
         if kind == "choice":
             combo.connect("notify::selected", on_changed)
         if kind in ("entry", "choice"):
             def on_entry_changed(_row: Any, selected: str = field) -> None:
-                if (state["hydrated"] and not state["hydrating"] and selected not in state["busy"]
+                if (state["hydrated"] and not state["hydrating"] and selected not in pending
                         and selected not in readonly_signals):
                     status_generation[selected] += 1
                     state["status"].pop(selected, None)
                     show_status(selected)
             row.connect("changed", on_entry_changed)
 
-    def apply_values(values: dict[str, Any], options: dict[str, Any], readonly: dict[str, Any], message_field: str | None) -> None:
+    def apply_values(values: dict[str, Any], options: dict[str, Any], readonly: dict[str, Any],
+                     saved: set[str], message_field: str | None) -> None:
+        focus = _focus(group)
+        field_with_focus = field_at(focus)
         previously_readonly = set(readonly_signals)
         readonly_signals.clear()
         readonly_signals.update((field, signal) for field, signal in readonly.items()
@@ -729,7 +846,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         state["hydrating"] = True
         try:
             for field, choice in choices.items():
-                if field in state["busy"] and field not in readonly_signals:
+                if field in pending:
                     continue
                 raw = options.get(field)
                 offered = [item for item in raw if isinstance(item, dict) and "value" in item and isinstance(item.get("label"), str)] if isinstance(raw, list) else []
@@ -745,7 +862,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                         offered_values.insert(0, value)
                         labels.insert(0, str(value))
                     choice["values"] = offered_values
-                    combo.set_model(Gtk.StringList.new(labels))
+                    if labels != choice.get("labels"):
+                        combo.set_model(Gtk.StringList.new(labels))
+                        choice["labels"] = labels
                     if hasattr(combo, "set_enable_search"):
                         combo.set_enable_search(len(offered) > 20)
                     entry.set_visible(False)
@@ -758,6 +877,12 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     getters[field] = entry.get_text
                     setters[field] = lambda value, item=entry: item.set_text("" if value is None else str(value))
             for field, row in rows.items():
+                if field in pending:
+                    row.set_visible(True)
+                    unavailable_rows[field].set_visible(False)
+                    set_control_sensitive(field, True)
+                    show_status(field, "Saving…")
+                    continue
                 slider = sliders.get(field)
                 readonly_signal = readonly_signals.get(field)
                 value = values.get(field)
@@ -782,7 +907,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     show_status(field)
                 unavailable_rows[field].set_visible(show_unavailable)
                 previous = state["values"].get(field)
-                if available and not defer_value and (field not in state["busy"] or readonly_signal):
+                if available and not defer_value:
                     setters[field](value)
                     state["values"][field] = value if slider else getters[field]()
                 if readonly_signal:
@@ -801,104 +926,114 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 elif not available:
                     set_control_sensitive(field, False)
                 else:
-                    set_control_sensitive(field, field not in state["busy"])
+                    set_control_sensitive(field, True)
                     if field in previously_readonly:
                         show_status(field)
-                    if field == message_field:
+                    if field in saved or field == message_field:
                         if slider and slider.wire_value(state["values"][field]) != previous:
                             show_status(field, "Not saved", "settings-readback-mismatch")
                         else:
-                            if slider:
-                                state["status"][field] = "Saved"
-                            show_status(field, state["status"].get(field, "Saved"))
+                            state["status"][field] = "Saved"
+                            show_status(field, "Saved")
                             GLib.timeout_add_seconds(3, clear_saved, field, status_generation[field])
         finally:
             state["hydrating"] = False
+        if field_with_focus is not None and (not focus.get_mapped() or not focus.is_sensitive()):
+            focus_field(field_with_focus)
 
-    def finish_read(generation: int, receipt: dict[str, Any] | None, error: str | None, message_field: str | None = None) -> bool:
-        if generation != state["read_generation"]:
-            return False
-        if error is not None or receipt is None or not _receipt_ok(receipt) or not isinstance(receipt.get("values"), dict):
-            signal = error or (_refusal_signal(receipt) if receipt is not None else "") or "Settings read refused"
-            for field, row in rows.items():
-                row.set_visible(False)
-                show_status(field)
-                unavailable_rows[field].set_visible(False)
-                set_control_sensitive(field, False)
-            read_error.set_subtitle(signal)
-            read_error.set_visible(True)
-            selectable_subtitle(read_error)
-            return False
-        read_error.set_visible(False)
-        state["hydrated"] = True
-        options = receipt.get("options")
-        readonly = receipt.get("readonly")
-        apply_values(receipt["values"], options if isinstance(options, dict) else {},
-                     readonly if isinstance(readonly, dict) else {}, message_field)
+    def fail_read(signal: str) -> bool:
+        nonlocal read_focus_field
+        focus = _focus(group)
+        state["hydrated"] = False
+        read_error.set_subtitle(GLib.markup_escape_text(signal))
+        read_error.set_activatable(True)
+        read_error.set_visible(True)
+        selectable_subtitle(read_error)
+        if _inside(focus, group) and not _inside(focus, read_error):
+            read_focus_field = field_at(focus)
+            read_error.grab_focus()
+        for field, row in rows.items():
+            row.set_visible(False)
+            show_status(field)
+            unavailable_rows[field].set_visible(False)
+            set_control_sensitive(field, False)
         return False
 
-    def read_door(generation: int, message_field: str | None = None) -> None:
+    def finish_read(generation: int, receipt: dict[str, Any] | None, error: str | None, message_field: str | None = None) -> bool:
+        nonlocal read_focus_field
+        if generation != state["read_generation"]:
+            return False
+        # One fresh GET can follow multiple successful PATCHes. A superseded
+        # GET leaves their rows pending for the newer read's completion.
+        saved = awaiting_read.copy()
+        awaiting_read.clear()
+        for field in saved:
+            pending.pop(field)
+            lock_editing(field, False)
+        if error is not None or receipt is None or not _receipt_ok(receipt) or not isinstance(receipt.get("values"), dict):
+            return fail_read(error or (_refusal_signal(receipt) if receipt is not None else "") or "Settings read refused")
+        options = receipt.get("options")
+        readonly = receipt.get("readonly")
         try:
-            if required_route is not None:
+            apply_values(receipt["values"], options if isinstance(options, dict) else {},
+                         readonly if isinstance(readonly, dict) else {}, saved, message_field)
+        except Exception:
+            return fail_read("Caduceus returned an invalid receipt")
+        state["hydrated"] = True
+        if _inside(_focus(group), read_error):
+            if read_focus_field is None or not focus_field(read_focus_field):
+                any(focus_field(field) for field in rows)
+        read_focus_field = None
+        read_error.set_visible(False)
+        return False
+
+    def read_door() -> dict[str, Any]:
+        if required_route is not None:
+            try:
                 doors = _request(discovery_path)
-                routes = doors.get("routes", []) if isinstance(doors, dict) else []
-                admitted = isinstance(routes, list) and required_route in routes
-                if not admitted:
-                    raise RuntimeError(f"missing door: {required_route}")
-            receipt = _request(path)
-            GLib.idle_add(finish_read, generation, receipt, None, message_field)
-        except RuntimeError as error:
-            message = str(error)
-            if required_route is not None and not message.startswith("missing door:"):
-                message = f"missing door: {required_route} (discovery failed: {message})"
-            GLib.idle_add(finish_read, generation, None, message, message_field)
+            except RuntimeError as error:
+                raise RuntimeError(f"missing door: {required_route} (discovery failed: {error})") from error
+            routes = doors.get("routes")
+            if not isinstance(routes, list) or required_route not in routes:
+                raise RuntimeError(f"missing door: {required_route}")
+        return _request(path)
 
     def refresh(message_field: str | None = None) -> bool:
         state["read_generation"] += 1
         generation = state["read_generation"]
-        threading.Thread(target=read_door, args=(generation, message_field), daemon=True).start()
+        read_error.set_activatable(False)
+        _background(GLib, read_door, lambda receipt, error: finish_read(generation, receipt, error, message_field))
         return False
 
     def send_slider(field: str, value: int | float) -> bool:
         previous = state["values"].get(field)
         if field in static_signals or field in readonly_signals or value == previous:
             return False
-        threading.Thread(target=mutate, args=(field, value, previous), daemon=True).start()
+        start_mutation(field, value, previous)
         return True
 
     def finish_mutation(field: str, value: Any, previous: Any, receipt: dict[str, Any] | None, error: str | None) -> bool:
-        state["busy"].discard(field)
         slider = sliders.get(field)
-        if field in readonly_signals:
-            if slider:
-                slider.complete(False)
+        if slider and field in readonly_signals:
+            slider.complete(False)
             refresh()
             return False
-        if error is not None:
-            if slider:
-                slider.complete(False)
-            state["hydrating"] = True
-            try:
-                setters[field](previous)
-                show_status(field, "Not saved", error)
-                set_control_sensitive(field, True)
-            finally:
-                state["hydrating"] = False
-            return False
-        assert receipt is not None
-        if _receipt_ok(receipt):
+        if receipt is not None and _receipt_ok(receipt):
             if slider:
                 state["values"][field] = value
                 slider.complete(True)
                 return False
-            state["status"][field] = "Saved"
-            refresh(field)
+            awaiting_read.add(field)
+            refresh()
             return False
-        signal = _refusal_signal(receipt) or "Setting refused"
-        staff_signal = _signal(receipt)
+        signal = error or (_refusal_signal(receipt) if receipt is not None else "") or "Setting refused"
+        staff_signal = _signal(receipt) if receipt is not None else ""
         sway_only = signal in _SWAY_ONLY_SIGNALS or staff_signal in _SWAY_ONLY_SIGNALS
         if slider:
             slider.complete(False)
+        else:
+            pending.pop(field)
+            lock_editing(field, False)
         state["hydrating"] = True
         try:
             setters[field](previous)
@@ -911,17 +1046,18 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     static_signals[field] = staff_signal
             if slider and field in static_signals:
                 slider.dragging = False
-            set_control_sensitive(field, field not in static_signals)
+            enabled = state["hydrated"] and field not in static_signals and field not in readonly_signals
+            if not enabled and _inside(_focus(group), rows[field]) and status_rows[field].get_mapped():
+                status_rows[field].grab_focus()
+            set_control_sensitive(field, enabled)
         finally:
             state["hydrating"] = False
         return False
 
-    def mutate(field: str, value: Any, previous: Any) -> None:
-        try:
-            receipt = _request(path, mutation_method, {field: value})
-            GLib.idle_add(finish_mutation, field, value, previous, receipt, None)
-        except RuntimeError as error:
-            GLib.idle_add(finish_mutation, field, value, previous, None, str(error))
+    def start_mutation(field: str, value: Any, previous: Any) -> None:
+        _background(GLib, lambda: _request(path, mutation_method, {field: value}),
+                    lambda receipt, error: finish_mutation(field, value, previous, receipt, error))
 
+    read_error.connect("activated", lambda _row: refresh())
     refresh()
     return page
