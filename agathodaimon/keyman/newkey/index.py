@@ -370,16 +370,27 @@ def _receipt_output(output: bytearray) -> bool:
         value = json.loads(output)
     except (UnicodeError, json.JSONDecodeError, RecursionError, TypeError):
         return False
-    return (
-        isinstance(value, dict)
-        and isinstance(value.get("schema"), str)
-        and isinstance(value.get("ok"), bool)
-        and isinstance(value.get("firstMissingSignal"), str)
-        and (
-            value.get("operation") == "newkey"
-            or value.get("schema") == "caduceus.staff.receipt.v1"
-        )
-    )
+    if not isinstance(value, dict):
+        return False
+    stop, schema = value.get("stop"), value.get("schema")
+    if not (isinstance(stop, dict) and stop.get("noun") == "keyman"
+            and stop.get("verb") == "newkey" and isinstance(schema, str)
+            and isinstance(value.get("ok"), bool)
+            and isinstance(value.get("firstMissingSignal"), str)):
+        return False
+
+    from agathodaimon._nidus.path import appliance_runtime_path
+    from agathodaimon._seat import read_seats
+
+    try:
+        entry = read_seats(appliance_runtime_path("seats")).get(schema)
+    except ValueError:
+        return False
+    if entry is None or entry["state"] != "loaded":
+        return False
+    # The shared stop receipt declares stop; the arpeggio aggregate does not.
+    fields = entry["seat"].get("fields")
+    return isinstance(fields, dict) and "stop" in fields
 
 
 def _root_reexec(args: list[str]) -> tuple[bytearray, int] | None:

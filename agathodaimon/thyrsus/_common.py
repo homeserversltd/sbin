@@ -24,6 +24,7 @@ from typing import Any
 from urllib.parse import quote
 import uuid
 
+from agathodaimon import _envelope
 from agathodaimon._envelope import (
     EnvelopeError, Request, appliance_runtime_path, attach, read,
 )
@@ -645,12 +646,21 @@ def _set_token(raw, payload, profile, receipt):
 
 def _primitive_request(verb, payload, original=None):
     value = dict(original or {})
-    for key, default in (("schema", "caduceus.staff.v1"), ("intent_id", "thyrsus-" + uuid.uuid4().hex),
-                         ("transition", "thyrsus/" + verb), ("version", "1.0.0"), ("timestamp", now_iso())):
-        value.setdefault(key, default)
+    defaults = {
+        "schema": _envelope.SCHEMA,
+        "intent_id": "thyrsus-" + uuid.uuid4().hex,
+        "transition": "thyrsus/" + verb,
+        "version": "1.0.0",
+        "timestamp": now_iso(),
+    }
+    # An absent seat imposes no kernel requirements; keep the old primitive request shape.
+    for key in _envelope._envelope_kernel() or defaults:
+        if key not in defaults:
+            raise Refusal(f"thyrsus-kernel-field-unknown:{key}")
+        value.setdefault(key, defaults[key])
     value["payload"] = payload
-    return Request(value, True, payload, json.dumps(value), value["intent_id"],
-                   value["transition"], value["version"], value["timestamp"])
+    return Request(value, True, payload, json.dumps(value), value.get("intent_id"),
+                   value.get("transition"), value.get("version"), value.get("timestamp"))
 
 
 def _input(verb, arguments):
