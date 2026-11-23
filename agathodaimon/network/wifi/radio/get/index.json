@@ -1,6 +1,5 @@
 {
   "children": [],
-  "envelope": {"stdin": "stream"},
   "mutation_allowed": false,
   "sclerite": {
     "name": "nmcli",

@@ -32,8 +32,6 @@ def _receipt(signal="none", *, observed=None, could_change_to=None, attempt=None
              final_receipt=None, outputs_after=None, mutation_performed=False):
     ok = signal == "none"
     return {
-        "schema": "caduceus.staff.receipt.v1",
-        "stop": {"noun": "screen", "verb": "follow"},
         "ok": ok,
         "firstMissingSignal": signal,
         "mutationPerformed": mutation_performed,
