@@ -35,12 +35,14 @@ class _Write(NamedTuple):
     field: str
     value: Any
     label: str
+    hand_hint: str | None
 
 
 # The shell builds a new widget on return. The write and probe deadline
 # belong to the plug on the GTK thread; only the mapped page listens.
 _pending: _Write | None = None
 _write_listener: Callable | None = None
+_unshown_hand_notice: tuple[str, str, bool] | None = None
 _sync_until = 0.0
 
 
@@ -82,33 +84,15 @@ def _read_values(reply):
     if isinstance(actual, dict):
         zone = _zone(actual.get("timezone"))
         if zone is not None or isinstance(actual.get("ntp_enabled"), bool):
-            return actual, zone
+            values = dict(actual)
+            mode = values.get("time_format")
+            if mode is not None and (not isinstance(mode, str) or mode not in _CLOCK_LABELS):
+                values.pop("time_format", None)
+            for field in ("automatic_timezone", "ntp_enabled", "ntp_synchronized"):
+                if not isinstance(values.get(field), bool):
+                    values.pop(field, None)
+            return values, zone
     return {}, None
-
-
-def _finish_save(attempt, result):
-    global _pending, _sync_until
-    if _pending is not attempt:
-        return False
-    _pending = None
-    patch, reply, read_at = result or ({}, {}, datetime.now(timezone.utc))
-    restart_probe = False
-    if attempt.field == "ntp_enabled":
-        actual, _zone_found = _read_values(reply)
-        enabled = actual.get("ntp_enabled")
-        synced = actual.get("ntp_synchronized")
-        accepted = _common._receipt_ok(patch)
-        # An observed enable can need polling even if the write was refused.
-        # An accepted enable can still resume probing once a failed read recovers.
-        if (attempt.value is True and enabled is not False and synced is not True
-                and (enabled is True or accepted)):
-            _sync_until = time.monotonic() + 60
-            restart_probe = True
-        elif accepted or enabled is False or synced is True:
-            _sync_until = 0.0
-    if _write_listener is not None:
-        _write_listener(attempt, patch, reply, read_at, restart_probe)
-    return False
 
 
 def _clock_text(local, mode):
@@ -172,6 +156,57 @@ def _refusal(receipt):
     # The staff's reason is the refusal to show even when the door adds
     # a familiar signal. A door-only refusal still has its own reason.
     return _common._signal(receipt) or _common._refusal_signal(receipt)
+
+
+def _write_notice(attempt, patch, values, zone, read_at):
+    accepted = _common._receipt_ok(patch)
+    signal = "" if accepted else _refusal(patch)
+    if not accepted and (patch.get("ok") is False or signal):
+        return (_REFUSALS.get(signal, _REFUSED), signal, False), False
+
+    lost_reply = not accepted
+    if lost_reply:
+        # Only an absent verdict is inferred from the fresh read. The GET has
+        # no local_time field; compare native wall time in the reported zone.
+        if attempt.field == "local_time":
+            accepted = (zone is not None and values.get("ntp_enabled") is False
+                        and _wall_text(read_at.astimezone(zone), "24h") == attempt.value)
+        else:
+            accepted = bool(values) and values.get(attempt.field) == attempt.value
+    if not accepted:
+        return (_UNCONFIRMED, "", False), lost_reply
+    message = "Time set." if attempt.field == "local_time" and values.get("ntp_enabled") is not False else "Saved"
+    return (message, "", True), lost_reply
+
+
+def _finish_save(attempt, result):
+    global _pending, _sync_until, _unshown_hand_notice
+    if _pending is not attempt:
+        return False
+    _pending = None
+    patch, reply, read_at = result or ({}, {}, datetime.now(timezone.utc))
+    values, zone = _read_values(reply)
+    notice, lost_reply = _write_notice(attempt, patch, values, zone, read_at)
+    restart_probe = False
+    if attempt.field == "ntp_enabled":
+        enabled = values.get("ntp_enabled")
+        synced = values.get("ntp_synchronized")
+        accepted = _common._receipt_ok(patch)
+        # An observed enable can need polling even if the write was refused.
+        # An accepted enable can still resume probing once a failed read recovers.
+        if (attempt.value is True and enabled is not False and synced is not True
+                and (enabled is True or accepted)):
+            _sync_until = time.monotonic() + 60
+            restart_probe = True
+        elif accepted or enabled is False or synced is True:
+            _sync_until = 0.0
+    if _write_listener is not None:
+        _write_listener(attempt.field, reply, notice, lost_reply, restart_probe)
+    elif attempt.field == "local_time":
+        # No widget owns the row now. Carry just the one unshown notice,
+        # never the reply, until the hand row is visible on a later visit.
+        _unshown_hand_notice = notice
+    return False
 
 
 def build_widget():
@@ -282,7 +317,6 @@ def build_widget():
     zone_entries: tuple[tuple[str, str], ...] = ()
     clock_entries: tuple[tuple[str, str], ...] = ()
     focus_return: str | None = None
-    hidden_hand_outcome: tuple[str, str, bool] | None = None
     dirty = painting = reading = available = False
     recheck_lost = False
     revision = minute_source = sync_source = 0
@@ -305,7 +339,8 @@ def build_widget():
             label.set_selectable(bool(signal))
 
     def paint(now=None):
-        nonlocal painting, zone_entries, clock_entries, focus_return, dirty, hidden_hand_outcome
+        global _unshown_hand_notice
+        nonlocal painting, zone_entries, clock_entries, focus_return, dirty
         painting = True
         try:
             now = now or datetime.now(timezone.utc)
@@ -326,9 +361,9 @@ def build_widget():
             manual_time = available and values.get("ntp_enabled") is False
             if not manual_time:
                 dirty = False
-            elif hidden_hand_outcome is not None:
-                outcome("local_time", *hidden_hand_outcome)
-                hidden_hand_outcome = None
+            elif _unshown_hand_notice is not None and _write_listener is write_finished and page.get_mapped():
+                notice, _unshown_hand_notice = _unshown_hand_notice, None
+                outcome("local_time", *notice)
             blocked = {**readonly, **locked}
             named = {}
             resting = {}
@@ -425,9 +460,10 @@ def build_widget():
                         anchor = entry.get_property("selection-bound")
                         entry.set_text(wall)
                         entry.select_region(min(anchor, len(wall)), min(position, len(wall)))
-            elif busy_field == "local_time" and not last_read:
+            elif pending is not None and pending.field == "local_time" and not last_read:
                 # Before the new page's first read, the hand write itself
                 # tells us which row was open and what was submitted there.
+                entry.set_placeholder_text(pending.hand_hint)
                 entry.set_text(held_label)
 
             editable.difference_update(blocked)
@@ -508,24 +544,17 @@ def build_widget():
         last_read = time.monotonic()
         # Today's older reply still reports the zone and NTP switch. Missing
         # optional fields get their own reasons, not guesses at current values.
-        actual, zone = _read_values(reply)
-        available = bool(actual)
+        values, zone = _read_values(reply)
+        available = bool(values)
         read_status.set_title("Couldn't read date and time settings.")
         if not available:
-            values, offered, readonly = {}, {}, {}
+            offered, readonly = {}, {}
             # A minute retry can fail while a save's failure is still being
             # read. Keep its timer, but don't show old successes as current.
             for field, notice in tuple(outcomes.items()):
                 if notice[2]:
                     del outcomes[field]
             return
-        values = dict(actual)
-        mode = values.get("time_format")
-        if mode is not None and (not isinstance(mode, str) or mode not in _CLOCK_LABELS):
-            values.pop("time_format", None)
-        for field in ("automatic_timezone", "ntp_enabled", "ntp_synchronized"):
-            if not isinstance(values.get(field), bool):
-                values.pop(field, None)
         options = reply.get("options")
         offered = {field: _choices(options, field) for field in ("timezone", "time_format")} if isinstance(options, dict) else {}
         reasons = reply.get("readonly")
@@ -574,11 +603,11 @@ def build_widget():
         return True
 
     def outcome(field, message, signal="", saved=False):
-        nonlocal hidden_hand_outcome
+        global _unshown_hand_notice
         notice = (message, signal, saved)
         if field == "local_time" and values.get("ntp_enabled") is not False:
             # Start the usual lifetime only when the hand row can show it.
-            hidden_hand_outcome = notice
+            _unshown_hand_notice = notice
             return
         outcomes[field] = notice
 
@@ -621,38 +650,19 @@ def build_widget():
     def can_save(field):
         return not painting and _pending is None and field in editable and page.get_mapped()
 
-    def write_finished(attempt, patch, reply, read_at, restart_probe):
+    def write_finished(field, reply, notice, lost_reply, restart_probe):
         nonlocal reading, revision, dirty, recheck_lost
         # A show read may have started while this write was still pending.
         revision += 1
         reading = False
-        field, value = attempt.field, attempt.value
         hydrate(reply)
-        ok = _common._receipt_ok(patch)
-        signal = "" if ok else _refusal(patch)
-        if not ok and (patch.get("ok") is False or signal):
-            if signal in _STANDING:
-                locked[field] = signal
-            outcome(field, _REFUSALS.get(signal, _REFUSED), signal)
-        else:
-            if not ok:
-                recheck_lost = True
-                # Only an absent verdict is inferred from the fresh read.
-                # The GET has no local_time field; compare native wall time.
-                if field == "local_time":
-                    ok = (zone is not None and values.get("ntp_enabled") is False
-                          and _wall_text(read_at.astimezone(zone), "24h") == value)
-                else:
-                    ok = available and values.get(field) == value
-            if ok:
-                message = "Saved"
-                if field == "local_time":
-                    dirty = False
-                    if values.get("ntp_enabled") is not False:
-                        message = "Time set."
-                outcome(field, message, saved=True)
-            else:
-                outcome(field, _UNCONFIRMED)
+        _message, signal, saved = notice
+        recheck_lost = recheck_lost or lost_reply
+        if signal in _STANDING:
+            locked[field] = signal
+        if saved and field == "local_time":
+            dirty = False
+        outcome(field, *notice)
         if restart_probe:
             stop_probe()
         resume_probe()
@@ -673,7 +683,8 @@ def build_widget():
             label = offered.get(field, {}).get(value, value.replace("_", " "))
         else:
             label = offered[field][value]
-        attempt = _pending = _Write(field, value, label)
+        hand_hint = entry.get_placeholder_text() if field == "local_time" else None
+        attempt = _pending = _Write(field, value, label or "", hand_hint)
         outcomes.pop(field, None)
         paint()
 
@@ -755,9 +766,10 @@ def build_widget():
 
     def unmapped(_page):
         global _write_listener
-        nonlocal minute_source
+        nonlocal minute_source, dirty
         if _write_listener is write_finished:
             _write_listener = None
+        dirty = False  # The submitted value may travel, but this draft cannot.
         if minute_source:
             GLib.source_remove(minute_source)
             minute_source = 0
