@@ -26,7 +26,11 @@ _REFUSALS = {
     "invalid:local_time:nonexistent": "The clocks change then and skip that time.",
     "invalid:local_time:ambiguous": "The clocks change then and repeat that time.",
 }
+_REFUSED = "The change didn't finish."
 _UNCONFIRMED = "Couldn't confirm this change."
+# The shell builds a new widget when the owner returns to this plug. Only
+# the pending probe's deadline crosses that boundary, not its GTK source.
+_sync_until = 0.0
 
 
 def _request(method="GET", payload=None):
@@ -120,9 +124,13 @@ def _sync_status(values, now):
 
 
 def _refusal(receipt):
-    # A generic gate signal can ride beside the staff's more specific refusal.
+    # Keep a known reason from either layer, otherwise prefer the stop's own
+    # signal to a generic door verdict that only says the write was refused.
     staff = _common._signal(receipt)
-    return staff if staff in _REFUSALS else _common._refusal_signal(receipt)
+    door = _common._refusal_signal(receipt)
+    if staff in _REFUSALS:
+        return staff
+    return door if door in _REFUSALS else staff or door
 
 
 def build_widget():
@@ -196,7 +204,7 @@ def build_widget():
     clock.add_suffix(clock_button)
     clock.set_activatable_widget(clock_button)
     clock_actions = Gio.SimpleActionGroup()
-    clock_action = Gio.SimpleAction.new("pick", GLib.VariantType.new("s"))
+    clock_action = Gio.SimpleAction.new_stateful("pick", GLib.VariantType.new("s"), GLib.Variant("s", ""))
     clock_actions.add_action(clock_action)
     clock_button.insert_action_group("clock", clock_actions)
 
@@ -232,12 +240,12 @@ def build_widget():
     zone = None
     zone_entries: tuple[tuple[str, str], ...] = ()
     clock_entries: tuple[tuple[str, str], ...] = ()
-    draft_basis = None
     focus_return: str | None = None
     pending: tuple[str, Any] | None = None
     dirty = painting = reading = available = False
+    recheck_lost = False
     revision = minute_source = sync_source = 0
-    last_read = sync_until = 0.0
+    last_read = 0.0
 
     def paint_subtitle(row, resting, message, signal):
         text = "\n".join(filter(None, (resting, message, signal)))
@@ -256,7 +264,7 @@ def build_widget():
             label.set_selectable(bool(signal))
 
     def paint(now=None):
-        nonlocal painting, zone_entries, clock_entries, draft_basis, dirty, focus_return
+        nonlocal painting, zone_entries, clock_entries, focus_return
         painting = True
         try:
             now = now or datetime.now(timezone.utc)
@@ -315,6 +323,11 @@ def build_widget():
                     item.set_action_and_target_value("clock.pick", GLib.Variant("s", key))
                     menu.append_item(item)
                 clock_button.set_menu_model(menu)
+            # Empty state matches no menu target. An activation asks to save;
+            # only a confirmed read changes which menu item is marked.
+            marked_format = values.get("time_format") or ""
+            if clock_action.get_state().get_string() != marked_format:
+                clock_action.set_state(GLib.Variant("s", marked_format))
             clock_name = "Not set" if clock_reported else "Not reported"
             if isinstance(clock_format, str):
                 clock_name = dict(clocks).get(clock_format, _CLOCK_LABELS[clock_format])
@@ -345,16 +358,14 @@ def build_widget():
             resting["local_time"] = f"Current date and time: {wall}" if wall else "This device didn't report a time zone."
             if manual_time and local is not None:
                 editable.add("local_time")
-                basis = (zone, mode)
-                if pending is None and (basis != draft_basis or (not dirty and not has_focus(entry))):
-                    if basis != draft_basis:
-                        hint = "YYYY-MM-DD HH:MM AM/PM" if mode == "12h" else "YYYY-MM-DD HH:MM"
-                        entry.set_placeholder_text(hint)
-                        draft_basis, dirty = basis, False
-                    if entry.get_text() != wall:
-                        entry.set_text(wall)
-            else:
-                draft_basis = None
+                hint = "YYYY-MM-DD HH:MM AM/PM" if mode == "12h" else "YYYY-MM-DD HH:MM"
+                if entry.get_placeholder_text() != hint:
+                    entry.set_placeholder_text(hint)
+                if not dirty and (pending is None or pending[0] != "local_time") and entry.get_text() != wall:
+                    position = entry.get_position()
+                    anchor = entry.get_property("selection-bound")
+                    entry.set_text(wall)
+                    entry.select_region(min(anchor, len(wall)), min(position, len(wall)))
 
             editable.difference_update(blocked)
             if not available:
@@ -485,7 +496,7 @@ def build_widget():
     def refresh():
         nonlocal reading
         if reading or pending is not None or not page.get_mapped():
-            return
+            return False
         reading = True
         started = revision
 
@@ -494,10 +505,12 @@ def build_widget():
             if revision == started:
                 reading = False
                 hydrate(reply or {})
+                resume_probe()
                 paint()
             return GLib.SOURCE_REMOVE
 
         background(_request, complete)
+        return True
 
     def outcome(field, message, signal="", saved=False):
         notice = (message, signal, saved)
@@ -511,10 +524,13 @@ def build_widget():
 
         GLib.timeout_add(3000 if saved else 8000, dismiss)
 
+    def can_probe():
+        return (page.get_mapped() and available and time.monotonic() < _sync_until
+                and values.get("ntp_enabled") is True and values.get("ntp_synchronized") is not True)
+
     def probe_sync():
         nonlocal sync_source
-        if (not page.get_mapped() or not available or time.monotonic() >= sync_until
-                or values.get("ntp_enabled") is not True or values.get("ntp_synchronized") is True):
+        if not can_probe():
             sync_source = 0
             return GLib.SOURCE_REMOVE
         refresh()
@@ -525,6 +541,16 @@ def build_widget():
         if sync_source:
             GLib.source_remove(sync_source)
             sync_source = 0
+
+    def resume_probe():
+        global _sync_until
+        nonlocal sync_source
+        if page.get_mapped() and (values.get("ntp_enabled") is False or values.get("ntp_synchronized") is True):
+            _sync_until = 0.0
+        if not can_probe():
+            stop_probe()
+        elif not sync_source:
+            sync_source = GLib.timeout_add(15_000, probe_sync)
 
     def can_save(field):
         return not painting and pending is None and field in editable
@@ -540,38 +566,44 @@ def build_widget():
         paint()
 
         def complete(result):
-            nonlocal pending, draft_basis, sync_source, sync_until
+            global _sync_until
+            nonlocal pending, dirty, recheck_lost
             if pending is not attempt:
                 return GLib.SOURCE_REMOVE
             pending = None
             patch, reply, read_at = result or ({}, {}, datetime.now(timezone.utc))
             hydrate(reply)
-            signal = _refusal(patch) if not _common._receipt_ok(patch) else ""
-            if signal in _STANDING:
-                locked[field] = signal
             destination = field
-            if field == "local_time":
-                draft_basis = None
-                if values.get("ntp_enabled") is not False:
-                    destination = "ntp_enabled"
-                # The GET has no local_time field. With a lost reply, only a
-                # native wall-clock match in the reported zone can confirm it.
-                confirmed = _common._receipt_ok(patch) or (
-                    zone is not None and values.get("ntp_enabled") is False
-                    and _wall_text(read_at.astimezone(zone), "24h") == value)
+            if field == "local_time" and values.get("ntp_enabled") is not False:
+                destination = "ntp_enabled"
+            ok = _common._receipt_ok(patch)
+            signal = "" if ok else _refusal(patch)
+            if not ok and (patch.get("ok") is False or signal):
+                if signal in _STANDING:
+                    locked[field] = signal
+                outcome(destination, _REFUSALS.get(signal, _REFUSED), signal)
             else:
-                confirmed = values.get(field) == value
-            if signal in _REFUSALS:
-                outcome(destination, _REFUSALS[signal], signal)
-            elif available and confirmed:
-                outcome(destination, "Time set." if destination != field else "Saved", saved=True)
-                if field == "ntp_enabled":
-                    stop_probe()
-                    if value is True and values.get("ntp_synchronized") is not True and page.get_mapped():
-                        sync_until = time.monotonic() + 60
-                        sync_source = GLib.timeout_add(15_000, probe_sync)
-            else:
-                outcome(destination, _UNCONFIRMED, signal)
+                if not ok:
+                    recheck_lost = True
+                    # Only an absent verdict is inferred from the fresh read.
+                    # The GET has no local_time field; compare native wall time.
+                    if field == "local_time":
+                        ok = (zone is not None and values.get("ntp_enabled") is False
+                              and _wall_text(read_at.astimezone(zone), "24h") == value)
+                    else:
+                        ok = available and values.get(field) == value
+                if ok:
+                    if field == "local_time":
+                        dirty = False
+                    outcome(destination, "Time set." if destination != field else "Saved", saved=True)
+                    if field == "ntp_enabled":
+                        stop_probe()
+                        _sync_until = (time.monotonic() + 60 if value is True
+                                       and values.get("ntp_enabled") is not False
+                                       and values.get("ntp_synchronized") is not True else 0.0)
+                else:
+                    outcome(destination, _UNCONFIRMED)
+            resume_probe()
             paint()
             return GLib.SOURCE_REMOVE
 
@@ -633,27 +665,28 @@ def build_widget():
             return
         save("local_time", value)
 
-    def minute():
-        nonlocal minute_source
+    def minute(*, on_show=False):
+        nonlocal minute_source, recheck_lost
         now = datetime.now(timezone.utc)
         # Re-arm before painting or reading. The local minute tick is not a GET.
         minute_source = GLib.timeout_add(60_000 - now.second * 1000 - now.microsecond // 1000, minute)
         paint(now)
-        if not available or time.monotonic() - last_read >= 600:
+        if on_show:
             refresh()
+        elif recheck_lost or not available or time.monotonic() - last_read >= 600:
+            if refresh():
+                recheck_lost = False
         return GLib.SOURCE_REMOVE
 
     def shown(_page):
-        minute()
-        refresh()
+        minute(on_show=True)
 
     def unmapped(_page):
-        nonlocal minute_source, draft_basis
+        nonlocal minute_source
         if minute_source:
             GLib.source_remove(minute_source)
             minute_source = 0
         stop_probe()
-        draft_basis = None
 
     for field, row in switches.items():
         row.connect("notify::active", switch_changed, field)
