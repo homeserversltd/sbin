@@ -655,9 +655,11 @@ def _primitive_request(verb, payload, original=None):
     }
     # An absent seat imposes no kernel requirements; keep the old primitive request shape.
     for key in _envelope._envelope_kernel() or defaults:
+        if key in value:
+            continue
         if key not in defaults:
             raise Refusal(f"thyrsus-kernel-field-unknown:{key}")
-        value.setdefault(key, defaults[key])
+        value[key] = defaults[key]
     value["payload"] = payload
     return Request(value, True, payload, json.dumps(value), value.get("intent_id"),
                    value.get("transition"), value.get("version"), value.get("timestamp"))
