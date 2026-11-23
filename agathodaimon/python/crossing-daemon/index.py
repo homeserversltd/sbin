@@ -65,7 +65,16 @@ def main(argv=None) -> int:
     choice.add_argument('--remove', action='store_true')
     parser.add_argument('--plan', action='store_true')
     parser.add_argument('--unit-dir', type=Path, default=Path('/etc/systemd/system'))
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code != 2:
+            raise
+        print(json.dumps({
+            'ok': False,
+            'firstMissingSignal': 'agathodaimon-crossing-daemon-arguments-invalid',
+        }))
+        return 2
     if args.install or args.remove:
         if os.geteuid() == 0 and args.unit_dir.resolve() != Path('/etc/systemd/system').resolve():
             print(json.dumps({'ok': False, 'error': 'unit-directory-refused'}, separators=(',', ':')))
