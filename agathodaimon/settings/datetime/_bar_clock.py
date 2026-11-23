@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import stat
 import subprocess
@@ -26,6 +27,14 @@ _FILE_MAX = 1024 * 1024
 
 class _MalformedDocument(ValueError):
     """The bounded regular file was read, but its contents could not be parsed."""
+
+
+def _finite_number(token: str) -> float:
+    # Reject bare NaN/Infinity and exponents that overflow a JSON round trip.
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError(_INVALID)
+    return value
 
 
 def _open_unlinked(path: Path) -> int:
@@ -90,7 +99,7 @@ def _strip_jsonc(raw: bytes) -> bytearray:
     return data
 
 
-def _read(path: Path):
+def _read(path: Path, *, finite_numbers: bool = False):
     fd = _open_unlinked(path)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -103,7 +112,10 @@ def _read(path: Path):
         raise ValueError("bar-clock-file-too-large")
     try:
         raw.decode("utf-8")  # Comments, too, must be UTF-8.
-        return json.loads(_strip_jsonc(raw).decode("utf-8"))
+        text = _strip_jsonc(raw).decode("utf-8")
+        if finite_numbers:
+            return json.loads(text, parse_float=_finite_number, parse_constant=_finite_number)
+        return json.loads(text)
     except (ValueError, RecursionError) as error:
         raise _MalformedDocument(_INVALID) from error
 
@@ -139,7 +151,7 @@ def read_format(home: Path, *, included: bool | None = None) -> str | None:
     if not included:
         return None
     try:
-        return _match(_read(home / _INCLUDE))
+        return _match(_read(home / _INCLUDE, finite_numbers=True))
     except (OSError, ValueError, RecursionError):
         return None
 
@@ -151,7 +163,7 @@ def _write_format(home: Path, name: str) -> dict:
     try:
         if not stat.S_ISREG(path.lstat().st_mode):
             raise ValueError(_INVALID)
-        value = _read(path)
+        value = _read(path, finite_numbers=True)
     except (FileNotFoundError, _MalformedDocument):
         value = None
     clock = value.get("clock") if isinstance(value, dict) else None
@@ -165,7 +177,8 @@ def _write_format(home: Path, name: str) -> dict:
     clock.update({"format": primary, "format-alt": alt})
     # Escaped lone surrogates can survive json.loads. Escape those code
     # points again without escaping the clock glyph or other valid Unicode.
-    payload = (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8", errors="backslashreplace")
+    document = json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False)
+    payload = (document + "\n").encode("utf-8", errors="backslashreplace")
 
     def reload_bar():
         argv = ["/usr/bin/pkill", "-USR2", "-u", str(os.geteuid()), "-x", "waybar"]
@@ -176,7 +189,7 @@ def _write_format(home: Path, name: str) -> dict:
         result["waybar_reload"] = "signalled" if attempt.returncode == 0 else "no-bar-signalled"
 
     def verify():
-        if _match(_read(path)) != name:
+        if _match(_read(path, finite_numbers=True)) != name:
             raise ValueError("datetime-bar-clock-readback-failed")
 
     parts = write([{"path": path, "candidate": payload}], verify=verify, reload=reload_bar)
