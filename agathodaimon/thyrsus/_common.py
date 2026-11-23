@@ -644,7 +644,7 @@ def _set_token(raw, payload, profile, receipt):
         token = None
 
 
-def _primitive_request(verb, payload, original=None):
+def _primitive_request(verb, payload, original=None, *, for_refusal=False):
     value = dict(original or {})
     defaults = {
         "schema": _envelope.SCHEMA,
@@ -654,14 +654,18 @@ def _primitive_request(verb, payload, original=None):
         "timestamp": now_iso(),
     }
     # An absent seat imposes no kernel requirements; keep the old primitive request shape.
+    complete = True
     for key in _envelope._envelope_kernel() or defaults:
         if key in value:
             continue
         if key not in defaults:
-            raise Refusal(f"thyrsus-kernel-field-unknown:{key}")
+            if not for_refusal:
+                raise Refusal(f"thyrsus-kernel-field-unknown:{key}")
+            complete = False
+            continue
         value[key] = defaults[key]
     value["payload"] = payload
-    return Request(value, True, payload, json.dumps(value), value.get("intent_id"),
+    return Request(value, complete, payload, json.dumps(value), value.get("intent_id"),
                    value.get("transition"), value.get("version"), value.get("timestamp"))
 
 
@@ -743,9 +747,22 @@ def main_for(verb, arguments=None):
     if verb == "new-tab":
         receipt.update(repo_url=None, path=None, next=[])
     try:
-        request = _primitive_request(verb, {})
+        # Only carry a complete fallback. The input may supply names we cannot default.
+        fallback = _primitive_request(verb, {}, for_refusal=True)
+        if fallback.envelope:
+            request = fallback
         profile = _configuration()
-        raw, payload, request = _input(verb, list(arguments or []))
+        try:
+            raw, payload, request = _input(verb, list(arguments or []))
+        except EnvelopeError as error:
+            # A stamped input hits the shared reader before the primitive builder.
+            prefix = "missing envelope kernel keys: "
+            message = str(error)
+            if message.startswith(prefix):
+                for key in message[len(prefix):].split(","):
+                    if key not in fallback.value:
+                        raise Refusal(f"thyrsus-kernel-field-unknown:{key}") from None
+            raise
         if verb == "forge":
             receipt.update(token_present=_token_present(profile), reachable=_reachable())
             receipt["observed"] = {key: receipt[key] for key in ("forge", "token_present", "reachable")}
