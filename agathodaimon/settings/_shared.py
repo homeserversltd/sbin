@@ -16,7 +16,7 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Iterable, Sequence
-from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
+
 
 FIELDS: dict[str, tuple[str, ...]] = {
     "display": ("resolution", "refresh_rate", "scale", "orientation", "brightness", "night_light", "hdr", "adaptive_sync", "overscan"),
@@ -29,7 +29,7 @@ FIELDS: dict[str, tuple[str, ...]] = {
                "charge_limit", "battery_level", "battery_state", "lid_action"),
     "notifications": ("enabled", "do_not_disturb", "show_banners", "show_on_lock_screen", "sound_enabled"),
     "default-apps": ("browser", "mail", "calendar", "music", "video", "photos", "text_editor", "terminal", "file_manager"),
-    "datetime": ("timezone", "ntp_enabled", "automatic_timezone", "date_format", "time_format"),
+    "datetime": ("timezone", "ntp_enabled", "automatic_timezone", "time_format", "local_time"),
 }
 
 MIME_KEYS = {
@@ -249,11 +249,8 @@ def get_values(kind: str) -> dict[str, Any]:
                 key, val = line.split("=", 1); mapping[key.strip()] = val.strip().rstrip(";")
         for field, mime_types in MIME_KEYS.items(): values[field] = next((mapping.get(mime) for mime in mime_types if mime in mapping), None)
     elif kind == "datetime":
-        good, out, _ = command(["timedatectl", "show", "-p", "Timezone", "-p", "NTP"])
-        if good:
-            properties = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
-            values["timezone"] = properties.get("Timezone")
-            values["ntp_enabled"] = properties["NTP"] == "yes" if "NTP" in properties else None
+        from agathodaimon.settings.datetime._acts import read_values
+        return read_values()
     return {key: values.get(key) for key in FIELDS[kind]}
 
 
@@ -435,27 +432,7 @@ def set_value(kind: str, field: str, value: Any, receipt: Receipt) -> None:
         for mime in MIME_KEYS[field]:
             if mime not in present: section.append(f"{mime}={app};\n")
         lines[start:end]=section; receipt.replace(path,"".join(lines).encode()); return
-    if kind == "datetime":
-        if field not in ("timezone","ntp_enabled"): raise ValueError("unsupported:"+field)
-        if field == "timezone": require_timezone_change_allowed()
-        require("timedatectl",field); val=("yes" if boolean(value,field) else "no") if field=="ntp_enabled" else str(scalar(value,field)); argv=["timedatectl","set-ntp",val] if field=="ntp_enabled" else ["timedatectl","set-timezone",val]; good,_,result=command(argv); receipt.commands.append({"argv":argv,"returncode":result.returncode})
-        if not good: raise ValueError("privilege:"+field)
-        if field == "timezone":
-            receipt.timezone_command_performed = True
-            from agathodaimon.settings.datetime import _zone_mode
-            _zone_mode.set_mode("manual")
-            receipt.changed = True
-        return
     raise ValueError("unsupported:"+field)
-
-
-def _failed_settings_receipt(receipt: Receipt, error: Exception) -> dict[str, Any]:
-    performed = getattr(receipt, "timezone_command_performed", False)
-    result = receipt.finish(False, performed, str(error))
-    if performed:
-        result["changed"] = True
-        result["mutationPerformed"] = True
-    return result
 
 
 from agathodaimon.settings._receipt import Receipt as _SettingsReceipt

@@ -1,12 +1,12 @@
-"""Set datetime settings."""
+"""Set timezone, ntp_enabled, automatic_timezone, time_format or local_time (YYYY-MM-DD HH:MM)."""
 import json
 from agathodaimon._envelope import EnvelopeError, attach, read
-from agathodaimon.settings import _shared
+from agathodaimon.settings.datetime._acts import set_values
 
 
 def main(argv=None):
     try:
-        request = read(known_fields=('timezone', 'ntp_enabled'))
+        request = read(known_fields=("timezone", "ntp_enabled", "automatic_timezone", "time_format", "local_time"))
         source = request.value.get("payload", {}) if request.envelope else request.value
         if not isinstance(source, dict):
             source = {}
@@ -17,14 +17,7 @@ def main(argv=None):
         elif not changes:
             result = {"ok": False, "firstMissingSignal": "no-fields-supplied", "mutationPerformed": False}
         else:
-            receipt = _shared.Receipt("datetime", list(changes))
-            try:
-                for field, value in changes.items():
-                    _shared.set_value("datetime", field, value, receipt)
-                result = receipt.finish(True, receipt.changed)
-            except Exception as error:
-                receipt.restore_backups()
-                result = _shared._failed_settings_receipt(receipt, error)
+            result = set_values(changes)
         result = attach(result, request)
     except (EnvelopeError, ValueError) as error:
         result = {"ok": False, "firstMissingSignal": str(error), "mutationPerformed": False}

@@ -1,10 +1,13 @@
 """The owner's household-zone following preference in appliance config."""
+from contextlib import contextmanager
 from importlib import import_module
 import fcntl
 import json
 import os
 import stat
 from pathlib import Path
+
+from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
 # Reuse the existing appliance-config member splicer and atomic writer.
 _writer = import_module("agathodaimon.update.module-toggle.index")
@@ -38,18 +41,39 @@ def read_mode():
     return _load()[-1]
 
 
+def keeps_house_time():
+    try:
+        require_timezone_change_allowed()
+    except ValueError as error:
+        if str(error) == "agathodaimon-household-time-homeserver-utc-only":
+            return True
+        raise
+    return False
+
+
+HOUSE_TIME_REFUSAL = "unsupported:homeserver-keeps-house-time"
+
+
 def set_mode(mode):
     if mode not in ("follow", "manual"):
         raise ValueError("agathodaimon-zone-mode-invalid")
+    if mode == "manual" and keeps_house_time():
+        raise ValueError(HOUSE_TIME_REFUSAL)
+    with locked():
+        return set_mode_locked(mode)
+
+
+@contextmanager
+def locked():
     directory = os.open(_config_path().parent, os.O_RDONLY | os.O_DIRECTORY)
     try:
         fcntl.flock(directory, fcntl.LOCK_EX)
-        return _set_mode_locked(mode)
+        yield
     finally:
         os.close(directory)
 
 
-def _set_mode_locked(mode):
+def set_mode_locked(mode):
     path, metadata, raw, document, previous = _load()
     if previous == mode and "zone_mode" in document.get("time", {}):
         return False

@@ -198,7 +198,8 @@ def options(kind, *, current_values=None):
         'sound': {'output_device': lambda: _sound('sinks'), 'input_device': lambda: _sound('sources')},
         'keyboard': {'keyboard_layout': _keyboard},
         'region': {'locale': _locales},
-        'datetime': {'timezone': _timezones},
+        'datetime': {'timezone': _timezones,
+                     'time_format': lambda: _choices((('24h', '24-hour'), ('12h', '12-hour')))},
     }
     result = {}
     if kind in ('appearance', 'default-apps'):

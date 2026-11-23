@@ -244,7 +244,8 @@ def ensure_ntp() -> dict[str, Any]:
     )
 
 
-def set_timezone(candidate: str) -> dict[str, Any]:
+def set_timezone(candidate: str, *, immediate: bool = False, observe_set=None) -> dict[str, Any]:
+    """Apply a household zone; only an explicit return to follow skips the hold."""
     require_timezone_change_allowed()
     requested = validated_timezone(candidate)
     state = read_state()
@@ -269,12 +270,12 @@ def set_timezone(candidate: str) -> dict[str, Any]:
             return receipt("set-timezone", ok=True, changed=False, requested_timezone=requested,
                            previously_applied_timezone=previous, applied_timezone=previous,
                            debounce_gated=False, post_apply=readback)
-    hold = _hold_seconds()
+    hold = 0 if immediate else _hold_seconds()
     observed = now()
     first_application = previous is None
     pending = state.get("pending_timezone")
     pending_at = parse_stamp(state.get("pending_observed_at"))
-    gated = not first_application and previous != requested and (pending != requested or pending_at is None or (observed - pending_at).total_seconds() < hold)
+    gated = not immediate and not first_application and previous != requested and (pending != requested or pending_at is None or (observed - pending_at).total_seconds() < hold)
     if gated:
         if pending != requested or pending_at is None:
             state["pending_timezone"] = requested
@@ -284,6 +285,8 @@ def set_timezone(candidate: str) -> dict[str, Any]:
                        previously_applied_timezone=previous, applied_timezone=previous,
                        debounce_gated=True, hold_seconds=hold, post_apply=timedatectl_readback())
     result = _run([timedatectl(), "set-timezone", requested])
+    if observe_set is not None:
+        observe_set(result)
     post_apply = timedatectl_readback()
     applied = post_apply["values"].get("Timezone")
     if result.returncode != 0 or applied != requested:
