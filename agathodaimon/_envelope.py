@@ -97,9 +97,42 @@ class Request:
         return "unknown"
 def _selected(source: Mapping[str, Any], names: Sequence[str]) -> dict[str, Any]:
     return {k: source[k] for k in names if k in source}
-def read(*, known_fields: Sequence[str] = (), declared_flags: Sequence[str] = (), rooms: Sequence[str] = (), secret: Sequence[str] = ()) -> Request:
+def read(
+    *,
+    known_fields: Sequence[str] = (),
+    declared_flags: Sequence[str] = (),
+    rooms: Sequence[str] = (),
+    secret: Sequence[str] = (),
+    max_input_bytes: int | None = None,
+    byte_stream: bool = False,
+    quiet_on_tty: bool = False,
+) -> Request:
+    """Read stdin as before unless a caller opts into a different intake.
+
+    A quiet TTY supplies the empty primitive without being read. Byte-stream
+    input (implicit with a byte limit) is decoded as UTF-8, keeping
+    Request.raw_envelope as text. The limit is inclusive and checked before
+    decoding or parsing, using one byte of lookahead.
+    """
+    if max_input_bytes is not None and (
+        type(max_input_bytes) is not int or not 0 <= max_input_bytes < sys.maxsize
+    ):
+        raise EnvelopeError("agathodaimon-envelope-input-bound-invalid")
     try:
-        raw = sys.stdin.read(); value = json.loads(raw)
+        if quiet_on_tty and sys.stdin.isatty():
+            raw = "{}"
+        elif byte_stream or max_input_bytes is not None:
+            stream = sys.stdin.buffer
+            if max_input_bytes is None:
+                data = stream.read()
+            else:
+                data = stream.read(max_input_bytes + 1)
+                if len(data) > max_input_bytes:
+                    raise EnvelopeError("agathodaimon-envelope-input-too-large")
+            raw = data.decode("utf-8")
+        else:
+            raw = sys.stdin.read()
+        value = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise EnvelopeError("invalid JSON") from exc
     if not isinstance(value, dict): raise EnvelopeError("JSON object required")
@@ -276,5 +309,16 @@ def attach(receipt: dict[str, Any], request: Request) -> dict[str, Any]:
     result.update(intent_id=carried.get("intent_id") if protected else request.intent_id, raw_envelope=raw_envelope, envelope=envelope, stamps=prior + [dict(stamp)], staff=dict(stamp))
     return _load_trace.attach_context(result, explicit_context, protected=protected,
                                       returned_context=request.returned_load_context is not None)
-def read_fields(*fields: str, flags: Sequence[str] = (), rooms: Sequence[str] = (), secret: Sequence[str] = ()) -> Request:
-    return read(known_fields=fields, declared_flags=flags, rooms=rooms, secret=secret)
+def read_fields(
+    *fields: str,
+    flags: Sequence[str] = (),
+    rooms: Sequence[str] = (),
+    secret: Sequence[str] = (),
+    max_input_bytes: int | None = None,
+    byte_stream: bool = False,
+    quiet_on_tty: bool = False,
+) -> Request:
+    return read(
+        known_fields=fields, declared_flags=flags, rooms=rooms, secret=secret,
+        max_input_bytes=max_input_bytes, byte_stream=byte_stream, quiet_on_tty=quiet_on_tty,
+    )
