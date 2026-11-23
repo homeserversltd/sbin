@@ -731,7 +731,7 @@ def _deed(verb, receipt, started):
 
 def main_for(verb, arguments=None):
     started = time.monotonic()
-    request = _primitive_request(verb, {})
+    request = None
     receipt = {"ok": False, "firstMissingSignal": "none",
                "mutationPerformed": False, "observed": None, "could-change": [], "attempt": []}
     if verb == "propose":
@@ -743,6 +743,7 @@ def main_for(verb, arguments=None):
     if verb == "new-tab":
         receipt.update(repo_url=None, path=None, next=[])
     try:
+        request = _primitive_request(verb, {})
         profile = _configuration()
         raw, payload, request = _input(verb, list(arguments or []))
         if verb == "forge":
@@ -776,7 +777,7 @@ def main_for(verb, arguments=None):
     finally:
         receipt["final"] = {"ok": receipt["ok"], "signal": receipt["firstMissingSignal"],
                             "mutationPerformed": receipt["mutationPerformed"]}
-        if verb in WRITES and not (verb == "new-tab" and receipt["mutationPerformed"] is False):
+        if request is not None and verb in WRITES and not (verb == "new-tab" and receipt["mutationPerformed"] is False):
             try:
                 _deed(verb, receipt, started)
             except (OSError, ValueError):

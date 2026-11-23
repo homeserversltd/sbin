@@ -372,21 +372,31 @@ def _receipt_output(output: bytearray) -> bool:
         return False
     if not isinstance(value, dict):
         return False
-    stop, schema = value.get("stop"), value.get("schema")
+    stop = value.get("stop")
     if not (isinstance(stop, dict) and stop.get("noun") == "keyman"
-            and stop.get("verb") == "newkey" and isinstance(schema, str)
+            and stop.get("verb") == "newkey"
             and isinstance(value.get("ok"), bool)
             and isinstance(value.get("firstMissingSignal"), str)):
         return False
 
+    from agathodaimon._envelope import SCHEMA
     from agathodaimon._nidus.path import appliance_runtime_path
     from agathodaimon._seat import read_seats
 
     try:
-        entry = read_seats(appliance_runtime_path("seats")).get(schema)
+        seats = read_seats(appliance_runtime_path("seats"))
     except ValueError:
         return False
-    if entry is None or entry["state"] != "loaded":
+    # Find the staff receipt in the shared catalog, not by the child's claim.
+    receipt_family = SCHEMA.rsplit(".", 1)[0] + ".receipt"
+    receipt_ids = [seat_id for seat_id in seats if seat_id.rsplit(".", 1)[0] == receipt_family]
+    if len(receipt_ids) != 1:
+        return False
+    receipt_id = receipt_ids[0]
+    entry = seats[receipt_id]
+    if entry["state"] == "absent":
+        return True
+    if entry["state"] != "loaded" or value.get("schema") != receipt_id:
         return False
     # The shared stop receipt declares stop; the arpeggio aggregate does not.
     fields = entry["seat"].get("fields")
