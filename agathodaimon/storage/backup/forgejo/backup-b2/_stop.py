@@ -11,7 +11,6 @@ _backup = import_module("agathodaimon.storage.backup.forgejo.backup-b2._backup")
 
 
 def finish(act, result, request=None):
-    result["schema"] = "caduceus.storage.backup.forgejo.backup-b2." + act + ".v1"
     if request is not None:
         result = _envelope.attach(result, request)
     print(json.dumps(result, separators=(",", ":")))

@@ -26,6 +26,5 @@ def run(act, request):
 
 
 def finish(act, receipt):
-    receipt["schema"] = "caduceus.storage.backup.backblaze.bucket-items." + act + ".v1"
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt.get("ok") else 1

@@ -740,7 +740,7 @@ def _invoke_envelope(path: Path, envelope: dict, raw_envelope: str | None = None
                 fn = getattr(mod, "main", None)
                 code = None if fn is None else int(fn([]) or 0)
         except SystemExit:
-            print(json.dumps({"schema": "agathodaimon.cli.envelope.v1", "ok": False,
+            print(json.dumps({"ok": False,
                               "error": "agathodaimon-envelope-invocation-failed",
                               "firstMissingSignal": "agathodaimon-envelope-invocation-failed"}, separators=(",", ":")))
             return 2
