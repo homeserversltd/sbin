@@ -124,13 +124,9 @@ def _sync_status(values, now):
 
 
 def _refusal(receipt):
-    # Keep a known reason from either layer, otherwise prefer the stop's own
-    # signal to a generic door verdict that only says the write was refused.
-    staff = _common._signal(receipt)
-    door = _common._refusal_signal(receipt)
-    if staff in _REFUSALS:
-        return staff
-    return door if door in _REFUSALS else staff or door
+    # The staff's reason is the refusal to show even when the door adds
+    # a familiar signal. A door-only refusal still has its own reason.
+    return _common._signal(receipt) or _common._refusal_signal(receipt)
 
 
 def build_widget():
