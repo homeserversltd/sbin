@@ -248,7 +248,7 @@ def _child(conn, notice, control, stdout_fd, stderr_fd, identity, band, raw, dea
         # Bound the front door's internal envelope-hand capture as well as the
         # OS-level pipes drained by the parent.
         cli.StringIO = lambda: BoundedText(STDOUT_LIMIT)
-        outcome, mutation, code, signal_name = 'failed', True, 1, 'unknown'
+        outcome, code, signal_name = 'failed', 1, 'unknown'
         try:
             if identity == 'other':
                 outcome, signal_name = 'refused', 'peer-refused'
@@ -256,8 +256,6 @@ def _child(conn, notice, control, stdout_fd, stderr_fd, identity, band, raw, dea
             if identity == 'caduceus' and not cli._admit_caduceus_crossing([band]):
                 outcome, code, signal_name = 'refused', 1, 'band-not-published'
             else:
-                target = cli._slash_target(band)
-                mutation = target is None or cli._mutation_allowed(target.parent if target.is_file() else target) is not False
                 sys.stdin = cli._EnvelopeStdin(raw)
                 try:
                     code = cli.main([band])
@@ -279,8 +277,7 @@ def _child(conn, notice, control, stdout_fd, stderr_fd, identity, band, raw, dea
         sys.stderr.flush()
         os.close(1)
         os.close(2)
-        os.write(notice, json.dumps({'outcome': outcome, 'mutation': mutation,
-                                     'exit': int(code or 0), 'signal': signal_name}).encode())
+        os.write(notice, json.dumps({'outcome': outcome, 'exit': int(code or 0), 'signal': signal_name}).encode())
         os.close(notice)
         # Only the forked child writes a normal crossing response.  The parent
         # drains bounded OS pipes and sends the resulting wire bytes back here.
@@ -394,7 +391,7 @@ class CrossingDaemon:
 
     def _handle(self, conn):
         started = time.monotonic()
-        uid, band, outcome, mutation = -1, '', 'failed', True
+        uid, band, outcome, changed, receipt_failed = -1, '', 'failed', False, False
         signal_name, missing_field = None, None
         try:
             with contextlib.nullcontext(conn):
@@ -475,11 +472,17 @@ class CrossingDaemon:
                         conn.sendall(reply(1, err='crossing-child-died'))
                     else:
                         result = json.loads(chunks[notice_r])
-                        outcome, mutation = result['outcome'], result['mutation']
+                        outcome = result['outcome']
                         signal_name = result['signal']
+                        try:
+                            body = json.loads(chunks[out_r])
+                            if isinstance(body, dict):
+                                changed = cli._stage_changed(body) is True
+                                receipt_failed = body.get('ok') is False
+                        except (ValueError, UnicodeError, TypeError):
+                            body = None
                         if outcome == 'failed':
                             try:
-                                body = json.loads(chunks[out_r])
                                 known_signals = {'agathodaimon-band-not-published',
                                                  'agathodaimon-envelope-invocation-failed',
                                                  'chord-secret-carrier-refused'}
@@ -531,6 +534,6 @@ class CrossingDaemon:
                 pass
         finally:
             conn.close()
-            if outcome != 'ok' or mutation:
+            if outcome != 'ok' or changed or receipt_failed:
                 audit(uid, band, outcome, started, signal_name, missing_field)
             self.slots.release()

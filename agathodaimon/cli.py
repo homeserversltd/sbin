@@ -92,34 +92,6 @@ def _seat_marked_value(declaration, seat, name):
     return value if value is None or isinstance(value, bool) else "absent"
 
 
-def _index_mutation_allowed(path: Path) -> bool | None:
-    """The standing declaration remains the PIN gate's authority."""
-    try:
-        declaration = _index(path)
-    except (OSError, UnicodeError, ValueError, RecursionError):
-        return None
-    value = _seat_marked_value(declaration, _intent_seat(path), "mutation_allowed")
-    if isinstance(declaration, dict) and declaration.get("mutation_allowed") == "seat" and value == "absent":
-        return True
-    return value if value is None or isinstance(value, bool) else None
-
-
-def _mutation_allowed(path: Path) -> bool | None:
-    try:
-        declaration = _index(path)
-    except (OSError, UnicodeError, ValueError, RecursionError):
-        declaration = None
-    if isinstance(declaration, dict) and declaration.get("mutation_allowed") == "seat":
-        value = _seat_marked_value(declaration, _intent_seat(path), "mutation_allowed")
-        return value if value is None or isinstance(value, bool) else True
-    legacy = _index_mutation_allowed(path)
-    seat = _intent_seat(path)
-    seated = _boolean_word(seat, "mutation_allowed")
-    if legacy is False or seated is False:
-        return False
-    return seated if seat is not None else legacy
-
-
 def _declares_dry_run(path: Path, index: dict) -> bool:
     # Until the sweep can identify a retired key, a missing key is not proof
     # that the installed stop honors dry-run. Never promote it from the seat.
@@ -206,7 +178,6 @@ def _help_result(path: Path) -> dict:
     if seat is not None:
         result.update({"payload_fields": _intent_payload_fields(seat),
                        "exousia": _boolean_word(seat, "exousia"),
-                       "mutation_allowed": _boolean_word(seat, "mutation_allowed"),
                        "dry-run": _boolean_word(seat, "dry-run")})
     return result
 
@@ -382,11 +353,7 @@ def _validate_chord(declaration: dict):
         if not isinstance(ring, dict) or not isinstance(ring.get("observe"), str):
             raise _ChordError("chord-stage-invalid")
         target = _slash_target(ring["observe"])
-        # Observation is permission to run the stop, not deed classification.
-        # Preserve the legacy read-only requirement; a mutating seat can veto it.
-        if (target is None or not target.is_file()
-                or _index_mutation_allowed(target.parent) is not False
-                or _boolean_word(_intent_seat(target.parent), "mutation_allowed") is True):
+        if target is None or not target.is_file():
             raise _ChordError("chord-stage-invalid")
         arguments = ring.get("arguments")
         if not isinstance(arguments, dict):
@@ -481,13 +448,11 @@ def _deed_target(routine_id):
     return target if re.fullmatch(r"[A-Za-z0-9_.-]{1,48}", target) else "chord"
 
 
-def _stage_word(row, mutating):
+def _stage_word(row):
     if row["outcome"] == "stage-skipped":
         return "skipped"
     if row["outcome"] == "stage-refused":
         return "refused"
-    if not mutating:
-        return "completed"
     receipt = row.get("receipt")
     changed = _stage_changed(receipt) if isinstance(receipt, dict) else None
     if changed is None:
@@ -502,12 +467,11 @@ def _stage_deed(routine_id, row, word, signal, duration_ms):
          signal=signal or "operation-failed", outcome=word)
 
 
-def _chord_deed(routine_id, rows, mutating, ok, changed, signal, started):
+def _chord_deed(routine_id, rows, ok, changed, signal, started):
     from agathodaimon._deed import send
     word = ("refused" if not ok else "completed" if changed is None
             else "changed" if changed else "kept")
-    stages = [[row["stage_id"], _stage_word(row, is_write)]
-              for row, is_write in zip(rows, mutating)]
+    stages = [[row["stage_id"], _stage_word(row)] for row in rows]
     return send("sbin", "chord", ok, target=_deed_target(routine_id),
                 duration_ms=int((time.monotonic() - started) * 1000),
                 signal=signal, outcome=word, stages=stages)
@@ -531,7 +495,6 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
     started = time.monotonic()
     routine_id = path.relative_to(ROOT).as_posix()
     rows = []
-    stage_mutating = []
     stage_durations = []
     stage_refusals = []
     completed = {}
@@ -542,11 +505,10 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
     change_known = True
     payload = envelope.get("payload")
     dry_run = isinstance(payload, dict) and payload.get("dry-run") is True
-    mutating_chord = _mutation_allowed(path) is not False
 
     def preflight_refusal(reason):
-        if mutating_chord and not dry_run:
-            _chord_deed(routine_id, [], [], False, False, reason, started)
+        if not dry_run:
+            _chord_deed(routine_id, [], False, False, reason, started)
 
     from agathodaimon._envelope import _pin_bearing_exousia, _redact_declared, _redact_pin_carriers
     echoed = _envelope.echo_undeclared(envelope)
@@ -618,10 +580,6 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             consume_between_stages()
             sid, band = stage["stage_id"], stage["snake"]
             stage_started = time.monotonic()
-            declared_target = _slash_target(band)
-            is_write = (declared_target is None or
-                        _mutation_allowed(declared_target.parent if declared_target.is_file() else declared_target) is not False)
-            stage_mutating.append(is_write)
             stage_durations.append(0)
             stage_refusals.append(None)
             row = {"stage_id": sid, "transition": band, "outcome": "stage-skipped", "arguments": {}, "receipt": None}
@@ -698,7 +656,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                                 and answered_stop.get("verb") == (parts[-1] if len(parts) > 1 else "")))
                     if not matches:
                         refusal = "chord-stage-receipt-schema-mismatch"
-                if is_write and phase not in ("observe", "reobserve"):
+                if phase not in ("observe", "reobserve"):
                     stage_changed = _stage_changed(receipt) if refusal is None else None
                     change_known = change_known and stage_changed is not None
                     changed = changed or stage_changed is True
@@ -740,9 +698,10 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
             last_executed = (row, phase)
     consume_between_stages()
     if not dry_run:
-        for row, is_write, duration_ms, refusal in zip(rows, stage_mutating, stage_durations, stage_refusals):
-            if is_write:
-                _stage_deed(routine_id, row, _stage_word(row, True),
+        for row, duration_ms, refusal in zip(rows, stage_durations, stage_refusals):
+            word = _stage_word(row)
+            if word in ("changed", "refused"):
+                _stage_deed(routine_id, row, word,
                             row.get("firstMissingSignal") or refusal, duration_ms)
     serve_offset = 1 if ring is not None else 0
     final_offset = serve_offset + len(serve) + len(rescue)
@@ -751,10 +710,10 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
               or (row["outcome"] == "stage-skipped" and row.get("skipped_by") == "settled")
               for stage, row in zip(serve, rows[serve_offset:serve_offset + len(serve)])) and
           all(row["outcome"] == "stage-completed" for row in rows[final_offset:]))
-    if not dry_run and _mutation_allowed(path) is not False:
+    if not dry_run and (not ok or changed):
         try:
-            logged = _chord_deed(routine_id, rows, stage_mutating, ok,
-                                 changed if change_known else None, signal, started)
+            logged = _chord_deed(routine_id, rows, ok,
+                                 changed if changed or change_known else None, signal, started)
         except (OSError, ValueError):
             logged = False
         if not logged and changed:
@@ -768,7 +727,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                                                if key not in {"raw_envelope", "envelope"}}, _HAND_SECRET_NAMES)
     answer = {"schema": "caduceus.chord.receipt.v1", "ok": ok, "routine_id": routine_id,
               "request": request, "stages": rows, "failedStage": failed, "firstMissingSignal": signal}
-    if change_known:
+    if change_known or changed:
         answer["changed"] = changed
     if settled_by is not None:
         answer["settledBy"] = settled_by
@@ -1496,8 +1455,6 @@ def _admin_mutation_request(target: str, remainder: list[str], envelope: dict | 
     if _display_startup_reapplication_without_pin(target, remainder, envelope):
         return False
     read_only = {"get", "read", "status", "list", "show", "observed", "validate", "verify"}
-    if target.startswith("settings/"):
-        return True
     if target == "appliance/service":
         return operation not in {"read", "get", "show", "list", "observed", "status"}
     if target == "portals/service-control":
@@ -1556,18 +1513,14 @@ def _administrative_pin_admits(
 ) -> bool:
     if not pin_required or caduceus_root or target is None:
         return True
-    is_admin = (
-        _administrative_candidate(target)
-        if publication is None
-        else _administrative_target(target, publication)
-    )
-    if not is_admin:
-        return True
     startup_envelope = None if startup_unenveloped else envelope
     if _display_startup_reapplication_without_pin(target, remainder, startup_envelope):
         return True
-    declared = _index_mutation_allowed(ROOT / target)
-    if declared is False or (declared is None and not _admin_mutation_request(target, remainder, envelope)):
+    if target in {"local-ai/slot", "transmission/keys", "appliance/service",
+                  "portals/service-control", "appliance/sudo-passwordless"}:
+        if not _admin_mutation_request(target, remainder, envelope):
+            return True
+    if _boolean_word(_intent_seat(ROOT / target), "exousia") is False:
         return True
     if not pin_present:
         tty_available, pin = _prompt_administrative_pin()
@@ -1820,7 +1773,7 @@ def _scoped_main(argv=None):
                     ("network/dhcp/", "network/dns/", "network/identity/"))):
         try:
             target = _slash_target(_stamp_target)
-            if target is not None and target.is_file() and _mutation_allowed(target.parent) is not False:
+            if target is not None and target.is_file() and (answer["ok"] is False or _stage_changed(answer) is True):
                 from agathodaimon._deed import send
                 changed = _stage_changed(answer)
                 word = ("refused" if not answer["ok"] else "completed" if changed is None
@@ -1886,7 +1839,7 @@ def _intent_declaration_drift(intents: dict) -> dict:
     for index in ROOT.rglob("index.json"):
         try:
             declaration = _index(index.parent)
-            if any(declaration.get(name) == "seat" for name in ("dry-run", "mutation_allowed")):
+            if any(declaration.get(name) == "seat" for name in ("dry-run",)):
                 intents.setdefault(index.parent.relative_to(ROOT).as_posix(), None)
         except (OSError, UnicodeError, ValueError, RecursionError):
             continue
@@ -1909,10 +1862,9 @@ def _intent_declaration_drift(intents: dict) -> dict:
             administrative = (_administrative_candidate(intent) if publication is None
                               else _administrative_target(intent, publication))
             # Report the standing posture, not the switch or a live PIN check.
-            administrative = administrative and _seat_marked_value(declaration, seat, "mutation_allowed") is not False
             if exousia != administrative:
                 differences.update(exousia=exousia, administrative=administrative)
-        for name in ("dry-run", "mutation_allowed"):
+        for name in ("dry-run",):
             legacy = _intent_boolean_declaration(declaration, name)
             seated = _intent_boolean_declaration(seat, name)
             if declaration.get(name) == "seat":
