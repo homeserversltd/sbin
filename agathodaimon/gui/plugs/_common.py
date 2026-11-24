@@ -218,10 +218,8 @@ def _focus(widget: Any) -> Any:
     return root.get_focus() if root is not None else None
 
 
-def _skip_disabled_rows(Gtk: Any, GObject: Any, box: Any, step: Any, count: int,
-                        extend: bool, modify: bool) -> None:
-    # GtkListBox's display-line move advances its cursor even if the next
-    # visible row rejects focus. Only take over when that row is unusable.
+def _move_setting_row(box: Any, step: Any, count: int, extend: bool, modify: bool,
+                      Gtk: Any, Adw: Any, GObject: Any) -> None:
     if step != Gtk.MovementStep.DISPLAY_LINES or count not in (-1, 1) or extend or modify:
         return
     row = _focus(box)
@@ -229,17 +227,44 @@ def _skip_disabled_rows(Gtk: Any, GObject: Any, box: Any, step: Any, count: int,
         if isinstance(row, Gtk.Popover):
             return
         row = row.get_parent()
-    skipped = False
-    while row is not None:
-        row = row.get_next_sibling() if count > 0 else row.get_prev_sibling()
-        if not isinstance(row, Gtk.ListBoxRow) or not row.get_mapped():
-            continue
-        if row.get_focusable() and row.is_sensitive():
-            if not skipped or row.grab_focus():
-                break
-        skipped = True
-    if skipped:
-        GObject.signal_stop_emission_by_name(box, "move-cursor")
+    if not isinstance(row, Gtk.ListBoxRow):
+        return
+
+    def advance(widget: Any) -> Any:
+        return widget.get_next_sibling() if count > 0 else widget.get_prev_sibling()
+
+    def focus_usable(candidate: Any) -> bool:
+        while candidate is not None:
+            if (isinstance(candidate, Gtk.ListBoxRow) and candidate.get_mapped()
+                    and candidate.get_focusable() and candidate.is_sensitive()
+                    and not getattr(candidate, "_settings_status_line", False)
+                    and candidate.grab_focus()):
+                return True
+            candidate = advance(candidate)
+        return False
+
+    # The list cursor can trail focus in a help button or status line.
+    GObject.signal_stop_emission_by_name(box, "move-cursor")
+    if focus_usable(advance(row)):
+        return
+
+    # Follow the PreferencesPage's group order, not the current row's Tab
+    # order (which could reenter its help button or land on an inert row).
+    group = box.get_ancestor(Adw.PreferencesGroup)
+    while group is not None and (group := advance(group)) is not None:
+        if isinstance(group, Adw.PreferencesGroup) and group.get_mapped():
+            sibling_box = next(_children_of_type(group, Gtk.ListBox), None)
+            if sibling_box is not None:
+                edge = sibling_box.get_first_child() if count > 0 else sibling_box.get_last_child()
+                if focus_usable(edge):
+                    return
+    box.error_bell()
+
+
+def _connect_row_navigation(row: Any, Gtk: Any, Adw: Any, GObject: Any) -> None:
+    listbox = row.get_parent()
+    if isinstance(listbox, Gtk.ListBox):
+        listbox.connect("move-cursor", _move_setting_row, Gtk, Adw, GObject)
 
 
 def _children_of_type(widget: Any, kind: Any) -> Any:
@@ -299,7 +324,7 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
     import gi
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, GLib, Gtk
+    from gi.repository import Adw, GLib, GObject, Gtk
 
     group = Adw.PreferencesGroup()
     page.add(group)
@@ -308,6 +333,7 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
     button.set_sensitive(False)
     row.add_suffix(button)
     group.add(row)
+    _connect_row_navigation(row, Gtk, Adw, GObject)
 
     def find_subtitle(widget: Any) -> Any:
         for child in widget:
@@ -834,6 +860,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             choices[field] = {"entry": row, "combo": combo, "values": [],
                               "empty_label": spec.get("absent", "No selection")}
         status_row = Adw.ActionRow(focusable=True, activatable=False, selectable=False)
+        # It can be handed focus, but must never be an arrow destination.
+        status_row._settings_status_line = True
         status_row.set_visible(False)
         status_rows[field] = status_row
         unavailable = Adw.ActionRow(title=title, subtitle=absent_reasons[field],
@@ -1232,9 +1260,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
 
         _background(GLib, write, finish)
 
-    listbox = read_error.get_parent()
-    if isinstance(listbox, Gtk.ListBox):
-        listbox.connect("move-cursor", lambda *args: _skip_disabled_rows(Gtk, GObject, *args))
+    _connect_row_navigation(read_error, Gtk, Adw, GObject)
     read_error.connect("activated", lambda _row: refresh())
     refresh()
     return page
