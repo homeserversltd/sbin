@@ -436,11 +436,9 @@ def _resolve_arguments(value, request, completed, allow_unrun=False):
 
 
 def _stage_changed(receipt):
-    for key in ("changed", "mutationPerformed", "mutation_performed"):
-        value = receipt.get(key)
-        if isinstance(value, bool):
-            return value
-    return None
+    values = [receipt.get(key) for key in ("changed", "mutationPerformed", "mutation_performed")]
+    booleans = [value for value in values if isinstance(value, bool)]
+    return any(booleans) if booleans else None
 
 
 def _deed_target(routine_id):
