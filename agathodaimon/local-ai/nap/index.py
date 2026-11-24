@@ -2,16 +2,15 @@
 from __future__ import annotations
 
 import argparse
-import io
 import json
 import os
 import pwd
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 from agathodaimon import _envelope
+from agathodaimon._local_ai import _optional_request
 
 HERE = Path(__file__).resolve().parent
 
@@ -80,19 +79,13 @@ def main(args=None):
         print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-local-ai-nap-arguments-invalid",
                           "mutationPerformed": False}))
         return 2
-    request = None
-    if not sys.stdin.isatty():
-        raw = sys.stdin.read()
-        if raw.strip():
-            original = sys.stdin
-            try:
-                sys.stdin = io.StringIO(raw)
-                request = _envelope.read(known_fields=("dry_run", "user_id"))
-            except (ValueError, OSError):
-                print(json.dumps({"ok": False, "firstMissingSignal": "nap-envelope-invalid"}))
-                return 2
-            finally:
-                sys.stdin = original
+    try:
+        request = _optional_request("dry_run", "user_id")
+    except UnicodeDecodeError:
+        raise  # transport failure, as with the former read before parsing
+    except ValueError:
+        print(json.dumps({"ok": False, "firstMissingSignal": "nap-envelope-invalid"}))
+        return 2
     value = dispatch(request, dry_run=options.dry_run, user_id=options.user_id)
     print(json.dumps(value, separators=(",", ":")))
     return 0 if value.get("ok") else 1

@@ -469,7 +469,7 @@ def memory(local: dict) -> dict:
     mounted = _worker_drive_mounted()
     on = edition == "memory" and mounted
     reason = (None if on else "not-chosen" if edition != "memory" else "drive_required")
-    return {"edition": edition, "worker_drive_mounted": mounted, "card": card_info,
+    return {"ok": True, "edition": edition, "worker_drive_mounted": mounted, "card": card_info,
             "state": "on" if on else "off", "reason": reason}
 
 
@@ -545,19 +545,17 @@ def run(local: dict, name: str) -> dict:
     raise AssertionError("execve returned")
 
 
-def slot_arguments(*, argv=None, envelope=None) -> list[str]:
-    """The PIN gate and execution share precisely the same action selector."""
-    if argv:
-        return list(argv)
-    if not isinstance(envelope, dict):
-        return []
-    payload = envelope.get("payload") if "schema" in envelope else envelope
-    if not isinstance(payload, dict):
-        return []
+def _slot_arguments(payload: dict, transition, argv=None) -> list[str]:
+    """Share selection between the front door's PIN gate and the stop."""
     arguments = payload.get("args")
+    if argv and argv != arguments:
+        # Harmonia's model-slot@.service still calls `local-ai slot run %i`.
+        # Give that launcher its standing precedence, including over stdin.
+        return list(argv) if len(argv) == 2 and argv[0] == "run" else []
+    # The front door may pass a copy of payload.args as argv; the request
+    # itself, not that copy, supplies the words for envelope calls.
     if arguments is not None:
         return arguments if isinstance(arguments, list) and all(isinstance(item, str) for item in arguments) else []
-    transition = envelope.get("transition", "")
     parts = [part for part in re.split(r"[./:]", transition) if part] if isinstance(transition, str) else []
     operation = payload.get("action", payload.get("op", parts[-1] if parts else None))
     name = payload.get("slot")
@@ -565,30 +563,33 @@ def slot_arguments(*, argv=None, envelope=None) -> list[str]:
 
 
 def slot_action(*, argv=None, envelope=None) -> str:
-    arguments = slot_arguments(argv=argv, envelope=envelope)
+    envelope = envelope if isinstance(envelope, dict) else {}
+    payload = envelope.get("payload") if "schema" in envelope else envelope
+    arguments = _slot_arguments(payload if isinstance(payload, dict) else {}, envelope.get("transition"), argv)
     if len(arguments) != 2 or arguments[0] not in {"apply", "run"} or arguments[1] not in ROLES:
         raise LocalAIError("local-ai-slot-arguments-invalid")
     return arguments[0]
 
 
 def _optional_request(*fields: str) -> Request | None:
-    if sys.stdin.isatty():
-        return None
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return None
-    from io import StringIO
-    original = sys.stdin
     try:
-        sys.stdin = StringIO(raw)
-        return read(known_fields=fields)
-    finally:
-        sys.stdin = original
+        return read(known_fields=fields, quiet_on_tty=True)
+    except EnvelopeError as error:
+        cause = error.__cause__
+        # The reader refuses blank JSON on a pipe; local-ai treats it as
+        # absence, just as before. Do not turn malformed input into absence.
+        if isinstance(cause, json.JSONDecodeError) and not cause.doc.strip():
+            return None
+        if isinstance(cause, (OSError, UnicodeDecodeError)):
+            raise cause from None  # preserve the former input observation signal
+        raise
 
 
 def _request(args: list[str]) -> tuple[list[str], Request | None]:
     request = _optional_request("args", "slot", "action", "op")
-    return slot_arguments(argv=args, envelope=request.value if request else None), request
+    if request is None:
+        return _slot_arguments({}, None, args), None
+    return _slot_arguments(request.payload, request.value.get("transition"), args), request
 
 
 def main(verb: str, args=None) -> int:
