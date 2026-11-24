@@ -3,7 +3,7 @@
   "children": [],
   "mutation_allowed": "seat",
   "sclerite": {
-    "name": "gateway",
+    "name": "all",
     "features": {
       "gateway": {
         "band": true,
