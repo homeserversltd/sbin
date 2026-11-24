@@ -4,8 +4,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
 from typing import Any, Sequence
+
+from agathodaimon import _envelope
 
 _MAX_INPUT_BYTES = 64 * 1024
 _HARMONIA = "/usr/local/bin/harmonia"
@@ -28,24 +29,13 @@ def _refuse(signal: str) -> int:
 
 def _request_object() -> dict[str, Any]:
     try:
-        stream = getattr(sys.stdin, "buffer", None)
-        raw = stream.read(_MAX_INPUT_BYTES + 1) if stream is not None else sys.stdin.read(_MAX_INPUT_BYTES + 1)
-    except (OSError, UnicodeError) as error:
+        value = _envelope.read(max_input_bytes=_MAX_INPUT_BYTES).value
+    except (_envelope.EnvelopeError, UnicodeError, RecursionError) as error:
+        if str(error) == "agathodaimon-envelope-input-too-large":
+            raise Refusal("harmonia-press-request-too-large") from error
         raise Refusal("harmonia-press-request-invalid") from error
-    if isinstance(raw, str):
-        try:
-            raw = raw.encode("utf-8")
-        except UnicodeEncodeError as error:
-            raise Refusal("harmonia-press-request-invalid") from error
-    if len(raw) > _MAX_INPUT_BYTES:
-        raise Refusal("harmonia-press-request-too-large")
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-        raise Refusal("harmonia-press-request-invalid") from error
-    if not isinstance(value, dict):
-        raise Refusal("harmonia-press-request-invalid")
-    payload = value.get("payload") if "payload" in value else value
+    # A payload wrapper also takes precedence on the legacy schema-less form.
+    payload = value.get("payload", value)
     if not isinstance(payload, dict):
         raise Refusal("harmonia-press-request-invalid")
     return payload

@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from typing import Any
+
+from agathodaimon import _envelope
 
 TIMER_UNIT = "harmonia.timer"
 
@@ -106,13 +107,11 @@ def _mark_failure(current: str, signal: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     del argv  # This actuator's request contract is stdin JSON only.
     try:
-        envelope = json.loads(sys.stdin.read())
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        request = _envelope.read()
+    except (_envelope.EnvelopeError, UnicodeError):
         return _emit(_receipt(first_missing_signal="update-service-payload-invalid"))
 
-    if not isinstance(envelope, dict):
-        return _emit(_receipt(first_missing_signal="update-service-payload-invalid"))
-    payload = envelope.get("payload") if "schema" in envelope else envelope
+    payload = request.value.get("payload") if request.envelope else request.value
     # Unknown keys, such as the scrubbed flags room, are skipped, never fatal.
     if not isinstance(payload, dict):
         return _emit(_receipt(first_missing_signal="update-service-payload-invalid"))
