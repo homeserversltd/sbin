@@ -18,7 +18,6 @@ import re
 import shutil
 import socket
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
@@ -1769,15 +1768,5 @@ def _emit(call) -> int:
         value = _refusal("error", "agathodaimon-house-ca-refused")
     print(json.dumps(value, sort_keys=True))
     return 0 if value.get("ok") else 1
-
-
-def _json_stdin() -> dict[str, Any]:
-    try:
-        value = json.load(sys.stdin)
-    except (json.JSONDecodeError, TypeError) as error:
-        raise ValueError("agathodaimon-house-ca-request-invalid") from error
-    if not isinstance(value, dict):
-        raise ValueError("agathodaimon-house-ca-request-invalid")
-    return value
 
 

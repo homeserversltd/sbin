@@ -6,10 +6,11 @@ import os
 import re
 import selectors
 import subprocess
-import sys
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Sequence
+
+from agathodaimon import _envelope
 
 _MAX_REQUEST = 65536
 _MAX_LINE_BYTES = 8192
@@ -110,14 +111,14 @@ def _receipt(ok: bool, signal: str, freed_bytes: int = 0) -> dict[str, object]:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        raw = sys.stdin.read(_MAX_REQUEST + 1)
-        if len(raw) > _MAX_REQUEST:
+        # The legacy limit counted text characters, not UTF-8 bytes.
+        request = _envelope.read(max_input_bytes=4 * _MAX_REQUEST)
+        if len(request.raw_envelope) > _MAX_REQUEST:
             raise ValueError
-        envelope = json.loads(raw)
-        payload = envelope.get("payload") if isinstance(envelope, dict) and "schema" in envelope else envelope
+        payload = request.value.get("payload") if request.envelope else request.value
         if not isinstance(payload, dict) or payload:
             raise ValueError
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+    except ValueError:
         print(json.dumps(_receipt(False, "journal-vacuum-payload-invalid"), separators=(",", ":")))
         return 1
     try:

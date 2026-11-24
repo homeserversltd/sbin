@@ -12,7 +12,6 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass, replace
-from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -811,21 +810,6 @@ def refresh_legacy_certificate(
                 pass
 
 
-def _read_request() -> Request:
-    stream = sys.stdin
-    try:
-        raw = stream.read(MAX_INPUT_BYTES + 1)
-    except (OSError, UnicodeError) as error:
-        raise EnvelopeError("cert-refresh-request-invalid") from error
-    if len(raw.encode("utf-8", "replace")) > MAX_INPUT_BYTES:
-        raise EnvelopeError("cert-refresh-request-too-large")
-    try:
-        sys.stdin = StringIO(raw)
-        return read(known_fields=("action", "operation", "state"), declared_flags=())
-    finally:
-        sys.stdin = stream
-
-
 def _scrub(value: Any) -> Any:
     if isinstance(value, str):
         return "[REDACTED]" if SECRET_MARKER.search(value) else value
@@ -873,11 +857,11 @@ def _has_nonempty_argv(value: Any) -> bool:
 def main(argv: Sequence[str] | None = None) -> int:
     request: Request | None = None
     try:
-        args = list(sys.argv[1:] if argv is None else argv)
-        request = _read_request()
+        request = read(known_fields=("action", "operation", "state"), max_input_bytes=MAX_INPUT_BYTES)
         raw_payload = request.value.get("payload") if request.envelope and isinstance(request.value.get("payload"), Mapping) else {}
         carriers = [request.value, raw_payload]
-        if args:
+        # Dispatch can pass extra words, but none may reach the certificate act.
+        if argv:
             raise Refusal("cert-refresh-arguments-refused")
         if any(_has_executable_selector(carrier) for carrier in carriers):
             raise Refusal("cert-refresh-executable-selector-refused")
@@ -898,4 +882,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))
