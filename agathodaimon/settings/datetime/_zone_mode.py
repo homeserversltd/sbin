@@ -5,8 +5,8 @@ import fcntl
 import json
 import os
 import stat
-from pathlib import Path
 
+from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
 # Reuse the existing appliance-config member splicer and atomic writer.
@@ -14,10 +14,6 @@ _writer = import_module("agathodaimon.update.module-toggle.index")
 
 
 def _config_path():
-    root = os.environ.get("CADUCEUS_ROOT")
-    if root is not None:
-        return Path(root) / "etc/appliance/config.json"
-    from agathodaimon._envelope import appliance_runtime_path
     return appliance_runtime_path("config")
 
 

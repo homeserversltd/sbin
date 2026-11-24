@@ -25,7 +25,7 @@ if __name__ == "__main__":
     signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGALRM})
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from agathodaimon._envelope import appliance_runtime_path
+from agathodaimon._nidus.path import runtime_root
 from agathodaimon._nidus.write import WriteError
 from agathodaimon.settings import _shared
 from agathodaimon.settings.datetime import _bar_clock, _zone_mode
@@ -51,9 +51,8 @@ def _clock():
 
 
 def _last_sync():
-    root = Path(os.environ.get("CADUCEUS_ROOT") or appliance_runtime_path("profile").parents[2])
     try:
-        stamp = (root / "run/systemd/timesync/synchronized").stat().st_mtime
+        stamp = (runtime_root() / "run/systemd/timesync/synchronized").stat().st_mtime
         return datetime.fromtimestamp(stamp, UTC).isoformat().replace("+00:00", "Z")
     except (OSError, ValueError, OverflowError):
         return None

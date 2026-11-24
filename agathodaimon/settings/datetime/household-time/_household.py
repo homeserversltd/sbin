@@ -14,6 +14,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.request import Request, urlopen
+
+from agathodaimon._nidus.path import runtime_root
 from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
 PROVIDER = "ip-api.com"
@@ -26,7 +28,7 @@ ZONE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9._+-]*(?:/[A-Za-z0-9._+-]+)+$")
 
 
 def _root() -> Path:
-    return Path(os.environ.get("CADUCEUS_ROOT", "/"))
+    return runtime_root()
 
 
 def state_path() -> Path:
