@@ -1,15 +1,13 @@
 """Mount and share one member of the opened data-drive collection."""
 from __future__ import annotations
 
-import io
 import json
 import os
 import stat
-import sys
 import time
 from typing import Any, NoReturn, Sequence
 
-from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
+from _envelope import attach as attach_envelope, read as read_envelope
 from agathodaimon.storage.drive import deed
 from agathodaimon.storage.nas import runtime
 
@@ -375,23 +373,12 @@ def dispatch(request: Any) -> dict[str, Any]:
     return attach_envelope(receipt, request)
 
 
-def _read_request():
-    raw = sys.stdin.buffer.read(runtime.MAX_INPUT + 1)
-    if not raw or len(raw) > runtime.MAX_INPUT:
-        raise ValueError("request-size-invalid")
-    previous = sys.stdin
-    try:
-        sys.stdin = io.StringIO(raw.decode("utf-8"))
-        return read_envelope(known_fields=("device", "dry-run"))
-    finally:
-        sys.stdin = previous
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        receipt = dispatch(_read_request())
-    except (ValueError, UnicodeError, json.JSONDecodeError, EnvelopeError):
+        request = read_envelope(known_fields=("device", "dry-run"), max_input_bytes=runtime.MAX_INPUT)
+        receipt = dispatch(request)
+    except ValueError:
         receipt = _receipt(None)
         receipt.update(firstMissingSignal="agathodaimon-drive-request-invalid", failedStep="request")
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))

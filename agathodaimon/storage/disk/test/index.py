@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
+from agathodaimon import _envelope
 from agathodaimon._deed import send
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus import unit
@@ -39,27 +40,21 @@ def _refuse(signal: str, **details: Any) -> int:
 
 def _request_object() -> dict[str, Any]:
     try:
-        stream = getattr(sys.stdin, "buffer", None)
-        raw = stream.read(_MAX_INPUT_BYTES + 1) if stream is not None else sys.stdin.read(_MAX_INPUT_BYTES + 1)
-    except (OSError, UnicodeError) as error:
+        request = _envelope.read(known_fields=("device", "test_type"), max_input_bytes=_MAX_INPUT_BYTES)
+    except _envelope.EnvelopeError as error:
+        signal = ("disk-test-request-too-large" if str(error) == "agathodaimon-envelope-input-too-large"
+                  else "disk-test-request-invalid")
+        raise Refusal(signal) from error
+    except RecursionError as error:
         raise Refusal("disk-test-request-invalid") from error
-    if isinstance(raw, str):
-        try:
-            raw = raw.encode("utf-8")
-        except UnicodeEncodeError as error:
-            raise Refusal("disk-test-request-invalid") from error
-    if len(raw) > _MAX_INPUT_BYTES:
-        raise Refusal("disk-test-request-too-large")
-    try:
-        value = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
-        raise Refusal("disk-test-request-invalid") from error
-    if not isinstance(value, dict):
-        raise Refusal("disk-test-request-invalid")
-    payload = value.get("payload") if "payload" in value else value
+
+    # The door sends a payload; preserve the legacy flat and nested objects too.
+    if "payload" not in request.value:
+        return request.value if request.envelope else request.payload
+    payload = request.value["payload"]
     if not isinstance(payload, dict):
         raise Refusal("disk-test-request-invalid")
-    return payload
+    return request.payload if request.envelope else payload
 
 
 def _device_form(value: Any) -> str:
@@ -210,10 +205,7 @@ def _worker(device: str, mode: str) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    if args:
-        if len(args) == 3 and args[0] == "--worker":
-            return _worker(args[1], args[2])
+    if argv:
         return _refuse("disk-test-request-invalid")
     started = time.monotonic()
     device = None
@@ -267,4 +259,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # systemd-run starts this private child directly, never through the stop.
+    args = sys.argv[1:]
+    if len(args) == 3 and args[0] == "--worker":
+        raise SystemExit(_worker(args[1], args[2]))
+    raise SystemExit(main(args))

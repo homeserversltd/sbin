@@ -1,15 +1,13 @@
 """Unshare and unmount one staff-opened data drive."""
 from __future__ import annotations
 
-import io
 import json
 import os
 import re
-import sys
 import time
 from typing import Any, NoReturn, Sequence
 
-from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
+from _envelope import attach as attach_envelope, read as read_envelope
 from agathodaimon.storage.drive import _drive, _opened, _resolve, _shares, deed
 from agathodaimon.storage.drive.add.index import _test_unit
 from agathodaimon.storage.nas import runtime
@@ -321,17 +319,9 @@ def dispatch(request: Any) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        raw = sys.stdin.buffer.read(runtime.MAX_INPUT + 1)
-        if not raw or len(raw) > runtime.MAX_INPUT:
-            raise ValueError("request-size-invalid")
-        previous = sys.stdin
-        try:
-            sys.stdin = io.StringIO(raw.decode("utf-8"))
-            request = read_envelope(known_fields=("device", "dry-run"))
-        finally:
-            sys.stdin = previous
+        request = read_envelope(known_fields=("device", "dry-run"), max_input_bytes=runtime.MAX_INPUT)
         receipt = dispatch(request)
-    except (ValueError, UnicodeError, json.JSONDecodeError, EnvelopeError):
+    except ValueError:
         receipt = _receipt(None)
         receipt.update(firstMissingSignal="agathodaimon-drive-request-invalid", failedStep="request")
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))

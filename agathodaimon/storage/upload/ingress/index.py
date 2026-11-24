@@ -4,9 +4,10 @@ import json
 import os
 import shutil
 import stat
-import sys
 import tempfile
 from pathlib import Path
+
+from agathodaimon import _envelope
 
 ROOT_PREFIX = "/mnt/nas"
 
@@ -71,8 +72,9 @@ def numeric(metadata, key, default):
 def main(_argv=None):
     action = "file-ingress"
     try:
-        envelope = json.load(sys.stdin)
-        metadata = envelope.get("metadata") if isinstance(envelope, dict) else None
+        request = _envelope.read(known_fields=("metadata",))
+        # The Caduceus staff receipt crossing sends metadata at the top level.
+        metadata = request.value.get("metadata")
         if not isinstance(metadata, dict):
             raise ValueError("metadata must be an object")
         target = target_path(metadata)
@@ -111,7 +113,10 @@ def main(_argv=None):
         if not stat.S_ISREG(final.st_mode) or stat.S_IMODE(final.st_mode) != mode or final.st_uid != uid or final.st_gid != gid:
             return receipt(False, action, False, True, commands, "file_ingress.readback_mismatch", target=str(target), mode=oct(stat.S_IMODE(final.st_mode)), uid=final.st_uid, gid=final.st_gid)
         return receipt(True, action, False, True, commands, None, target=str(target), mode=oct(mode), uid=uid, gid=gid, size=final.st_size)
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except _envelope.EnvelopeError as exc:
+        error = "metadata must be an object" if str(exc) == "JSON object required" else str(exc.__cause__ or exc)
+        return receipt(False, action, False, False, [], "file_ingress.validation", error=error)
+    except (OSError, ValueError, TypeError) as exc:
         return receipt(False, action, False, False, [], "file_ingress.validation", error=str(exc))
 
 

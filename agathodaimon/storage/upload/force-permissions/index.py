@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 from pathlib import Path
+
+from agathodaimon import _envelope
 
 ROOT_PREFIX = "/mnt/nas"
 
@@ -45,8 +46,9 @@ def requested_mode(metadata: dict) -> str:
 def main(_argv=None):
     action = "force-permissions"
     try:
-        envelope = json.load(sys.stdin)
-        metadata = envelope.get("metadata") if isinstance(envelope, dict) else None
+        request = _envelope.read(known_fields=("metadata",))
+        # The Caduceus staff receipt crossing sends metadata at the top level.
+        metadata = request.value.get("metadata")
         if not isinstance(metadata, dict):
             raise ValueError("metadata must be an object")
         raw = next((metadata.get(k) for k in ("destination", "directory", "path") if k in metadata), None)
@@ -63,7 +65,10 @@ def main(_argv=None):
         if mode != 0o775:
             return receipt(False, action, False, True, commands, "force_permissions.readback_mismatch", target=str(target), mode=oct(mode))
         return receipt(True, action, False, True, commands, None, target=str(target), mode="0775", requestedMode="0775", appliedMode="0775")
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except _envelope.EnvelopeError as exc:
+        error = "metadata must be an object" if str(exc) == "JSON object required" else str(exc.__cause__ or exc)
+        return receipt(False, action, False, False, [], "force_permissions.validation", error=error)
+    except (OSError, ValueError, TypeError) as exc:
         return receipt(False, action, False, False, [], "force_permissions.validation", error=str(exc))
 
 

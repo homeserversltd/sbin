@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-import sys
 from typing import Any, Sequence
 
+from agathodaimon import _envelope
 from agathodaimon.storage.disk.wipe import index as wipe
 
 MAX_INPUT_BYTES = 64 * 1024
@@ -37,15 +37,15 @@ def dispatch(value: dict[str, Any]) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
-        if len(raw) > MAX_INPUT_BYTES:
-            raise Refusal("agathodaimon-disk-request-too-large")
-        value = json.loads(raw.decode())
-        receipt = dispatch(value) if isinstance(value, dict) else _fail("agathodaimon-disk-request-invalid")
+        request = _envelope.read(known_fields=("actuator", "metadata"), max_input_bytes=MAX_INPUT_BYTES)
+        receipt = dispatch(request.value)
+    except _envelope.EnvelopeError as error:
+        signal = ("agathodaimon-disk-request-too-large"
+                  if str(error) == "agathodaimon-envelope-input-too-large"
+                  else "agathodaimon-disk-request-invalid")
+        receipt = _fail(signal)
     except Refusal as error:
         receipt = _fail(error.signal, error.failed_step, error.return_code)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        receipt = _fail("agathodaimon-disk-request-invalid")
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["ok"] else 1
 
