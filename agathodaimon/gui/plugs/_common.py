@@ -12,7 +12,7 @@ import urllib.request
 import uuid
 from http.client import HTTPException
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 def _caduceus_url() -> str:
     configured = os.environ.get("CADUCEUS_URL")
@@ -274,6 +274,73 @@ def _children_of_type(widget: Any, kind: Any) -> Any:
             yield child
         yield from _children_of_type(child, kind)
         child = child.get_next_sibling()
+
+
+def _spin_keyboard(Gtk: Any, Gdk: Any, row: Any) -> Callable[[bool], None]:
+    """Keep the spin row's native focus stop; Enter grants editing at that stop."""
+    spin = row.get_delegate()
+    text = spin.get_delegate()
+    editing = locked = False
+    row.set_editable(False)
+
+    def set_editing(active: bool) -> None:
+        nonlocal editing
+        editing = active
+        row.set_editable(editing and not locked)
+        if editing:
+            # Use Adwaita's stock accent even after a step clears selection.
+            text.add_css_class("accent")
+        else:
+            text.remove_css_class("accent")
+            row.select_region(0, 0)
+
+    def lock_editing(busy: bool) -> None:
+        nonlocal locked
+        locked = busy
+        row.set_editable(editing and not locked)
+
+    def leave(_controller: Any) -> None:
+        if row.get_editable():
+            spin.update()  # Settle typed text the same way as a native focus-out.
+        set_editing(False)
+
+    def press(keys: Any, key: int, _code: int, mods: Any) -> bool:
+        if not editing and key in (Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_KP_Up, Gdk.KEY_KP_Down):
+            # Run the ListBox binding (move-cursor), not the spin binding.
+            box = row.get_parent()
+            return isinstance(box, Gtk.ListBox) and keys.forward(box)
+        if mods & (Gdk.ModifierType.SHIFT_MASK | Gdk.ModifierType.CONTROL_MASK |
+                   Gdk.ModifierType.ALT_MASK | Gdk.ModifierType.SUPER_MASK |
+                   Gdk.ModifierType.META_MASK | Gdk.ModifierType.HYPER_MASK):
+            return False
+        if key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_ISO_Enter):
+            if editing:
+                leave(keys)
+            elif not locked:
+                set_editing(True)
+                row.select_region(0, -1)
+        elif key == Gdk.KEY_Escape and editing:
+            spin.set_value(spin.get_value())  # Redraw the settled value, not the draft.
+            set_editing(False)
+        else:
+            return False
+        return True
+
+    keys = Gtk.EventControllerKey.new()
+    keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    keys.connect("key-pressed", press)
+    spin.add_controller(keys)
+
+    focus = Gtk.EventControllerFocus.new()
+    focus.connect("leave", leave)
+    spin.add_controller(focus)
+    # A direct click on the number or its +/- controls still works natively.
+    click = Gtk.GestureClick.new()
+    click.set_button(0)
+    click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+    click.connect("pressed", lambda *_args: set_editing(True) if not locked else None)
+    spin.add_controller(click)
+    return lock_editing
 
 
 def _combo_search(Gtk: Any, Gdk: Any, row: Any) -> None:
@@ -630,6 +697,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     static_signals: dict[str, str] = {}
     readonly_signals: dict[str, str] = {}
     sliders: dict[str, _LiveSlider] = {}
+    spin_locks: dict[str, Callable[[bool], None]] = {}
     action_buttons: dict[str, Any] = {}
     choices: dict[str, dict[str, Any]] = {}
     pending: dict[str, Any] = {}
@@ -696,6 +764,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     def lock_editing(field: str, locked: bool) -> None:
         # Lock the action, not the focus widget. Buttons use the pending
         # dispatch guard; sliders have their own in-flight coalescer.
+        if field in spin_locks:
+            spin_locks[field](locked)
+            return
         choice = choices.get(field)
         for row in (choice["entry"], choice["combo"]) if choice else (rows[field],):
             if isinstance(row, Adw.ComboRow):
@@ -800,6 +871,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             )
             row = Adw.SpinRow.new(adjustment, float(spec.get("climb", 1.0)), int(spec.get("digits", 0)))
             row.set_title(title)
+            spin_locks[field] = _spin_keyboard(Gtk, Gdk, row)
             digits = int(spec.get("digits", 0))
             getters[field] = (lambda item=row: int(item.get_value())) if digits == 0 else row.get_value
             setters[field] = lambda value, item=row, default=float(spec.get("minimum", 0.0)): item.set_value(_number(value, default))
