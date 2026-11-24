@@ -1357,6 +1357,23 @@ def _screenshot_utility(name: str, owner_path: str) -> str | None:
     return utility if stat.S_ISREG(metadata.st_mode) and os.access(utility, os.X_OK) else None
 
 
+def _screenshot_satty_starts(satty: str, environment: Mapping[str, str]) -> bool:
+    # --version exercises the loader without opening an editor or reading a capture.
+    command, outer = owner_session_command([satty, "--version"], environment)
+    try:
+        process = subprocess.Popen(
+            command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True, env=outer, text=True,
+        )
+    except OSError:
+        return False
+    try:
+        return process.wait(timeout=1) == 0
+    except subprocess.TimeoutExpired:
+        _screenshot_stop_process_group(process)
+        return False
+
+
 def _screenshot_prepare_capture(
     path: Path, environment: Mapping[str, str], python: str,
 ) -> int:
@@ -2045,6 +2062,8 @@ def screenshot(payload: dict[str, Any]) -> Mapping[str, Any]:
                 geometry = _screenshot_hypr_geometry(environment, hyprctl)
 
         satty = _screenshot_utility("satty", owner_path)
+        if satty is not None and not _screenshot_satty_starts(satty, environment):
+            satty = None
         swappy = _screenshot_utility("swappy", owner_path) if satty is None else None
         if satty is None and swappy is None:
             raise FaceError("face-screenshot-editor-unavailable")
