@@ -15,7 +15,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if argv:
             raise ValueError("arguments refused")
         request = _envelope.read_fields(
-            "device", "mapper", "mountpoint", "seated_record",
+            "device", "mapper", "mountpoint", "passphrase", "seated_record",
             secret_bytes=("passphrase",), max_input_bytes=_core.MAX_INPUT_BYTES,
         )
         secret = request.secret_bytes.get("passphrase")
