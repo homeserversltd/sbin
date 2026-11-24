@@ -1,1 +1,11 @@
-{"children": ["send", "probe"]}
+{
+  "children": ["send", "probe"],
+  "sclerite": {
+    "name": "settings",
+    "features": {
+      "settings": {
+        "routes": ["/api/v1/network/device/wake"]
+      }
+    }
+  }
+}

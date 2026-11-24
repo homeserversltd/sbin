@@ -15,9 +15,9 @@ known `sclerite.name` beside its `features` contribution map in `index.json`;
 empty maps remain unpublished owners. A declaration maps feature names to that
 owner's `band`, alias `verbs`, `routes`, and optional `administrative`
 contributions. Gateway-family reads and changes alike are published only by
-their own feature: `kea` for DHCP, `unbound` for DNS, `firewall` for firewall
-and child-device, each identity stop's declared feature, and `gateway` for
-House CA work other than household trust. Method-qualified administrative
+their own feature: `kea` for DHCP, `unbound` for DNS, `firewall` for firewall,
+each identity stop's declared feature, and `gateway` for House CA work other
+than household trust. Method-qualified administrative
 claims move with the doors they protect. The DHCP noun declares its shared
 reservation routes under `kea`. On a profile that does not light the feature,
 a gateway-family stop run by hand answers `not-the-gateway` without running
@@ -28,7 +28,7 @@ stay household-wide. Cert refresh keeps its band and status route under `all`
 and contributes only its bundle-download route under `gateway`. The VPN probe
 `/api/v1/network/status` and Wake-on-LAN route `/api/v1/network/device/wake`
 are not gateway-family routes. Their existing declarations in identity
-`device/list` and the child-device noun, respectively, keep them as route-only
+`device/list` and the wake-on-lan noun, respectively, keep them as route-only
 contributions under the always-on `settings` feature.
 
 `lib` is internal and cannot contribute crossing bands or routes. All twelve

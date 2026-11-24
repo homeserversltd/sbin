@@ -5,7 +5,6 @@
     "firewall",
     "identity",
     "neighbor",
-    "child-device",
     "wake-on-lan",
     "linker",
     "cert",
