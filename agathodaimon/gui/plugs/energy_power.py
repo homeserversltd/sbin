@@ -3,10 +3,7 @@ from __future__ import annotations
 
 import threading
 
-try:
-    from . import _common
-except ImportError:
-    import _common
+from . import _common
 
 
 PLUG = {"id": "energy-power", "title": "Energy & Power", "icon": "battery-symbolic", "order": 97, "parent": None}

@@ -1,8 +1,5 @@
 """Keyboard settings plug."""
-try:
-    from ._common import build_settings_widget
-except ImportError:
-    from _common import build_settings_widget
+from ._common import build_settings_widget
 
 PLUG = None
 SPECS = [

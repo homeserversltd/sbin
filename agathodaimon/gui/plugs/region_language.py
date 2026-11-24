@@ -6,10 +6,7 @@ import re
 import subprocess
 import threading
 
-try:
-    from ._common import _group, _json, _page, _receipt_ok, _request
-except ImportError:
-    from _common import _group, _json, _page, _receipt_ok, _request
+from ._common import _group, _json, _page, _receipt_ok, _request
 
 PLUG = {"id": "region-language", "title": "Region & Language", "icon": "preferences-desktop-locale-symbolic", "order": 95, "parent": None}
 

@@ -1,30 +1,17 @@
 """Harmonia Updates plug using Caduceus HTTP doors."""
 from __future__ import annotations
 
-import importlib.util
 import ipaddress
 import uuid
 
 import re
-import sys
 import threading
 import urllib.parse
 from datetime import datetime, timezone
-from pathlib import Path
 
 from typing import Any, Callable
 
-try:
-    from ._common import CADUCEUS_URL, _direct_request, _receipt_ok, _refusal_signal, _request, _signal
-except ImportError:
-    _common_path = Path(__file__).with_name("_common.py")
-    _common_spec = importlib.util.spec_from_file_location("_common", _common_path)
-    if _common_spec is None or _common_spec.loader is None:
-        raise
-    _common_module = importlib.util.module_from_spec(_common_spec)
-    sys.modules["_common"] = _common_module
-    _common_spec.loader.exec_module(_common_module)
-    from _common import CADUCEUS_URL, _direct_request, _receipt_ok, _refusal_signal, _request, _signal
+from ._common import CADUCEUS_URL, _direct_request, _receipt_ok, _refusal_signal, _request, _signal
 
 
 PLUG = {
