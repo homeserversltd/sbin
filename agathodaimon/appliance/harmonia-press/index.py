@@ -7,6 +7,7 @@ import re
 from typing import Any, Sequence
 
 from agathodaimon import _envelope
+from agathodaimon._nidus.refusal import Refusal
 
 _MAX_INPUT_BYTES = 64 * 1024
 _HARMONIA = "/usr/local/bin/harmonia"
@@ -14,12 +15,6 @@ _SYSTEMD_RUN = "/usr/bin/systemd-run"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._-]+$")
 _INVOCATION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 _PROFILE_INDEX = re.compile(r"^/etc/harmonia/profiles/[a-z0-9-]+/index\.json$")
-
-
-class Refusal(ValueError):
-    def __init__(self, signal: str):
-        super().__init__(signal)
-        self.signal = signal
 
 
 def _refuse(signal: str) -> int:

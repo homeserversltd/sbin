@@ -17,6 +17,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
+from agathodaimon._nidus.refusal import Refusal
 
 MAX_INPUT_BYTES = 64 * 1024
 MAX_CONFIG_BYTES = 8 * 1024 * 1024
@@ -33,14 +34,6 @@ FALLBACK_HOSTS = (
 )
 EXECUTABLE_SELECTORS = {"bin", "program", "path", "script", "command"}
 SECRET_MARKER = re.compile(r"tskey-", re.IGNORECASE)
-
-
-class Refusal(ValueError):
-    """A named, structured refusal that is safe to report."""
-
-    def __init__(self, signal: str):
-        super().__init__(signal)
-        self.signal = signal
 
 
 @dataclass(frozen=True)

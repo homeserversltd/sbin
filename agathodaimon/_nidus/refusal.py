@@ -7,6 +7,11 @@ _SIGNAL_TOKEN = re.compile(r"[a-z0-9._:-]+")
 class Refusal(RuntimeError):
     """A bounded actuation refusal."""
 
+    def __init__(self, signal: str, **details):
+        super().__init__(signal)
+        self.signal = signal
+        self.details = details
+
 
 class BadRequest(ValueError):
     """A bounded refusal of the request itself."""
