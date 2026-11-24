@@ -15,10 +15,8 @@ agathodaimon gui launcher-cache --check|--apply
 agathodaimon exousia forgejo-credential --check|--apply
 ```
 
-`--check` writes no receipt. Every `--apply` attempt writes one aggregate
-`run.json` below `CADUCEUS_RECEIPT_ROOT` (default
-`/var/lib/caduceus/receipts/<run-id>/run.json`) through the Agathodaimon
-receipt emitter. Failed attempts are recorded and return nonzero.
+For staff-path and forgejo-credential, `--apply` writes no file: the stop
+answers its raw word, and a changed or failed apply leaves one hyalos deed.
 
 Fixture-only path/command overrides are environment variables:
 

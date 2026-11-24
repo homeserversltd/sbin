@@ -3,20 +3,17 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import subprocess
 import sys
-import uuid
 from pathlib import Path
 
-from agathodaimon.lib.receipts.index import emit
+from agathodaimon import _deed
 
 HELPER_PATH = "/usr/local/sbin/caduceus-forgejo-credential"
 DEFAULT_FULCRUM_ROOT = "/fulcrum"
 DEFAULT_ATTACHMENTS_ROOT = "/fulcrum/attachments"
 DEFAULT_OWNER_HOME = "/home/owner"
-DEFAULT_RECEIPT_ROOT = "/var/lib/caduceus/receipts"
 GIT = "/usr/bin/git"
 
 
@@ -235,26 +232,6 @@ def apply_changes() -> tuple[bool, list[dict], list[str]]:
     return True, steps, touched_paths
 
 
-def _write_apply_receipt(receipt: dict) -> bool:
-    run_id = uuid.uuid4().hex
-    receipt_path = (
-        Path(os.environ.get("CADUCEUS_RECEIPT_ROOT", DEFAULT_RECEIPT_ROOT))
-        / run_id
-        / "run.json"
-    )
-    try:
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with receipt_path.open("x", encoding="utf-8") as stream:
-            with contextlib.redirect_stdout(stream):
-                emit({**receipt, "run_id": run_id})
-            stream.flush()
-            os.fsync(stream.fileno())
-    except (OSError, TypeError, ValueError):
-        print("caduceus-receipt-write-failed", file=sys.stderr)
-        return False
-    return True
-
-
 def _apply() -> int:
     try:
         observed = state()
@@ -319,7 +296,13 @@ def _apply() -> int:
             else {"converged": None, "blocker": "credential-mediation-observation-failed"}
         ),
     }
-    receipt_written = _write_apply_receipt(receipt)
+    if receipt["changed"] or not receipt["ok"]:
+        try:
+            _deed.send("sbin", "forgejo-credential", receipt["ok"],
+                       signal="credential-mediation-failed",
+                       outcome="changed" if receipt["ok"] else "failed")
+        except Exception:
+            print("caduceus-deed-post-failed", file=sys.stderr)
 
     if final is not None:
         print("converged" if final else "different")
@@ -329,7 +312,7 @@ def _apply() -> int:
         print("credential-mediation-failed", file=sys.stderr)
     if final_blocker:
         print("credential-mediation-observation-failed", file=sys.stderr)
-    return 0 if receipt["ok"] and receipt_written else 1
+    return 0 if receipt["ok"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:

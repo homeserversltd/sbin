@@ -3,18 +3,15 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import stat
 import sys
-import uuid
 from pathlib import Path
 
-from agathodaimon.lib.receipts.index import emit
+from agathodaimon import _deed
 
 EXPECTED = "/usr/local/sbin\n"
 DEFAULT_STAFF_VENV = "/var/lib/caduceus/venv"
-DEFAULT_RECEIPT_ROOT = "/var/lib/caduceus/receipts"
 
 
 def staff_path_file() -> Path:
@@ -61,26 +58,6 @@ def _observe(path: Path, *, missing_is_different: bool) -> str:
     if not stat.S_ISREG(target_stat.st_mode):
         raise RuntimeError(f"staff path target is not a regular file: {path}")
     return "/usr/local/sbin" if _read_existing(path) == EXPECTED else "Different"
-
-
-def _write_apply_receipt(receipt: dict) -> bool:
-    run_id = uuid.uuid4().hex
-    receipt_path = (
-        Path(os.environ.get("CADUCEUS_RECEIPT_ROOT", DEFAULT_RECEIPT_ROOT))
-        / run_id
-        / "run.json"
-    )
-    try:
-        receipt_path.parent.mkdir(parents=True, exist_ok=True)
-        with receipt_path.open("x", encoding="utf-8") as stream:
-            with contextlib.redirect_stdout(stream):
-                emit({**receipt, "run_id": run_id})
-            stream.flush()
-            os.fsync(stream.fileno())
-    except (OSError, TypeError, ValueError):
-        print("caduceus-receipt-write-failed", file=sys.stderr)
-        return False
-    return True
 
 
 def _apply() -> int:
@@ -145,7 +122,13 @@ def _apply() -> int:
             else {"state": None, "converged": False, "blocker": final_blocker}
         ),
     }
-    receipt_written = _write_apply_receipt(receipt)
+    if receipt["changed"] or not receipt["ok"]:
+        try:
+            _deed.send("sbin", "staff-path", receipt["ok"],
+                       signal="staff-path-apply-failed",
+                       outcome="changed" if receipt["ok"] else "failed")
+        except Exception:
+            print("caduceus-deed-post-failed", file=sys.stderr)
 
     if final is not None:
         print(final)
@@ -153,7 +136,7 @@ def _apply() -> int:
         print(blocker, file=sys.stderr)
     if final_blocker is not None:
         print(final_blocker, file=sys.stderr)
-    return 0 if receipt["ok"] and receipt_written else 1
+    return 0 if receipt["ok"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:
