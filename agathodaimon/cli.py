@@ -2005,11 +2005,11 @@ def _main(argv, folder, seats, intents):
                 if entry["id"] == "caduceus.chord.v1":
                     entry["drift"] = drift
         result = {"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT),"seats":census}
-        if intents is not None:
-            loaded, invalid = intents
+        loaded, invalid = intents if intents is not None else ({}, [])
+        drift = _intent_declaration_drift(loaded)
+        if intents is not None or drift:
             result["intents"] = {"loaded_count": len(loaded), "loaded": ["intents/" + name for name in sorted(loaded)],
                                  "invalid": invalid}
-            drift = _intent_declaration_drift(loaded)
             if drift:
                 result["intents"]["drift"] = drift
         print(json.dumps(result, indent=2)); return 0
