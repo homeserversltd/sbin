@@ -6,6 +6,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from agathodaimon._nidus.unit import systemctl
+
 CONFIG_PATH = Path("/etc/appliance/config.json")
 ACTIONS = {"start", "stop", "restart", "reload", "enable", "disable", "status"}
 CERT_DEPENDENTS = {"forgejo.service": "restart", "nginx.service": "reload"}
@@ -77,7 +79,7 @@ def _command_output(stdout: bytes, stderr: bytes) -> str:
 
 
 def _run_systemctl(*args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(["/usr/bin/systemctl", *args], capture_output=True, check=False)
+    return systemctl(*args, text=False)
 
 
 def _enabled_state(systemd_service: str) -> bool | None:

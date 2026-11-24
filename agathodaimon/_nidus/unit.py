@@ -3,16 +3,41 @@ from __future__ import annotations
 
 import os
 import subprocess
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence, overload
 
 from agathodaimon._nidus.run import run
 
 CommandRunner = Callable[[Sequence[str]], subprocess.CompletedProcess[str]]
 
 
-def systemctl(*args: str, runner: CommandRunner | None = None) -> subprocess.CompletedProcess[str]:
+@overload
+def systemctl(
+    *args: str, runner: CommandRunner | None = None, text: Literal[True] = True
+) -> subprocess.CompletedProcess[str]: ...
+
+
+@overload
+def systemctl(
+    *args: str, runner: None = None, text: Literal[False]
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+@overload
+def systemctl(
+    *args: str, runner: CommandRunner | None = None, text: bool
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]: ...
+
+
+def systemctl(
+    *args: str, runner: CommandRunner | None = None, text: bool = True
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    """Capture text by default; an injected runner supplies its own result."""
     command = [os.environ.get("CADUCEUS_SYSTEMCTL_BIN") or "/usr/bin/systemctl", *args]
-    return runner(command) if runner is not None else run(command, timeout=None)
+    if runner is not None:
+        return runner(command)
+    if not text:
+        return subprocess.run(command, capture_output=True, check=False)
+    return run(command, timeout=None)
 
 
 def restart(unit: str, *, runner: CommandRunner | None = None) -> subprocess.CompletedProcess[str]:

@@ -6,6 +6,7 @@ import subprocess
 from typing import Any
 
 from agathodaimon import _envelope
+from agathodaimon._nidus.unit import systemctl
 
 TIMER_UNIT = "harmonia.timer"
 
@@ -74,7 +75,7 @@ def _record_result(lines: list[str], name: str, result: subprocess.CompletedProc
 
 
 def _run_systemctl(*args: str) -> subprocess.CompletedProcess[bytes]:
-    return subprocess.run(["/usr/bin/systemctl", *args], capture_output=True, check=False)
+    return systemctl(*args, text=False)
 
 
 def _first_word(value: bytes | str | None) -> str | None:
