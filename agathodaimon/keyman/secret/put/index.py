@@ -15,7 +15,7 @@ import unicodedata
 from uuid import uuid4
 
 from agathodaimon._envelope import EnvelopeError, read, wipe_bytes
-from agathodaimon._nidus.lock import household_config_held
+from agathodaimon._nidus.lock import held, household_config_held, identity_lock_path
 from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon.keyman._common import _scrub
 
@@ -216,6 +216,11 @@ def _newkey(name, value, secrets):
 
 
 def _put(name, about, value, secrets, receipt):
+    with held("keyman-secret-put", path=identity_lock_path().parent / "keyman-secret-put.lock"):
+        return _put_locked(name, about, value, secrets, receipt)
+
+
+def _put_locked(name, about, value, secrets, receipt):
     path = appliance_runtime_path("config")
     directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:

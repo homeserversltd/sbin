@@ -196,9 +196,14 @@ def splice_lists(text, lists):
 
 def change_sources(verb, url):
     validate_url(url)
-    if verb == 'add':
-        fetch(url)
     path = appliance_runtime_path('config')
+    if verb == 'add':
+        sources = chosen(document(path.read_bytes().decode('utf-8')))
+        if any(entry['url'] == url for entry in sources):
+            return sources, False
+        if len(sources) >= 16:
+            raise Refusal('blocklist-source-limit')
+        fetch(url)
     lock = household_config_held()
     lock.__enter__()
     directory = None

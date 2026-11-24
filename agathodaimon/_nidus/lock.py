@@ -44,7 +44,10 @@ def household_config_held(*, blocking: bool = True):
         raise HouseholdConfigLockUnavailable("household-config-lock-unavailable")
     try:
         owner_pid = os.getpid()
-        target = household_config_lock_path()
+        try:
+            target = household_config_lock_path()
+        except Exception:
+            raise HouseholdConfigLockUnavailable("household-config-lock-unavailable") from None
         if _depth.get(name, 0):
             if target != _paths[name]:
                 raise RuntimeError(f"lock-path-mismatch:{name}")
