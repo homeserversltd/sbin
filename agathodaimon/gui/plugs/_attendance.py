@@ -102,7 +102,7 @@ class _Attendance:
                             done.set()
 
                 dialog.connect("response", responded)
-                entry.connect("activate", lambda _entry: dialog.response("continue"))
+                entry.connect("activate", lambda _entry: (dialog.emit("response", "continue"), dialog.close()))
                 dialog.present(window)
                 entry.grab_focus()
             except Exception:
