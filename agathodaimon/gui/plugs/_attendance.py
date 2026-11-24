@@ -53,6 +53,76 @@ class _Attendance:
             raise RuntimeError("Caduceus returned an invalid response")
         return receipt
 
+    def check(self, pin: str) -> bool:
+        try:
+            return self._post("/api/v1/exousia/verify", {"pin": pin}).get("verified") is True
+        except Exception:
+            return False
+        finally:
+            pin = ""
+
+    def pin_check(self, parent: Any, body: str = "Enter your PIN to confirm.") -> bool:
+        if threading.current_thread() is threading.main_thread():
+            return False
+        try:
+            import gi
+
+            gi.require_version("Gtk", "4.0")
+            gi.require_version("Adw", "1")
+            from gi.repository import Adw, GLib, Gtk
+        except Exception:
+            return False
+
+        done = threading.Event()
+        answer: list[str | None] = [None]
+
+        def show() -> bool:
+            try:
+                window = parent.get_root() if parent is not None else None
+                if not isinstance(window, Gtk.Window):
+                    done.set()
+                    return False
+                dialog = Adw.AlertDialog(heading="Appliance PIN", body=body)
+                entry = Gtk.PasswordEntry()
+                entry.set_show_peek_icon(False)
+                dialog.set_extra_child(entry)
+                dialog.add_response("cancel", "Cancel")
+                dialog.add_response("continue", "Continue")
+                dialog.set_default_response("continue")
+                dialog.set_close_response("cancel")
+
+                def responded(_dialog: Any, response: str) -> None:
+                    try:
+                        if response == "continue":
+                            answer[0] = entry.get_text()
+                    finally:
+                        try:
+                            entry.set_text("")
+                        finally:
+                            done.set()
+
+                dialog.connect("response", responded)
+                entry.connect("activate", lambda _entry: dialog.response("continue"))
+                dialog.present(window)
+                entry.grab_focus()
+            except Exception:
+                answer[0] = None
+                done.set()
+            return False
+
+        try:
+            GLib.idle_add(show)
+        except Exception:
+            return False
+        done.wait()
+        pin = answer.pop()
+        if pin is None:
+            return False
+        try:
+            return self.check(pin)
+        finally:
+            pin = ""
+
     def open(self, pin: str) -> None:
         try:
             receipt = self._post("/api/v1/exousia/open", {
