@@ -23,6 +23,8 @@ SCHEMA_DOOR = f"/api/v1/schema/{SCHEMA_ID}"
 APPLIANCE_CONFIG_PATH = "/etc/appliance/config.json"
 GUEST_INSTRUCTION = "Accept this from your HomeServer in Admin Mode"
 GATEWAY_INSTRUCTION = "Act on this from your HomeServer in Admin Mode"
+# A link-up door answers this when its attendance is absent or stale; it asks the PIN like the rest.
+ADMIN_REFUSALS = PIN_REFUSALS | {"link-up-admin-required"}
 SPECS = [
     {"field": "enabled", "title": "Notifications enabled", "kind": "switch"},
     {"field": "do_not_disturb", "title": "Do not disturb", "kind": "switch"},
@@ -318,7 +320,7 @@ def _is_gateway() -> bool:
 def _attended(post: Callable[[], tuple[int, dict[str, Any]]],
               prompt: Callable[[], str | None]) -> tuple[int, dict[str, Any]]:
     status, receipt = post()
-    if not _receipt_ok(receipt) and _refusal_signal(receipt) in PIN_REFUSALS:
+    if not _receipt_ok(receipt) and _refusal_signal(receipt) in ADMIN_REFUSALS:
         GATE.ask(prompt)
         return post()
     return status, receipt
