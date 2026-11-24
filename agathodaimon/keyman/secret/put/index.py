@@ -1,4 +1,4 @@
-"""Put a named value into Keyman from raw JSON on stdin (name, about, value)."""
+"""Put a named value into Keyman from an envelope or flat JSON request."""
 from __future__ import annotations
 
 import contextlib
@@ -15,13 +15,14 @@ import time
 import unicodedata
 from uuid import uuid4
 
+from agathodaimon._envelope import EnvelopeError, read, wipe_bytes
 from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon.keyman._common import _scrub
 
 _CONFIG = import_module("agathodaimon.update.module-toggle.index")
 _BAND = "keyman/secret/put"
 _PREFIX = "keyman-secret-"
-_MAX_INPUT = 4096
+_MAX_INPUT = 16384
 _NAME = re.compile(r"[A-Za-z0-9_]{1,64}")
 _NEWKEY_SIGNAL = re.compile(r"keyman-newkey-([a-z0-9-]{1,80})")
 
@@ -30,25 +31,14 @@ class Refusal(Exception):
     """Only fixed signals or a validated, secret-free newkey signal tail."""
 
 
-def _invalid_constant(_token):
-    raise Refusal("request-invalid")
-
-
 def _request():
-    if sys.stdin.isatty():
-        raise Refusal("request-invalid")
     try:
-        # One extra byte distinguishes an exactly full object from a prefix.
-        raw = sys.stdin.buffer.read(_MAX_INPUT + 1)
-        if len(raw) > _MAX_INPUT:
-            raise Refusal("request-invalid")
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_CONFIG._reject_duplicates,
-                           parse_constant=_invalid_constant)
-    except (OSError, ValueError, RecursionError):
-        raise Refusal("request-invalid") from None
-    if not isinstance(value, dict):
-        raise Refusal("request-invalid")
-    return value
+        return read(known_fields=("name", "about", "value"),
+                    secret_bytes=("value",), max_input_bytes=_MAX_INPUT,
+                    quiet_on_tty=True)
+    except EnvelopeError as error:
+        signal = "value-invalid" if str(error) == "agathodaimon-vault-open-request-invalid" else "request-invalid"
+        raise Refusal(signal) from None
 
 
 def _valid_about(about):
@@ -57,20 +47,16 @@ def _valid_about(about):
 
 
 def _valid_value(value):
-    if not isinstance(value, str) or not value or any(c in value for c in '\0\r\n"'):
-        return False
-    try:
-        return len(value.encode("utf-8")) <= 511
-    except UnicodeEncodeError:
-        return False
+    return (isinstance(value, bytearray) and 1 <= len(value) <= 511 and
+            not any(c in value for c in b'\0\r\n"'))
 
 
 def _public_fields(name, about, value):
     # Neither the service label (which newkey takes on argv) nor the public
     # description may carry a copy of the submitted value.
-    if value in name:
+    if value in name.encode("utf-8"):
         raise Refusal("name-invalid")
-    if about is not None and value in about:
+    if about is not None and value in about.encode("utf-8"):
         raise Refusal("about-invalid")
 
 
@@ -199,12 +185,16 @@ def _existing_key(name, owner):
 def _newkey(name, value, secrets):
     original = sys.stdin
     try:
-        with io.StringIO(value) as source, io.StringIO() as output, io.StringIO() as errors:
+        with io.BytesIO(value) as source, io.StringIO() as output, io.StringIO() as errors:
             sys.stdin = source
-            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
-                setter = import_module("agathodaimon.keyman.newkey.index")
-                status = setter.main([name, "--username", "secret", "--pword", "-", "--replace"])
-            answer = json.loads(output.getvalue())
+            try:
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                    setter = import_module("agathodaimon.keyman.newkey.index")
+                    status = setter.main([name, "--username", "secret", "--pword", "-", "--replace"])
+                answer = json.loads(output.getvalue())
+            finally:
+                with source.getbuffer() as buffer:
+                    buffer[:] = b"\0" * len(buffer)
     except (Exception, SystemExit):
         return False, "vault-receipt-invalid", None
     finally:
@@ -221,7 +211,7 @@ def _newkey(name, value, secrets):
         return True, "none", True
     signal = answer.get(signal_key)
     match = _NEWKEY_SIGNAL.fullmatch(signal) if isinstance(signal, str) else None
-    tail = match[1] if match and value not in match[1] else "refused"
+    tail = match[1] if match and value not in match[1].encode("utf-8") else "refused"
     return False, "vault-" + tail, mutation if isinstance(mutation, bool) else None
 
 
@@ -278,14 +268,13 @@ def main(argv=None):
     receipt = {"ok": False, "firstMissingSignal": "none", "mutationPerformed": False,
                "name": None, "about": None, "replaced": False}
     secrets = set()
+    value = None
     try:
-        # A slash-form JSON argv object can otherwise be relayed as stdin by the staff.
-        if argv or (len(sys.argv) > 2 and sys.argv[1] == _BAND):
-            raise Refusal("request-invalid")
         request = _request()
-        name, about, value = (request.get(key) for key in ("name", "about", "value"))
-        if isinstance(value, str) and value:
-            secrets.add(value)
+        name, about = (request.payload.get(key) for key in ("name", "about"))
+        value = request.secret_bytes.get("value")
+        if value:
+            secrets.add(value.decode("utf-8"))
         if not isinstance(name, str) or not _NAME.fullmatch(name):
             raise Refusal("name-invalid")
         receipt["name"] = name
@@ -300,6 +289,9 @@ def main(argv=None):
         receipt["firstMissingSignal"] = _PREFIX + str(error)
     except (OSError, ValueError, RecursionError):
         receipt["firstMissingSignal"] = _PREFIX + "config-unavailable"
+    finally:
+        if value is not None:
+            wipe_bytes(value)
 
     # Scrub caller-derived metadata without changing the wire field names.
     for key in ("name", "about"):
