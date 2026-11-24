@@ -1,9 +1,6 @@
 """Harmonia Updates plug using Caduceus HTTP doors."""
 from __future__ import annotations
 
-import ipaddress
-import uuid
-
 import re
 import threading
 import urllib.parse
@@ -11,7 +8,8 @@ from datetime import datetime, timezone
 
 from typing import Any, Callable
 
-from ._common import CADUCEUS_URL, _direct_request, _receipt_ok, _refusal_signal, _request, _signal
+from ._attendance import GATE, PIN_REFUSALS
+from ._common import _direct_request, _receipt_ok, _refusal_signal, _request
 
 
 PLUG = {
@@ -50,67 +48,20 @@ def _matches_read_schema(receipt: Any, former: str, path: str) -> bool:
     return isinstance(stop, dict) and stop.get("noun") == noun and stop.get("verb") == verb
 
 
-class _InteractableGate:
-    """A single in-memory document attendance, shared by this plug's actions."""
-
-    def __init__(self) -> None:
-        self.document = str(uuid.uuid4())
-        self.attendance = ""
-        self.lock = threading.Lock()
-
-    def _open(self, prompt: Callable[[], str | None]) -> None:
-        host = urllib.parse.urlsplit(CADUCEUS_URL).hostname or ""
-        try:
-            loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            loopback = False
-        if not loopback:
-            raise RuntimeError("PIN can only be sent to local Caduceus")
-        pin = prompt()
-        if pin is None:
-            raise RuntimeError("PIN entry cancelled")
-        try:
-            receipt = _direct_request("/api/v1/exousia/open", "POST", {
-                "pin": pin, "documentId": self.document,
-                "documentIncarnation": self.document,
-            })
-        finally:
-            pin = ""
-        if not _receipt_ok(receipt):
-            if "pin-wrong" in _signal(receipt):
-                raise RuntimeError("PIN not accepted")
-            raise RuntimeError(_receipt_error(receipt, "Attendance refused"))
-        attendance = receipt.get("attendance")
-        if not isinstance(attendance, str) or not attendance:
-            raise RuntimeError("Attendance unavailable")
-        self.attendance = attendance
-
-    def run(self, path: str, prompt: Callable[[], str | None]) -> dict[str, Any]:
-        with self.lock:
-            gate = _direct_request("/api/v1/access/gate")
-            pin_state = gate.get("pin")
-            if not isinstance(pin_state, dict) or type(pin_state.get("pin_required")) is not bool:
-                raise RuntimeError("PIN switch unavailable")
-            if pin_state["pin_required"] and not self.attendance:
-                self._open(prompt)
-            for attempt in range(2):
-                headers = {"x-caduceus-document": self.document}
-                if self.attendance:
-                    headers["x-caduceus-attendance"] = self.attendance
-                receipt = _request(path, "POST", None, headers=headers)
-                signal = _signal(receipt)
-                if (attempt == 0 and not _receipt_ok(receipt)
-                        and signal in {"caduceus-administrative-pin-required",
-                                       "caduceus-administrative-pin-wrong",
-                                       "agathodaimon-administrative-pin-required",
-                                       "agathodaimon-administrative-pin-wrong",
-                                       "exousia-pin-required",
-                                       "exousia-pin-wrong"}):
-                    self.attendance = ""
-                    self._open(prompt)
-                    continue
-                return receipt
-            raise RuntimeError("Interactable request unavailable")
+def _attended_request(path: str, payload: dict[str, Any] | None,
+                      prompt: Callable[[], str | None], *, precheck: bool = False) -> dict[str, Any]:
+    if precheck:
+        gate = _direct_request("/api/v1/access/gate")
+        pin_state = gate.get("pin")
+        if not isinstance(pin_state, dict) or type(pin_state.get("pin_required")) is not bool:
+            raise RuntimeError("PIN switch unavailable")
+        if pin_state["pin_required"] and not GATE.attendance:
+            GATE.ask(prompt)
+    receipt = _request(path, "POST", payload, headers=GATE.headers())
+    if not _receipt_ok(receipt) and _refusal_signal(receipt) in PIN_REFUSALS:
+        GATE.ask(prompt)
+        return _request(path, "POST", payload, headers=GATE.headers())
+    return receipt
 
 
 def _module_card_class(Gtk: Any) -> Any:
@@ -301,7 +252,6 @@ def build_widget() -> Any:
     from gi.repository import Adw, Gdk, GLib, Gtk, Pango
 
     ModuleSquareCard = _module_card_class(Gtk)
-    interactable_gate = _InteractableGate()
     active_dialog: dict[str, Any] = {}
 
     reads = {name: 0 for name in ("status", "timer", "modules", "interactables", "history")}
@@ -627,7 +577,7 @@ def build_widget() -> Any:
         *args: Any,
     ) -> None:
         try:
-            receipt = _request(path, "POST", payload)
+            receipt = _attended_request(path, payload, prompt_pin)
             post_to_ui(callback, receipt, None, *args)
         except Exception as error:  # transport failures remain visible in the pane
             post_to_ui(callback, None, str(error), *args)
@@ -669,7 +619,7 @@ def build_widget() -> Any:
 
     def mutate_interactable(path: str, callback: Callable[..., bool]) -> None:
         try:
-            receipt = interactable_gate.run(path, prompt_pin)
+            receipt = _attended_request(path, None, prompt_pin, precheck=True)
             post_to_ui(callback, receipt, None)
         except Exception as error:
             post_to_ui(callback, None, str(error))
