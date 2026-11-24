@@ -1,4 +1,5 @@
 {
+  "hand": "envelope",
   "children": [],
   "payload_fields": [
     {"name": "role", "meaning": "Seat the configured NAS layout for an attached role (primary or backup)."}
