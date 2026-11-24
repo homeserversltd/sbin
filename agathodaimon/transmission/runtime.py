@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import base64
 import importlib.util
-import io
 import ipaddress
 import json
 import os
@@ -325,15 +324,18 @@ def safe_unlink(path: str, identity: tuple[int, int] | None = None) -> bool:
 
 def read_request(*, known_fields: tuple[str, ...] = ("provider",),
                  declared_flags: tuple[str, ...] = ("vpn",)) -> Any:
-    raw = sys.stdin.read(MAX_INPUT + 1)
-    if not raw or len(raw.encode("utf-8", "ignore")) > MAX_INPUT:
-        raise EnvelopeError("request-size-invalid")
-    original = sys.stdin
     try:
-        sys.stdin = io.StringIO(raw)
-        return read_envelope(known_fields=known_fields, declared_flags=declared_flags)
-    finally:
-        sys.stdin = original
+        return read_envelope(known_fields=known_fields, declared_flags=declared_flags,
+                             max_input_bytes=MAX_INPUT)
+    except EnvelopeError as failure:
+        cause = failure.__cause__
+        if (str(failure) == "agathodaimon-envelope-input-too-large"
+                or (isinstance(cause, json.JSONDecodeError) and cause.doc == "")):
+            raise EnvelopeError("request-size-invalid") from None
+        if isinstance(cause, OSError):
+            # Keep the separate read-I/O outcome for callers such as release-trip.
+            raise cause from None
+        raise
 
 
 def _provider_metadata() -> tuple[list[str], str]:

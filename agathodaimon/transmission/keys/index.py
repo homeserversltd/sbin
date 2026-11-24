@@ -26,17 +26,8 @@ def _action_value(value: Any) -> str | None:
 
 
 def select_action(request: Any = None, argv: Any = None, *, envelope: Any = None) -> str | None:
-    # The front-door PIN gate and dispatch call this same selector.
-    if argv is not None:
-        try:
-            arguments = list(argv)
-        except TypeError:
-            return None
-        if arguments:
-            if len(arguments) != 1:
-                return None
-            return _action_value(arguments[0])
-
+    # The front-door PIN gate still supplies argv; neither gate nor dispatch uses it.
+    del argv
     raw = envelope
     if raw is None:
         raw = request if isinstance(request, Mapping) else getattr(request, "value", None)
@@ -624,7 +615,7 @@ def _rotate(service_value: Any, service_present: bool) -> dict[str, Any]:
 
 
 def main(argv: Any = None) -> int:
-    arguments = [] if argv is None else argv
+    del argv
     request = None
     request_sanitized = False
     action = None
@@ -633,7 +624,7 @@ def main(argv: Any = None) -> int:
     successful_read = False
     try:
         request = rt.read_request(known_fields=_KNOWN_FIELDS, declared_flags=())
-        action = select_action(request=request, argv=arguments)
+        action = select_action(request=request)
         service_present, service_value = _field(request, "service")
         username_present, username_value = _field(request, "username")
         password_present, password_value = _field(request, "password")
