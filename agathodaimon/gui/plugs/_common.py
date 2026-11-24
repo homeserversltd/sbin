@@ -329,6 +329,7 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
     group = Adw.PreferencesGroup()
     page.add(group)
     row = Adw.ActionRow(title=title, subtitle="Checking if this app can be opened…")
+    row.set_sensitive(False)
     button = Gtk.Button(label=button_text, valign=Gtk.Align.CENTER)
     button.set_sensitive(False)
     row.add_suffix(button)
@@ -705,7 +706,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
 
     def focus_control(field: str) -> bool:
         if field in sliders:
-            return try_focus(sliders[field].scale)
+            # A read-only slider can still have an enabled help button.
+            row = rows[field]
+            return row.get_focusable() and try_focus(row)
         return try_focus(action_buttons.get(field, rows[field]))
 
     def focus_field(field: str, *, allow_status: bool = True) -> bool:
