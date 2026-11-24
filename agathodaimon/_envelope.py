@@ -116,14 +116,20 @@ def _read_bytes(data: bytearray, limit: int | None) -> None:
         stream = sys.stdin
     while True:
         size = _INPUT_CHUNK_BYTES if limit is None else min(_INPUT_CHUNK_BYTES, limit + 1 - len(data))
-        # A text stream reads characters, not bytes. Near the boundary its
-        # smallest unit is one character, even if that takes several bytes.
+        # Budget four bytes per character. With less room, inspect one
+        # indivisible character, but do not encode it beyond lookahead.
         block = stream.read(max(1, size // 4) if text_fallback else size)
         if block is None:
             raise BlockingIOError("stdin not ready")
         if not block:
             return
         if isinstance(block, str):
+            if text_fallback and size < 4:
+                codepoint = ord(block)
+                width = 1 + (codepoint > 0x7F) + (codepoint > 0x7FF) + (codepoint > 0xFFFF)
+                if width > size and not 0xD800 <= codepoint <= 0xDFFF:
+                    del block, codepoint
+                    raise EnvelopeError("agathodaimon-envelope-input-too-large")
             block = block.encode("utf-8")
         if limit is not None and len(data) + len(block) > limit:
             del block
