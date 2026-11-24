@@ -13,6 +13,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable
 from agathodaimon.carapace import normalize_profile
+from agathodaimon.gui.plugs._attendance import GATE
 
 PLUG_KEYS = ("id", "title", "icon", "order", "parent")
 PLUGS_DIR = Path(__file__).resolve().parent.parent / "plugs"
@@ -363,16 +364,19 @@ def _install_page_keyboard(window: Any, Gtk: Any, Gdk: Any, Adw: Any,
     window.add_controller(bubble_controller)
 
 
-def vault_required() -> bool:
-    """Trust only the gate's explicit decision; unreadable means open."""
+def read_open_gate() -> tuple[bool, bool]:
+    """Read the gate once; only explicit true values require a stage."""
     from agathodaimon.gui.plugs._common import _direct_request
 
     try:
         gate = _direct_request("/api/v1/access/gate", timeout=3)
     except RuntimeError:
-        return False
+        return False, False
     vault = gate.get("vault")
-    return gate.get("ok") is True and isinstance(vault, dict) and vault.get("unlock_required") is True
+    pin = gate.get("pin")
+    valid = gate.get("ok") is True
+    return (valid and isinstance(vault, dict) and vault.get("unlock_required") is True,
+            valid and isinstance(pin, dict) and pin.get("pin_required") is True)
 
 
 def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
@@ -386,6 +390,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             self.registry = registry
             self.standalone = standalone
             self.window = None
+            self.pin_required = False
 
         def install_optional_css(self) -> None:
             css_path = os.environ.get("APPLIANCE_SETTINGS_CSS")
@@ -426,16 +431,30 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             self.install_optional_css()
             self.window.present()
             self.read_gate()
+            GLib.timeout_add_seconds(300, self.touch_attendance)
+
+        def touch_attendance(self) -> bool:
+            if not self.window or not self.window.get_application():
+                return False
+            if GATE.attendance:
+                def touch() -> None:
+                    try:
+                        GATE.touch()
+                    except RuntimeError:
+                        pass
+                threading.Thread(target=touch, daemon=True).start()
+            return True
 
         def read_gate(self, warning: str = "") -> None:
             def read() -> None:
-                required = vault_required()
-                GLib.idle_add(self.show_stage, required, warning)
+                required, pin_required = read_open_gate()
+                GLib.idle_add(self.show_stage, required, pin_required, warning)
             threading.Thread(target=read, daemon=True).start()
 
-        def show_stage(self, required: bool, warning: str) -> bool:
+        def show_stage(self, required: bool, pin_required: bool, warning: str) -> bool:
+            self.pin_required = pin_required
             if not required:
-                self.show_settings(warning)
+                self.after_vault(warning)
                 return False
             box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             box.set_halign(Gtk.Align.CENTER)
@@ -454,7 +473,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             def finish(receipt: dict[str, Any] | None, error: str) -> bool:
                 if receipt is not None and receipt.get("success") is True:
                     message = receipt.get("warning")
-                    self.read_gate(message if isinstance(message, str) else "")
+                    self.after_vault(message if isinstance(message, str) else "")
                 else:
                     message = (receipt.get("message") or receipt.get("firstMissingSignal")
                                or receipt.get("first_missing_signal")) if receipt is not None else error
@@ -486,6 +505,58 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
             entry.connect("activate", submit)
             button.connect("clicked", submit)
             return False
+
+        def after_vault(self, warning: str = "") -> None:
+            if not self.pin_required:
+                self.show_settings(warning)
+                return
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            box.set_halign(Gtk.Align.CENTER)
+            box.set_valign(Gtk.Align.CENTER)
+            entry = Gtk.PasswordEntry()
+            entry.set_placeholder_text("PIN")
+            entry.set_show_peek_icon(False)
+            button = Gtk.Button(label="Continue")
+            status = Gtk.Label(label=warning, wrap=True)
+            box.append(entry)
+            box.append(button)
+            box.append(status)
+            self.window.set_content(box)
+            entry.grab_focus()
+
+            def finish(error: str) -> bool:
+                if not error:
+                    self.show_settings(warning)
+                else:
+                    status.set_text(error)
+                    entry.set_sensitive(True)
+                    button.set_sensitive(True)
+                    entry.grab_focus()
+                return False
+
+            def submit(_widget: Any) -> None:
+                if not button.get_sensitive():
+                    return
+                pin = entry.get_text()
+                entry.set_text("")
+                entry.set_sensitive(False)
+                button.set_sensitive(False)
+                status.set_text("Waiting for Caduceus…")
+
+                def open_attendance(secret: str) -> None:
+                    try:
+                        GATE.open(secret)
+                    except RuntimeError as error:
+                        GLib.idle_add(finish, str(error))
+                    else:
+                        GLib.idle_add(finish, "")
+                    finally:
+                        secret = ""
+                threading.Thread(target=open_attendance, args=(pin,), daemon=True).start()
+                pin = ""
+
+            entry.connect("activate", submit)
+            button.connect("clicked", submit)
 
         def set_settings_content(self, child: Any, warning: str) -> None:
             if warning:
@@ -576,6 +647,7 @@ def run_application(registry: dict[str, Plug], standalone: str | None) -> int:
                 )
                 sidebar_bar.pack_end(indicator)
             sidebar_bar.pack_end(_load_module(PLUGS_DIR / f"{MANUAL_MODULE}.py").build_indicator())
+            sidebar_bar.pack_end(_load_module(PLUGS_DIR / "power.py").build_indicator())
 
             listing.connect("row-activated", activate_row)
             self.window.set_title(app_title)

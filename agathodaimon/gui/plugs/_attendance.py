@@ -1,0 +1,101 @@
+"""The settings window's shared Caduceus document and attendance."""
+from __future__ import annotations
+
+import ipaddress
+import json
+import threading
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from typing import Any, Callable
+
+from ._common import CADUCEUS_URL, _receipt_ok, _refusal_signal
+
+PIN_REFUSALS = frozenset({
+    "caduceus-administrative-pin-required", "caduceus-administrative-pin-wrong",
+    "agathodaimon-administrative-pin-required", "agathodaimon-administrative-pin-wrong",
+    "exousia-pin-required", "exousia-pin-wrong",
+})
+
+
+class _Attendance:
+    def __init__(self) -> None:
+        self.document = str(uuid.uuid4())
+        self.attendance = ""
+        self.lock = threading.Lock()
+
+    def headers(self) -> dict[str, str]:
+        headers = {"x-caduceus-document": self.document}
+        if self.attendance:
+            headers["x-caduceus-attendance"] = self.attendance
+        return headers
+
+    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        host = urllib.parse.urlsplit(CADUCEUS_URL).hostname or ""
+        try:
+            loopback = host == "localhost" or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+        if not loopback:
+            raise RuntimeError("PIN can only be sent to local Caduceus")
+        request = urllib.request.Request(CADUCEUS_URL + path, data=json.dumps(payload).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            try:
+                response = opener.open(request, timeout=30)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                receipt = json.loads(response.read(256 * 1024))
+        except (OSError, ValueError, UnicodeDecodeError) as error:
+            raise RuntimeError("Caduceus is unavailable or returned an unreadable response") from error
+        if not isinstance(receipt, dict):
+            raise RuntimeError("Caduceus returned an invalid response")
+        return receipt
+
+    def open(self, pin: str) -> None:
+        try:
+            receipt = self._post("/api/v1/exousia/open", {
+                "pin": pin, "documentId": self.document, "documentIncarnation": self.document,
+            })
+        finally:
+            pin = ""
+        if not _receipt_ok(receipt):
+            if "pin-wrong" in _refusal_signal(receipt):
+                raise RuntimeError("PIN not accepted")
+            raise RuntimeError("Attendance refused")
+        attendance = receipt.get("attendance")
+        if not isinstance(attendance, str) or not attendance:
+            raise RuntimeError("Attendance unavailable")
+        self.attendance = attendance
+
+    def ask(self, prompt: Callable[[], str | None]) -> None:
+        with self.lock:
+            self.attendance = ""
+            pin = prompt()
+            if pin is None:
+                raise RuntimeError("PIN entry cancelled")
+            try:
+                self.open(pin)
+            finally:
+                pin = ""
+
+    def touch(self) -> None:
+        with self.lock:
+            if not self.attendance:
+                return
+            try:
+                receipt = self._post("/api/v1/exousia/touch", {
+                    "attendance": self.attendance, "documentId": self.document,
+                    "documentIncarnation": self.document,
+                })
+                if not _receipt_ok(receipt):
+                    raise RuntimeError("Attendance touch refused")
+            except Exception:
+                self.attendance = ""
+                raise
+
+
+GATE = _Attendance()
