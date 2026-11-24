@@ -1,11 +1,10 @@
 """The owner's household-zone following preference in appliance config."""
 from contextlib import contextmanager
 from importlib import import_module
-import fcntl
 import json
-import os
 import stat
 
+from agathodaimon._nidus.lock import household_config_held
 from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
@@ -61,12 +60,8 @@ def set_mode(mode):
 
 @contextmanager
 def locked():
-    directory = os.open(_config_path().parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        fcntl.flock(directory, fcntl.LOCK_EX)
+    with household_config_held():
         yield
-    finally:
-        os.close(directory)
 
 
 def set_mode_locked(mode):

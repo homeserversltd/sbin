@@ -15,6 +15,7 @@ _locks: dict[str, threading.RLock] = {}
 _depth: dict[str, int] = {}
 _paths: dict[str, Path] = {}
 IDENTITY_LOCK = "network-identity-claim"
+HOUSEHOLD_CONFIG_LOCK = "household-config"
 
 
 def identity_lock_path(path: str | Path | None = None) -> Path:
@@ -23,6 +24,62 @@ def identity_lock_path(path: str | Path | None = None) -> Path:
 
 class IdentityLockUnavailable(OSError):
     """The named household lock could not be acquired or released."""
+
+
+class HouseholdConfigLockUnavailable(OSError):
+    """The household config directory lock could not be acquired or released."""
+
+
+def household_config_lock_path() -> Path:
+    return appliance_runtime_path("config").parent
+
+
+@contextmanager
+def household_config_held(*, blocking: bool = True):
+    """Hold the config directory inode, re-entering by name in this thread."""
+    name = HOUSEHOLD_CONFIG_LOCK
+    with _guard:
+        mutex = _locks.setdefault(name, threading.RLock())
+    if not mutex.acquire(blocking=blocking):
+        raise HouseholdConfigLockUnavailable("household-config-lock-unavailable")
+    try:
+        owner_pid = os.getpid()
+        target = household_config_lock_path()
+        if _depth.get(name, 0):
+            if target != _paths[name]:
+                raise RuntimeError(f"lock-path-mismatch:{name}")
+            _depth[name] += 1
+            try:
+                yield
+            finally:
+                if os.getpid() == owner_pid:
+                    _depth[name] -= 1
+            return
+        try:
+            fd = os.open(target, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        except OSError:
+            raise HouseholdConfigLockUnavailable("household-config-lock-unavailable") from None
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+            except OSError:
+                raise HouseholdConfigLockUnavailable("household-config-lock-unavailable") from None
+            _depth[name] = 1
+            _paths[name] = target
+            try:
+                yield
+            finally:
+                if os.getpid() == owner_pid:
+                    del _depth[name]
+                    del _paths[name]
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        raise HouseholdConfigLockUnavailable("household-config-lock-unavailable") from None
+        finally:
+            os.close(fd)
+    finally:
+        mutex.release()
 
 
 def identity_locked(method):

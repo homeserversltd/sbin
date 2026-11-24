@@ -1,7 +1,5 @@
 """Config-chosen Unbound blocklist, its source collection and refresh ladder."""
 from __future__ import annotations
-
-import fcntl
 import hashlib
 import json
 import os
@@ -17,7 +15,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from agathodaimon import _deed
 from agathodaimon._nidus import unit
-from agathodaimon._nidus.lock import identity_locked
+from agathodaimon._nidus.lock import identity_locked, household_config_held
 from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon._nidus.refusal import Refusal
 from agathodaimon._nidus.write import write, WriteError
@@ -198,11 +196,15 @@ def splice_lists(text, lists):
 
 def change_sources(verb, url):
     validate_url(url)
+    if verb == 'add':
+        fetch(url)
     path = appliance_runtime_path('config')
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    lock = household_config_held()
+    lock.__enter__()
+    directory = None
     tmp = None
     try:
-        fcntl.flock(directory, fcntl.LOCK_EX)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         original = path.read_bytes()
         info = path.stat()
         text = original.decode('utf-8')
@@ -213,7 +215,6 @@ def change_sources(verb, url):
                 return sources, False
             if len(sources) >= 16:
                 raise Refusal('blocklist-source-limit')
-            fetch(url)
             sources.append({'url': url})
         else:
             if not exists:
@@ -238,9 +239,15 @@ def change_sources(verb, url):
             raise OSError('config readback mismatch')
         return sources, True
     finally:
-        if tmp is not None:
-            tmp.unlink(missing_ok=True)
-        os.close(directory)
+        try:
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
+        finally:
+            try:
+                if directory is not None:
+                    os.close(directory)
+            finally:
+                lock.__exit__(None, None, None)
 
 
 def digest(sources):

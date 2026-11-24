@@ -5,7 +5,7 @@ Keyman remains only for the unrelated homeconsole-vault service record.
 """
 from __future__ import annotations
 
-import fcntl
+from contextlib import ExitStack
 import grp
 import hashlib
 import hmac
@@ -23,6 +23,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from agathodaimon._envelope import appliance_runtime_path
+from agathodaimon._nidus.lock import household_config_held
 
 _RECORD = re.compile(rb'^username="([^"\r\n]+)"\r?\npassword="([^"\r\n]*)"\r?\n?$', re.DOTALL)
 _MAX_CONFIG_BYTES = 1024 * 1024
@@ -247,13 +248,14 @@ def _update_config_pin(
     new = bytearray()
     expected: bytearray | None = None
     directory_fd = None
+    locks = ExitStack()
     temporary_name: str | None = None
     try:
         new = _pin_bytes(new_pin)
         expected = _pin_bytes(expected_old_pin) if expected_old_pin is not None else None
         path = _runtime_path("config", label="config")
+        locks.enter_context(household_config_held())
         directory_fd, name = _open_parent(path)
-        fcntl.flock(directory_fd, fcntl.LOCK_EX)
         try:
             original_raw, original_stat = _read_at(directory_fd, name, _MAX_CONFIG_BYTES)
         except FileNotFoundError as exc:
@@ -331,9 +333,12 @@ def _update_config_pin(
                 except OSError:
                     pass
             os.close(directory_fd)
-        if expected is not None:
-            _wipe(expected)
-        _wipe(new)
+        try:
+            locks.close()
+        finally:
+            if expected is not None:
+                _wipe(expected)
+            _wipe(new)
 
 
 def _keyman_binary() -> Path:

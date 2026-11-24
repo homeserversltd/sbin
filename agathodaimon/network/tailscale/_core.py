@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import datetime
-import fcntl
 import importlib.util
 import ipaddress
 import json
@@ -25,6 +24,7 @@ from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit, urlunsplit
 
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
+from agathodaimon._nidus.lock import household_config_held
 
 NOUN = "tailscale"
 TAILSCALE = "/usr/bin/tailscale"
@@ -1043,14 +1043,12 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
                         priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
 
     config_path = appliance_runtime_path("config")
-    lock_fd: int | None = None
+    config_lock = None
     try:
         if not dry_run:
-            lock_fd = os.open(config_path.parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            config_lock = household_config_held(blocking=False)
+            config_lock.__enter__()
     except OSError:
-        if lock_fd is not None:
-            os.close(lock_fd)
         return _receipt("tailnet", False, "tailscale-tailnet-config-lock-unavailable",
                         observed={"configPath": str(config_path)}, attempt="serialize-config-transaction",
                         priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
@@ -1456,13 +1454,12 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
                 signal.signal(signum, old_handler)
             except (OSError, ValueError):
                 pass
-        if ca_lock is not None:
-            ca_lock.__exit__(None, None, None)
-        if lock_fd is not None:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            finally:
-                os.close(lock_fd)
+        try:
+            if ca_lock is not None:
+                ca_lock.__exit__(None, None, None)
+        finally:
+            if config_lock is not None:
+                config_lock.__exit__(None, None, None)
 
 
 def _status_receipt() -> dict[str, Any]:

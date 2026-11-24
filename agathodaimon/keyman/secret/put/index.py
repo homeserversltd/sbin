@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import io
 import json
 import os
@@ -16,6 +15,7 @@ import unicodedata
 from uuid import uuid4
 
 from agathodaimon._envelope import EnvelopeError, read, wipe_bytes
+from agathodaimon._nidus.lock import household_config_held
 from agathodaimon._nidus.path import appliance_runtime_path
 from agathodaimon.keyman._common import _scrub
 
@@ -217,12 +217,9 @@ def _newkey(name, value, secrets):
 
 def _put(name, about, value, secrets, receipt):
     path = appliance_runtime_path("config")
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        # The appliance zone writer uses this same directory lock. The inode
-        # and byte check below also detects changes by other writers before commit.
-        fcntl.flock(directory, fcntl.LOCK_EX)
-        raw, meta = _config_snapshot(directory, path.name)
+        raw, _ = _config_snapshot(directory, path.name)
         section, entries, matched = _register(raw, name)
         owner = matched is not None and entries[matched].get("builtin") is False
         if matched is not None:
@@ -235,21 +232,32 @@ def _put(name, about, value, secrets, receipt):
         _public_fields(name, about, value)
         if os.geteuid() != 0:
             raise Refusal("vault-root-required")
-
-        entry = {"name": name, "about": about, "builtin": False}
-        if matched is None:
-            entries.append(entry)
-        else:
-            entries[matched] = entry
-        updated = _edited_config(raw, section, entries).encode("utf-8")
-
-        ok, signal, mutation = _newkey(name, value, secrets)
-        receipt["mutationPerformed"] = mutation
-        if not ok:
-            raise Refusal(signal)
-        _replace_config(directory, path.name, raw, meta, updated)
     finally:
         os.close(directory)
+    # Custody may launch a child; it must finish before taking the house lock.
+    ok, signal, mutation = _newkey(name, value, secrets)
+    receipt["mutationPerformed"] = mutation
+    if not ok:
+        raise Refusal(signal)
+    with household_config_held():
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            raw, meta = _config_snapshot(directory, path.name)
+            section, entries, current = _register(raw, name)
+            if (current is None) != (matched is None):
+                raise Refusal("config-changed")
+            if current is not None and (entries[current].get("name") != name or
+                                        (entries[current].get("builtin") is False) != owner):
+                raise Refusal("config-changed")
+            entry = {"name": name, "about": about, "builtin": False}
+            if current is None:
+                entries.append(entry)
+            else:
+                entries[current] = entry
+            updated = _edited_config(raw, section, entries).encode("utf-8")
+            _replace_config(directory, path.name, raw, meta, updated)
+        finally:
+            os.close(directory)
 
 
 def _safe_refusal_signal(signal, secrets, *, deed=False):
