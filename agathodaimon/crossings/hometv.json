@@ -4,6 +4,8 @@
   "bands": [
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
+    "appliance/power/poweroff",
+    "appliance/power/reboot",
     "appliance/service",
     "appliance/service/disable",
     "appliance/service/enable",
@@ -272,6 +274,8 @@
   ],
   "routes": [
     "/api/v1/access/sudo/mode",
+    "/api/v1/appliance/power/poweroff",
+    "/api/v1/appliance/power/reboot",
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
@@ -322,6 +326,8 @@
   ],
   "administrative": {
     "bands": [
+      "appliance/power/poweroff",
+      "appliance/power/reboot",
       "appliance/service",
       "appliance/service/disable",
       "appliance/service/enable",
@@ -445,6 +451,8 @@
     ],
     "routes": [
       "/api/v1/access/sudo/mode",
+      "/api/v1/appliance/power/poweroff",
+      "/api/v1/appliance/power/reboot",
       "/api/v1/cert/trust-fetch",
       "/api/v1/cert/trust-install",
       "/api/v1/network/bandwidth/measure",

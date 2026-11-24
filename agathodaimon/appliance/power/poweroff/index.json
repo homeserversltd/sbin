@@ -18,6 +18,20 @@
             "/api/v1/appliance/power/poweroff"
           ]
         }
+      },
+      "desktop": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/appliance/power/poweroff"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/appliance/power/poweroff"
+          ]
+        }
       }
     }
   }

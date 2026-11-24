@@ -18,6 +18,20 @@
             "/api/v1/appliance/power/reboot"
           ]
         }
+      },
+      "desktop": {
+        "band": true,
+        "verbs": [],
+        "routes": [
+          "/api/v1/appliance/power/reboot"
+        ],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": [
+            "/api/v1/appliance/power/reboot"
+          ]
+        }
       }
     }
   }
