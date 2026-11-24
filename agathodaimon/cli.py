@@ -287,6 +287,21 @@ def _hand_options(words: list[str]) -> dict:
     return result
 
 
+def _refuse_undeclared_hand_option(path: Path, options: dict) -> bool:
+    if not options:
+        return False
+    seat = _intent_seat(path)
+    payload = seat.get("payload") if seat is not None else None
+    fields = payload.get("fields") if isinstance(payload, dict) else None
+    if isinstance(fields, dict):
+        for name in options:
+            if name != "dry-run" and name not in fields:
+                _front_answer("option-undeclared", "options", path, word=name,
+                              observed_extra={"word": name})
+                return True
+    return False
+
+
 def _contains_secret_name(value):
     pending = [value]
     while pending:
@@ -1228,6 +1243,21 @@ def _cli_target(args: list[str]) -> tuple[str | None, list[str]]:
     return path.relative_to(ROOT).as_posix(), remainder
 
 
+def _refuse_undeclared_hand_option_before_argv_guard(args: list[str]) -> bool:
+    """Check parsed hand options before a JSON-shaped value is treated as an envelope."""
+    try:
+        target, words = _cli_target(args)
+        if target is None or not words or not words[0].startswith("--"):
+            return False
+        path = ROOT / target
+        if not (path / "index.py").is_file():
+            return False
+        options = _hand_options(words)
+    except (OSError, TypeError, ValueError, RecursionError):
+        return False
+    return _refuse_undeclared_hand_option(path, options)
+
+
 def _unlit_family_stop(args: list[str], family: str) -> Path | None:
     """Find a requested stop whose own feature requires the family and is unlit."""
     if not args or args[0].startswith("--"):
@@ -1872,9 +1902,11 @@ def _main(argv, folder, seats, intents):
                 except RecursionError:
                     _front_answer("invalid-envelope-json", "parse-envelope")
                     return 2
-    if _transmission_keys_json_argv(args):
-        return _refuse_administrative("transmission-keys-stdin-required")
     caduceus_root = os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0
+    if _transmission_keys_json_argv(args):
+        if not caduceus_root and _refuse_undeclared_hand_option_before_argv_guard(args):
+            return 2
+        return _refuse_administrative("transmission-keys-stdin-required")
     if caduceus_root:
         if not _admit_caduceus_crossing(args):
             return 1
@@ -1893,6 +1925,10 @@ def _main(argv, folder, seats, intents):
             preflight_target = None
         if preflight_target is not None and not _dry_run_admits(preflight_target, preflight_envelope):
             return 2
+    if (not wrapped_argv_pin
+            and any(isinstance(word, str) and word.lstrip().startswith("{") for word in args[1:])
+            and _refuse_undeclared_hand_option_before_argv_guard(args)):
+        return 2
     if wrapped_argv_pin or _argv_envelope_has_pin(args):
         return _refuse_administrative("exousia-pin-required")
     if not args or args == ["--help"]:
@@ -2089,16 +2125,8 @@ def _main(argv, folder, seats, intents):
             options = _hand_options(remainder)
         except ValueError as exc:
             _front_answer(str(exc).replace(" ", "-"), "options", path); return 2
-        if options and not chord:
-            seat = _intent_seat(path)
-            seated_payload = seat.get("payload") if seat is not None else None
-            fields = seated_payload.get("fields") if isinstance(seated_payload, dict) else None
-            if isinstance(fields, dict):
-                for name in options:
-                    if name != "dry-run" and name not in fields:
-                        _front_answer("option-undeclared", "options", path, word=name,
-                                      observed_extra={"word": name})
-                        return 2
+        if not chord and _refuse_undeclared_hand_option(path, options):
+            return 2
         from agathodaimon._envelope import _pin_bearing_exousia
         if _pin_bearing_exousia({"payload": options}):
             return _refuse_administrative("exousia-pin-stdin-required")
