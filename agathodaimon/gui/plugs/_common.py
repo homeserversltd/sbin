@@ -276,12 +276,35 @@ def _children_of_type(widget: Any, kind: Any) -> Any:
         child = child.get_next_sibling()
 
 
-def _spin_keyboard(Gtk: Any, Gdk: Any, row: Any) -> Callable[[bool], None]:
+def _spin_keyboard(Gtk: Any, Gdk: Any, GLib: Any, row: Any) -> Callable[[bool], None]:
     """Keep the spin row's native focus stop; Enter grants editing at that stop."""
     spin = row.get_delegate()
     text = spin.get_delegate()
+    # Our leave handler settles the draft. The native focus handler would
+    # also commit it, and the native scroll handler would consume page scroll.
+    for controller in list(spin.observe_controllers()):
+        if isinstance(controller, (Gtk.EventControllerFocus, Gtk.EventControllerScroll)):
+            spin.remove_controller(controller)
+    step_keys = (Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_KP_Up, Gdk.KEY_KP_Down)
     editing = locked = False
     row.set_editable(False)
+
+    def readable_draft() -> bool:
+        draft = row.get_text()
+        if not draft:
+            return False  # g_strtod alone also reads an empty string as zero.
+        value, rest = GLib.strtod(draft)
+        if not rest:
+            return math.isfinite(value)
+        # GTK also accepts integers written with localized decimal digits.
+        digits = draft.removeprefix("-")
+        return bool(digits) and all(GLib.unichar_isdigit(digit) for digit in digits)
+
+    def prepare_step() -> None:
+        if row.get_editable() and not readable_draft():
+            # GTK parses before a step; supply the exact settled value, not
+            # its rounded display text, so only the step can change it.
+            row.set_text(repr(spin.get_value()))
 
     def set_editing(active: bool) -> None:
         nonlocal editing
@@ -301,11 +324,14 @@ def _spin_keyboard(Gtk: Any, Gdk: Any, row: Any) -> Callable[[bool], None]:
 
     def leave(_controller: Any) -> None:
         if row.get_editable():
-            spin.update()  # Settle typed text the same way as a native focus-out.
+            if readable_draft():
+                spin.update()
+            else:
+                spin.set_value(spin.get_value())
         set_editing(False)
 
     def press(keys: Any, key: int, _code: int, mods: Any) -> bool:
-        if not editing and key in (Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_KP_Up, Gdk.KEY_KP_Down):
+        if not editing and key in step_keys:
             # Run the ListBox binding (move-cursor), not the spin binding.
             box = row.get_parent()
             return isinstance(box, Gtk.ListBox) and keys.forward(box)
@@ -323,6 +349,8 @@ def _spin_keyboard(Gtk: Any, Gdk: Any, row: Any) -> Callable[[bool], None]:
             spin.set_value(spin.get_value())  # Redraw the settled value, not the draft.
             set_editing(False)
         else:
+            if key in step_keys:
+                prepare_step()
             return False
         return True
 
@@ -335,10 +363,17 @@ def _spin_keyboard(Gtk: Any, Gdk: Any, row: Any) -> Callable[[bool], None]:
     focus.connect("leave", leave)
     spin.add_controller(focus)
     # A direct click on the number or its +/- controls still works natively.
+    def click_pressed(_click: Any, _count: int, x: float, y: float) -> None:
+        if not locked:
+            set_editing(True)
+            hit = spin.pick(x, y, Gtk.PickFlags.DEFAULT)
+            if hit is not None and (isinstance(hit, Gtk.Button) or hit.get_ancestor(Gtk.Button)):
+                prepare_step()
+
     click = Gtk.GestureClick.new()
     click.set_button(0)
     click.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
-    click.connect("pressed", lambda *_args: set_editing(True) if not locked else None)
+    click.connect("pressed", click_pressed)
     spin.add_controller(click)
     return lock_editing
 
@@ -871,7 +906,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
             )
             row = Adw.SpinRow.new(adjustment, float(spec.get("climb", 1.0)), int(spec.get("digits", 0)))
             row.set_title(title)
-            spin_locks[field] = _spin_keyboard(Gtk, Gdk, row)
+            spin_locks[field] = _spin_keyboard(Gtk, Gdk, GLib, row)
             digits = int(spec.get("digits", 0))
             getters[field] = (lambda item=row: int(item.get_value())) if digits == 0 else row.get_value
             setters[field] = lambda value, item=row, default=float(spec.get("minimum", 0.0)): item.set_value(_number(value, default))
