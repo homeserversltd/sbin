@@ -2089,6 +2089,16 @@ def _main(argv, folder, seats, intents):
             options = _hand_options(remainder)
         except ValueError as exc:
             _front_answer(str(exc).replace(" ", "-"), "options", path); return 2
+        if options and not chord:
+            seat = _intent_seat(path)
+            seated_payload = seat.get("payload") if seat is not None else None
+            fields = seated_payload.get("fields") if isinstance(seated_payload, dict) else None
+            if isinstance(fields, dict):
+                for name in options:
+                    if name != "dry-run" and name not in fields:
+                        _front_answer("option-undeclared", "options", path, word=name,
+                                      observed_extra={"word": name})
+                        return 2
         from agathodaimon._envelope import _pin_bearing_exousia
         if _pin_bearing_exousia({"payload": options}):
             return _refuse_administrative("exousia-pin-stdin-required")
