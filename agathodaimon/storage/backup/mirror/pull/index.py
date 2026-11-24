@@ -211,20 +211,9 @@ def pull(metadata):
     return result
 
 
-def _forwarded_hand_options(words):
-    # The CLI folds hand options into stdin, but also forwards their argv.
-    # The envelope stream identifies the active CLI, whether run or imported.
-    stream_type = type(sys.stdin)
-    front = sys.modules.get(stream_type.__module__)
-    if getattr(front, "_EnvelopeStdin", None) is not stream_type:
-        return False
-    front_args = getattr(front, "_front_args", ())
-    return front_args[-(len(words) + 1):] == [HERE.parent.name, *words]
-
-
 def main(argv=None):
     words = sys.argv[1:] if argv is None else list(argv)
-    if words and not (argv is not None and words[0].startswith("--") and _forwarded_hand_options(words)):
+    if words:
         print(json.dumps({"ok": False, "firstMissingSignal": "mirror-arguments-invalid"}, sort_keys=True))
         return 1
     try:

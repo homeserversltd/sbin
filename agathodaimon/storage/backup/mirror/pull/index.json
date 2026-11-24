@@ -1,4 +1,5 @@
 {
+  "hand": "envelope",
   "envelope": {"stdin": "json", "keys": ["metadata"], "unknown_fields": "skipped"},
   "sclerite": {
     "name": "backup-drive",
