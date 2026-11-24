@@ -8,6 +8,7 @@ from agathodaimon import _envelope
 from agathodaimon.storage.disk.wipe import index as wipe
 
 MAX_INPUT_BYTES = 64 * 1024
+_REQUEST_FIELDS = ("actuator", "metadata")
 Refusal = wipe.Refusal
 
 
@@ -37,7 +38,8 @@ def dispatch(value: dict[str, Any]) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        request = _envelope.read(known_fields=("actuator", "metadata"), max_input_bytes=MAX_INPUT_BYTES)
+        # The legacy dispatch keeps top-level precedence; these are not hand options.
+        request = _envelope.read(known_fields=_REQUEST_FIELDS, max_input_bytes=MAX_INPUT_BYTES)
         receipt = dispatch(request.value)
     except _envelope.EnvelopeError as error:
         signal = ("agathodaimon-disk-request-too-large"

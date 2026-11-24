@@ -8,6 +8,8 @@ from pathlib import Path
 from agathodaimon import _envelope
 
 ROOT_PREFIX = "/mnt/nas"
+# Caduceus sends this at the top level, not as a hand option.
+_REQUEST_FIELDS = ("metadata",)
 
 
 def receipt(ok, action, planned=False, mutation=False, commands=None, signal=None, **facts):
@@ -46,8 +48,7 @@ def requested_mode(metadata: dict) -> str:
 def main(_argv=None):
     action = "force-permissions"
     try:
-        request = _envelope.read(known_fields=("metadata",))
-        # The Caduceus staff receipt crossing sends metadata at the top level.
+        request = _envelope.read(known_fields=_REQUEST_FIELDS)
         metadata = request.value.get("metadata")
         if not isinstance(metadata, dict):
             raise ValueError("metadata must be an object")

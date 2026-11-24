@@ -18,6 +18,8 @@ from agathodaimon._nidus import unit
 from agathodaimon.storage.nas import runtime
 
 _MAX_INPUT_BYTES = 64 * 1024
+# Keep the existing hand help and refusal hints; these are the disk-test door's fields.
+_REQUEST_FIELDS = ("device", "test_type")
 _TEST = "/usr/local/sbin/harddrive_test.sh"
 _RESULTS = Path("/var/harddriveTest.txt")
 _UNIT = "agathodaimon-disk-test.service"
@@ -40,7 +42,7 @@ def _refuse(signal: str, **details: Any) -> int:
 
 def _request_object() -> dict[str, Any]:
     try:
-        request = _envelope.read(known_fields=("device", "test_type"), max_input_bytes=_MAX_INPUT_BYTES)
+        request = _envelope.read(known_fields=_REQUEST_FIELDS, max_input_bytes=_MAX_INPUT_BYTES)
     except _envelope.EnvelopeError as error:
         signal = ("disk-test-request-too-large" if str(error) == "agathodaimon-envelope-input-too-large"
                   else "disk-test-request-invalid")
@@ -205,6 +207,7 @@ def _worker(device: str, mode: str) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # Retain the refusal of stray words; no argv can select a stop action.
     if argv:
         return _refuse("disk-test-request-invalid")
     started = time.monotonic()
