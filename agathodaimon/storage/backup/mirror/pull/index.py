@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 
+from agathodaimon import _envelope
 from agathodaimon.lib.keyman_export.index import export_credential
 from agathodaimon.storage.nas import deed
 
@@ -212,12 +213,7 @@ def pull(metadata):
 
 def main():
     try:
-        raw = sys.stdin.buffer.read(65537)
-        if len(raw) > 65536:
-            raise ValueError("large")
-        request = json.loads(raw)
-        if not isinstance(request, dict):
-            raise ValueError("invalid")
+        request = _envelope.read(max_input_bytes=65536).value
         metadata = request.get("metadata")
         if metadata is None and isinstance(request.get("payload"), dict):
             metadata = request["payload"].get("metadata")
@@ -226,7 +222,9 @@ def main():
         if not isinstance(metadata, dict):
             raise ValueError("invalid")
         result = pull(metadata)
-    except (ValueError, UnicodeError):
+    except (ValueError, UnicodeError) as error:
+        if isinstance(error, _envelope.EnvelopeError) and isinstance(error.__cause__, OSError):
+            raise error.__cause__  # Transport I/O was never a mirror validation refusal.
         result = {"ok": False, "converged": False, "outcome": "refused",
                   "planned": False, "firstMissingSignal": "mirror-request-invalid", "checks": [],
                   "rsyncExitCode": None, "rsyncStats": None, "maxDelete": None, "homeserver": None}

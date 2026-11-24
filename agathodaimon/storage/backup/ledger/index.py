@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import json
 import re
-import sys
 from datetime import datetime, timezone
 
+from agathodaimon import _envelope
 from agathodaimon.storage.backup.backblaze import shared
 
 CHUNK = 65536
@@ -122,9 +122,7 @@ def page(before, limit):
 
 def main(argv=None):
     try:
-        request = json.load(sys.stdin)
-        if not isinstance(request, dict):
-            raise ValueError('request-invalid')
+        request = _envelope.read().value
         payload = request.get('payload')
         metadata = request.get('metadata')
         if isinstance(payload, dict):
@@ -143,6 +141,9 @@ def main(argv=None):
         result = {'ok': True, 'rows': rows, 'next': cursor,
                   'firstMissingSignal': 'none'}
     except (OSError, ValueError, UnicodeError, shared.Refusal) as error:
+        if isinstance(error, _envelope.EnvelopeError):
+            # Keep the original decoder or I/O signal, if there was one.
+            error = error.__cause__ or ValueError('request-invalid')
         signal = str(error) if isinstance(error, ValueError) else 'backup-ledger-unavailable'
         result = {'ok': False, 'rows': [], 'next': None,
                   'firstMissingSignal': signal}

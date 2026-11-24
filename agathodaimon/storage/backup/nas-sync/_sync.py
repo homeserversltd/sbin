@@ -1,6 +1,7 @@
 from __future__ import annotations
 import errno,fcntl,json,os,re,shlex,stat,subprocess,sys,time
 from pathlib import Path
+from agathodaimon import _envelope
 from agathodaimon.storage.nas import deed
 
 RSYNC="/usr/bin/rsync"; FINDMNT="/usr/bin/findmnt"; LSBLK="/usr/bin/lsblk"; BLKID="/usr/sbin/blkid"; JOURNALCTL="/usr/bin/journalctl"
@@ -240,11 +241,18 @@ def dispatch(x):
   baseline={k:baseline[k] for k in ("fileCount","totalBytes")}
  return sync(baseline,override,planned)
 def read_envelope():
- raw=sys.stdin.buffer.read(MAX_INPUT+1)
- if len(raw)>MAX_INPUT: raise Refusal("agathodaimon-nas-request-too-large")
- if not raw: raise Refusal("agathodaimon-nas-request-empty")
- try: return json.loads(raw.decode())
- except Exception as e: raise Refusal("agathodaimon-nas-request-invalid") from e
+ try:
+  return _envelope.read(max_input_bytes=MAX_INPUT).value
+ except _envelope.EnvelopeError as e:
+  if str(e)=="agathodaimon-envelope-input-too-large":
+   raise Refusal("agathodaimon-nas-request-too-large") from e
+  cause=e.__cause__
+  if isinstance(cause,OSError): raise cause
+  if isinstance(cause,json.JSONDecodeError) and cause.doc=="":
+   raise Refusal("agathodaimon-nas-request-empty") from e
+  raise Refusal("agathodaimon-nas-request-invalid") from e
+ except (ValueError,RecursionError) as e:
+  raise Refusal("agathodaimon-nas-request-invalid") from e
 def record_deed(v,started):
  reason=v.get("firstMissingSignal")
  signal=reason.split(":",1)[0] if isinstance(reason,str) else "nas-operation-failed"
@@ -268,10 +276,9 @@ def record_deed(v,started):
   if v.get("ok") is True:
    v["ok"]=False; v["outcome"]="failed"; v["firstMissingSignal"]=v["deedLogSignal"]
 
-def main(argv=None):
- args=list(sys.argv[1:] if argv is None else argv); request=None; started=time.monotonic()
+def main():
+ request=None; started=time.monotonic()
  try:
-  if args: raise Refusal("agathodaimon-nas-cli-arguments-invalid")
   request=read_envelope(); v=dispatch(request)
  except Refusal as e: v=refused("sync",str(e))
  except Exception as e: v=finish(receipt("sync","failed",reason="agathodaimon-nas-unexpected:"+bounded(e)))
