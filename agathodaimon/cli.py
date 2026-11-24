@@ -49,8 +49,8 @@ def _stamp_receipt(receipt, target):
     receipt.setdefault("observed", None)
     receipt.setdefault("could_change_to", None)
     receipt.setdefault("attempt", None)
-    receipt.setdefault("final_receipt", {"ok": receipt["ok"],
-                                         "firstMissingSignal": receipt.get("firstMissingSignal")})
+    signal = receipt.get("firstMissingSignal", receipt.get("first_missing_signal"))
+    receipt.setdefault("final_receipt", {"ok": receipt["ok"], "firstMissingSignal": signal})
     if _stamp_seat is not None:
         receipt.setdefault("seat", _stamp_seat)
     return receipt
