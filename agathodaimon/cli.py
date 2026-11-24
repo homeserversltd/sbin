@@ -94,13 +94,21 @@ def _index_mutation_allowed(path: Path) -> bool | None:
 
 
 def _mutation_allowed(path: Path) -> bool | None:
+    legacy = _index_mutation_allowed(path)
     seat = _intent_seat(path)
-    return _boolean_word(seat, "mutation_allowed") if seat is not None else _index_mutation_allowed(path)
+    seated = _boolean_word(seat, "mutation_allowed")
+    if legacy is False or seated is False:
+        return False
+    return seated if seat is not None else legacy
 
 
 def _declares_dry_run(path: Path, index: dict) -> bool:
+    # Until the sweep can identify a retired key, a missing key is not proof
+    # that the installed stop honors dry-run. Never promote it from the seat.
+    if index.get("dry-run") is not True:
+        return False
     seat = _intent_seat(path)
-    return (seat if seat is not None else index).get("dry-run") is True
+    return seat is None or seat.get("dry-run") is True
 
 def _children(path: Path) -> list[str]: return list(_index(path).get("children", []))
 
@@ -325,7 +333,11 @@ def _validate_chord(declaration: dict):
         if not isinstance(ring, dict) or not isinstance(ring.get("observe"), str):
             raise _ChordError("chord-stage-invalid")
         target = _slash_target(ring["observe"])
-        if target is None or not target.is_file() or _mutation_allowed(target.parent) is not False:
+        # Observation is permission to run the stop, not deed classification.
+        # Preserve the legacy read-only requirement; a mutating seat can veto it.
+        if (target is None or not target.is_file()
+                or _index_mutation_allowed(target.parent) is not False
+                or _boolean_word(_intent_seat(target.parent), "mutation_allowed") is True):
             raise _ChordError("chord-stage-invalid")
         arguments = ring.get("arguments")
         if not isinstance(arguments, dict):
@@ -1772,28 +1784,45 @@ def _chord_part_names_drift(seat):
             "walker_only": sorted(_CHORD_PART_NAMES - names)}
 
 
-def _intent_exousia_drift(intents: dict) -> dict:
+def _intent_boolean_declaration(declaration: dict, name: str) -> bool | str | None:
+    if name not in declaration:
+        return "absent"
+    value = declaration[name]
+    return value if value is None or isinstance(value, bool) else "invalid"
+
+
+def _intent_declaration_drift(intents: dict) -> dict:
     if not intents:
         return {}
     profile, profile_ok = _profile_for_crossing()
     publication = _crossing_publication(profile) if profile_ok else None
     drift = {}
     for intent, seat in sorted(intents.items()):
-        exousia = _boolean_word(seat, "exousia")
-        if exousia is None:
-            continue
         try:
-            if _slash_target(intent) is None:
+            target = _slash_target(intent)
+            if target is None:
                 continue
+            declaration = _index(target.parent if target.is_file() else target)
         except (OSError, ValueError, TypeError, AttributeError, RecursionError):
             continue
-        administrative = (_administrative_candidate(intent) if publication is None
-                          else _administrative_target(intent, publication))
-        # Explicitly read-only stops are exempt even under an administrative
-        # ancestor. Report the declared posture, not the switch or a live PIN check.
-        administrative = administrative and _index_mutation_allowed(ROOT / intent) is not False
-        if exousia != administrative:
-            drift["intents/" + intent] = {"exousia": exousia, "administrative": administrative}
+        if not isinstance(declaration, dict):
+            continue
+        differences = {}
+        exousia = _boolean_word(seat, "exousia")
+        if exousia is not None:
+            administrative = (_administrative_candidate(intent) if publication is None
+                              else _administrative_target(intent, publication))
+            # Report the standing posture, not the switch or a live PIN check.
+            administrative = administrative and _boolean_word(declaration, "mutation_allowed") is not False
+            if exousia != administrative:
+                differences.update(exousia=exousia, administrative=administrative)
+        for name in ("dry-run", "mutation_allowed"):
+            legacy = _intent_boolean_declaration(declaration, name)
+            seated = _intent_boolean_declaration(seat, name)
+            if seated != legacy:
+                differences[name] = {"seat": seated, "index": legacy}
+        if differences:
+            drift["intents/" + intent] = differences
     return drift
 
 
@@ -1876,7 +1905,7 @@ def _main(argv, folder, seats, intents):
             loaded, invalid = intents
             result["intents"] = {"loaded_count": len(loaded), "loaded": ["intents/" + name for name in sorted(loaded)],
                                  "invalid": invalid}
-            drift = _intent_exousia_drift(loaded)
+            drift = _intent_declaration_drift(loaded)
             if drift:
                 result["intents"]["drift"] = drift
         print(json.dumps(result, indent=2)); return 0
