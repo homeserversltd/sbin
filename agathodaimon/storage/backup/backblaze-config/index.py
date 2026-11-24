@@ -57,6 +57,7 @@ def dispatch(e):
  backblaze=tabs.get("backblaze",{})
  if not isinstance(backblaze,dict): raise Refusal("config","tabs.backblaze must be a JSON object")
  original_backblaze=copy.deepcopy(backblaze)
+ original_present="backblaze" in tabs
  if backblaze.get("locked") is True: return fail("locked","configuration is locked after initial setup")
  verify(k,a)
  if os.geteuid()!=0: raise Refusal("seed_keyman","agathodaimon-keyman-root-required")
@@ -83,9 +84,7 @@ def dispatch(e):
   with household_config_held():
    current=load()
    tabs=current.get("tabs",{})
-   if not isinstance(tabs,dict): raise Refusal("config","tabs must be a JSON object")
-   backblaze=tabs.get("backblaze",{})
-   if backblaze!=original_backblaze:
+   if not isinstance(tabs,dict) or ("backblaze" in tabs)!=original_present or json.dumps(tabs.get("backblaze",{}),sort_keys=True)!=json.dumps(original_backblaze,sort_keys=True):
     return {"ok":False,"step":"config","reason":"config-changed","mutationPerformed":True,"mutationStep":"seed_keyman"}
    backblaze=current.setdefault("tabs",{}).setdefault("backblaze",{})
    backblaze["config"]=cfg

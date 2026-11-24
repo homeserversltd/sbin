@@ -181,11 +181,14 @@ def normalized_row(value):
     return row
 
 
-def store(data, original_backblaze):
+def store(data, original_backblaze, original_present=True):
     try:
         with household_config_held():
             current = load()
-            if current.get('tabs', {}).get('backblaze', {}) != original_backblaze:
+            tabs = current.get('tabs', {})
+            if (not isinstance(tabs, dict) or ('backblaze' in tabs) != original_present or
+                    json.dumps(tabs.get('backblaze', {}), sort_keys=True) !=
+                    json.dumps(original_backblaze, sort_keys=True)):
                 fail('config', 'config-changed')
             current.setdefault('tabs', {})['backblaze'] = data.get('tabs', {}).get('backblaze', {})
             return _write_config(current)

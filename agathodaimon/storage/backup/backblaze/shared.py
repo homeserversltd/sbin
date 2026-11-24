@@ -29,7 +29,11 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
     if verb not in ACTUATORS or not isinstance(metadata, dict):
         fail('shape', 'metadata-invalid')
     data = load()
-    original_backblaze = copy.deepcopy(data.get('tabs', {}).get('backblaze', {}))
+    tabs = data.get('tabs', {})
+    if not isinstance(tabs, dict):
+        fail('config', 'config-invalid')
+    original_backblaze = copy.deepcopy(tabs.get('backblaze', {}))
+    original_present = 'backblaze' in tabs
     if verb == 'status':
         from agathodaimon.storage.backup.backblaze.status.index import act
         return act(data)
@@ -97,7 +101,7 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
             item.pop('encrypted', None)
         changed = json.dumps(data, sort_keys=True, separators=(',', ':')) != before
         if changed:
-            if not store(data, original_backblaze):
+            if not store(data, original_backblaze, original_present):
                 mutation_result['durability'] = 'unconfirmed'
         elif verb != 'bucket-credentials':
             should_log = False
