@@ -655,7 +655,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                     if not matches:
                         refusal = "chord-stage-receipt-schema-mismatch"
                 if phase not in ("observe", "reobserve"):
-                    stage_changed = _stage_changed(receipt) if refusal is None else None
+                    stage_changed = _stage_changed(receipt) if isinstance(receipt, dict) else None
                     change_known = change_known and stage_changed is not None
                     changed = changed or stage_changed is True
                 if refusal is None and (code != 0 or receipt.get("ok") is False):
