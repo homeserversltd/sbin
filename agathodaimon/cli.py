@@ -177,7 +177,10 @@ def _help_result(path: Path) -> dict:
                                   "meaning": doc if re.search(r"\b" + re.escape(name) + r"\b", doc, re.IGNORECASE) else None}
                                  for name in fields]}
     if kind == "chord":
-        result["stages"] = [stage.get("stage_id") for stage in declaration.get("serve", []) + declaration.get("rescue", []) + declaration.get("finally", [])]
+        stages = _chord_source(declaration, seat)
+        result["stages"] = [stage.get("stage_id") for name in ("serve", "rescue", "finally")
+                            if isinstance(stages.get(name), list)
+                            for stage in stages[name] if isinstance(stage, dict)]
         if declaration.get("children"):
             result["children"] = declaration["children"]
     if seat is not None:
@@ -317,6 +320,17 @@ def _contains_secret_name(value):
 
 # The part names are checked against the seat when help is requested.
 _CHORD_PART_NAMES = frozenset({"serve", "rescue", "finally", "ouroboros"})
+
+
+def _chord_source(declaration: dict, seat: dict | None) -> dict:
+    # A seated serve selects the whole definition, including absent parts.
+    return seat if seat is not None and "serve" in seat else declaration
+
+
+def _native_chord_value(value):
+    # Intent seats keep JSON numbers as lexemes for help; the validator and
+    # stage envelopes expect the same Python values as an index.json read.
+    return json.loads(dump_intent_projection(value))
 
 
 class _ChordError(ValueError):
@@ -523,7 +537,11 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
                           "request": request, "stages": [], "failedStage": None, "firstMissingSignal": "chord-secret-carrier-refused"}))
         return 1
     try:
-        declaration = _index(path)
+        index = _index(path)
+        declaration = _chord_source(index, _intent_seat(path))
+        if declaration is not index:
+            declaration = _native_chord_value({name: value for name, value in declaration.items()
+                                               if name in _CHORD_PART_NAMES})
         serve, rescue, final = _validate_chord(declaration)
         ring = declaration.get("ouroboros")
     except (OSError, ValueError, _ChordError) as exc:
@@ -1826,6 +1844,22 @@ def _intent_boolean_declaration(declaration: dict, name: str) -> bool | str | No
     return value if value is None or isinstance(value, bool) else "invalid"
 
 
+def _chord_parts_drift(declaration: dict, seat: dict) -> list[str]:
+    parts = []
+    for name in sorted(_CHORD_PART_NAMES):
+        if name in declaration and name in seat:
+            try:
+                # Ignore member order, but distinguish JSON types (True != 1).
+                if (json.dumps(declaration[name], sort_keys=True)
+                        == json.dumps(_native_chord_value(seat[name]), sort_keys=True)):
+                    continue
+            except (ValueError, RecursionError):
+                pass  # An unreadable part is not the legacy part.
+        if name in declaration or name in seat:
+            parts.append(name)
+    return parts
+
+
 def _intent_declaration_drift(intents: dict) -> dict:
     if not intents:
         return {}
@@ -1856,6 +1890,10 @@ def _intent_declaration_drift(intents: dict) -> dict:
             seated = _intent_boolean_declaration(seat, name)
             if seated != legacy:
                 differences[name] = {"seat": seated, "index": legacy}
+        if not target.is_file():  # _slash_target only returns a directory for a chord.
+            parts = _chord_parts_drift(declaration, seat)
+            if parts:
+                differences["chord"] = parts
         if differences:
             drift["intents/" + intent] = differences
     return drift
