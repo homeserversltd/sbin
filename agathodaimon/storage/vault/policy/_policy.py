@@ -6,8 +6,9 @@ import os
 import re
 import stat
 import subprocess
-import sys
 from typing import Any, Sequence
+
+from agathodaimon import _envelope
 
 _POLICY_SCHEMA = "caduceus.vault_policy.v1"
 _LEGACY_POLICY_SCHEMA = "fulcrum.keyman.vault_policy.v1"
@@ -963,10 +964,15 @@ def _op_hint(value: Any) -> str | None:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        value = json.load(sys.stdin)
+        request = _envelope.read(known_fields=("op", "mapper", "unlock", "keyfile"))
+    except _envelope.EnvelopeError as exc:
+        signal = "vault-policy-mapper-invalid" if str(exc) == "JSON object required" else "vault-policy-op-invalid"
+        receipt = _receipt(False, None, None, None, signal)
     except Exception:
         receipt = _receipt(False, None, None, None, "vault-policy-op-invalid")
     else:
+        # Keep dispatch's exact-field checks in the direct module entry.
+        value = request.value
         try:
             receipt = _dispatch(value)
         except Exception:

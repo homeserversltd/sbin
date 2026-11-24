@@ -10,7 +10,11 @@ import sys
 from typing import Any, Sequence
 
 import agathodaimon.lib.sacred_credential.index as sacred_credential
+from agathodaimon import _envelope
 
+MAX_INPUT_BYTES = 131072
+_INVALID_REQUEST = "agathodaimon-vault-open-request-invalid"
+_SECRET_PLACEMENT_INVALID = "agathodaimon-envelope-secret-field-placement-invalid"
 _SERVICE = "homeconsole-vault"
 _CRYPTSETUP = "/usr/sbin/cryptsetup"
 _BASH = "/usr/bin/bash"
@@ -630,49 +634,43 @@ def _unlock(
                 pass
 
 
-def _dispatch(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    payload = value.get("payload") if "schema" in value else value
+def _request_refusal(error: Exception | None = None) -> dict[str, Any]:
+    signal = _INVALID_REQUEST
+    if isinstance(error, _envelope.EnvelopeError) and str(error) == _SECRET_PLACEMENT_INVALID:
+        signal = _SECRET_PLACEMENT_INVALID
+    return _receipt(False, True, signal)
+
+
+def _dispatch(payload: Any, secret: bytearray | None) -> dict[str, Any]:
     if not isinstance(payload, dict):
-        return _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+        return _request_refusal()
     if payload.get("op") == "unlock":
         payload.pop("op")
-        passphrase = payload.pop("passphrase", None)
-        passphrase_valid = passphrase is None or isinstance(passphrase, str)
-        secret: bytearray | None = None
-        if isinstance(passphrase, str):
-            try:
-                secret = bytearray(passphrase.encode("utf-8"))
-            except UnicodeError:
-                passphrase_valid = False
-            finally:
-                del passphrase
-        try:
-            return _unlock(payload, secret, passphrase_valid)
-        finally:
-            if secret is not None:
-                _wipe(secret)
+        return _unlock(payload, secret, True)
+    if secret is not None:
+        return _request_refusal()
     return open_from_seated_record(payload)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if args:
-        receipt = _receipt(False, True, "agathodaimon-vault-open-request-invalid")
-    else:
-        try:
-            raw = bytearray()
-            try:
-                raw.extend(sys.stdin.buffer.read(131073))
-                if len(raw) > 131072:
-                    raise ValueError
-                value = json.loads(raw.decode("utf-8"))
-            finally:
-                _wipe(raw)
-            receipt = _dispatch(value)
-        except Exception:
-            receipt = _receipt(False, True, "agathodaimon-vault-open-request-invalid")
+    secret = None
+    try:
+        if args:
+            raise ValueError("arguments refused")
+        request = _envelope.read_fields(
+            "op", "device", "mapper", "mountpoint",
+            secret_bytes=("passphrase",), max_input_bytes=MAX_INPUT_BYTES,
+        )
+        secret = request.secret_bytes.get("passphrase")
+        # Dispatch still checks the exact selector set, not a field projection.
+        payload = request.value.get("payload") if request.envelope else request.value
+        receipt = _dispatch(payload, secret)
+    except Exception as exc:
+        receipt = _request_refusal(exc)
+    finally:
+        if secret is not None:
+            _envelope.wipe_bytes(secret)
     print(json.dumps(receipt, separators=(",", ":")))
     return 0 if receipt["ok"] else 1
 
