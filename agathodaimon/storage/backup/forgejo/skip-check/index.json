@@ -1,1 +1,2 @@
-{"children":[],"mutation_allowed":false,"sclerite":{"name":"nas","features":{"nas":{"band":true,"verbs":[["forgejo","skip-check"]],"routes":["/api/v1/storage/backup/forgejo/skip-check"],"administrative":{"band":true,"verbs":[["forgejo","skip-check"]],"routes":["POST /api/v1/storage/backup/forgejo/skip-check"]}}}}}
+{
+  "hand": "envelope","children":[],"mutation_allowed":"seat","sclerite":{"name":"nas","features":{"nas":{"band":true,"verbs":[["forgejo","skip-check"]],"routes":["/api/v1/storage/backup/forgejo/skip-check"],"administrative":{"band":true,"verbs":[["forgejo","skip-check"]],"routes":["POST /api/v1/storage/backup/forgejo/skip-check"]}}}}}

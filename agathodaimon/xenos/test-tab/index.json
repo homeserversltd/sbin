@@ -1,6 +1,6 @@
 {
   "children": [],
   "hand": "envelope",
-  "mutation_allowed": true,
+  "mutation_allowed": "seat",
   "sclerite": {"name": "all", "features": {}}
 }

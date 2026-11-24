@@ -1,7 +1,7 @@
 {
   "hand": "envelope",
   "children": [],
-  "dry-run": true,
+  "dry-run": "seat",
   "sclerite": {
     "name": "all",
     "features": {

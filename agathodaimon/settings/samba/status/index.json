@@ -1,7 +1,7 @@
 {
   "hand": "envelope",
   "children": [],
-  "mutation_allowed": false,
+  "mutation_allowed": "seat",
   "sclerite": {
     "name": "all",
     "features": {

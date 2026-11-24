@@ -1,8 +1,8 @@
 {
   "hand": "envelope",
-  "dry-run": true,
+  "dry-run": "seat",
   "children": [],
-  "mutation_allowed": true,
+  "mutation_allowed": "seat",
   "sclerite": {
     "name": "desktop",
     "features": {

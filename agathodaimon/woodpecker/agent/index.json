@@ -1,5 +1,6 @@
 {
+  "hand": "envelope",
   "children": [],
-  "mutation_allowed": false,
+  "mutation_allowed": "seat",
   "sclerite": {"name": "woodpecker", "features": {"woodpecker": {"band": true, "verbs": [["woodpecker", "agent"]], "routes": ["/api/v1/woodpecker/agent"]}}}
 }

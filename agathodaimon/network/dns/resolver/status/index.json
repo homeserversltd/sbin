@@ -18,5 +18,5 @@
       }
     }
   },
-  "mutation_allowed": false
+  "mutation_allowed": "seat"
 }

@@ -20,5 +20,5 @@
       }
     }
   },
-  "dry-run": true
+  "dry-run": "seat"
 }

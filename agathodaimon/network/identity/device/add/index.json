@@ -1,6 +1,6 @@
 {
   "children": [],
-  "mutation_allowed": true,
+  "mutation_allowed": "seat",
   "sclerite": {
     "name": "unbound",
     "features": {

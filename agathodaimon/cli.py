@@ -84,13 +84,24 @@ def _boolean_word(declaration, name: str) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _seat_marked_value(declaration, seat, name):
+    """Resolve a marker, distinguishing an unanswered seat from null."""
+    if not isinstance(declaration, dict) or declaration.get(name) != "seat":
+        return _intent_boolean_declaration(declaration, name)
+    value = _intent_boolean_declaration(seat, name)
+    return value if value is None or isinstance(value, bool) else "absent"
+
+
 def _index_mutation_allowed(path: Path) -> bool | None:
     """The standing declaration remains the PIN gate's authority."""
     try:
         declaration = _index(path)
     except (OSError, UnicodeError, ValueError, RecursionError):
         return None
-    return _boolean_word(declaration, "mutation_allowed")
+    value = _seat_marked_value(declaration, _intent_seat(path), "mutation_allowed")
+    if isinstance(declaration, dict) and declaration.get("mutation_allowed") == "seat" and value == "absent":
+        return True
+    return value if value is None or isinstance(value, bool) else None
 
 
 def _mutation_allowed(path: Path) -> bool | None:
@@ -105,6 +116,8 @@ def _mutation_allowed(path: Path) -> bool | None:
 def _declares_dry_run(path: Path, index: dict) -> bool:
     # Until the sweep can identify a retired key, a missing key is not proof
     # that the installed stop honors dry-run. Never promote it from the seat.
+    if index.get("dry-run") == "seat":
+        return _seat_marked_value(index, _intent_seat(path), "dry-run") is True
     if index.get("dry-run") is not True:
         return False
     seat = _intent_seat(path)
@@ -1838,7 +1851,7 @@ def _chord_part_names_drift(seat):
 
 
 def _intent_boolean_declaration(declaration: dict, name: str) -> bool | str | None:
-    if name not in declaration:
+    if not isinstance(declaration, dict) or name not in declaration:
         return "absent"
     value = declaration[name]
     return value if value is None or isinstance(value, bool) else "invalid"
@@ -1861,8 +1874,15 @@ def _chord_parts_drift(declaration: dict, seat: dict) -> list[str]:
 
 
 def _intent_declaration_drift(intents: dict) -> dict:
-    if not intents:
-        return {}
+    # Include marked declarations whose seat is absent, not just loaded seats.
+    intents = dict(intents or {})
+    for index in ROOT.rglob("index.json"):
+        try:
+            declaration = _index(index.parent)
+            if any(declaration.get(name) == "seat" for name in ("dry-run", "mutation_allowed")):
+                intents.setdefault(index.parent.relative_to(ROOT).as_posix(), None)
+        except (OSError, UnicodeError, ValueError, RecursionError):
+            continue
     profile, profile_ok = _profile_for_crossing()
     publication = _crossing_publication(profile) if profile_ok else None
     drift = {}
@@ -1882,15 +1902,20 @@ def _intent_declaration_drift(intents: dict) -> dict:
             administrative = (_administrative_candidate(intent) if publication is None
                               else _administrative_target(intent, publication))
             # Report the standing posture, not the switch or a live PIN check.
-            administrative = administrative and _boolean_word(declaration, "mutation_allowed") is not False
+            administrative = administrative and _seat_marked_value(declaration, seat, "mutation_allowed") is not False
             if exousia != administrative:
                 differences.update(exousia=exousia, administrative=administrative)
         for name in ("dry-run", "mutation_allowed"):
             legacy = _intent_boolean_declaration(declaration, name)
             seated = _intent_boolean_declaration(seat, name)
+            if declaration.get(name) == "seat":
+                resolved = _seat_marked_value(declaration, seat, name)
+                if resolved == "absent":
+                    differences[name] = {"seat": "absent", "index": "seat"}
+                continue
             if seated != legacy:
                 differences[name] = {"seat": seated, "index": legacy}
-        if not target.is_file():  # _slash_target only returns a directory for a chord.
+        if seat is not None and not target.is_file():  # A directory denotes a chord.
             parts = _chord_parts_drift(declaration, seat)
             if parts:
                 differences["chord"] = parts
