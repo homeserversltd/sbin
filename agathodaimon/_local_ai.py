@@ -598,6 +598,7 @@ def main(verb: str, args=None) -> int:
     started = time.monotonic()
     attempted = False
     action = verb
+    name = None
     try:
         if verb == "slot":
             arguments, request = _request(arguments)
@@ -629,7 +630,7 @@ def main(verb: str, args=None) -> int:
 
             _deed.send(
                 "sbin", "local-ai-slot-apply", reply["ok"],
-                target=reply.get("unit", "model-slot"),
+                target=f"model-slot-{name}" if name in ROLES else "model-slot",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 signal=reply.get("firstMissingSignal", "none"),
             )
