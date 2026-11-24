@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import grp
-import json
 import os
 from pathlib import Path
 import stat
-import sys
 import time
 import uuid
 
 from agathodaimon.lib.receipts.index import emit
+from agathodaimon import _envelope
 from agathodaimon.thyrsus._common import _rooted
 from agathodaimon.unit import _control
 
@@ -22,27 +21,31 @@ class Refusal(Exception):
     pass
 
 
-def _token(arguments):
-    if arguments or (len(sys.argv) > 2 and sys.argv[1] == "woodpecker/agent-token"):
-        raise Refusal("woodpecker-token-stdin-required")
-    raw = sys.stdin.read(65537)
-    if len(raw) > 65536:
-        raise Refusal("woodpecker-request-too-large")
+def _token():
     try:
-        obj = json.loads(raw)
-    except ValueError:
-        obj = None
-    if isinstance(obj, dict):
-        payload = obj.get("payload")
-        if not isinstance(payload, dict):
-            payload = obj
-        value = payload.get("token")
-    else:
-        value = raw.removesuffix("\n")
-    if (not isinstance(value, str) or not 1 <= len(value) <= 256
-            or not value.isprintable() or any(c.isspace() for c in value)):
+        request = _envelope.read(known_fields=("token",), secret_bytes=("token",),
+                                 max_input_bytes=65536)
+    except _envelope.EnvelopeError as error:
+        signal = str(error)
+        if signal == "agathodaimon-envelope-input-too-large":
+            raise Refusal("woodpecker-request-too-large") from None
+        if signal == "agathodaimon-vault-open-request-invalid":
+            raise Refusal("woodpecker-token-invalid") from None
+        raise Refusal("woodpecker-request-invalid") from None
+    token = request.secret_bytes.get("token")
+    if token is None:
         raise Refusal("woodpecker-token-invalid")
-    return value
+    try:
+        value = token.decode("utf-8")
+        valid = (1 <= len(value) <= 256 and value.isprintable()
+                 and not any(c.isspace() for c in value))
+        del value
+        if not valid:
+            raise Refusal("woodpecker-token-invalid")
+        return token
+    except BaseException:
+        _envelope.wipe_bytes(token)
+        raise
 
 
 def _store(token, receipt):
@@ -112,11 +115,11 @@ def main_for(verb, arguments=None):
     try:
         if verb == "agent-token":
             receipt.update(file=None, restart=None, restarted=False)
-            token = _token(list(arguments or []))
+            token = _token()
             try:
-                _store(token, receipt)
+                _store(token.decode("utf-8"), receipt)
             finally:
-                token = None
+                _envelope.wipe_bytes(token)
             if os.environ.get("AGATHODAIMON_SCRATCH_ROOT") is not None:
                 receipt["restart"] = "skipped"
             else:

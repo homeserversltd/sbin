@@ -1,6 +1,7 @@
 {
   "children": [],
-  "mutation_allowed": true,
-  "envelope": {"stdin": "stream"},
+  "mutation_allowed": "seat",
+  "envelope": {"stdin": "json"},
+  "hand": "envelope",
   "sclerite": {"name": "woodpecker", "features": {"woodpecker": {"band": true, "verbs": [["woodpecker", "agent-token"]], "routes": ["/api/v1/woodpecker/agent-token"], "administrative": {"band": true, "verbs": [["woodpecker", "agent-token"]], "routes": ["/api/v1/woodpecker/agent-token"]}}}}
 }
