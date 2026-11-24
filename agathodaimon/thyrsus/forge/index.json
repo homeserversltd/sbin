@@ -1,4 +1,5 @@
 {
   "children": [],
+  "hand": "envelope",
   "sclerite": {"name": "thyrsus", "features": {"thyrsus": {"band": true, "verbs": [["thyrsus", "forge"]], "routes": ["/api/v1/thyrsus/forge"]}}}
 }

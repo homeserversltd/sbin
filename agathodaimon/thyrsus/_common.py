@@ -676,32 +676,6 @@ def _primitive_request(verb, payload, original=None, *, for_refusal=False):
                    value.get("transition"), value.get("version"), value.get("timestamp"))
 
 
-def _argv_payload(verb, arguments):
-    if verb == "forge-token":
-        raise Refusal("thyrsus-token-stdin-required")
-    if verb == "forge":
-        raise Refusal("thyrsus-arguments-invalid")
-    import argparse
-
-    class Arguments(argparse.ArgumentParser):
-        def error(self, message):
-            raise Refusal("thyrsus-arguments-invalid")
-
-    parser = Arguments(prog="cli.py thyrsus " + verb)
-    if verb in {"propose", "admit"}:
-        parser.add_argument("repo")
-    if verb == "propose":
-        parser.add_argument("-m", dest="message", required=True)
-        parser.add_argument("--branch", default=None)
-    if verb == "admit":
-        parser.add_argument("pr")
-    if verb == "new-tab":
-        parser.add_argument("id")
-        parser.add_argument("--into", required=True)
-        parser.add_argument("--display", default=None)
-    return vars(parser.parse_args(arguments))
-
-
 def _token_echo(request, token):
     # Keep the old redaction of any value repeated in caller-owned metadata.
     # The placeholder is reply metadata only; the action sees only the bytearray.
@@ -759,8 +733,8 @@ def main_for(verb, arguments=None):
         profile = _configuration()
         arguments = list(arguments or [])
         if arguments:
-            payload = _argv_payload(verb, arguments)
-            request = _primitive_request(verb, payload)
+            raise Refusal("thyrsus-token-stdin-required" if verb == "forge-token"
+                          else "thyrsus-arguments-invalid")
         else:
             try:
                 incoming = read(known_fields=_REQUEST_FIELDS[verb],
