@@ -7,43 +7,55 @@ import subprocess
 import threading
 
 try:
-    from ._common import _group, _json, _page, _receipt_ok, _request
+    from ._common import _group, _page, _receipt_ok, _request
 except ImportError:
-    from _common import _group, _json, _page, _receipt_ok, _request
+    from _common import _group, _page, _receipt_ok, _request
 
 PLUG = {"id": "region-language", "title": "Region & Language", "icon": "preferences-desktop-locale-symbolic", "order": 95, "parent": None}
 
-_LOCALE = re.compile(r"(?:([a-z]{2,3})(?:_([A-Z]{2}))?|C|POSIX)(?:\.[A-Za-z0-9-]+)?(?:@[A-Za-z0-9_-]+)?")
+_LOCALE = re.compile(r"(?:[a-z]{2,3}(?:_[A-Z]{2})?|C|POSIX)(?:\.[A-Za-z0-9-]+)?(?:@[A-Za-z0-9_-]+)?")
 _MEASUREMENT = {"metric": "Metric", "imperial": "US customary"}
 _PAPER = {("210", "297"): "A4", ("216", "279"): "Letter"}
 _WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+_FORMATS_PROBE = r"""
+/usr/bin/locale charmap
+/usr/bin/date '+%x%n%X'
+/usr/bin/printf "%'.2f\n" 1234.56
+/usr/bin/locale -k LC_ADDRESS LC_PAPER LC_TIME
+"""
 
 
-def _english_name(table: str, code: str | None) -> str | None:
-    if not code:
-        return None
-    entries = _json(f"/usr/share/iso-codes/json/iso_{table}.json").get(table)
+def _language_label(options, locale_id: str) -> str | None:
+    entries = options.get("locale") if isinstance(options, dict) else None
     if isinstance(entries, list):
         for entry in entries:
-            if isinstance(entry, dict) and code in (entry.get("alpha_2"), entry.get("alpha_3")):
-                name = entry.get("common_name") or entry.get("name")
-                return name if isinstance(name, str) and name else None
+            if isinstance(entry, dict) and entry.get("value") == locale_id:
+                label = entry.get("label")
+                return label if isinstance(label, str) and label else None
     return None
 
 
-def _paper_and_weekday(locale_id: str) -> tuple[str | None, str | None] | None:
-    """Read the locale's formats, or return None if glibc could not load it."""
+def _locale_formats(locale_id: str) -> tuple[str, str | None, str | None] | None:
+    """Read and format under the stored locale without changing GTK's locale."""
     try:
         result = subprocess.run(
-            ["locale", "-k", "LC_PAPER", "LC_TIME"], env={**os.environ, "LC_ALL": locale_id},
-            capture_output=True, text=True, errors="replace", timeout=3, check=False,
+            ["/bin/sh", "-ec", _FORMATS_PROBE], env={**os.environ, "LC_ALL": locale_id},
+            capture_output=True, timeout=3, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
     # An ungenerated locale can print C defaults with a warning and exit zero.
     if result.returncode or result.stderr:
         return None
-    facts = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    charmap, _, output = result.stdout.partition(b"\n")
+    try:
+        date, time, number, keywords = output.decode(charmap.decode("ascii")).split("\n", 3)
+    except (LookupError, ValueError):
+        return None
+    facts = dict(line.split("=", 1) for line in keywords.splitlines() if "=" in line)
+    country = facts.get("country_name", "").removeprefix('"').removesuffix('"')
+    preview = " · ".join((date, time, number))
+    formats = f"{country}\n{preview}" if country else preview
     paper = _PAPER.get((facts.get("width", ""), facts.get("height", "")))
     # glibc's first_weekday is one-based relative to the week origin.
     week_origin = {"19971130": 6, "19971201": 0}.get(facts.get("week-1stday", ""))
@@ -51,7 +63,7 @@ def _paper_and_weekday(locale_id: str) -> tuple[str | None, str | None] | None:
     weekday = None
     if week_origin is not None and first in {"1", "2", "3", "4", "5", "6", "7"}:
         weekday = _WEEKDAYS[(week_origin + int(first) - 1) % len(_WEEKDAYS)]
-    return paper, weekday
+    return formats, paper, weekday
 
 
 def _current_values() -> tuple[str | None, ...]:
@@ -66,18 +78,13 @@ def _current_values() -> tuple[str | None, ...]:
     units = values.get("measurement_units")
     measurement = _MEASUREMENT.get(units) if isinstance(units, str) else None
     locale_id = values.get("locale")
-    match = _LOCALE.fullmatch(locale_id) if isinstance(locale_id, str) and len(locale_id) <= 128 else None
-    if match is None:
+    if not isinstance(locale_id, str) or len(locale_id) > 128 or not _LOCALE.fullmatch(locale_id):
         return None, None, measurement, None, None
-    formats = _paper_and_weekday(match[0])
-    if formats is None:
+    probe = _locale_formats(locale_id)
+    if probe is None:
         return None, None, measurement, None, None
-    paper, weekday = formats
-    language = _english_name("639-3", match[1])
-    region = _english_name("3166-1", match[2])
-    if language and region:
-        language = f"{language} ({region})"
-    return language, region, measurement, paper, weekday
+    formats, paper, weekday = probe
+    return _language_label(reply.get("options"), locale_id), formats, measurement, paper, weekday
 
 
 def build_widget():
