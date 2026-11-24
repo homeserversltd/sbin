@@ -174,7 +174,7 @@ def _take_secret_bytes(
         try:
             if isinstance(text, str):
                 material[name] = bytearray(text, "utf-8")
-            else:
+            elif text is not None:
                 invalid = True
         except UnicodeEncodeError:
             invalid = True
@@ -201,8 +201,9 @@ def read(
     The limit is inclusive and checked before parsing, using byte lookahead.
 
     secret_bytes is a sequence of field names, not a bare string. Only direct
-    fields of the payload (or flat request) are taken. A named field elsewhere
-    or occurring more than once is refused before any request is returned.
+    fields of the payload (or flat request) are taken. A direct null is removed
+    and treated as absent; other non-string values are invalid. A named field
+    elsewhere or occurring more than once is refused before a request returns.
     The final input bytearray is wiped after parsing, not the decoder's
     transient copies or storage owned by the input stream. The caller owns
     the removed field bytearrays in Request.secret_bytes and must zero them
