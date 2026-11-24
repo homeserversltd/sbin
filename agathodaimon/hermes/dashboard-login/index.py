@@ -92,6 +92,8 @@ def main(arguments=None):
                                     stderr=subprocess.DEVNULL, timeout=30, check=False)
         finally:
             data = None
+            _envelope.wipe_bytes(password_bytes)
+            password_bytes = None
         if result.returncode != 0:
             raise Refusal("hermes-config-write-failed")
         receipt["file"] = str(path)
