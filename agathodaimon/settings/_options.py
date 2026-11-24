@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import configparser
 import json
+import os
 import re
 import shlex
+import subprocess
 from pathlib import Path
 
-from agathodaimon.settings import _shared
+from agathodaimon.settings import _locale_names, _shared
 
 
 def _choices(items):
@@ -85,28 +87,53 @@ def _keyboard():
     return _choices(result)
 
 
-def _locales():
+def _locale_loads_as_utf8(value: str, environment: dict[str, str]) -> bool:
+    try:
+        answer = subprocess.run(['locale', 'charmap'], env={**environment, 'LC_ALL': value},
+                                capture_output=True, timeout=3, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    # glibc may return 0 with a fallback charmap and warnings on stderr.
+    return answer.returncode == 0 and not answer.stderr and answer.stdout.strip() == b'UTF-8'
+
+
+def _installed_locales(supported: dict[str, str | None]) -> set[str] | None:
     ok, text, _ = _shared.command(['locale', '-a'])
     if not ok:
-        return []
-    result = []
-    for raw in text.splitlines():
-        match = re.fullmatch(r'([A-Za-z0-9_+-]+)\.(?:utf-?8)(@[A-Za-z0-9_-]+)?', raw, re.I)
-        if not match:
-            continue
-        name, modifier = match.group(1), match.group(2) or ''
-        value = name + '.UTF-8' + modifier
-        label = value
+        return None
+    native = text.splitlines()
+    installed = {value for raw in native if (value := _locale_names.utf8_value(raw))}
+    environment = os.environ.copy()
+    locpath = environment.pop('LOCPATH', '')
+    for raw in native:
+        # A bare locale -a entry may use a legacy codeset (including C itself).
+        value = _locale_names.utf8_value(raw, allow_bare=True)
+        if value and value in supported and value not in installed and _locale_loads_as_utf8(raw, environment):
+            installed.add(value)
+
+    # locale -a sees the system inventory, not private localedef directories.
+    # Let glibc confirm the compiled locale is loadable rather than trust the name.
+    private = {**environment, 'LOCPATH': locpath}
+    for root in filter(None, locpath.split(':')):
         try:
-            source = (Path('/usr/share/i18n/locales') / (name + modifier)).read_text(encoding='utf-8')
-            section = re.search(r'(?ms)^LC_IDENTIFICATION\s*$\n(.*?)^END LC_IDENTIFICATION\s*$', source)
-            title = re.search(r'(?m)^\s*title\s+"([^"]+)"', section.group(1)) if section else None
-            if title:
-                label = title.group(1)
-        except (OSError, UnicodeError):
-            pass
-        result.append((value, label))
-    return _choices(result)
+            for entry in Path(root).iterdir():
+                value = _locale_names.utf8_value(entry.name, allow_bare=True)
+                if (value and value in supported and value not in installed and (entry / 'LC_CTYPE').is_file()
+                        and _locale_loads_as_utf8(value, private)):
+                    installed.add(value)
+        except OSError:
+            continue
+    return installed
+
+
+def _locales():
+    names = _locale_names.supported_labels()
+    installed = _installed_locales(names) if names else None
+    if installed is None:
+        return []
+    entries = [{'value': value, 'label': name or value, 'installed': value in installed}
+               for value, name in names.items()]
+    return sorted(entries, key=lambda entry: (entry['label'].casefold(), entry['value']))
 
 
 def _ini(path, section):
