@@ -448,6 +448,7 @@ class _LiveSlider:
         self.dragging = self.drag_changed = False
         self.held_keys: set[int] = set()
         self.pending = self.in_flight = self.readback_pending = False
+        self.wait_for_release = False
         self.send_source = self.settle_source = self.last_send = 0
 
         # Observe the pointer stream without claiming Gtk.Range's native drag gesture.
@@ -515,7 +516,8 @@ class _LiveSlider:
         return False
 
     def _advance(self) -> None:
-        if self.pending and not self.in_flight and not self.send_source:
+        if (self.pending and not self.in_flight and not self.send_source
+                and not (self.wait_for_release and self.held)):
             until = self.last_send + _SLIDER_WRITE_INTERVAL_US - self.glib.get_monotonic_time()
             delay = max(0, (until + 999) // 1000)
             self.send_source = self.glib.timeout_add(delay, self._flush)
@@ -525,7 +527,9 @@ class _LiveSlider:
 
     def _flush(self) -> bool:
         self.send_source = 0
-        self.pending = False
+        if self.wait_for_release and self.held:
+            return False
+        self.pending = self.wait_for_release = False
         if self.scale.is_sensitive() and self.send(self.wire_value(self.scale.get_value())):
             self.last_send = self.glib.get_monotonic_time()
             self.in_flight = True
@@ -542,7 +546,8 @@ class _LiveSlider:
 
     def reconciled(self, send_pending: bool) -> None:
         self.in_flight = False
-        self.pending = send_pending
+        # Only a follow-up to a lost reply waits for the hand to let go.
+        self.pending = self.wait_for_release = send_pending
         self._advance()
 
     def discard(self) -> None:
@@ -551,7 +556,7 @@ class _LiveSlider:
         if self.settle_source:
             self.glib.source_remove(self.settle_source)
         self.send_source = self.settle_source = 0
-        self.pending = self.readback_pending = self.drag_changed = False
+        self.pending = self.readback_pending = self.drag_changed = self.wait_for_release = False
 
     def _pointer_event(self, controller: Any, event: Any, Gdk: Any) -> bool:
         # PyGObject 3.50 can marshal the signal argument as None. The
@@ -972,28 +977,42 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         confirmed = field not in action_buttons and actual is not None and actual == wanted
         settled = confirmed or field in late_reads
         slider = sliders.get(field)
-        pick = slider.wire_value(slider.scale.get_value()) if slider else None
-        later = bool(slider and slider.pending and pick != wanted)
-        if slider and writable and not later and (settled or not (slider.pending or slider.held)):
-            setters[field](state["values"][field])
+        if slider:
+            if not settled or actual is None:
+                if writable:
+                    # The first mismatch is not a verdict on the owner's pick.
+                    show_status(field)
+                return True
+            owned = slider.pending or slider.held
+            pick = slider.wire_value(slider.scale.get_value())
+            # Owner input can choose the same number as the lost attempt.
+            follow_up = writable and owned and pick != actual
+            if not owned:
+                setters[field](state["values"][field])
+            if writable:
+                state["values"][field] = actual
+            lost_replies.pop(field)
+            late_reads.discard(field)
+            slider.reconciled(follow_up)
+            if writable:
+                if confirmed and not follow_up:
+                    show_saved(field)
+                elif owned:
+                    show_status(field)
+                else:
+                    show_status(field, _UNCONFIRMED, signal)
+            return True
         if settled:
             lost_replies.pop(field)
             late_reads.discard(field)
-            if slider:
-                # Only a distinct owner move can follow the lost write, and
-                # it needn't be sent if the body already holds that position.
-                slider.reconciled(writable and later and pick != actual)
-            else:
-                pending.pop(field, None)
-                lock_editing(field, False)
-        elif writable and not slider:
+            pending.pop(field, None)
+            lock_editing(field, False)
+        elif writable:
             # Paint what the first GET actually saw, but keep new input on
             # this field gated until the bounded late read has had its turn.
             pending[field] = getters[field]()
             lock_editing(field, True)
-        if writable and later:
-            show_status(field)
-        elif writable and confirmed:
+        if writable and confirmed:
             show_saved(field)
         elif writable or not (field in readonly_signals or field in static_signals):
             show_status(field, _UNCONFIRMED, signal)
@@ -1051,7 +1070,12 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                 if slider and value is not None:
                     number = _number(value, math.nan)
                     value = number if math.isfinite(number) else None
-                if slider and slider.protected and not readonly_signal and field not in lost_replies:
+                lost_slider = slider is not None and field in lost_replies
+                if lost_slider:
+                    # A read can take focus away. Preserve an owner's hold
+                    # even if it did not generate a value-changed signal.
+                    slider.pending |= slider.held
+                if slider and slider.protected and not readonly_signal and not lost_slider:
                     # A prior bad read may have hidden the slider. Recover
                     # its visibility without hydrating over the held value.
                     reveal_row(field)
@@ -1061,15 +1085,15 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     continue
                 slider_read = field in slider_reads
                 slider_reads.discard(field)
-                writing_slider = bool(slider and slider.in_flight and field not in lost_replies)
+                writing_slider = bool(slider and slider.in_flight and not lost_slider)
                 defer_value = bool(slider and readonly_signal and (slider.held or writing_slider))
                 if slider and readonly_signal:
-                    slider.discard()
+                    if not lost_slider:
+                        slider.discard()
                     slider.dragging = False
                     slider.held_keys.clear()
                 available = (field in action_buttons or value is not None
                              or (field in choices and row is choices[field]["combo"]))
-                writable = available and not readonly_signal and field not in static_signals
                 show_unavailable = not available and (field not in static_signals or bool(readonly_signal))
                 row.set_visible(not show_unavailable)
                 unavailable_rows[field].set_visible(show_unavailable)
@@ -1078,17 +1102,18 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     if not readonly_signal:
                         show_status(field)
                 previous = state["values"].get(field)
-                if available and not defer_value:
+                if available and (not defer_value or lost_slider):
                     # A lost slider write still needs the body's value, but
                     # its resolver decides whether that value may move the knob.
-                    if not (slider and writable and field in lost_replies):
+                    if not lost_slider:
                         setters[field](value)
                     state["values"][field] = value if slider else getters[field]()
+                actual = slider.wire_value(value) if slider is not None and value is not None else value
                 if readonly_signal:
                     show_readonly(field, readonly_signal)
                     set_control_sensitive(field, False)
-                    resolve_lost_reply(field, value, writable=False)
-                    if slider and defer_value and not writing_slider:
+                    resolve_lost_reply(field, actual, writable=False)
+                    if slider and defer_value and not writing_slider and not lost_slider:
                         GLib.idle_add(refresh)
                     continue
                 if field in static_signals:
@@ -1098,15 +1123,14 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
                     else:
                         show_status(field, "Can't be changed from Settings yet", signal)
                     set_control_sensitive(field, False)
-                    resolve_lost_reply(field, value, writable=False)
+                    resolve_lost_reply(field, actual, writable=False)
                 elif not available:
                     set_control_sensitive(field, False)
-                    resolve_lost_reply(field, value, writable=False)
+                    resolve_lost_reply(field, actual, writable=False)
                 else:
                     set_control_sensitive(field, True)
                     if field in previously_readonly:
                         show_status(field)
-                    actual = slider.wire_value(value) if slider is not None and value is not None else value
                     if not resolve_lost_reply(field, actual, writable=True) and (field in saved or slider_read):
                         if slider and slider.wire_value(state["values"][field]) != previous:
                             show_status(field, "Not saved", "settings-readback-mismatch")
@@ -1120,6 +1144,9 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     def fail_read(signal: str, settled: set[str]) -> bool:
         nonlocal read_focus_field
         focus = _focus(group)
+        for field in lost_replies.keys() & sliders.keys():
+            slider = sliders[field]
+            slider.pending |= slider.held
         state["hydrated"] = False
         returned_fields.clear()
         read_error.set_subtitle(GLib.markup_escape_text(signal))
@@ -1138,7 +1165,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         # just its own row visible, but don't enable an unconfirmed value.
         for field in settled:
             reveal_row(field)
-            show_status(field, _UNCONFIRMED, signal)
+            if field not in sliders or field not in lost_replies:
+                show_status(field, _UNCONFIRMED, signal)
         return False
 
     def finish_read(generation: int, receipt: dict[str, Any] | None, error: str | None) -> bool:
