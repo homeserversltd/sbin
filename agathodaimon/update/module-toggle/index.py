@@ -19,6 +19,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Sequence
 
+from agathodaimon._nidus.lock import household_config_held
+
 CONFIG_PATH = "/etc/appliance/config.json"
 BACKUP_ROOT = "/var/lib/caduceus/backups/harmonia-module-toggle"
 MODULE_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
@@ -226,15 +228,16 @@ def toggle(module: str, state: str) -> dict[str, Any]:
     if not path.is_file():
         return _receipt(module, state, [], None, ok=False, signal="agathodaimon-harmonia-module-toggle-config-missing")
     try:
-        original = path.read_bytes()
-        raw = original.decode("utf-8")
-        updated, disabled = _updated_bytes(raw, module, state)
-        if updated == raw:
-            return _receipt(module, state, disabled, None)
-        metadata = path.stat()
-        backup = _backup(path, original)
-        _atomic_write(path, updated.encode("utf-8"), stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid, ".config.")
-        return _receipt(module, state, disabled, backup)
+        with household_config_held():
+            original = path.read_bytes()
+            raw = original.decode("utf-8")
+            updated, disabled = _updated_bytes(raw, module, state)
+            if updated == raw:
+                return _receipt(module, state, disabled, None)
+            metadata = path.stat()
+            backup = _backup(path, original)
+            _atomic_write(path, updated.encode("utf-8"), stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid, ".config.")
+            return _receipt(module, state, disabled, backup)
     except (OSError, UnicodeDecodeError, ToggleError) as exc:
         return _receipt(module, state, [], None, ok=False, signal=str(exc))
 
