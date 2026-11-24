@@ -26,6 +26,7 @@ import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session, export_credential
+from agathodaimon._nidus.lock import household_config_held, HouseholdConfigLockUnavailable
 
 NAME = re.compile(r"[A-Za-z0-9-]{6,63}\Z")
 SKIP = re.compile(r"[A-Za-z0-9_.-]+\Z")
@@ -180,7 +181,18 @@ def normalized_row(value):
     return row
 
 
-def store(data):
+def store(data, original_backblaze):
+    try:
+        with household_config_held():
+            current = load()
+            if current.get('tabs', {}).get('backblaze', {}) != original_backblaze:
+                fail('config', 'config-changed')
+            current.setdefault('tabs', {})['backblaze'] = data.get('tabs', {}).get('backblaze', {})
+            return _write_config(current)
+    except HouseholdConfigLockUnavailable:
+        fail('config', 'household-config-lock-unavailable')
+
+def _write_config(data):
     path = config_path()
     fd = None
     tmp = None

@@ -1,9 +1,10 @@
 from __future__ import annotations
-import base64,json,os,re,stat,subprocess,tempfile,urllib.error,urllib.request
+import base64,copy,json,os,re,stat,subprocess,tempfile,urllib.error,urllib.request
 from pathlib import Path
 from agathodaimon import _envelope
 from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
 from agathodaimon.keyman.custody import call as custody_call
+from agathodaimon._nidus.lock import household_config_held, HouseholdConfigLockUnavailable
 URL="https://api.backblazeb2.com/b2api/v2/b2_authorize_account"; KEYMAN="/vault/keyman/keyman"; CONFIG=Path("/etc/appliance/config.json")
 class Refusal(ValueError):
  def __init__(self,step,reason): self.step,self.reason=step,reason
@@ -55,6 +56,7 @@ def dispatch(e):
  if not isinstance(tabs,dict): raise Refusal("config","tabs must be a JSON object")
  backblaze=tabs.get("backblaze",{})
  if not isinstance(backblaze,dict): raise Refusal("config","tabs.backblaze must be a JSON object")
+ original_backblaze=copy.deepcopy(backblaze)
  if backblaze.get("locked") is True: return fail("locked","configuration is locked after initial setup")
  verify(k,a)
  if os.geteuid()!=0: raise Refusal("seed_keyman","agathodaimon-keyman-root-required")
@@ -77,12 +79,21 @@ def dispatch(e):
  finally: credential[:]=b"\0"*len(credential)
  cfg={"bucket":b,"paths":paths}
  if p is not None: cfg["prefix"]=p
- tabs=d.setdefault("tabs",{})
- backblaze=tabs.setdefault("backblaze",{})
- backblaze["config"]=cfg
- backblaze["locked"]=True
- try: write(d)
- except OSError as e: raise Refusal("write_config",f"unable to write appliance config: {e}")
+ try:
+  with household_config_held():
+   current=load()
+   tabs=current.get("tabs",{})
+   if not isinstance(tabs,dict): raise Refusal("config","tabs must be a JSON object")
+   backblaze=tabs.get("backblaze",{})
+   if backblaze!=original_backblaze:
+    return {"ok":False,"step":"config","reason":"config-changed","mutationPerformed":True,"mutationStep":"seed_keyman"}
+   backblaze=current.setdefault("tabs",{}).setdefault("backblaze",{})
+   backblaze["config"]=cfg
+   backblaze["locked"]=True
+   try: write(current)
+   except OSError as e: raise Refusal("write_config",f"unable to write appliance config: {e}")
+ except HouseholdConfigLockUnavailable:
+  return {"ok":False,"step":"config","reason":"household-config-lock-unavailable","mutationPerformed":True,"mutationStep":"seed_keyman"}
  return {"ok":True,"locked":True,"bucket":b,"keyman_service":s,"mutationPerformed":True}
 def main(argv=None):
  try:

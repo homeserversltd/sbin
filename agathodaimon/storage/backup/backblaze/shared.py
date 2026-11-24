@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import copy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
@@ -28,6 +29,7 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
     if verb not in ACTUATORS or not isinstance(metadata, dict):
         fail('shape', 'metadata-invalid')
     data = load()
+    original_backblaze = copy.deepcopy(data.get('tabs', {}).get('backblaze', {}))
     if verb == 'status':
         from agathodaimon.storage.backup.backblaze.status.index import act
         return act(data)
@@ -95,7 +97,7 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
             item.pop('encrypted', None)
         changed = json.dumps(data, sort_keys=True, separators=(',', ':')) != before
         if changed:
-            if not store(data):
+            if not store(data, original_backblaze):
                 mutation_result['durability'] = 'unconfirmed'
         elif verb != 'bucket-credentials':
             should_log = False
@@ -103,6 +105,8 @@ def dispatch(verb, metadata, scheduled=False, deed_verb=None):
         return mutation_result
     except Refusal as error:
         signal_name = error.reason
+        if error.reason in ('config-changed', 'household-config-lock-unavailable') and verb in ('bucket-add', 'bucket-credentials') and mutation_result.get('ok'):
+            error.mutation_performed = True
         raise
     finally:
         if should_log and outcome == 'ok':
@@ -179,6 +183,8 @@ def main_for(verb, request_override=None, return_result=False, deed_verb=None):
             result = dispatch(verb, request.get('metadata'))
     except Refusal as error:
         result = {'ok':False, 'step':error.step, 'reason':error.reason}
+        if getattr(error, 'mutation_performed', False):
+            result.update(mutationPerformed=True, mutationStep='keyman-seed')
     except Exception:
         result = {'ok':False, 'step':'request', 'reason':'request-unavailable'}
     finally:
