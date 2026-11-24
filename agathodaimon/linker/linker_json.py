@@ -8,6 +8,7 @@ import pathlib
 import sys
 from typing import Any
 
+from agathodaimon import _envelope
 from agathodaimon.linker.core import create_directory, create_hardlink, delete_path, rename_directory
 from agathodaimon.linker.link_index import scan_hardlinks
 from agathodaimon._envelope import appliance_runtime_path
@@ -15,6 +16,7 @@ from agathodaimon.linker.logger_utils import json_deed
 
 NAS_ROOT = (appliance_runtime_path("config").parents[2] / "mnt/nas").resolve()
 CONFLICT_STRATEGIES = {"fail", "skip", "overwrite", "rename"}
+_REQUEST_FIELDS = ("operation", "path", "new_dir_name", "new_name", "sources", "destination", "conflict_strategy")
 
 
 class AdapterError(Exception):
@@ -141,14 +143,18 @@ def run(request: dict[str, Any]) -> tuple[dict[str, Any], int]:
 
 def main() -> int:
     try:
-        request = json.load(sys.stdin)
-        if not isinstance(request, dict):
-            raise AdapterError("request must be a JSON object")
-        payload, exit_code = run(request)
-    except (AdapterError, json.JSONDecodeError) as error:
-        payload, exit_code = {"ok": False, "status": "adapter_error", "error": str(error)}, 2
+        request = _envelope.read(known_fields=_REQUEST_FIELDS)
+        # network/linker's caller sends a flat operation object. Even with
+        # kernel fields present, the adapter's arguments stay at the top level.
+        payload, exit_code = run(request.value if request.envelope else request.payload)
     except Exception as error:
-        payload, exit_code = {"ok": False, "status": "adapter_error", "error": str(error)}, 2
+        message = str(error)
+        if isinstance(error, _envelope.EnvelopeError):
+            if message == "JSON object required":
+                message = "request must be a JSON object"
+            elif message == "invalid JSON" and error.__cause__ is not None:
+                message = str(error.__cause__)
+        payload, exit_code = {"ok": False, "status": "adapter_error", "error": message}, 2
     emit(payload)
     return exit_code
 

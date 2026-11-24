@@ -11,13 +11,20 @@ import stat
 import time
 from typing import Any, Mapping
 
-from agathodaimon._envelope import EnvelopeError, _envelope_kernel
+from agathodaimon import _envelope
 from agathodaimon.linker import core, link_index
 from agathodaimon.linker.logger_utils import MUTATIONS, quiet_mutations, record_deed
 
-SCHEMA = "caduceus.staff.v1"
 BACKEND = "linker-staff-core"
 MAX_INPUT = 1024 * 1024
+_REQUEST_FIELDS = ("path", "new_dir_name", "new_name", "sources", "destination", "conflict_strategy")
+_REQUEST_SIGNALS = {
+    "agathodaimon-envelope-input-too-large": "linker-request-too-large",
+    "agathodaimon-envelope-input-bound-invalid": "linker-request-unreadable",
+    "invalid JSON": "linker-request-json-invalid",
+    "JSON object required": "linker-request-object-required",
+    "foreign envelope schema": "linker-envelope-schema-foreign",
+}
 REDACTED = "[REDACTED]"
 _SECRET_NAMES = {
     "key", "keymaterial", "privatekey", "secretkey", "seed", "seedphrase",
@@ -92,37 +99,34 @@ def _scrub(value: Any, secrets: set[str]) -> Any:
 
 
 def _read_request() -> tuple[dict[str, Any], dict[str, Any], bool]:
-    import sys
     try:
-        raw = sys.stdin.read(MAX_INPUT + 1)
+        request = _envelope.read(known_fields=_REQUEST_FIELDS, max_input_bytes=MAX_INPUT)
+    except _envelope.EnvelopeError as error:
+        reason = str(error)
+        if reason == "invalid JSON" and isinstance(error.__cause__, (OSError, UnicodeError)):
+            signal = "linker-request-unreadable"
+        elif reason.startswith("foreign seat "):
+            signal = "agathodaimon-seat-foreign"
+        elif reason.startswith("missing envelope kernel keys: "):
+            signal = "linker-envelope-kernel-missing"
+        else:
+            signal = _REQUEST_SIGNALS.get(reason)
+            if signal is None:
+                raise
+        raise RequestError(signal) from None
     except (OSError, UnicodeError):
         raise RequestError("linker-request-unreadable") from None
-    if len(raw.encode("utf-8", "replace")) > MAX_INPUT:
-        raise RequestError("linker-request-too-large")
-    try:
-        value = json.loads(raw)
-    except (TypeError, json.JSONDecodeError, RecursionError):
+    except (TypeError, RecursionError):
         raise RequestError("linker-request-json-invalid") from None
-    if not isinstance(value, dict):
-        raise RequestError("linker-request-object-required")
-    is_envelope = "schema" in value
-    if is_envelope:
-        if value.get("schema") != SCHEMA:
-            raise RequestError("linker-envelope-schema-foreign")
-        try:
-            kernel = _envelope_kernel()
-        except EnvelopeError:
-            raise RequestError("agathodaimon-seat-foreign") from None
-        except ValueError:
-            raise StaffError("linker-scratch-root-invalid") from None
-        if any(key not in value for key in kernel):
-            raise RequestError("linker-envelope-kernel-missing")
-        source = value.get("payload")
-        payload = dict(source) if isinstance(source, Mapping) else {}
-    else:
-        nested = value.get("payload")
-        payload = dict(nested) if isinstance(nested, Mapping) else dict(value)
-    return value, payload, is_envelope
+    except ValueError as error:
+        if str(error) != "invalid AGATHODAIMON_SCRATCH_ROOT":
+            raise
+        raise StaffError("linker-scratch-root-invalid") from None
+    if request.envelope:
+        return request.value, request.payload, True
+    # The legacy linker accepts a nested payload or, failing that, the whole object.
+    nested = request.value.get("payload")
+    return request.value, dict(nested) if isinstance(nested, Mapping) else dict(request.value), False
 
 
 def _emit(receipt: dict[str, Any], request: tuple[dict[str, Any], dict[str, Any], bool] | None,
