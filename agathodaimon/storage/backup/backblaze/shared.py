@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from agathodaimon import _envelope
 from agathodaimon.storage.backup.backblaze._store import base64, datetime, timezone, errno, fcntl, hashlib, json, os, re, select, signal, socket, stat, struct, subprocess, tempfile, time, NoReturn, urllib, KeymanExportError, exchange_session, export_credential, NAME, SKIP, CONFIG, SKELETON, KEYMAN, Refusal, fail
 
 ACTUATORS = {name: 'backblaze-' + name for name in ('bucket-add', 'bucket-credentials', 'bucket-verify', 'bucket-remove', 'bucket-items', 'bucket-save', 'bucket-run', 'status', 'snapshots')}
@@ -128,13 +129,19 @@ def main_for(verb, request_override=None, return_result=False, deed_verb=None):
         previous = signal.signal(signal.SIGALRM, deadline)
         signal.alarm(budgets.get(verb, 20))
         if request_override is None:
-            raw = sys.stdin.buffer.read(16385)
-            if len(raw) > 16384:
-                fail('shape', 'request-too-large')
             try:
-                request = json.loads(raw)
-            except (ValueError, UnicodeError):
-                fail('shape', 'request-invalid')
+                request = _envelope.read(
+                    max_input_bytes=16384,
+                    secret=('keyId', 'applicationKey') if verb in ('bucket-add', 'bucket-credentials') else (),
+                ).value
+            except _envelope.EnvelopeError as error:
+                if isinstance(error.__cause__, OSError):
+                    raise  # Keep the outer request-unavailable answer for input I/O.
+                reason = {
+                    'agathodaimon-envelope-input-too-large': 'request-too-large',
+                    'invalid JSON': 'request-invalid',
+                }.get(str(error), 'actuator-envelope-invalid')
+                fail('shape', reason)
         else:
             request = request_override
         scheduled = (isinstance(request, dict) and verb == 'bucket-run'

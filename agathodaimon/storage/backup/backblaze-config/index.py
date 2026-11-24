@@ -1,6 +1,7 @@
 from __future__ import annotations
-import base64,json,os,re,stat,subprocess,sys,tempfile,urllib.error,urllib.request
+import base64,json,os,re,stat,subprocess,tempfile,urllib.error,urllib.request
 from pathlib import Path
+from agathodaimon import _envelope
 from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
 from agathodaimon.keyman.custody import call as custody_call
 URL="https://api.backblazeb2.com/b2api/v2/b2_authorize_account"; KEYMAN="/vault/keyman/keyman"; CONFIG=Path("/etc/appliance/config.json")
@@ -85,9 +86,17 @@ def dispatch(e):
  return {"ok":True,"locked":True,"bucket":b,"keyman_service":s,"mutationPerformed":True}
 def main(argv=None):
  try:
-  raw=sys.stdin.buffer.read(16385)
-  if len(raw)>16384: raise Refusal("shape","request is too large")
-  x=json.loads(raw.decode()); out=dispatch(x if isinstance(x,dict) else (_ for _ in ()).throw(Refusal("shape","request must be a JSON object")))
+  try:
+   request=_envelope.read(max_input_bytes=16384,secret=("keyId","applicationKey"))
+  except _envelope.EnvelopeError as e:
+   if isinstance(e.__cause__,OSError): raise e.__cause__ from None
+   reason={
+    "agathodaimon-envelope-input-too-large":"request is too large",
+    "invalid JSON":"request must be valid UTF-8 JSON",
+    "JSON object required":"request must be a JSON object",
+   }.get(str(e),"invalid Backblaze staff envelope")
+   raise Refusal("shape",reason) from None
+  out=dispatch(request.value)
  except (UnicodeDecodeError,json.JSONDecodeError): out=fail("shape","request must be valid UTF-8 JSON")
  except Refusal as e: out=fail(e.step,e.reason)
  print(json.dumps(out,separators=(",",":"))); return 0 if out["ok"] else 1
