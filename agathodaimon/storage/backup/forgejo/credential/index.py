@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from io import SEEK_END, StringIO
 from pathlib import Path
 from typing import Sequence
 
@@ -42,6 +43,26 @@ def _refuse(signal: str) -> int:
     return 1
 
 
+def _legacy_hand_without_input() -> bool:
+    # cli.py loads a legacy hand stop before it installs the generated
+    # envelope. Preserve only the original no-input bit, not request bytes.
+    if sys.argv[-2:] != ["forgejo", "credential"]:
+        return False
+    stream = sys.stdin
+    if stream.isatty():
+        return True
+    if not isinstance(stream, StringIO):
+        return False
+    position = stream.tell()
+    try:
+        return stream.seek(0, SEEK_END) == 0
+    finally:
+        stream.seek(position)
+
+
+_HAND_WITHOUT_INPUT = _legacy_hand_without_input()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     # The front door can also pass payload.args to main; that is not Git argv.
@@ -49,10 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return get()
     if sys.stdin.isatty():
         return _refuse("forgejo-credential-arguments-invalid") if args else get()
-    # On the hand path, cli.py replaces a real terminal with a generated
-    # envelope. The original terminal still identifies this no-input form.
-    if (not args and sys.argv[-2:] == ["forgejo", "credential"]
-            and sys.__stdin__ is not None and sys.__stdin__.isatty()):
+    if not args and _HAND_WITHOUT_INPUT:
         return get()
 
     from agathodaimon import _envelope
