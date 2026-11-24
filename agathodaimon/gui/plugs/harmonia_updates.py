@@ -48,6 +48,21 @@ HISTORY_SCHEMA = "caduceus.update.history.v1"
 _MODULE_CARD_CLASS: Any = None
 
 
+def _matches_read_schema(receipt: Any, former: str, path: str) -> bool:
+    if not isinstance(receipt, dict):
+        return False
+    schema = receipt.get("schema")
+    if schema == former:
+        return True
+    if schema != "caduceus.staff.receipt.v1":
+        return False
+    noun, separator, verb = path.removeprefix("/api/v1/").rpartition("/")
+    if not separator:
+        noun, verb = verb, ""
+    stop = receipt.get("stop")
+    return isinstance(stop, dict) and stop.get("noun") == noun and stop.get("verb") == verb
+
+
 class _InteractableGate:
     """A single in-memory document attendance, shared by this plug's actions."""
 
@@ -1013,7 +1028,7 @@ def build_widget() -> Any:
         data["status_error"] = ""
         if error:
             data["status_error"] = error
-        elif not isinstance(receipt, dict) or receipt.get("schema") != STATUS_SCHEMA or not _receipt_ok(receipt):
+        elif not _matches_read_schema(receipt, STATUS_SCHEMA, STATUS_DOOR) or not _receipt_ok(receipt):
             data["status_error"] = _receipt_error(receipt, "Update status read refused.")
         elif any(receipt.get(field) is not True for field in ("profilePresent", "statePresent", "routePresent")):
             data["status_error"] = _receipt_error(receipt, "Update status prerequisites are unavailable.")
@@ -1146,9 +1161,8 @@ def build_widget() -> Any:
         if error:
             data["history_error"] = error
         elif (
-            not isinstance(receipt, dict)
+            not _matches_read_schema(receipt, HISTORY_SCHEMA, HISTORY_DOOR)
             or receipt.get("ok") is not True
-            or receipt.get("schema") != HISTORY_SCHEMA
             or not isinstance(receipt.get("runs"), list)
         ):
             data["history_error"] = _receipt_error(receipt, "Update history unavailable.")

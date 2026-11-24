@@ -121,21 +121,28 @@ def _read_notifications_model() -> dict[str, Any]:
         "message": "Notifications are unavailable. Try again.", "admin_mode": False,
     }
     try:
-        # Load the public seat, never a private schema copy. Before the producer
-        # lands, an absent seat selects the primitive reader of the supplied seam.
-        schema_status, seat = _get_json(SCHEMA_DOOR)
         status, receipt = _get_json(NOTIFICATIONS_DOOR)
+        if receipt is not None and receipt.get("schema") == "caduceus.staff.receipt.v1":
+            stop = receipt.get("stop")
+            matches = (isinstance(stop, dict)
+                       and stop.get("noun") == NOTIFICATIONS_DOOR.removeprefix("/api/v1/")
+                       and stop.get("verb") == "")
+        else:
+            # Only the former form uses this public seat; an absent seat keeps
+            # the primitive reader on older profiles.
+            schema_status, seat = _get_json(SCHEMA_DOOR)
+            matches = receipt is not None and receipt.get("schema") in (None, SCHEMA_ID) and (
+                schema_status in (404, 405, 501) or (
+                    schema_status < 400 and seat is not None and seat.get("schema", seat.get("$id")) == SCHEMA_ID
+                )
+            )
         if status in (404, 405, 501):
             model.update(state="empty", pending_count=0, message="No household notifications.")
             return model
         if status >= 400 or (receipt is not None and receipt.get("ok") is False):
             model.update(state="refused", message=_refusal(receipt or {}))
             return model
-        if schema_status not in (404, 405, 501) and (
-            schema_status >= 400 or seat is None or seat.get("schema", seat.get("$id")) != SCHEMA_ID
-        ):
-            return model
-        if receipt is None or receipt.get("schema") not in (None, SCHEMA_ID):
+        if receipt is None or not matches:
             return model
         values = receipt.get("notifications")
         if values is None:

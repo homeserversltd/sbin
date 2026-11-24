@@ -1602,6 +1602,7 @@ _DICTATE_UPLOAD_SECONDS = 30
 _DICTATE_STOP_SECONDS = 3
 
 
+_DICTATE_ROSTER_DOOR = "/api/v1/ruyi"
 _DICTATE_ROSTER_SECONDS = 3
 _DICTATE_ROSTER_LIMIT = 4 * 1024 * 1024
 _DICTATE_PROMPT = "transcribe the speech with proper punctuation and capitalization."
@@ -1626,7 +1627,7 @@ def _dictate_roster_seat() -> str:
         row = perspective.get("self", {})
         gateway_mac = perspective.get("gateway_seat", {}).get("mac")
         if isinstance(gateway_mac, str) and gateway_mac and row.get("mac") == gateway_mac:
-            return f"http://127.0.0.1:{port}/api/v1/ruyi"
+            return f"http://127.0.0.1:{port}{_DICTATE_ROSTER_DOOR}"
     except (OSError, ValueError, AttributeError):
         row = {}
     try:
@@ -1657,7 +1658,7 @@ def _dictate_roster_seat() -> str:
         except (OSError, subprocess.TimeoutExpired):
             pass  # An unavailable local-address observation does not invent a local seat.
         host = "127.0.0.1" if local else gateway
-        return f"http://{host}:{port}/api/v1/ruyi"
+        return f"http://{host}:{port}{_DICTATE_ROSTER_DOOR}"
     raise FaceError("ruyi-default-gateway-unavailable")
 
 
@@ -1685,8 +1686,17 @@ def _dictate_speech_server(environment: Mapping[str, str], tools: Mapping[str, s
             roster = json.loads(output) if len(output) <= _DICTATE_ROSTER_LIMIT else None
         except (ValueError, UnicodeError):
             roster = None
-        if (not isinstance(roster, dict) or roster.get("schema") != "caduceus.ruyi.v1"
-                or ("ok" in roster and roster["ok"] is not True)
+        if not isinstance(roster, dict):
+            raise FaceError("ruyi-roster-malformed")
+        schema = roster.get("schema")
+        if schema == "caduceus.staff.receipt.v1":
+            stop = roster.get("stop")
+            matches = (isinstance(stop, dict)
+                       and stop.get("noun") == _DICTATE_ROSTER_DOOR.removeprefix("/api/v1/")
+                       and stop.get("verb") == "")
+        else:
+            matches = schema == "caduceus.ruyi.v1"
+        if (not matches or ("ok" in roster and roster["ok"] is not True)
                 or not isinstance(roster.get("staves"), list)):
             raise FaceError("ruyi-roster-malformed")
         # GET serves only live responders; neither timestamps nor the stored perspective select a service.
