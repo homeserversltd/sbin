@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import stat
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -47,21 +47,28 @@ class _ObjectPairs(list):
     """Keep duplicate members until their values have been decoded."""
 
 
-class _WideNumber(str):
-    """Keep the spelling of numbers Python's JSON types cannot represent."""
+@dataclass(frozen=True, slots=True)
+class _IntentNumber:
+    """A JSON number lexeme checked by the decoder; never round it to float."""
+
+    literal: str
 
 
-def _intent_number(text: str) -> int | float | _WideNumber:
-    try:
-        if not any(mark in text for mark in ".eE"):
-            return int(text)
-        number = float(text)
-        if math.isfinite(number):
-            return number
-    except ValueError:
-        pass
-    # Caduceus uses serde_json's arbitrary_precision number reader.
-    return _WideNumber(text)
+def dump_intent_projection(value: Any, *, separators: tuple[str, str] = (", ", ": ")) -> str:
+    """Render projected help without narrowing Caduceus's arbitrary-precision numbers."""
+    item_sep, key_sep = separators
+
+    def encode(item: Any) -> str:
+        if isinstance(item, _IntentNumber):
+            return item.literal
+        if isinstance(item, dict):
+            return "{" + item_sep.join(json.dumps(key) + key_sep + encode(child)
+                                       for key, child in item.items()) + "}"
+        if isinstance(item, list):
+            return "[" + item_sep.join(encode(child) for child in item) + "]"
+        return json.dumps(item)
+
+    return encode(value)
 
 
 def _invalid_json_constant(value: str) -> None:
@@ -91,14 +98,14 @@ def _read_intent_seat(name: str, directory_fd: int, intent: str) -> dict[str, An
                 return None
             with os.fdopen(fd, encoding="utf-8", closefd=False) as file:
                 seat = _intent_value(json.load(file, parse_constant=_invalid_json_constant,
-                                               parse_int=_intent_number, parse_float=_intent_number,
+                                               parse_int=_IntentNumber, parse_float=_IntentNumber,
                                                object_pairs_hook=_ObjectPairs))
         finally:
             os.close(fd)
     except (OSError, ValueError, RecursionError):
         return None
     if (isinstance(seat, dict) and seat.get("schema") == _STAFF_SCHEMA
-            and type(seat.get("intent")) is str and seat["intent"] == intent):
+            and isinstance(seat.get("intent"), str) and seat["intent"] == intent):
         return seat
     return None
 

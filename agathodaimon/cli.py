@@ -31,7 +31,7 @@ sys.modules["_envelope"] = _envelope
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon.carapace import _load_feature_tree, _resolve_profile, normalize_profile
 from agathodaimon import _load_trace
-from agathodaimon._seat import ForeignSeat, read_intent_seats, read_seats
+from agathodaimon._seat import ForeignSeat, dump_intent_projection, read_intent_seats, read_seats
 _stamp_target = None
 _stamp_seat = None
 _front_args = []
@@ -181,7 +181,9 @@ def _help_result(path: Path) -> dict:
 
 
 def _help(path: Path) -> None:
-    print(json.dumps(_help_result(path)))
+    result = _help_result(path)
+    encode = dump_intent_projection if "exousia" in result else json.dumps
+    print(encode(result))
 
 def _slash_target(raw_path: str) -> Path | None:
     parts = tuple(part for part in raw_path.split("/") if part)
@@ -1535,9 +1537,10 @@ def _front_answer(signal: str, step: str, path: Path | None = None,
                 walked.append(part)
         children = _children(cursor)
         resolved = (cursor / "index.py").is_file() or "serve" in _index(cursor)
-        fields = _help_result(cursor)["payload_fields"] if resolved else None
+        help_result = _help_result(cursor) if resolved else {}
+        fields = help_result.get("payload_fields")
     except (OSError, ValueError, TypeError, SyntaxError, RecursionError):
-        children, fields, resolved = [], None, False
+        children, fields, resolved, help_result = [], None, False, {}
     words = []
     depth = 0
     aligned = True
@@ -1583,7 +1586,8 @@ def _front_answer(signal: str, step: str, path: Path | None = None,
     result.update(extra)
     if _stamp_seat is not None:
         result["seat"] = _stamp_seat
-    print(json.dumps(result, separators=(",", ":")))
+    encode = dump_intent_projection if "exousia" in help_result else json.dumps
+    print(encode(result, separators=(",", ":")))
 
 
 def _unwrap_receipt(value):
