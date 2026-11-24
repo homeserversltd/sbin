@@ -56,18 +56,6 @@ def _device(value):
     return value
 
 
-def _read_request():
-    raw = sys.stdin.buffer.read(runtime.MAX_INPUT + 1)
-    if not raw or len(raw) > runtime.MAX_INPUT:
-        raise ValueError("request-size-invalid")
-    prior = sys.stdin
-    try:
-        sys.stdin = io.StringIO(raw.decode("utf-8"))
-        return _envelope.read(known_fields=("device",))
-    finally:
-        sys.stdin = prior
-
-
 def dispatch(request):
     started = time.monotonic()
     receipt = _receipt()
@@ -102,7 +90,7 @@ def dispatch(request):
 def main(argv=None):
     del argv
     try:
-        receipt = dispatch(_read_request())
+        receipt = dispatch(_envelope.read(known_fields=("device",), max_input_bytes=runtime.MAX_INPUT))
     except (ValueError, UnicodeError, json.JSONDecodeError, _envelope.EnvelopeError):
         receipt = _receipt()
         runtime._attach_failure(receipt, runtime.Refusal("agathodaimon-nas-request-invalid", "request"))

@@ -2,13 +2,11 @@
 from __future__ import annotations
 
 import grp
-import io
 import json
 import os
 import posixpath
 import pwd
 import stat
-import sys
 from typing import Any, Sequence
 
 from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
@@ -25,18 +23,6 @@ def _failure(signal: str, step: str, role: str | None = None) -> dict[str, Any]:
             "partition": None, "mapper": None, "mountpoint": None, "applications": 0,
             "steps": [], "failedStep": step, "mutationPerformed": False,
             "paths": [], "differences": [], "absent": []}
-
-
-def _read_request():
-    raw = sys.stdin.buffer.read(MAX_INPUT + 1)
-    if not raw or len(raw) > MAX_INPUT:
-        raise ValueError("request-size-invalid")
-    previous = sys.stdin
-    try:
-        sys.stdin = io.StringIO(raw.decode("utf-8"))
-        return read_envelope(known_fields=("role",))
-    finally:
-        sys.stdin = previous
 
 
 def _raw_config(receipt: dict[str, Any], mountpoint: str) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
@@ -202,7 +188,7 @@ def dispatch(request: Any) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        receipt = dispatch(_read_request())
+        receipt = dispatch(read_envelope(known_fields=("role",), max_input_bytes=MAX_INPUT))
     except (ValueError, UnicodeError, json.JSONDecodeError, EnvelopeError):
         receipt = _failure("agathodaimon-nas-invalid-envelope", "request-envelope")
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))

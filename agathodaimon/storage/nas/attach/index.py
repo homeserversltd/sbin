@@ -1,9 +1,7 @@
 """Attach one NAS role directly and optionally start its dependent services."""
 from __future__ import annotations
 
-import io
 import json
-import sys
 import time
 from typing import Any, Sequence
 
@@ -22,19 +20,6 @@ def _failure(signal_name: str, step: str, role: str | None = None) -> dict[str, 
         "servicesStarted": [], "mapperReadback": None, "mountReadback": None,
         "failedStep": step, "shareStep": None, "shares": [],
     }
-
-
-def _read_request():
-    raw = sys.stdin.buffer.read(MAX_INPUT + 1)
-    if not raw or len(raw) > MAX_INPUT:
-        raise ValueError("request-size-invalid")
-    text = raw.decode("utf-8")
-    previous = sys.stdin
-    try:
-        sys.stdin = io.StringIO(text)
-        return read_envelope(known_fields=("role",))
-    finally:
-        sys.stdin = previous
 
 
 def _role(request: Any) -> str:
@@ -72,7 +57,7 @@ def _envelope_failure(error: Exception) -> dict[str, Any]:
 def main(argv: Sequence[str] | None = None) -> int:
     del argv  # The role is read only from stdin, never argv or environment.
     try:
-        receipt = dispatch(_read_request())
+        receipt = dispatch(read_envelope(known_fields=("role",), max_input_bytes=MAX_INPUT))
     except (ValueError, UnicodeError, json.JSONDecodeError, EnvelopeError) as error:
         receipt = _envelope_failure(error)
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))

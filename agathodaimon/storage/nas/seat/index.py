@@ -1,13 +1,11 @@
 """Seat the configured NAS layout for an attached role (primary or backup)."""
 from __future__ import annotations
 
-import io
 import json
-import sys
 import time
 from typing import Any, Sequence
 
-from _envelope import EnvelopeError, attach as attach_envelope, read_fields
+from _envelope import EnvelopeError, attach as attach_envelope, read as read_envelope
 from agathodaimon.storage.nas import deed
 from agathodaimon.storage.nas.folders.index import _attached_info, _observe_layout, _raw_config
 from agathodaimon.storage.nas.runtime import MAX_INPUT, ROLE, Refusal, _role_info, guarded_drive
@@ -64,22 +62,10 @@ def dispatch(request: Any) -> dict[str, Any]:
     return attach_envelope(receipt, request)
 
 
-def _read_request():
-    raw = sys.stdin.buffer.read(MAX_INPUT + 1)
-    if not raw or len(raw) > MAX_INPUT:
-        raise ValueError("request-size-invalid")
-    previous = sys.stdin
-    try:
-        sys.stdin = io.StringIO(raw.decode("utf-8"))
-        return read_fields("role")
-    finally:
-        sys.stdin = previous
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
     try:
-        receipt = dispatch(_read_request())
+        receipt = dispatch(read_envelope(known_fields=("role",), max_input_bytes=MAX_INPUT))
     except (ValueError, UnicodeError, json.JSONDecodeError, EnvelopeError):
         receipt = _failure("agathodaimon-nas-invalid-envelope", "request-envelope")
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
