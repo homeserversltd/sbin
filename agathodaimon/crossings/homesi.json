@@ -396,6 +396,7 @@
     "/api/v1/cert/status",
     "/api/v1/cert/trust-fetch",
     "/api/v1/cert/trust-install",
+    "/api/v1/exousia/verify",
     "/api/v1/face/app",
     "/api/v1/face/badge",
     "/api/v1/face/bar",

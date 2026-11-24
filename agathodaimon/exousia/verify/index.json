@@ -12,7 +12,9 @@
             "verify"
           ]
         ],
-        "routes": [],
+        "routes": [
+          "/api/v1/exousia/verify"
+        ],
         "administrative": {
           "band": false,
           "verbs": [],
