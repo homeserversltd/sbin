@@ -1,6 +1,6 @@
 """Shared reader and additive receipt custody for staff envelopes."""
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import copy, json, os, re, sys
 from contextvars import ContextVar
@@ -20,6 +20,7 @@ _PIN_FIELDS = ("pin", "oldPin", "newPin")
 _REDACTED_PIN = "[REDACTED]"
 _gate_pin = ContextVar("staff_gate_pin_present", default=False)
 _sensitive_echo = ContextVar("staff_sensitive_echo", default=False)
+_INPUT_CHUNK_BYTES = 64 * 1024
 
 
 @contextmanager
@@ -89,6 +90,8 @@ class Request:
     declared_flags: tuple[str, ...] = ()
     rooms: tuple[str, ...] = ()
     gate_pin_present: bool = False
+    secret_bytes: dict[str, bytearray] = field(default_factory=dict, repr=False, compare=False)
+
     @property
     def verb(self) -> str:
         if isinstance(self.transition, str) and self.transition:
@@ -97,12 +100,80 @@ class Request:
         return "unknown"
 def _selected(source: Mapping[str, Any], names: Sequence[str]) -> dict[str, Any]:
     return {k: source[k] for k in names if k in source}
+
+
+def wipe_bytes(buffer: bytearray) -> None:
+    """Zero the contents of a caller-owned buffer in place."""
+    for offset in range(0, len(buffer), _INPUT_CHUNK_BYTES):
+        count = min(_INPUT_CHUNK_BYTES, len(buffer) - offset)
+        buffer[offset:offset + count] = b"\0" * count
+
+
+def _read_bytes(data: bytearray, limit: int | None) -> None:
+    stream = getattr(sys.stdin, "buffer", None)
+    text_fallback = stream is None
+    if text_fallback:
+        stream = sys.stdin
+    while True:
+        size = _INPUT_CHUNK_BYTES if limit is None else min(_INPUT_CHUNK_BYTES, limit + 1 - len(data))
+        # A text stream reads characters, not bytes. Near the boundary its
+        # smallest unit is one character, even if that takes several bytes.
+        block = stream.read(max(1, size // 4) if text_fallback else size)
+        if block is None:
+            raise BlockingIOError("stdin not ready")
+        if not block:
+            return
+        if isinstance(block, str):
+            block = block.encode("utf-8")
+        if limit is not None and len(data) + len(block) > limit:
+            del block
+            raise EnvelopeError("agathodaimon-envelope-input-too-large")
+        data.extend(block)
+        del block
+
+
+def _read_secret_input(limit: int | None) -> Any:
+    data = bytearray()
+    try:
+        _read_bytes(data, limit)
+        return json.loads(data.decode("utf-8"))
+    except EnvelopeError:
+        raise
+    except (ValueError, OSError, RecursionError):
+        # Decoder exceptions can hold the whole input. Do not chain them.
+        pass
+    finally:
+        wipe_bytes(data)
+    raise EnvelopeError("invalid JSON")
+
+
+def _take_secret_bytes(
+    source: dict[str, Any], names: Sequence[str], material: dict[str, bytearray],
+) -> bool:
+    invalid = False
+    for name in names:
+        if name not in source:
+            continue
+        text = source.pop(name)
+        try:
+            if isinstance(text, str):
+                material[name] = bytearray(text, "utf-8")
+            else:
+                invalid = True
+        except UnicodeEncodeError:
+            invalid = True
+        finally:
+            del text
+    return invalid
+
+
 def read(
     *,
     known_fields: Sequence[str] = (),
     declared_flags: Sequence[str] = (),
     rooms: Sequence[str] = (),
     secret: Sequence[str] = (),
+    secret_bytes: Sequence[str] = (),
     max_input_bytes: int | None = None,
     byte_stream: bool = False,
     quiet_on_tty: bool = False,
@@ -110,62 +181,92 @@ def read(
     """Read stdin as before unless a caller opts into a different intake.
 
     A quiet TTY supplies the empty primitive without being read. Byte-stream
-    input (implicit with a byte limit) is decoded as UTF-8, keeping
-    Request.raw_envelope as text. The limit is inclusive and checked before
-    decoding or parsing, using one byte of lookahead.
+    input (implicit with a byte limit or secret_bytes) is decoded as UTF-8.
+    The limit is inclusive and checked before parsing, using byte lookahead.
+
+    secret_bytes names string fields in the payload (or flat request). They
+    are removed from the request and its echo; the caller owns the buffers
+    in Request.secret_bytes and must wipe them with wipe_bytes in a finally.
+    The input buffer is wiped after parsing. Python's temporary decoded
+    strings and storage owned by the input stream are not wipeable here.
     """
     if max_input_bytes is not None and (
         type(max_input_bytes) is not int or not 0 <= max_input_bytes < sys.maxsize
     ):
         raise EnvelopeError("agathodaimon-envelope-input-bound-invalid")
+    byte_fields = tuple(secret_bytes)
     try:
         if quiet_on_tty and sys.stdin.isatty():
             raw = "{}"
-        elif byte_stream or max_input_bytes is not None:
-            stream = sys.stdin.buffer
-            if max_input_bytes is None:
-                data = stream.read()
-            else:
-                data = stream.read(max_input_bytes + 1)
-                if len(data) > max_input_bytes:
-                    raise EnvelopeError("agathodaimon-envelope-input-too-large")
-            raw = data.decode("utf-8")
+            value = json.loads(raw)
+        elif byte_fields:
+            value = _read_secret_input(max_input_bytes)
+            raw = ""  # Rebuilt from the value only after extracting secrets.
         else:
-            raw = sys.stdin.read()
-        value = json.loads(raw)
+            if byte_stream or max_input_bytes is not None:
+                data = bytearray()
+                try:
+                    _read_bytes(data, max_input_bytes)
+                except UnicodeEncodeError as exc:
+                    raise EnvelopeError("invalid JSON") from exc
+                raw = data.decode("utf-8")
+                del data
+            else:
+                raw = sys.stdin.read()
+            value = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise EnvelopeError("invalid JSON") from exc
-    if not isinstance(value, dict): raise EnvelopeError("JSON object required")
-    if secret or _gate_pin.get() or _pin_bearing_exousia(value):
+    if not isinstance(value, dict):
+        if byte_fields:
+            del value
+        raise EnvelopeError("JSON object required")
+    if secret or byte_fields or _gate_pin.get() or _pin_bearing_exousia(value):
         _sensitive_echo.set(True)
-    load_context_present, load_context = _load_trace.extract_load_context(value)
-    if "schema" not in value:
+    envelope = "schema" in value
+    source = value.get("payload") if envelope else value
+    material: dict[str, bytearray] = {}
+    try:
+        invalid_secret = bool(byte_fields) and isinstance(source, dict) and _take_secret_bytes(source, byte_fields, material)
+        load_context_present, load_context = _load_trace.extract_load_context(value)
+        if envelope:
+            if value.get("schema") != SCHEMA: raise EnvelopeError("foreign envelope schema")
+            missing = [k for k in _envelope_kernel() if k not in value]
+            if missing: raise EnvelopeError("missing envelope kernel keys: " + ",".join(missing))
+        if invalid_secret:
+            raise EnvelopeError("agathodaimon-vault-open-request-invalid")
+        if byte_fields:
+            raw = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+
+        if envelope:
+            source = source if isinstance(source, Mapping) else {}
+            payload = _selected(source, tuple(known_fields) + tuple(declared_flags) + tuple(rooms) + tuple(secret))
+            for group, names in (("flags", declared_flags), ("rooms", rooms)):
+                candidates = []
+                for container in (source, value):
+                    nested = container.get(group) if isinstance(container, Mapping) else None
+                    if isinstance(nested, Mapping):
+                        scoped = nested.get("exousia")
+                        if isinstance(scoped, Mapping): candidates.append(scoped)
+                        candidates.append(nested)
+                for candidate in candidates: payload.update(_selected(candidate, names))
+        else:
+            payload = _selected(value, tuple(known_fields) + tuple(secret))
+        for name in byte_fields:
+            payload.pop(name, None)
         return Request(
-            value, False, _selected(value, tuple(known_fields) + tuple(secret)), raw,
-            load_context_present=load_context_present, load_context=load_context, secret_fields=tuple(secret),
+            value, envelope, payload, raw,
+            value.get("intent_id") if envelope else None, value.get("transition") if envelope else None,
+            value.get("version") if envelope else None, value.get("timestamp") if envelope else None,
+            load_context_present, load_context, secret_fields=tuple(secret) + byte_fields,
             known_fields=tuple(known_fields), declared_flags=tuple(declared_flags), rooms=tuple(rooms),
-            gate_pin_present=_gate_pin.get(),
+            gate_pin_present=_gate_pin.get(), secret_bytes=material,
         )
-    if value.get("schema") != SCHEMA: raise EnvelopeError("foreign envelope schema")
-    missing = [k for k in _envelope_kernel() if k not in value]
-    if missing: raise EnvelopeError("missing envelope kernel keys: " + ",".join(missing))
-    source = value.get("payload") if isinstance(value.get("payload"), Mapping) else {}
-    payload = _selected(source, tuple(known_fields) + tuple(declared_flags) + tuple(rooms) + tuple(secret))
-    for group, names in (("flags", declared_flags), ("rooms", rooms)):
-        candidates = []
-        for container in (source, value):
-            nested = container.get(group) if isinstance(container, Mapping) else None
-            if isinstance(nested, Mapping):
-                scoped = nested.get("exousia")
-                if isinstance(scoped, Mapping): candidates.append(scoped)
-                candidates.append(nested)
-        for candidate in candidates: payload.update(_selected(candidate, names))
-    return Request(
-        value, True, payload, raw, value.get("intent_id"), value.get("transition"),
-        value.get("version"), value.get("timestamp"), load_context_present, load_context,
-        secret_fields=tuple(secret), known_fields=tuple(known_fields),
-        declared_flags=tuple(declared_flags), rooms=tuple(rooms), gate_pin_present=_gate_pin.get(),
-    )
+    except BaseException:
+        for buffer in material.values():
+            wipe_bytes(buffer)
+        raise
+
+
 def _outcome(receipt: Mapping[str, Any]) -> str:
     first_missing_signal = receipt.get("firstMissingSignal")
     return "failed" if receipt.get("ok") is False or receipt.get("verified") is False or (first_missing_signal and first_missing_signal != "none") else "ok"
@@ -314,11 +415,13 @@ def read_fields(
     flags: Sequence[str] = (),
     rooms: Sequence[str] = (),
     secret: Sequence[str] = (),
+    secret_bytes: Sequence[str] = (),
     max_input_bytes: int | None = None,
     byte_stream: bool = False,
     quiet_on_tty: bool = False,
 ) -> Request:
     return read(
         known_fields=fields, declared_flags=flags, rooms=rooms, secret=secret,
+        secret_bytes=secret_bytes,
         max_input_bytes=max_input_bytes, byte_stream=byte_stream, quiet_on_tty=quiet_on_tty,
     )
