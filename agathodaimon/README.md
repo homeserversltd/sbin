@@ -15,8 +15,9 @@ agathodaimon gui launcher-cache --check|--apply
 agathodaimon exousia forgejo-credential --check|--apply
 ```
 
-For staff-path and forgejo-credential, `--apply` writes no file: the stop
-answers its raw word, and a changed or failed apply leaves one hyalos deed.
+For staff-path and forgejo-credential, `--apply` writes no receipt file: the
+stop answers its raw word, and a changed or failed apply sends one best-effort
+hyalos deed.
 
 Fixture-only path/command overrides are environment variables:
 
