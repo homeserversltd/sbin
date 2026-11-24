@@ -31,7 +31,7 @@ sys.modules["_envelope"] = _envelope
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon.carapace import _load_feature_tree, _resolve_profile, normalize_profile
 from agathodaimon import _load_trace
-from agathodaimon._seat import ForeignSeat, read_seats
+from agathodaimon._seat import ForeignSeat, read_intent_seats, read_seats
 _stamp_target = None
 _stamp_seat = None
 _front_args = []
@@ -70,13 +70,37 @@ def _index(path: Path) -> dict:
     if not index.is_file(): return {}
     return json.loads(index.read_text(encoding="utf-8"))
 
-def _mutation_allowed(path: Path) -> bool | None:
+def _intent_seat(path: Path) -> dict | None:
+    try:
+        intent = path.relative_to(ROOT).as_posix()
+        catalogue = read_intent_seats(appliance_runtime_path("seats"))
+    except ValueError:
+        return None
+    return catalogue[0].get(intent) if catalogue is not None else None
+
+
+def _boolean_word(declaration, name: str) -> bool | None:
+    value = declaration.get(name) if isinstance(declaration, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def _index_mutation_allowed(path: Path) -> bool | None:
+    """The standing declaration remains the PIN gate's authority."""
     try:
         declaration = _index(path)
     except (OSError, UnicodeError, ValueError, RecursionError):
         return None
-    value = declaration.get("mutation_allowed") if isinstance(declaration, dict) else None
-    return value if isinstance(value, bool) else None
+    return _boolean_word(declaration, "mutation_allowed")
+
+
+def _mutation_allowed(path: Path) -> bool | None:
+    seat = _intent_seat(path)
+    return _boolean_word(seat, "mutation_allowed") if seat is not None else _index_mutation_allowed(path)
+
+
+def _declares_dry_run(path: Path, index: dict) -> bool:
+    seat = _intent_seat(path)
+    return (seat if seat is not None else index).get("dry-run") is True
 
 def _children(path: Path) -> list[str]: return list(_index(path).get("children", []))
 
@@ -86,8 +110,26 @@ def _load(path: Path):
     if spec is None or spec.loader is None: raise ImportError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec); module.__package__ = "agathodaimon"; sys.modules[safe] = module; spec.loader.exec_module(module); return module
 
+def _intent_payload_fields(seat: dict) -> list[dict]:
+    payload = seat.get("payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("fields"), dict):
+        return []
+    required = payload.get("required")
+    required = required if isinstance(required, list) else []
+    rows = []
+    for name, field in payload["fields"].items():
+        if not isinstance(field, dict):
+            continue
+        row = {"name": name, "meaning": field.get("meaning"), "type": field.get("type"),
+               "required": name in required}
+        row.update((key, value) for key, value in field.items() if key not in row)
+        rows.append(row)
+    return rows
+
+
 def _help_result(path: Path) -> dict:
     declaration = _index(path)
+    seat = _intent_seat(path)
     source = path / "index.py"
     kind = "chord" if "serve" in declaration and not source.is_file() else "stop"
     doc = ""
@@ -95,7 +137,7 @@ def _help_result(path: Path) -> dict:
     if source.is_file():
         tree = ast.parse(source.read_text(encoding="utf-8"))
         doc = (ast.get_docstring(tree) or "").split("\n\n", 1)[0]
-        for node in ast.walk(tree):
+        for node in (ast.walk(tree) if seat is None else ()):
             if not isinstance(node, ast.Call):
                 continue
             callee = node.func.id if isinstance(node.func, ast.Name) else (
@@ -130,6 +172,11 @@ def _help_result(path: Path) -> dict:
         result["stages"] = [stage.get("stage_id") for stage in declaration.get("serve", []) + declaration.get("rescue", []) + declaration.get("finally", [])]
         if declaration.get("children"):
             result["children"] = declaration["children"]
+    if seat is not None:
+        result.update({"payload_fields": _intent_payload_fields(seat),
+                       "exousia": _boolean_word(seat, "exousia"),
+                       "mutation_allowed": _boolean_word(seat, "mutation_allowed"),
+                       "dry-run": _boolean_word(seat, "dry-run")})
     return result
 
 
@@ -460,7 +507,7 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
         ring_stages = ([{"stage_id": "observe", "snake": ring["observe"]}] if ring is not None else [])
         for stage in ring_stages + serve + rescue + final:
             target = _slash_target(stage["snake"])
-            if _index(target.parent).get("dry-run") is not True:
+            if target is None or not _declares_dry_run(target.parent, _index(target.parent)):
                 print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
                                   "request": request, "stages": [], "failedStage": None,
                                   "firstMissingSignal": "chord-dry-run-undeclared-stage",
@@ -673,17 +720,21 @@ def _dry_run_admits(path: Path, envelope: dict | None, argv: list[str] | None = 
             for arg in candidates
         ):
             return True
-        declaration = _index(path if path.is_dir() else path.parent)
-        if declaration.get("dry-run") is True and declaration.get("hand") != "envelope":
+        stop = path if path.is_dir() else path.parent
+        declaration = _index(stop)
+        declared = _declares_dry_run(stop, declaration)
+        if declared and declaration.get("hand") != "envelope":
             return True
-        signal = ("agathodaimon-dry-run-invalid" if declaration.get("dry-run") is True
+        signal = ("agathodaimon-dry-run-invalid" if declared
                   else "agathodaimon-dry-run-undeclared")
         _front_answer(signal, "dry-run", path, error=signal)
         return False
-    declaration = _index(path if path.is_dir() else path.parent)
-    if path.is_dir() and "serve" in declaration and payload["dry-run"] is True:
+    stop = path if path.is_dir() else path.parent
+    declaration = _index(stop)
+    if (path.is_dir() and "serve" in declaration and payload["dry-run"] is True
+            and _intent_seat(stop) is None):
         return True
-    if declaration.get("dry-run") is not True:
+    if not _declares_dry_run(stop, declaration):
         signal = "agathodaimon-dry-run-undeclared"
     elif not isinstance(payload["dry-run"], bool):
         signal = "agathodaimon-dry-run-invalid"
@@ -1428,7 +1479,7 @@ def _administrative_pin_admits(
     startup_envelope = None if startup_unenveloped else envelope
     if _display_startup_reapplication_without_pin(target, remainder, startup_envelope):
         return True
-    declared = _mutation_allowed(ROOT / target)
+    declared = _index_mutation_allowed(ROOT / target)
     if declared is False or (declared is None and not _admin_mutation_request(target, remainder, envelope)):
         return True
     if not pin_present:
@@ -1637,6 +1688,7 @@ def _scoped_main(argv=None):
     except (OSError, ValueError, UnicodeError, RecursionError):
         _front_answer("agathodaimon-seat-read-failed", "seat-read")
         return 2
+    intents = read_intent_seats(folder)
     _stamp_target = None
     absent = [seat_id for seat_id, seat in seats.items() if seat["state"] == "absent"]
     _stamp_seat = {"folder": str(folder), "absent": absent} if absent else None
@@ -1652,12 +1704,12 @@ def _scoped_main(argv=None):
         stream = False
         raw_stdout = False
     if stream or raw_stdout:
-        return _main(argv, folder, seats)
+        return _main(argv, folder, seats, intents)
     destination = sys.stdout
     output = _StampOutput(destination)
     try:
         with contextlib.redirect_stdout(output):
-            result = _main(argv, folder, seats)
+            result = _main(argv, folder, seats, intents)
     except BaseException:
         _emit_stamp_bytes(destination, output.bytes())
         raise
@@ -1716,7 +1768,32 @@ def _chord_part_names_drift(seat):
             "walker_only": sorted(_CHORD_PART_NAMES - names)}
 
 
-def _main(argv, folder, seats):
+def _intent_exousia_drift(intents: dict) -> dict:
+    if not intents:
+        return {}
+    profile, profile_ok = _profile_for_crossing()
+    publication = _crossing_publication(profile) if profile_ok else None
+    drift = {}
+    for intent, seat in sorted(intents.items()):
+        exousia = _boolean_word(seat, "exousia")
+        if exousia is None:
+            continue
+        try:
+            if _slash_target(intent) is None:
+                continue
+        except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+            continue
+        administrative = (_administrative_candidate(intent) if publication is None
+                          else _administrative_target(intent, publication))
+        # Explicitly read-only stops are exempt even under an administrative
+        # ancestor. Report the declared posture, not the switch or a live PIN check.
+        administrative = administrative and _index_mutation_allowed(ROOT / intent) is not False
+        if exousia != administrative:
+            drift["intents/" + intent] = {"exousia": exousia, "administrative": administrative}
+    return drift
+
+
+def _main(argv, folder, seats, intents):
     global _stamp_target
     args=list(sys.argv[1:] if argv is None else argv)
     wrapped_argv_pin = False
@@ -1790,9 +1867,24 @@ def _main(argv, folder, seats):
             for entry in census["loaded"]:
                 if entry["id"] == "caduceus.chord.v1":
                     entry["drift"] = drift
-        print(json.dumps({"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT),"seats":census},indent=2)); return 0
+        result = {"schema":"agathodaimon.cli.spine.v1","nouns":_children(ROOT),"seats":census}
+        if intents is not None:
+            loaded, invalid = intents
+            result["intents"] = {"loaded_count": len(loaded), "loaded": ["intents/" + name for name in sorted(loaded)],
+                                 "invalid": invalid}
+            drift = _intent_exousia_drift(loaded)
+            if drift:
+                result["intents"]["drift"] = drift
+        print(json.dumps(result, indent=2)); return 0
     if args == ["--version"]:
         print(_shelf_version()); return 0
+    # Slash help is the seated form; unseated paths retain their original grammar.
+    if (len(args) == 2 and args[1] == "--help" and "/" in args[0]
+            and intents is not None and args[0] in intents[0]):
+        target = _slash_target(args[0])
+        if target is not None:
+            _help(target.parent if target.is_file() else target)
+            return 0
     original=args[:]
     pin_required = _pin_required()
     publication = None
