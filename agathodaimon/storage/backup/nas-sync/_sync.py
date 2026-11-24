@@ -276,9 +276,12 @@ def record_deed(v,started):
   if v.get("ok") is True:
    v["ok"]=False; v["outcome"]="failed"; v["firstMissingSignal"]=v["deedLogSignal"]
 
-def main():
+def main(argv=None):
+ extra_words=len(sys.argv)>1 if argv is None else bool(list(argv))
  request=None; started=time.monotonic()
  try:
+  # Reject extra invocation words; argv never supplies any request data.
+  if extra_words: raise Refusal("agathodaimon-nas-cli-arguments-invalid")
   request=read_envelope(); v=dispatch(request)
  except Refusal as e: v=refused("sync",str(e))
  except Exception as e: v=finish(receipt("sync","failed",reason="agathodaimon-nas-unexpected:"+bounded(e)))
