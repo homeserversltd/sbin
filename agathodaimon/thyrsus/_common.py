@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+from dataclasses import replace
 import http.client
 import importlib
 import io
@@ -28,7 +29,7 @@ from agathodaimon import _envelope
 from agathodaimon._envelope import (
     EnvelopeError, Request, appliance_runtime_path, attach, read,
 )
-from agathodaimon.keyman._common import _scrub
+from agathodaimon.keyman._common import REDACTED, _scrub
 from agathodaimon.lib.receipts.index import emit, now_iso
 
 FORGE = "git.home.arpa"
@@ -40,6 +41,13 @@ WRITES = frozenset(("propose", "admit", "forge-token", "new-tab"))
 MAX_INPUT = 65536
 MAX_RESPONSE = 65536
 GIT = "/usr/bin/git"
+_REQUEST_FIELDS = {
+    "propose": ("repo", "message", "branch"),
+    "admit": ("repo", "pr"),
+    "forge": (),
+    "forge-token": (),
+    "new-tab": ("id", "into", "display"),
+}
 
 
 class Refusal(Exception):
@@ -602,46 +610,41 @@ def _admit(payload, profile, receipt):
     receipt["attempt"].append({"step": "merged-readback", "ok": True})
 
 
-def _set_token(raw, payload, profile, receipt):
+def _set_token(token: bytearray | None, profile, receipt):
     # The setter never changes the HomeServer's skeleton authentication source.
     if profile == "homeserver":
         _vault()
         if os.environ.get("AGATHODAIMON_SCRATCH_ROOT") is not None:
             raise Refusal("thyrsus-token-absent")
-    token = payload.get("token") if payload is not None else raw.removesuffix("\n")
-    if not isinstance(token, str) or not token or len(token.encode("utf-8")) > 511:
+    if not token or len(token) > 511:
         raise Refusal("thyrsus-token-absent")
-    if any(character in token for character in "\0\r\n\""):
+    if any(byte in token for byte in b'\0\r\n"'):
         raise Refusal("thyrsus-token-invalid")
-    if profile != "homeserver" and not re.fullmatch(r"[0-9a-fA-F]{40}", token):
-        raise Refusal("thyrsus-token-invalid")
-    secret = bytearray(token.encode("utf-8"))
     if profile != "homeserver":
-        try:
-            _store_runtime_token(secret, receipt)
-        finally:
-            _zero(secret)
+        if not re.fullmatch(rb"[0-9a-fA-F]{40}", token):
+            raise Refusal("thyrsus-token-invalid")
+        _store_runtime_token(token, receipt)
         return
-    output = io.StringIO()
-    original = sys.stdin
-    try:
-        sys.stdin = io.StringIO(token)
-        setter = importlib.import_module("agathodaimon.keyman.newkey.index")
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
-            status_code = setter.main([SERVICE, "--username", "owner", "--pword", "-", "--replace"])
+    # Keep Keyman's private, stdin-only handoff separate from Thyrsus intake.
+    with io.BytesIO(token) as source, io.StringIO() as output, io.StringIO() as errors:
+        previous = getattr(sys, "stdin")
+        try:
+            setattr(sys, "stdin", source)
+            setter = importlib.import_module("agathodaimon.keyman.newkey.index")
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+                status_code = setter.main([SERVICE, "--username", "owner", "--pword", "-", "--replace"])
+        finally:
+            setattr(sys, "stdin", previous)
+            with source.getbuffer() as buffer:
+                buffer[:] = b"\0" * len(buffer)
         backend = json.loads(output.getvalue())
-        receipt["mutationPerformed"] = backend.get("mutationPerformed")
-        if status_code != 0 or backend.get("ok") is not True:
-            signal = backend.get("firstMissingSignal", "")
-            if signal.endswith(("non-root", "root-required", "uninitialized-system")):
-                raise Refusal("thyrsus-vault-locked")
-            raise Refusal("thyrsus-token-absent")
-        receipt["attempt"].append({"step": "store-credential", "ok": True})
-    finally:
-        sys.stdin = original
-        output.close()
-        _zero(secret)
-        token = None
+    receipt["mutationPerformed"] = backend.get("mutationPerformed")
+    if status_code != 0 or backend.get("ok") is not True:
+        signal = backend.get("firstMissingSignal", "")
+        if signal.endswith(("non-root", "root-required", "uninitialized-system")):
+            raise Refusal("thyrsus-vault-locked")
+        raise Refusal("thyrsus-token-absent")
+    receipt["attempt"].append({"step": "store-credential", "ok": True})
 
 
 def _primitive_request(verb, payload, original=None, *, for_refusal=False):
@@ -653,9 +656,13 @@ def _primitive_request(verb, payload, original=None, *, for_refusal=False):
         "version": "1.0.0",
         "timestamp": now_iso(),
     }
-    # An absent seat imposes no kernel requirements; keep the old primitive request shape.
+    kernel = _envelope._envelope_kernel()
+    if not kernel:
+        # No requirements in primitive mode, but keep the legacy reply metadata.
+        for key, default in defaults.items():
+            value.setdefault(key, default)
     complete = True
-    for key in _envelope._envelope_kernel() or defaults:
+    for key in kernel:
         if key in value:
             continue
         if key not in defaults:
@@ -669,61 +676,57 @@ def _primitive_request(verb, payload, original=None, *, for_refusal=False):
                    value.get("transition"), value.get("version"), value.get("timestamp"))
 
 
-def _input(verb, arguments):
-    if verb == "forge-token" and arguments:
-        raise Refusal("thyrsus-token-stdin-required")
-    if verb == "forge" and arguments:
-        raise Refusal("thyrsus-arguments-invalid")
-    # Ordinary positional CLI calls never wait for stdin. A tty read belongs
-    # only to the explicit secret setter; envelope crossings arrive on a pipe.
-    raw = "" if arguments or (verb != "forge-token" and sys.stdin.isatty()) else sys.stdin.read(MAX_INPUT + 1)
-    if len(raw) > MAX_INPUT:
-        raise Refusal("thyrsus-request-too-large")
-    request = None
-    payload = None
-    if raw.lstrip().startswith("{"):
-        original = sys.stdin
-        try:
-            sys.stdin = io.StringIO(raw)
-            request = read(known_fields=("repo", "message", "branch", "pr", "token", "id", "into", "display"))
-            payload = request.payload
-            if not request.envelope and isinstance(request.value.get("payload"), dict):
-                payload = dict(request.value["payload"])
-        finally:
-            sys.stdin = original
-    if arguments:
-        import argparse
-        class Arguments(argparse.ArgumentParser):
-            def error(self, message):
-                raise Refusal("thyrsus-arguments-invalid")
-
-        parser = Arguments(prog="cli.py thyrsus " + verb)
-        if verb in {"propose", "admit"}:
-            parser.add_argument("repo")
-        if verb == "propose":
-            parser.add_argument("-m", dest="message", required=True)
-            parser.add_argument("--branch", default=None)
-        if verb == "admit":
-            parser.add_argument("pr")
-        if verb == "new-tab":
-            parser.add_argument("id")
-            parser.add_argument("--into", required=True)
-            parser.add_argument("--display", default=None)
-        payload = vars(parser.parse_args(arguments))
-    if payload is None:
-        payload = {}
-    if request is None:
-        request = _primitive_request(verb, {} if verb == "forge-token" else payload)
-    elif not request.envelope:
-        request = _primitive_request(verb, payload, request.value)
+def _argv_payload(verb, arguments):
     if verb == "forge-token":
-        token = payload.get("token")
-        secrets = {token} if isinstance(token, str) and token else set()
-        value = _scrub(request.value, secrets)
-        request = Request(value, request.envelope, {}, json.dumps(value), value.get("intent_id"),
-                          value.get("transition"), value.get("version"), value.get("timestamp"),
-                          request.load_context_present, _scrub(request.load_context, secrets))
-    return raw, payload, request
+        raise Refusal("thyrsus-token-stdin-required")
+    if verb == "forge":
+        raise Refusal("thyrsus-arguments-invalid")
+    import argparse
+
+    class Arguments(argparse.ArgumentParser):
+        def error(self, message):
+            raise Refusal("thyrsus-arguments-invalid")
+
+    parser = Arguments(prog="cli.py thyrsus " + verb)
+    if verb in {"propose", "admit"}:
+        parser.add_argument("repo")
+    if verb == "propose":
+        parser.add_argument("-m", dest="message", required=True)
+        parser.add_argument("--branch", default=None)
+    if verb == "admit":
+        parser.add_argument("pr")
+    if verb == "new-tab":
+        parser.add_argument("id")
+        parser.add_argument("--into", required=True)
+        parser.add_argument("--display", default=None)
+    return vars(parser.parse_args(arguments))
+
+
+def _token_echo(request, token):
+    # Keep the old redaction of any value repeated in caller-owned metadata.
+    # The placeholder is reply metadata only; the action sees only the bytearray.
+    secrets = {token.decode("utf-8")} if token else set()
+    value = _scrub(request.value, secrets)
+    if token is not None and isinstance(value.get("payload"), dict):
+        value["payload"]["token"] = REDACTED
+    return replace(request, value=value, raw_envelope=json.dumps(value),
+                   transition=value.get("transition"), secret_bytes={},
+                   load_context=_scrub(request.load_context, secrets))
+
+
+def _reply(receipt, request, flat_token):
+    if request is None:
+        return receipt
+    reply = attach(receipt, request)
+    if request.envelope and request.secret_fields:
+        # Format the already projected echo as before. The legacy flat sender
+        # also saw the redaction placeholder at the top of its echoed object.
+        raw_echo = json.loads(reply["raw_envelope"])
+        if flat_token:
+            raw_echo = {"token": REDACTED, **raw_echo}
+            reply["envelope"] = {"token": REDACTED, **reply["envelope"]}
+        reply["raw_envelope"] = json.dumps(raw_echo)
+    return reply
 
 
 def _deed(verb, receipt, started):
@@ -736,6 +739,8 @@ def _deed(verb, receipt, started):
 def main_for(verb, arguments=None):
     started = time.monotonic()
     request = None
+    token = None
+    flat_token = False
     receipt = {"ok": False, "firstMissingSignal": "none",
                "mutationPerformed": False, "observed": None, "could-change": [], "attempt": []}
     if verb == "propose":
@@ -752,17 +757,49 @@ def main_for(verb, arguments=None):
         if fallback.envelope:
             request = fallback
         profile = _configuration()
-        try:
-            raw, payload, request = _input(verb, list(arguments or []))
-        except EnvelopeError as error:
-            # A stamped input hits the shared reader before the primitive builder.
-            prefix = "missing envelope kernel keys: "
-            message = str(error)
-            if message.startswith(prefix):
-                for key in message[len(prefix):].split(","):
-                    if key not in fallback.value:
-                        raise Refusal(f"thyrsus-kernel-field-unknown:{key}") from None
-            raise
+        arguments = list(arguments or [])
+        if arguments:
+            payload = _argv_payload(verb, arguments)
+            request = _primitive_request(verb, payload)
+        else:
+            try:
+                incoming = read(known_fields=_REQUEST_FIELDS[verb],
+                                secret_bytes=("token",) if verb == "forge-token" else (),
+                                max_input_bytes=MAX_INPUT, quiet_on_tty=verb != "forge-token")
+            except EnvelopeError as error:
+                message = str(error)
+                if message == "agathodaimon-envelope-input-too-large":
+                    raise Refusal("thyrsus-request-too-large") from None
+                if verb == "forge-token" and message == "agathodaimon-vault-open-request-invalid":
+                    # A non-string token retains the setter's missing-token and
+                    # vault precedence without accepting it as an ordinary field.
+                    receipt["could-change"] = ["store-credential"]
+                    _set_token(None, profile, receipt)
+                prefix = "missing envelope kernel keys: "
+                if message.startswith(prefix):
+                    for key in message[len(prefix):].split(","):
+                        if key not in fallback.value:
+                            raise Refusal(f"thyrsus-kernel-field-unknown:{key}") from None
+                raise
+            token = incoming.secret_bytes.get("token")
+            payload = incoming.payload
+            if incoming.envelope:
+                request = incoming
+            else:
+                nested = incoming.value.get("payload")
+                if isinstance(nested, dict):
+                    if verb == "forge-token" and token is not None:
+                        # A legacy wrapped flat object did not use a top-level token.
+                        receipt["could-change"] = ["store-credential"]
+                        _set_token(None, profile, receipt)
+                    if verb != "forge-token":
+                        payload = {name: nested[name] for name in incoming.known_fields if name in nested}
+                request = replace(_primitive_request(verb, payload, incoming.value),
+                                  known_fields=incoming.known_fields, secret_fields=incoming.secret_fields,
+                                  gate_pin_present=incoming.gate_pin_present)
+            if verb == "forge-token":
+                request = _token_echo(request, token)
+                flat_token = not incoming.envelope and token is not None
         if verb == "forge":
             receipt.update(token_present=_token_present(profile), reachable=_reachable())
             receipt["observed"] = {key: receipt[key] for key in ("forge", "token_present", "reachable")}
@@ -781,7 +818,7 @@ def main_for(verb, arguments=None):
             _new_tab(payload, profile, receipt)
         else:
             receipt["could-change"] = ["store-credential"]
-            _set_token(raw, payload if raw.lstrip().startswith("{") else None, profile, receipt)
+            _set_token(token, profile, receipt)
         receipt["ok"] = True
     except Refusal as error:
         signal_name = ("forge-unreachable" if verb == "new-tab" and error.signal == "thyrsus-forge-unreachable"
@@ -792,6 +829,8 @@ def main_for(verb, arguments=None):
     except (OSError, ValueError, UnicodeError, KeyError, TypeError):
         receipt["firstMissingSignal"] = "thyrsus-observation-failed"
     finally:
+        if token is not None:
+            _envelope.wipe_bytes(token)
         receipt["final"] = {"ok": receipt["ok"], "signal": receipt["firstMissingSignal"],
                             "mutationPerformed": receipt["mutationPerformed"]}
         if request is not None and verb in WRITES and not (verb == "new-tab" and receipt["mutationPerformed"] is False):
@@ -800,4 +839,4 @@ def main_for(verb, arguments=None):
             except (OSError, ValueError):
                 receipt.update(ok=False, firstMissingSignal="thyrsus-ledger-unavailable")
                 receipt["final"].update(ok=False, signal="thyrsus-ledger-unavailable")
-    return emit(attach(receipt, request) if request is not None else receipt)
+    return emit(_reply(receipt, request, flat_token))
