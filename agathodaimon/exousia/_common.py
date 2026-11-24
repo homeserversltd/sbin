@@ -128,19 +128,30 @@ def bind():
 
 
 def verify():
-    value = payload({"pin", "publicKey"})
-    public_key = text(value, "publicKey")
-    if len(public_key) != 64:
-        raise MalformedInput("publicKey missing or invalid")
+    global _last_request
+    from agathodaimon.lib.sacred_credential.index import (
+        CaduceusAccessRefused,
+        verify_caduceus_pin,
+    )
+
+    _last_request = read(known_fields=("pin",))
+    pin = _last_request.payload.get("pin")
+    if not isinstance(pin, str) or not pin or len(pin) > 512:
+        return {"ok": False, "verified": False, "firstMissingSignal": "exousia-pin-required"}
     try:
-        int(public_key, 16)
-    except ValueError as exc:
-        raise MalformedInput("publicKey missing or invalid") from exc
-    result = invoke_library("verify", {"pin": text(value, "pin"), "publicKey": public_key.lower()})
-    verified = result.get("verified")
-    if not isinstance(verified, bool):
-        raise RuntimeError("invalid caduceus verify response")
-    return {"ok": True, "verified": verified}
+        verified = verify_caduceus_pin(pin)
+    except CaduceusAccessRefused as exc:
+        signal = str(exc)
+        if signal == "exousia-pin-invalid":
+            signal = "exousia-pin-required"
+        elif signal in {"exousia-pin-absent", "exousia-pin-malformed",
+                        "agathodaimon-config-unavailable", "agathodaimon-config-unreadable",
+                        "agathodaimon-config-malformed", "agathodaimon-scratch-root-invalid"}:
+            signal = "exousia-pin-not-yet-provisioned"
+        elif signal != "agathodaimon-staff-root-required":
+            raise
+        return {"ok": False, "verified": False, "firstMissingSignal": signal}
+    return {"ok": True, "verified": verified, "firstMissingSignal": "none"}
 
 
 def execute(action):
@@ -155,6 +166,24 @@ def run(action, argv=None):
     global _last_request, _last_request_pin
     _last_request = None
     _last_request_pin = None
+    if action == "verify":
+        try:
+            if argv:
+                raise MalformedInput("one exousia verb is required")
+            result = verify()
+        except Exception as exc:  # noqa: BLE001
+            result = {"ok": False, "verified": False,
+                      "firstMissingSignal": "agathodaimon-stop-raised",
+                      "exceptionType": type(exc).__name__}
+        if _last_request is not None:
+            try:
+                result = attach(result, _last_request)
+            except Exception as exc:  # noqa: BLE001
+                result = {"ok": False, "verified": False,
+                          "firstMissingSignal": "agathodaimon-stop-raised",
+                          "exceptionType": type(exc).__name__}
+        print(json.dumps(result, separators=(",", ":")))
+        return 0
     try:
         if argv:
             raise MalformedInput("one exousia verb is required")

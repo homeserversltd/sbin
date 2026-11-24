@@ -512,6 +512,20 @@ class DerivedCaduceusSigner:
         self.close()
 
 
+def verify_caduceus_pin(pin: str) -> bool:
+    """Compare the presented PIN with the live household PIN, without deriving."""
+    _require_root()
+    presented = bytearray()
+    stored = bytearray()
+    try:
+        presented = _pin_bytes(pin)
+        stored = _pin_bytes(_runtime_pin())
+        return hmac.compare_digest(stored, presented)
+    finally:
+        _wipe(presented)
+        _wipe(stored)
+
+
 def verify_and_derive_caduceus(pin: str) -> DerivedCaduceusSigner:
     """Verify against config.json and derive the tablet-defined signer."""
     _require_root()
