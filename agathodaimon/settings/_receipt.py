@@ -1,19 +1,16 @@
 """Receipt handling shared by settings families."""
 from __future__ import annotations
 
-import json
 import os
 import tempfile
-import uuid
 from pathlib import Path
 from typing import Any
+
+from agathodaimon import _deed
 
 
 class Receipt:
     def __init__(self, kind: str, fields: list[str]) -> None:
-        root = Path(os.environ.get("CADUCEUS_RECEIPT_ROOT", "/var/lib/caduceus/receipts"))
-        self.run_dir = root / str(uuid.uuid4())
-        self.run_dir.mkdir(parents=True, exist_ok=False)
         self.kind = kind
         self.fields = fields
         self.backups: list[dict[str, Any]] = []
@@ -21,6 +18,7 @@ class Receipt:
         self.commands: list[dict[str, Any]] = []
         self.changed = False
         self.timezone_command_performed = False
+        self._finished = False
 
     def backup(self, path: Path) -> None:
         if path in self._saved:
@@ -89,10 +87,14 @@ class Receipt:
     def finish(self, ok: bool, changed: bool = False, error: str | None = None) -> dict[str, Any]:
         metadata = {"ok": ok, "changed": bool(changed), "kind": self.kind, "fields": self.fields,
                     "backups": self.backups, "commands": self.commands}
+        if not self._finished:
+            self._finished = True
+            if os.environ.get("CADUCEUS_SETTINGS_DRY_RUN") != "1" and (changed or not ok):
+                _deed.send("sbin", "settings-" + self.kind, ok,
+                           outcome="changed" if ok else None,
+                           signal=(error or "failure").split(":", 1)[0])
         if ok:
-            (self.run_dir / "run.json").write_text(json.dumps(metadata, sort_keys=True) + "\n", encoding="utf-8")
-            result = {"ok": True, "changed": bool(changed), "receiptPath": str(self.run_dir / "run.json"), "receipt": metadata}
+            result = {"ok": True, "changed": bool(changed), "receipt": metadata}
         else:
-            self.run_dir.rmdir()
             result = {"ok": False, "firstMissingSignal": error or "failure", "receipt": metadata}
         return result

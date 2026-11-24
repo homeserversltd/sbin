@@ -120,6 +120,6 @@ def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int 
             if not 200 <= response.status < 300:
                 raise OSError("door rejected deed")
         return True
-    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+    except Exception:
         print("caduceus-deed-post-failed", file=sys.stderr)
         return False
