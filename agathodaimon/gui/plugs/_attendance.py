@@ -62,8 +62,11 @@ class _Attendance:
             pin = ""
 
     def pin_check(self, parent: Any, body: str = "Enter your PIN to confirm.") -> bool:
+        return self.pin_confirm(parent, body) is not None
+
+    def pin_confirm(self, parent: Any, body: str = "Enter your PIN to confirm.") -> str | None:
         if threading.current_thread() is threading.main_thread():
-            return False
+            return None
         try:
             import gi
 
@@ -71,7 +74,7 @@ class _Attendance:
             gi.require_version("Adw", "1")
             from gi.repository import Adw, GLib, Gtk
         except Exception:
-            return False
+            return None
 
         done = threading.Event()
         answer: list[str | None] = [None]
@@ -113,13 +116,13 @@ class _Attendance:
         try:
             GLib.idle_add(show)
         except Exception:
-            return False
+            return None
         done.wait()
         pin = answer.pop()
         if pin is None:
-            return False
+            return None
         try:
-            return self.check(pin)
+            return pin if self.check(pin) else None
         finally:
             pin = ""
 
