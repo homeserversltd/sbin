@@ -138,11 +138,21 @@ def _read_bytes(data: bytearray, limit: int | None) -> None:
         del block
 
 
-def _read_secret_input(limit: int | None) -> Any:
+def _read_secret_input(limit: int | None, names: Sequence[str]) -> tuple[Any, int]:
+    wanted = frozenset(names)
+    seen = 0
+
+    def count_named_fields(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        nonlocal seen
+        # Count before last-wins decoding can discard a key or its parent.
+        seen += sum(name in wanted for name, _ in pairs)
+        return dict(pairs)
+
     data = bytearray()
     try:
         _read_bytes(data, limit)
-        return json.loads(data.decode("utf-8"))
+        value = json.loads(data.decode("utf-8"), object_pairs_hook=count_named_fields)
+        return value, seen
     except EnvelopeError:
         raise
     except (ValueError, OSError, RecursionError):
@@ -190,23 +200,33 @@ def read(
     input (implicit with a byte limit or secret_bytes) is decoded as UTF-8.
     The limit is inclusive and checked before parsing, using byte lookahead.
 
-    secret_bytes names string fields in the payload (or flat request). They
-    are removed from the request and its echo; the caller owns the buffers
-    in Request.secret_bytes and must wipe them with wipe_bytes in a finally.
-    The input buffer is wiped after parsing. Python's temporary decoded
-    strings and storage owned by the input stream are not wipeable here.
+    secret_bytes is a sequence of field names, not a bare string. Only direct
+    fields of the payload (or flat request) are taken. A named field elsewhere
+    or occurring more than once is refused before any request is returned.
+    The final input bytearray is wiped after parsing, not the decoder's
+    transient copies or storage owned by the input stream. The caller owns
+    the removed field bytearrays in Request.secret_bytes and must zero them
+    with wipe_bytes in a finally.
     """
     if max_input_bytes is not None and (
         type(max_input_bytes) is not int or not 0 <= max_input_bytes < sys.maxsize
     ):
         raise EnvelopeError("agathodaimon-envelope-input-bound-invalid")
+    if isinstance(secret_bytes, str):
+        _sensitive_echo.set(True)
+        raise EnvelopeError("agathodaimon-envelope-secret-fields-invalid")
     byte_fields = tuple(secret_bytes)
+    if byte_fields:
+        _sensitive_echo.set(True)
+        if any(not isinstance(name, str) for name in byte_fields):
+            raise EnvelopeError("agathodaimon-envelope-secret-fields-invalid")
+    seen_secret_fields = 0
     try:
         if quiet_on_tty and sys.stdin.isatty():
             raw = "{}"
             value = json.loads(raw)
         elif byte_fields:
-            value = _read_secret_input(max_input_bytes)
+            value, seen_secret_fields = _read_secret_input(max_input_bytes, byte_fields)
             raw = ""  # Rebuilt from the value only after extracting secrets.
         else:
             if byte_stream or max_input_bytes is not None:
@@ -226,10 +246,15 @@ def read(
         if byte_fields:
             del value
         raise EnvelopeError("JSON object required")
-    if secret or byte_fields or _gate_pin.get() or _pin_bearing_exousia(value):
+    if not byte_fields and (secret or _gate_pin.get() or _pin_bearing_exousia(value)):
         _sensitive_echo.set(True)
     envelope = "schema" in value
     source = value.get("payload") if envelope else value
+    if seen_secret_fields and (
+        not isinstance(source, dict) or seen_secret_fields != len(source.keys() & byte_fields)
+    ):
+        del source, value
+        raise EnvelopeError("agathodaimon-envelope-secret-field-placement-invalid")
     material: dict[str, bytearray] = {}
     try:
         invalid_secret = bool(byte_fields) and isinstance(source, dict) and _take_secret_bytes(source, byte_fields, material)
