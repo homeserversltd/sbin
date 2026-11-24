@@ -121,5 +121,8 @@ def send(organ: str, verb: str, ok: bool, *, target: str = "", duration_ms: int 
                 raise OSError("door rejected deed")
         return True
     except Exception:
-        print("caduceus-deed-post-failed", file=sys.stderr)
+        try:
+            print("caduceus-deed-post-failed", file=sys.stderr)
+        except Exception:
+            pass
         return False
