@@ -457,7 +457,7 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
         alive["value"] = False
         dialog = active_dialog.get("dialog")
         if dialog is not None:
-            dialog.response("cancel")
+            dialog.close()
 
     stack.connect("unmap", unmapped)
 
@@ -494,7 +494,11 @@ def build_widget(on_model: Callable[[dict[str, Any]], None] | None = None) -> An
                 done.set()
 
             dialog.connect("response", responded)
-            entry.connect("activate", lambda _entry: dialog.response("continue"))
+            def activate(_entry: Any) -> None:
+                dialog.emit("response", "continue")
+                dialog.close()
+
+            entry.connect("activate", activate)
             dialog.present(stack)
             entry.grab_focus()
             return False

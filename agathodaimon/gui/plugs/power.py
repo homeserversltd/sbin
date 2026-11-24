@@ -85,7 +85,11 @@ def build_indicator() -> Any:
                     done.set()
 
                 dialog.connect("response", responded)
-                entry.connect("activate", lambda _entry: dialog.response("continue"))
+                def activate(_entry: Any) -> None:
+                    dialog.emit("response", "continue")
+                    dialog.close()
+
+                entry.connect("activate", activate)
                 dialog.present(box)
                 entry.grab_focus()
             except Exception:
@@ -99,7 +103,7 @@ def build_indicator() -> Any:
     def unmapped(_widget: Any) -> None:
         dialog = state["dialog"]
         if dialog is not None:
-            dialog.response("cancel")
+            dialog.close()
 
     box.connect("unmap", unmapped)
 

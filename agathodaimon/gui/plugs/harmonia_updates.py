@@ -608,7 +608,11 @@ def build_widget() -> Any:
                 done.set()
 
             dialog.connect("response", responded)
-            entry.connect("activate", lambda _entry: dialog.response("continue"))
+            def activate(_entry: Any) -> None:
+                dialog.emit("response", "continue")
+                dialog.close()
+
+            entry.connect("activate", activate)
             dialog.present(stack)
             entry.grab_focus()
             return False
@@ -1350,7 +1354,7 @@ def build_widget() -> Any:
         data["alive"] = False
         dialog = active_dialog.get("dialog")
         if dialog is not None:
-            dialog.response("cancel")
+            dialog.close()
         for popup in (modules_dialog, history_dialog, silenced_dialog):
             if popup.get_parent() is not None:
                 popup.force_close()
