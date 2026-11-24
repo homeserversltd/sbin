@@ -469,16 +469,15 @@ class _LiveSlider:
                                                ("Page_Up", page, "last"), ("Page_Down", -page, "first"))}
         keys.connect("key-pressed", self._key_pressed, moves)
         keys.connect("key-released", self._key_released)
-        focus = Gtk.EventControllerFocus.new()
 
-        def focus_in(_focus: Any) -> None:
+        def focus_in() -> None:
             # The shell captures Page Up/Down for scrolling. Take them only while
             # this scale owns focus, before the shell's window controller.
             root = scale.get_root()
             if isinstance(root, Gtk.Window) and keys.get_widget() is None:
                 root.add_controller(keys)
 
-        def focus_out(_widget: Any) -> None:
+        def focus_out() -> None:
             root = keys.get_widget()
             if (self.read_failed and self.held_keys and (self.wait_for_release or self.reply_lost())
                     and root is not None and root.is_active()):
@@ -490,18 +489,29 @@ class _LiveSlider:
             self._clear_keys(detach=True)
             self._advance()
 
-        def unmapped(widget: Any) -> None:
+        def focus_changed(widget: Any, _param: Any) -> None:
+            if widget.has_focus() and widget.get_mapped():
+                focus_in()
+            else:
+                focus_out()
+
+        def mapped(widget: Any) -> None:
+            if widget.has_focus():
+                focus_in()
+
+        def unmapped(_widget: Any) -> None:
             self.dragging = self.drag_changed = False
-            focus_out(widget)
+            focus_out()
 
         def root_changed(widget: Any, _param: Any) -> None:
             if self.release_watch and widget.get_root() is None:
                 self._clear_keys(detach=True)
                 self._advance()
 
-        focus.connect("enter", focus_in)
-        focus.connect("leave", focus_out)
-        scale.add_controller(focus)
+        # A hidden scale may not get a balanced controller leave/enter.
+        # On recovery, arm the mark keys from its actual widget focus.
+        scale.connect("notify::has-focus", focus_changed)
+        scale.connect("map", mapped)
         scale.connect("unmap", unmapped)
         scale.connect("notify::root", root_changed)
 
