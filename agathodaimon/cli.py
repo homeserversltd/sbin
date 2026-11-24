@@ -111,7 +111,7 @@ def _mutation_allowed(path: Path) -> bool | None:
         declaration = None
     if isinstance(declaration, dict) and declaration.get("mutation_allowed") == "seat":
         value = _seat_marked_value(declaration, _intent_seat(path), "mutation_allowed")
-        return True if value == "absent" else value
+        return value if value is None or isinstance(value, bool) else True
     legacy = _index_mutation_allowed(path)
     seat = _intent_seat(path)
     seated = _boolean_word(seat, "mutation_allowed")
