@@ -1,4 +1,5 @@
 {
+  "hand": "envelope",
   "children": [],
   "envelope": {"stdin": "json", "keys": ["id", "verb", "fields", "row"], "actions": []},
   "sclerite": {"name": "all", "features": {"all": {"band": true, "verbs": [["notify", "act"]], "routes": [], "administrative": {"band": false, "verbs": [], "routes": []}}}}
