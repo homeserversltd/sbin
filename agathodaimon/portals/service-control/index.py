@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Sequence
+
+from agathodaimon import _envelope
 
 MAX_INPUT_BYTES = 64 * 1024
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -232,19 +233,24 @@ def dispatch(payload: dict[str, Any]) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     del argv
-    raw = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     try:
-        if len(raw) > MAX_INPUT_BYTES:
-            raise Refusal("agathodaimon-service-request-too-large")
-        value = json.loads(raw.decode("utf-8"))
-        if not isinstance(value, dict):
-            raise Refusal("agathodaimon-service-request-invalid")
-        receipt = dispatch(value)
-    except (UnicodeDecodeError, json.JSONDecodeError, Refusal):
-        signal = "agathodaimon-service-request-invalid"
-        if isinstance(sys.exc_info()[1], Refusal):
-            signal = str(sys.exc_info()[1])
+        request = _envelope.read(max_input_bytes=MAX_INPUT_BYTES)
+        # The named-actuator adapter carries both the legacy top-level fields
+        # and the same fields in payload. Keep dispatch's existing precedence.
+        receipt = dispatch(request.value)
+    except _envelope.EnvelopeError as error:
+        if isinstance(error.__cause__, OSError):
+            raise error.__cause__
+        reason = str(error)
+        if reason == "agathodaimon-envelope-input-too-large":
+            signal = "agathodaimon-service-request-too-large"
+        elif reason in {"invalid JSON", "JSON object required"}:
+            signal = "agathodaimon-service-request-invalid"
+        else:
+            signal = "agathodaimon-service-envelope-invalid"
         receipt = _receipt("unknown", False, planned=False, commands=[], signal=signal)
+    except Refusal as error:
+        receipt = _receipt("unknown", False, planned=False, commands=[], signal=str(error))
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["ok"] else 1
 

@@ -1,11 +1,11 @@
 """Post one complete notification through the local Caduceus door."""
 import json
 import os
-import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from agathodaimon import _envelope
 from agathodaimon._load_trace import _caduceus_base_url
 
 
@@ -33,13 +33,14 @@ def _post(url, body):
 
 def main(argv=None):
     try:
-        value = json.load(sys.stdin)
-        if isinstance(value, dict) and value.get("schema") == "caduceus.staff.v1":
-            value = value.get("payload")
+        request = _envelope.read()
+        # The legacy package caller sends the notice row itself, including its
+        # optional fields; the downstream notification door validates that row.
+        value = request.value.get("payload") if request.envelope else request.value
         row = value.get("notification", value) if isinstance(value, dict) else None
         if not isinstance(row, dict) or not all(isinstance(row.get(k), str) and row[k].strip() for k in ("id", "kind", "title")) or row.get("color") not in ("red", "amber", "blue", "none"):
             return _failure("notify-row-invalid")
-    except (OSError, UnicodeError, ValueError):
+    except ValueError:
         return _failure("notify-row-invalid")
     try:
         root = Path(os.environ.get("CADUCEUS_ROOT", "/"))

@@ -1,7 +1,7 @@
 """One dispatcher for notification actions, owned by the staff."""
 import json
-import sys
 
+from agathodaimon import _envelope
 
 
 def _pending():
@@ -17,13 +17,9 @@ KINDS = {"update": {"open-updates": _pending}, "house-link-up": {"accept": _cadu
 
 def main(argv=None):
     try:
-        request = json.load(sys.stdin)
-        if not isinstance(request, dict):
-            request = {}
-    except (OSError, UnicodeError, ValueError):
+        request = _envelope.read_fields("id", "verb", "row").payload
+    except ValueError:
         request = {}
-    if request.get("schema") == "caduceus.staff.v1":
-        request = request.get("payload") if isinstance(request.get("payload"), dict) else {}
     row = request.get("row") if isinstance(request.get("row"), dict) else {}
     kind, verb = row.get("kind"), request.get("verb")
     receipt = {"id": request.get("id"), "verb": verb, "kind": kind}

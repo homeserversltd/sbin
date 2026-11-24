@@ -6,12 +6,11 @@ import json
 import os
 import shlex
 import stat
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from agathodaimon._envelope import SCHEMA, _envelope_kernel
+from agathodaimon import _envelope
 
 SUPPORTED_KEYS = ("THEGAMESDB_API_KEY", "SCREENSCRAPER_API_KEY")
 DEFAULT_PATH = Path("/etc/arch-game-sync/providers.env")
@@ -68,18 +67,18 @@ def _payload(envelope: Mapping[str, Any]) -> Mapping[str, Any]:
     return envelope
 
 
-def _request(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    if "schema" in value and value.get("schema") != SCHEMA:
-        raise ValueError("foreign envelope schema")
-    if value.get("schema") == SCHEMA:
-        missing = [key for key in _envelope_kernel() if key not in value]
-        if missing:
-            raise ValueError("missing envelope kernel keys: " + ",".join(missing))
-        payload = value.get("payload")
-        if not isinstance(payload, Mapping) or not payload:
-            raise _PayloadRequired("provider request payload required")
-        return payload
-    return value
+def _read_request() -> _envelope.Request | None:
+    try:
+        return _envelope.read(quiet_on_tty=True)
+    except _envelope.EnvelopeError as error:
+        cause = error.__cause__
+        if isinstance(cause, json.JSONDecodeError) and not cause.doc.strip():
+            return None
+        if str(error) == "JSON object required":
+            raise ValueError("crossing input must be a JSON object") from None
+        if cause is not None:
+            raise cause
+        raise
 
 
 def _save(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -118,47 +117,53 @@ def _save(values: Mapping[str, Any]) -> dict[str, Any]:
     return {"ok":True,"path":str(target),"changed":old != content,"preserved_existing":True,"configured_names":[key for key in SUPPORTED_KEYS if merged.get(key)],"mode":"0600","mutationPerformed":True}
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _parse_payload_args(words: list[str]) -> str:
     parser = argparse.ArgumentParser(prog="agathodaimon-games-provider-keys")
     parser.add_argument("operation", choices=("status", "save"), nargs="?", default="status")
+    return parser.parse_args(words).operation
+
+
+def _arguments_invalid() -> int:
+    print(json.dumps({"ok": False, "firstMissingSignal": "provider-keys-arguments-invalid"}))
+    return 2
+
+
+def main(argv: Sequence[str] | None = None) -> int:
     try:
-        args = parser.parse_args(argv)
-    except SystemExit as exc:
-        if exc.code != 2:
-            raise
-        print(json.dumps({"ok": False, "firstMissingSignal": "provider-keys-arguments-invalid"}))
-        return 2
-    envelope: Mapping[str, Any] | None = None
-    try:
-        if argv == []:
-            raw = sys.stdin.read()
-            if raw.strip():
-                loaded = json.loads(raw)
-                if not isinstance(loaded, Mapping):
-                    raise ValueError("crossing input must be a JSON object")
-                envelope = _request(loaded)
-                operation = envelope.get("verb")
-                if loaded.get("schema") == SCHEMA and operation is None:
-                    request_args = envelope.get("args")
-                    if isinstance(request_args, list) and request_args:
-                        operation = request_args[0]
-                if operation == "save":
-                    args.operation = "save"
-        if args.operation == "status":
-            result = _status()
+        request = _read_request()
+        if request is not None and request.envelope:
+            payload = request.value.get("payload")
+            if not isinstance(payload, dict) or not payload:
+                raise _PayloadRequired("provider request payload required")
+            # The Caduceus door sends its operation in payload.args as well as
+            # verb. Read the vector from the request, not the CLI's argv mirror.
+            words = payload.get("args")
         else:
-            if envelope is None:
-                loaded = json.load(sys.stdin)
-                if not isinstance(loaded, Mapping):
-                    raise ValueError("save input must be a JSON object")
-                envelope = _request(loaded)
-            result = _save(_payload(envelope))
+            payload = request.value if request is not None else {}
+            words = None
+        # An empty pipe still admits the original status spelling; it does not
+        # supply fields or let a positional word select a write.
+        empty_status = request is None and argv == ["status"]
+        if argv and argv != words and not empty_status:
+            return _arguments_invalid()
+        operation = payload.get("verb")
+        if isinstance(words, list) and words:
+            if all(isinstance(word, str) for word in words):
+                try:
+                    operation = _parse_payload_args(words)
+                except SystemExit as exc:
+                    if exc.code != 2:
+                        raise
+                    return _arguments_invalid()
+            elif operation is None:
+                operation = words[0]
+        result = _save(_payload(payload)) if operation == "save" else _status()
     except _PayloadRequired as exc:
         print(json.dumps({"ok": False, "error": str(exc),
                           "firstMissingSignal": "agathodaimon-provider-keys-payload-required",
                           "mutationPerformed": False}, sort_keys=True))
         return 2
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, TypeError, ValueError) as exc:
         print(json.dumps({"ok":False,"error":str(exc),"mutationPerformed":False}, sort_keys=True))
         return 1
     print(json.dumps(result, sort_keys=True))

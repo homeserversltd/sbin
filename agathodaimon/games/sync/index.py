@@ -1,9 +1,11 @@
 """Synchronize the configured ROM library and its artwork cache."""
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json, re, shlex, subprocess, time, urllib.parse, urllib.request
+import json, re, shlex, subprocess, time, urllib.parse, urllib.request
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
+
+from agathodaimon import _envelope
 
 LIBRARY_ROOT = Path('/home/owner/Games')
 ARTWORK_ROOT = LIBRARY_ROOT / 'artwork'
@@ -311,18 +313,7 @@ def scan_games(runners):
     return games, blocked
 
 
-def _sync_main():
-    parser = argparse.ArgumentParser(description='Sync configured RetroArch and DOSBox ROM folders and artwork')
-    try:
-        parser.parse_args()
-    except SystemExit as exc:
-        if exc.code == 0:
-            return 0
-        if exc.code != 2:
-            raise
-        print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-games-sync-arguments-invalid",
-                          "mutationPerformed": False}))
-        return 2
+def _sync():
     runners = json.loads(RUNNERS_PATH.read_text())
     games, blocked_payloads = scan_games(runners)
     artwork = [
@@ -330,18 +321,35 @@ def _sync_main():
          'artwork_cache': ensure_cached_artwork(game)}
         for game in games
     ]
-    receipt = {'ok': True, 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'artwork': artwork, 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
-    print(json.dumps(receipt, sort_keys=True))
+    return {'ok': True, 'games': [g['appname'] for g in games], 'game_count': len(games), 'blocked_payloads': blocked_payloads, 'bios_requirements': BIOS_REQUIREMENTS, 'artwork': artwork, 'payload_boundary': 'runtime-game-files-artwork-cache-bios-firmware-keys-and-secrets-not-source', 'provider_env_path': str(PROVIDER_ENV)}
+
+
+def _arguments_invalid():
+    print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-games-sync-arguments-invalid",
+                      "mutationPerformed": False}))
+    return 2
 
 
 def main(argv=None):
-    import sys
-    previous = sys.argv
+    if argv:
+        return _arguments_invalid()
     try:
-        sys.argv = [previous[0], *(argv or [])]
-        return _sync_main() or 0
-    finally:
-        sys.argv = previous
+        _envelope.read(quiet_on_tty=True)
+    except _envelope.EnvelopeError as error:
+        cause = error.__cause__
+        # Sync has no request fields; a closed or blank pipe used to mean run.
+        if not isinstance(cause, json.JSONDecodeError) or cause.doc.strip():
+            return _arguments_invalid()
+    except (UnicodeError, RecursionError):
+        return _arguments_invalid()
+    try:
+        receipt = _sync()
+    except Exception as error:
+        # A failure does not tell us whether the sync already changed files.
+        receipt = {"ok": False, "firstMissingSignal": "agathodaimon-games-sync-failed",
+                   "exceptionType": type(error).__name__}
+    print(json.dumps(receipt, sort_keys=True))
+    return 0 if receipt["ok"] else 1
 
 
 if __name__ == "__main__":

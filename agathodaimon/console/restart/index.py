@@ -1,7 +1,8 @@
 """Bounded console restart degrees for Sunshine and SDDM."""
 from __future__ import annotations
-import argparse, json, subprocess, sys
-from typing import Sequence
+import json, subprocess
+
+from agathodaimon import _envelope
 
 OWNER="owner"
 SUNSHINE_UNIT="app-dev.lizardbyte.app.Sunshine.service"; SEAT_UNIT="sddm.service"
@@ -48,27 +49,17 @@ def restart(degree):
     return {**attempted,"ok":active,"command_results":results,"first_missing_signal":"none" if active else f"console-restart-{degree}-active-readback-failed"}
 
 
-def main(argv:Sequence[str]|None=None):
-    parser=argparse.ArgumentParser(prog="agathodaimon-console-restart"); parser.add_argument("degree",nargs="*",metavar="{stream|seat}")
-    try:
-        args=parser.parse_args(argv)
-    except SystemExit as exc:
-        if exc.code == 0:
-            return 0
-        if exc.code != 2:
-            raise
+def main(argv=None):
+    if argv:
         print(json.dumps({"ok": False, "firstMissingSignal": "agathodaimon-console-restart-arguments-invalid",
                           "mutationPerformed": False}))
         return 2
-    degree=args.degree[0] if len(args.degree)==1 else None
-    if len(args.degree)>1: degree="<multiple-degrees>"
-    if not args.degree and not sys.stdin.isatty():
-        try:
-            raw=sys.stdin.read().strip(); envelope=json.loads(raw) if raw else {}
-            if isinstance(envelope,dict):
-                degree=envelope.get("degree")
-                if not isinstance(degree,str): degree="<multiple-degrees>" if degree is not None else None
-        except json.JSONDecodeError: degree=None
+    try:
+        degree = _envelope.read_fields("degree", quiet_on_tty=True).payload.get("degree")
+    except (_envelope.EnvelopeError, UnicodeError, RecursionError):
+        degree = None
+    if degree is not None and not isinstance(degree, str):
+        degree = "<multiple-degrees>"
     receipt=restart(degree); print(json.dumps(receipt,sort_keys=True)); return 0 if receipt["ok"] else 1
 
 
