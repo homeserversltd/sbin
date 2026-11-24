@@ -31,13 +31,17 @@ def _digest(data: bytes | None) -> str | None:
     return hashlib.sha256(data).hexdigest() if data is not None else None
 
 
-def _put(path: Path, data: bytes | None, mode: int, owner: tuple[int, int] | None, on_changed=None) -> None:
-    if data is None:
-        path.unlink(missing_ok=True)
-        if on_changed is not None:
-            on_changed()
-        return
-    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+def atomic_replace(
+    path: Path,
+    data: bytes,
+    mode: int,
+    owner: tuple[int, int] | None = None,
+    *,
+    prefix: str | None = None,
+    fsync_dir: bool = False,
+) -> None:
+    """Replace a file with synced bytes, optionally syncing its parent too."""
+    fd, name = tempfile.mkstemp(prefix=prefix or f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
@@ -47,10 +51,27 @@ def _put(path: Path, data: bytes | None, mode: int, owner: tuple[int, int] | Non
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
         os.replace(name, path)
+        name = None  # The rename consumed the temporary name.
+        if fsync_dir:
+            dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+    finally:
+        if name is not None:
+            Path(name).unlink(missing_ok=True)
+
+
+def _put(path: Path, data: bytes | None, mode: int, owner: tuple[int, int] | None, on_changed=None) -> None:
+    if data is None:
+        path.unlink(missing_ok=True)
         if on_changed is not None:
             on_changed()
-    finally:
-        Path(name).unlink(missing_ok=True)
+        return
+    atomic_replace(path, data, mode, owner)
+    if on_changed is not None:
+        on_changed()
 
 
 def write(edits, *, check=None, verify=None, reload=None, readback=None):

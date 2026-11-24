@@ -6,19 +6,19 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import tempfile
 import time
 from importlib import import_module
 
 from agathodaimon._envelope import EnvelopeError, attach, read
+from agathodaimon._nidus.run import run
+from agathodaimon._nidus.write import atomic_replace
 
 household = import_module("agathodaimon.settings.datetime.household-time._household")
 POOLS = "".join(f"pool {number}.debian.pool.ntp.org iburst\n" for number in range(4))
 
 
 def _run(argv, timeout):
-    return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.DEVNULL, text=True, timeout=timeout, check=False)
+    return run(argv, timeout=timeout, stdin=subprocess.DEVNULL)
 
 
 def _gateway():
@@ -49,15 +49,7 @@ def _gateway():
 def _write_sources(content):
     directory = Path(os.environ.get("AGATHODAIMON_TIME_UPSTREAM_DIR", "/run/chrony-dhcp"))
     directory.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(prefix=".upstream.", dir=directory)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fchmod(stream.fileno(), 0o644)
-        os.replace(name, directory / "upstream.sources")
-    finally:
-        Path(name).unlink(missing_ok=True)
+    atomic_replace(directory / "upstream.sources", content.encode("utf-8"), 0o644, prefix=".upstream.")
 
 
 def _reload_if_running():
