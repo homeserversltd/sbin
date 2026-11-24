@@ -13,9 +13,7 @@ from typing import Any, Callable
 from ._common import CADUCEUS_URL, _receipt_ok, _refusal_signal
 
 PIN_REFUSALS = frozenset({
-    "caduceus-administrative-pin-required", "caduceus-administrative-pin-wrong",
-    "agathodaimon-administrative-pin-required", "agathodaimon-administrative-pin-wrong",
-    "exousia-pin-required", "exousia-pin-wrong",
+    "exousia-pin-required", "exousia-pin-wrong", "caduceus-attendance-not-current",
 })
 
 

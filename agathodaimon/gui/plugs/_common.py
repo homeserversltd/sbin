@@ -108,13 +108,16 @@ class _HTTPRefusal(RuntimeError):
 
 def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None,
              *, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    from ._attendance import GATE
+
     refused = None
     try:
         data = json.dumps(_staff_envelope(path, payload)).encode('utf-8')
-        request_headers = {'Content-Type': 'application/json', **(headers or {})}
+        request_headers = {'Content-Type': 'application/json', **GATE.headers(), **(headers or {})}
         request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=request_headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=30) as response:
                 raw = response.read(256 * 1024)
         except urllib.error.HTTPError as error:
             if 400 <= error.code < 500:
@@ -143,12 +146,15 @@ def _request(path: str, method: str = 'GET', payload: dict[str, Any] | None = No
 def _direct_request(path: str, method: str = "GET", payload: dict[str, Any] | None = None,
                     timeout: int = 30) -> dict[str, Any]:
     """Call a native Caduceus door without a staff envelope."""
+    from ._attendance import GATE
+
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Content-Type": "application/json"} if data is not None else {}
+    headers = {**GATE.headers(), **({"Content-Type": "application/json"} if data is not None else {})}
     request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=headers, method=method)
     try:
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=timeout) as response:
                 raw = response.read(256 * 1024)
         except urllib.error.HTTPError as error:
             if method == "GET":
