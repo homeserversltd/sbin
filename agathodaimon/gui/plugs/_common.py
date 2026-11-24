@@ -453,6 +453,7 @@ class _LiveSlider:
         self.wait_for_release = False
         self.read_failed = False
         self.release_watch = 0
+        self.keys = None
         self.send_source = self.settle_source = self.last_send = 0
 
         # Observe the pointer stream without claiming Gtk.Range's native drag gesture.
@@ -461,24 +462,24 @@ class _LiveSlider:
         pointer.connect("event", self._pointer_event, Gdk)
         scale.add_controller(pointer)
 
-        self.keys = keys = Gtk.EventControllerKey.new()
-        keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         moves = {getattr(Gdk, "KEY_" + prefix + key): (delta, snap_move) for prefix in ("", "KP_")
                  for key, delta, snap_move in (("Left", -step, "previous"), ("Right", step, "next"),
                                                ("Up", step, "next"), ("Down", -step, "previous"),
                                                ("Page_Up", page, "last"), ("Page_Down", -page, "first"))}
-        keys.connect("key-pressed", self._key_pressed, moves)
-        keys.connect("key-released", self._key_released)
 
         def focus_in() -> None:
             # The shell captures Page Up/Down for scrolling. Take them only while
             # this scale owns focus, before the shell's window controller.
             root = scale.get_root()
-            if isinstance(root, Gtk.Window) and keys.get_widget() is None:
+            if isinstance(root, Gtk.Window) and self.keys is None:
+                self.keys = keys = Gtk.EventControllerKey.new()
+                keys.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+                keys.connect("key-pressed", self._key_pressed, moves)
+                keys.connect("key-released", self._key_released)
                 root.add_controller(keys)
 
         def focus_out() -> None:
-            root = keys.get_widget()
+            root = self.keys.get_widget() if self.keys is not None else None
             if (self.read_failed and self.held_keys and (self.wait_for_release or self.reply_lost())
                     and root is not None and root.is_active()):
                 # Moving focus to the read error isn't releasing the key.
@@ -595,12 +596,15 @@ class _LiveSlider:
 
     def _clear_keys(self, *, detach: bool) -> None:
         self.held_keys.clear()
-        root = self.keys.get_widget()
+        keys = self.keys
+        root = keys.get_widget() if keys is not None else None
         if root is not None:
             if self.release_watch:
                 root.disconnect(self.release_watch)
             if detach:
-                root.remove_controller(self.keys)
+                root.remove_controller(keys)
+        if detach:
+            self.keys = None
         self.release_watch = 0
 
     def _window_activity(self, root: Any, _param: Any) -> None:
