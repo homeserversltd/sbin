@@ -521,12 +521,17 @@ def _walk_chord_inner(path: Path, envelope: dict, interrupted: list[bool]) -> in
         ring_stages = ([{"stage_id": "observe", "snake": ring["observe"]}] if ring is not None else [])
         for stage in ring_stages + serve + rescue + final:
             target = _slash_target(stage["snake"])
-            if target is None or not _declares_dry_run(target.parent, _index(target.parent)):
-                print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
-                                  "request": request, "stages": [], "failedStage": None,
-                                  "firstMissingSignal": "chord-dry-run-undeclared-stage",
-                                  "firstMissingField": stage["stage_id"]}))
-                return 1
+            if target is not None and _declares_dry_run(target.parent, _index(target.parent)):
+                continue
+            # A seat-only claim gets the same refusal as the direct stop.
+            # Keep the old aggregate signal when there is no affirmative seat.
+            seat = _intent_seat(target.parent) if target is not None else None
+            reason = ("agathodaimon-dry-run-undeclared" if _boolean_word(seat, "dry-run") is True
+                      else "chord-dry-run-undeclared-stage")
+            print(json.dumps({"schema": "caduceus.chord.receipt.v1", "ok": False, "routine_id": routine_id,
+                              "request": request, "stages": [], "failedStage": None,
+                              "firstMissingSignal": reason, "firstMissingField": stage["stage_id"]}))
+            return 1
     blocked = False
     settled_by = None
     last_executed = None
