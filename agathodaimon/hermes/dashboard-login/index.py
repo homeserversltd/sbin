@@ -10,6 +10,7 @@ import sys
 import time
 import uuid
 
+from agathodaimon import _envelope
 from agathodaimon._envelope import appliance_runtime_path
 from agathodaimon.lib.receipts.index import emit
 from agathodaimon.unit import _control
@@ -26,32 +27,19 @@ def _root():
     return appliance_runtime_path("config").parents[2]
 
 
-def _password(arguments):
-    # The shared router can otherwise forward a slash-form JSON argv object.
-    # Refuse it here without parsing, printing, or forwarding its contents.
-    if arguments or (len(sys.argv) > 2 and sys.argv[1] == "hermes/dashboard-login"):
-        raise Refusal("hermes-password-stdin-required")
-    raw = sys.stdin.read(65537)
-    if len(raw) > 65536:
-        raise Refusal("hermes-request-too-large")
-    if raw.lstrip().startswith("{"):
-        try:
-            obj = json.loads(raw)
-        except ValueError:
-            obj = None
-        if obj is None:
-            value = raw[:-1] if raw.endswith("\n") else raw
-        elif isinstance(obj, dict):
-            if isinstance(obj.get("payload"), dict):
-                obj = obj["payload"]
-            value = obj.get("password")
+def _password():
+    try:
+        request = _envelope.read(known_fields=("password",), secret_bytes=("password",),
+                                 max_input_bytes=65536)
+    except _envelope.EnvelopeError as error:
+        if str(error) == "agathodaimon-envelope-input-too-large":
+            signal = "hermes-request-too-large"
+        elif str(error) == "agathodaimon-vault-open-request-invalid":
+            signal = "hermes-password-invalid"
         else:
-            raise Refusal("hermes-input-invalid")
-    else:
-        value = raw[:-1] if raw.endswith("\n") else raw
-    if not isinstance(value, str) or not 12 <= len(value) <= 256 or not value.isprintable() or any(c in value for c in "\0\r\n"):
-        raise Refusal("hermes-password-invalid")
-    return value
+            signal = "hermes-input-invalid"
+        raise Refusal(signal) from None
+    return request.secret_bytes.get("password")
 
 
 def _unit_identity():
@@ -79,8 +67,14 @@ def main(arguments=None):
     started = time.monotonic()
     receipt = {"ok": False, "firstMissingSignal": "none",
                "mutationPerformed": False, "file": None, "restart": None, "restarted": False, "argv": []}
+    password_bytes = None
     try:
-        password = _password(list(arguments or []))
+        password_bytes = _password()
+        if password_bytes is None:
+            raise Refusal("hermes-password-invalid")
+        password = password_bytes.decode("utf-8")
+        if not 12 <= len(password) <= 256 or not password.isprintable() or any(c in password for c in "\0\r\n"):
+            raise Refusal("hermes-password-invalid")
         root = _root()
         path = root / "home/hermes/.hermes/config.yaml"
         scratch = os.environ.get("AGATHODAIMON_SCRATCH_ROOT") is not None
@@ -120,6 +114,9 @@ def main(arguments=None):
         receipt["firstMissingSignal"] = str(error)
     except (OSError, ValueError, UnicodeError, subprocess.SubprocessError):
         receipt["firstMissingSignal"] = "hermes-operation-failed"
+    finally:
+        if password_bytes is not None:
+            _envelope.wipe_bytes(password_bytes)
     try:
         _deed(receipt, started)
     except (OSError, ValueError):

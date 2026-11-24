@@ -1,6 +1,7 @@
 {
   "children": [],
-  "mutation_allowed": true,
-  "envelope": {"stdin": "stream"},
+  "mutation_allowed": "seat",
+  "envelope": {"stdin": "json"},
+  "hand": "envelope",
   "sclerite": {"name": "hermes", "features": {"hermes": {"band": true, "verbs": [["hermes", "dashboard-login"]], "routes": ["/api/v1/hermes/dashboard-login"], "administrative": {"band": true, "verbs": [["hermes", "dashboard-login"]], "routes": ["/api/v1/hermes/dashboard-login"]}}}}
 }
