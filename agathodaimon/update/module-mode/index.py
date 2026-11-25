@@ -102,6 +102,8 @@ def _operate(module, mode):
             except FileNotFoundError as error:
                 raise Refusal(_PREFIX + "config-missing") from error
             document, previous = _load(raw)
+            if (mode == "safe" and module in previous) or (mode == "developer" and module not in previous):
+                return _receipt(module, mode, previous)
             modules = list(dict.fromkeys(previous))
             if mode == "safe" and module not in modules:
                 modules.append(module)
@@ -137,7 +139,7 @@ def main(argv=None):
     try:
         try:
             request = _envelope.read()
-        except (_envelope.EnvelopeError, UnicodeError) as error:
+        except (_envelope.EnvelopeError, UnicodeError, RecursionError) as error:
             raise Refusal(_PREFIX + "arguments-invalid") from error
         payload = request.value.get("payload") if request.envelope else request.value
         if not isinstance(payload, dict):
