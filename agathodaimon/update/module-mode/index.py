@@ -142,6 +142,8 @@ def main(argv=None):
         except (_envelope.EnvelopeError, UnicodeError, RecursionError) as error:
             raise Refusal(_PREFIX + "arguments-invalid") from error
         payload = request.value.get("payload") if request.envelope else request.value
+        if payload is None:
+            payload = {}
         if not isinstance(payload, dict):
             raise Refusal(_PREFIX + "arguments-invalid")
         has_module, has_mode = "module" in payload, "mode" in payload
