@@ -14,7 +14,6 @@ import re
 import stat
 import sys
 import tempfile
-from datetime import UTC, datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Sequence
@@ -22,7 +21,6 @@ from typing import Any, Sequence
 from agathodaimon._nidus.lock import household_config_held
 
 CONFIG_PATH = "/etc/appliance/config.json"
-BACKUP_ROOT = "/var/lib/caduceus/backups/harmonia-module-toggle"
 MODULE_ID = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 
 
@@ -177,28 +175,11 @@ def _atomic_write(path: Path, payload: bytes, mode: int, uid: int, gid: int, pre
         Path(temporary).unlink(missing_ok=True)
 
 
-def _backup(path: Path, raw: bytes) -> Path:
-    directory = _path(BACKUP_ROOT)
-    directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    target = directory / f"config-{stamp}.json"
-    _atomic_write(target, raw, 0o600, os.geteuid(), os.getegid(), ".config-backup.")
-    return target
-
-
-def _device_path(path: Path) -> str:
-    try:
-        return "/" + str(path.relative_to(_root()))
-    except ValueError:
-        return str(path)
-
-
-def _receipt(module: str | None, state: str, disabled: list[str], backup: Path | None, *, ok: bool = True, signal: str = "none") -> dict[str, Any]:
+def _receipt(module: str | None, state: str, disabled: list[str], *, ok: bool = True, signal: str = "none") -> dict[str, Any]:
     return {
         "module": module,
         "state": state,
         "disabled_modules": disabled,
-        "backup_path": None if backup is None else _device_path(backup),
         "ok": ok,
         "firstMissingSignal": signal,
     }
@@ -207,7 +188,7 @@ def _receipt(module: str | None, state: str, disabled: list[str], backup: Path |
 def list_disabled() -> dict[str, Any]:
     path = config_path()
     if not path.is_file():
-        return _receipt(None, "list", [], None, ok=False, signal="agathodaimon-harmonia-module-toggle-config-missing")
+        return _receipt(None, "list", [], ok=False, signal="agathodaimon-harmonia-module-toggle-config-missing")
     try:
         document = _load(path.read_text(encoding="utf-8"))
         harmonia = document.get("harmonia", {})
@@ -216,30 +197,29 @@ def list_disabled() -> dict[str, Any]:
         disabled = harmonia.get("disabled_modules", [])
         if not isinstance(disabled, list) or any(not isinstance(item, str) for item in disabled):
             raise ToggleError("agathodaimon-harmonia-module-toggle-disabled-modules-invalid")
-        return _receipt(None, "list", _dedupe(disabled), None)
+        return _receipt(None, "list", _dedupe(disabled))
     except (OSError, ToggleError) as exc:
-        return _receipt(None, "list", [], None, ok=False, signal=str(exc))
+        return _receipt(None, "list", [], ok=False, signal=str(exc))
 
 
 def toggle(module: str, state: str) -> dict[str, Any]:
     if not MODULE_ID.fullmatch(module):
-        return _receipt(module, state, [], None, ok=False, signal="agathodaimon-harmonia-module-toggle-module-invalid")
+        return _receipt(module, state, [], ok=False, signal="agathodaimon-harmonia-module-toggle-module-invalid")
     path = config_path()
     if not path.is_file():
-        return _receipt(module, state, [], None, ok=False, signal="agathodaimon-harmonia-module-toggle-config-missing")
+        return _receipt(module, state, [], ok=False, signal="agathodaimon-harmonia-module-toggle-config-missing")
     try:
         with household_config_held():
             original = path.read_bytes()
             raw = original.decode("utf-8")
             updated, disabled = _updated_bytes(raw, module, state)
             if updated == raw:
-                return _receipt(module, state, disabled, None)
+                return _receipt(module, state, disabled)
             metadata = path.stat()
-            backup = _backup(path, original)
             _atomic_write(path, updated.encode("utf-8"), stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid, ".config.")
-            return _receipt(module, state, disabled, backup)
+            return _receipt(module, state, disabled)
     except (OSError, UnicodeDecodeError, ToggleError) as exc:
-        return _receipt(module, state, [], None, ok=False, signal=str(exc))
+        return _receipt(module, state, [], ok=False, signal=str(exc))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
