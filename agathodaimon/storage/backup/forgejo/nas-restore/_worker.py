@@ -208,6 +208,31 @@ def _inside(base, value):
     return path
 
 
+def _checkout_fault():
+    """A root-owned proof file may fault an uninstalled checkout only."""
+    module = Path(__file__).resolve(strict=True)
+    if module.is_relative_to(Path('/usr/local/sbin')):
+        return ''
+    checkout = module.parents[5]
+    proof = checkout / '.forgejo-nas-restore-fault'
+    try:
+        fd = os.open(proof, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return ''
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 32:
+            raise Failure('launch-failed')
+        value = os.read(fd, 33).decode('ascii').strip()
+        if value not in ('start', 'exchange-back'):
+            raise Failure('launch-failed')
+        return 'start-and-exchange-back' if value == 'exchange-back' else value
+    except (OSError, UnicodeError) as error:
+        raise Failure('launch-failed') from error
+    finally:
+        os.close(fd)
+
+
 def settings():
     if os.geteuid() != 0:
         raise Failure("launch-failed")
@@ -219,7 +244,8 @@ def settings():
                 "lock": Path("/run/homeserver-nas-sync.lock"), "unit": "forgejo.service",
                 "host": "/var/run/postgresql", "port": "5432", "os_user": "postgres",
                 "psql": "/opt/homeserver/postgresql/bin/psql", "skeleton": Path("/root/key/skeleton.key"),
-                "file_user": "git", "file_group": "git", "pause": None}
+                "file_user": "git", "file_group": "git", "pause": None,
+                "fault": _checkout_fault()}
     try:
         base = Path(root).resolve(strict=True)
         scratch = (Path(pwd.getpwnam("owner").pw_dir) / ".hermes/cache/scratch").resolve(strict=True)
@@ -929,10 +955,19 @@ def worker():
         if _active_state(cfg, "stop-failed") != "inactive":
             raise Failure("stop-failed")
         names = _db_inventory(cfg)
-        if "forgejo" not in names and "forgejo_before_restore" in names:
+        # A previous interrupted reversal can leave the prior database under
+        # this name even when forgejo also exists. Do not guess its identity.
+        if "forgejo_before_restore" in names:
+            stopped, stage = False, "stopped"
             raise Failure("db-failed")
         gate(cfg, repo, database)
-        staged = _staged_paths(cfg, repo)
+        candidates = _staged_paths(cfg, repo)
+        # A leftover may be the only prior tree after an interrupted or failed
+        # exchange-back. Its name cannot establish its contents; preserve it.
+        if any(os.path.lexists(path) for path in candidates):
+            stopped, stage = False, "stopped"
+            raise Failure("copy-failed")
+        staged = candidates
         _drop_stage_db(cfg)
         if "forgejo_before_restore" in names:
             _db_command(cfg, 'DROP DATABASE "forgejo_before_restore" WITH (FORCE)')
@@ -1033,6 +1068,8 @@ def worker():
                 except Exception:
                     stage = "cleanup-failed"
                 for path in staged:
+                    if path in unreversed:
+                        continue  # this name still holds the prior tree
                     try:
                         _remove_stage_tree(cfg, path)
                     except Exception:
