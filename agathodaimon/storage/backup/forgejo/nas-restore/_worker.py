@@ -11,7 +11,10 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import pwd
+import grp
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -184,7 +187,10 @@ def validate_source(mount: str) -> None:
 
 PREFIX = "forgejo-nas-restore-"
 # Values are read only after the scratch root is present and validated.
-PROOF_KEYS = ("MOUNT", "WORK", "LOCK", "UNIT", "PG_PORT", "PG_SOCKET", "OS_USER")
+PROOF_KEYS = ("MOUNT", "WORK", "LOCK", "UNIT", "PG_PORT", "PG_SOCKET", "OS_USER", "SKELETON")
+# Optional, scratch-only rendezvous: worker creates <PAUSE>.ready and waits for
+# <PAUSE>.continue, before removing the staged objects.
+PROOF_PAUSE = "FORGEJO_NAS_RESTORE_PROOF_PAUSE"
 INTENT = "storage/backup/forgejo/nas-restore"
 
 
@@ -211,11 +217,22 @@ def settings():
         return {"proof": False, "mount": Path("/mnt/nas"), "work": Path("/opt/forgejo"),
                 "lock": Path("/run/homeserver-nas-sync.lock"), "unit": "forgejo.service",
                 "host": "/var/run/postgresql", "port": "5432", "os_user": "postgres",
-                "psql": "/opt/homeserver/postgresql/bin/psql"}
+                "psql": "/opt/homeserver/postgresql/bin/psql", "skeleton": Path("/root/key/skeleton.key"),
+                "file_user": "git", "file_group": "git", "pause": None}
     try:
         base = Path(root).resolve(strict=True)
-        if not Path(root).is_absolute() or base == Path("/") or ".." in Path(root).parts:
+        scratch = (Path(pwd.getpwnam("owner").pw_dir) / ".hermes/cache/scratch").resolve(strict=True)
+        if (not Path(root).is_absolute() or ".." in Path(root).parts
+                or base == scratch or not base.is_relative_to(scratch)):
             raise Failure("launch-failed")
+        scratch_fd = _open_dir_path(scratch)
+        base_fd = _open_dir_path(base)
+        try:
+            if _mount_id(base_fd) != _mount_id(scratch_fd):
+                raise Failure("launch-failed")
+        finally:
+            os.close(base_fd)
+            os.close(scratch_fd)
         values = {key: os.environ["FORGEJO_NAS_RESTORE_PROOF_" + key] for key in PROOF_KEYS}
         if not re.fullmatch(r"forgejo-restore-proof-[a-z0-9-]+\.service", values["UNIT"]):
             raise Failure("launch-failed")
@@ -226,7 +243,10 @@ def settings():
         return {"proof": True, "base": base, "mount": _inside(base, values["MOUNT"]),
                 "work": _inside(base, values["WORK"]), "lock": _inside(base, values["LOCK"]),
                 "unit": values["UNIT"], "host": str(_inside(base, values["PG_SOCKET"])), "port": values["PG_PORT"],
-                "os_user": values["OS_USER"], "psql": "/usr/bin/psql"}
+                "os_user": values["OS_USER"], "psql": "/usr/bin/psql",
+                "skeleton": _inside(base, values["SKELETON"]),
+                "file_user": values["OS_USER"], "file_group": pwd.getpwnam(values["OS_USER"]).pw_gid,
+                "pause": _inside(base, os.environ[PROOF_PAUSE]) if PROOF_PAUSE in os.environ else None}
     except (OSError, KeyError, ValueError) as error:
         raise Failure("launch-failed") from error
 
@@ -287,7 +307,7 @@ def _sql(cfg, database, statement):
         except (OSError, ValueError):
             raise Failure("forge-unobserved") from None
     return _run(["/usr/sbin/runuser", "-u", cfg["os_user"], "--", cfg["psql"],
-                 "-X", "-qAt", "--no-password", "--host", cfg["host"], "--port", cfg["port"],
+                 "-X", "-v", "ON_ERROR_STOP=1", "-qAt", "--no-password", "--host", cfg["host"], "--port", cfg["port"],
                  "--username", "postgres", "--dbname", database, "--command", statement],
                 "forge-unobserved")
 
@@ -603,6 +623,8 @@ def launch():
         if cfg["proof"]:
             for name in ("AGATHODAIMON_SCRATCH_ROOT", *("FORGEJO_NAS_RESTORE_PROOF_" + key for key in PROOF_KEYS)):
                 args.append("--setenv=" + name + "=" + os.environ[name])
+            if PROOF_PAUSE in os.environ:
+                args.append("--setenv=" + PROOF_PAUSE + "=" + os.environ[PROOF_PAUSE])
         args += ["--", sys.executable, str(Path(__file__).resolve()), "--worker"]
         try:
             _run(args, "launch-failed")
@@ -625,8 +647,234 @@ def launch():
     return _answer(failure, "preflight")
 
 
+def _open_dir_path(path):
+    if not path.is_absolute() or ".." in path.parts:
+        raise Failure("copy-failed")
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for part in path.parts[1:]:
+            child = _directory(fd, part)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _source_fd(cfg):
+    root = _open_dir_path(cfg["mount"])
+    try:
+        mount_id = _mount_id(root)
+        for part in ("backups", "forgejo", "nas", "export"):
+            child = _directory(root, part, mount_id)
+            os.close(root)
+            root = child
+        return root
+    except BaseException:
+        os.close(root)
+        raise
+
+
+def _db_command(cfg, statement):
+    try:
+        return _sql(cfg, "postgres", statement)
+    except Failure as error:
+        raise Failure("db-failed") from error
+
+
+def _db_inventory(cfg):
+    names = _db_command(cfg, "SELECT datname FROM pg_database WHERE datname IN ('forgejo','forgejo_restore','forgejo_before_restore')")
+    return set(names.splitlines())
+
+
+def _drop_stage_db(cfg):
+    _db_command(cfg, 'DROP DATABASE IF EXISTS "forgejo_restore" WITH (FORCE)')
+
+
+def _staged_paths(cfg, repo):
+    paths = [repo.with_name(repo.name + ".restore"),
+             cfg["work"] / "data.restore", cfg["work"] / "custom.restore"]
+    live = [repo, cfg["work"] / "data", cfg["work"] / "custom"]
+    # Refuse overlapping names, including a staged parent of a live tree.
+    if len(set(paths)) != len(paths) or any(a == b or a in b.parents or b in a.parents
+                                            for a in paths for b in live):
+        raise Failure("copy-failed")
+    return paths
+
+
+def _check_destination_mount(cfg, parent):
+    if not cfg["proof"]:
+        return
+    base = _open_dir_path(cfg["base"])
+    try:
+        if _mount_id(base) != _mount_id(parent):
+            raise Failure("copy-failed")
+    finally:
+        os.close(base)
+
+
+def _remove_stage_tree(cfg, path):
+    parent = _open_dir_path(path.parent)
+    try:
+        _check_destination_mount(cfg, parent)
+        mount_id = _mount_id(parent)
+        try:
+            os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        def remove_tree(pfd, name):
+            child = _directory(pfd, name, mount_id)
+            try:
+                with os.scandir(child) as entries:
+                    for entry in entries:
+                        info = entry.stat(follow_symlinks=False)
+                        if stat.S_ISDIR(info.st_mode):
+                            remove_tree(child, entry.name)
+                        else:
+                            os.unlink(entry.name, dir_fd=child)
+                current = os.stat(name, dir_fd=pfd, follow_symlinks=False)
+                opened = os.fstat(child)
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise Failure("copy-failed")
+                os.rmdir(name, dir_fd=pfd)
+            finally:
+                os.close(child)
+        remove_tree(parent, path.name)
+    finally:
+        os.close(parent)
+
+
+def _load_dump(cfg, source):
+    try:
+        fd = _regular(source, "forgejo.sql", _mount_id(source))
+        try:
+            args = ["/usr/sbin/runuser", "-u", cfg["os_user"], "--", cfg["psql"],
+                    "-X", "-v", "ON_ERROR_STOP=1", "--no-password", "--host", cfg["host"],
+                    "--port", cfg["port"], "--username", "postgres", "--dbname", "forgejo_restore"]
+            process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL,
+                                       env={"PATH": "/usr/bin:/bin", "LANG": "C", "PGCONNECT_TIMEOUT": "3"})
+            try:
+                with process.stdin as dest, os.fdopen(fd, "rb", closefd=False) as src:
+                    dest.write(b"SET ROLE git;\n")
+                    shutil.copyfileobj(src, dest, 1024 * 1024)
+                if process.wait(timeout=300) != 0:
+                    raise Failure("db-failed")
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+        finally:
+            os.close(fd)
+    except (OSError, SourceError, subprocess.SubprocessError) as error:
+        raise Failure("db-failed") from error
+
+
+def _copy_tree(cfg, source, name, destination):
+    source_dir = _directory(source, name, _mount_id(source))
+    parent = _open_dir_path(destination.parent)
+    dest_dir = None
+    try:
+        _check_destination_mount(cfg, parent)
+        os.mkdir(destination.name, 0o700, dir_fd=parent)
+        dest_dir = _directory(parent, destination.name, _mount_id(parent))
+        uid = pwd.getpwnam(cfg["file_user"]).pw_uid
+        gid = cfg["file_group"] if isinstance(cfg["file_group"], int) else grp.getgrnam(cfg["file_group"]).gr_gid
+        args = ["/usr/bin/rsync", "-rlpt", "--chown=" + str(uid) + ":" + str(gid),
+                "/proc/self/fd/" + str(source_dir) + "/", "/proc/self/fd/" + str(dest_dir) + "/"]
+        result = subprocess.run(args, pass_fds=(source_dir, dest_dir), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=300,
+                                env={"PATH": "/usr/bin:/bin", "LANG": "C"}, check=False)
+        if result.returncode:
+            raise Failure("copy-failed")
+        # -h / physical traversal changes links themselves, never their targets.
+        chown = subprocess.run(["/usr/bin/chown", "-R", "-h", str(uid) + ":" + str(gid),
+                                "/proc/self/fd/" + str(dest_dir) + "/."],
+                               pass_fds=(dest_dir,), stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=300, check=False)
+        if chown.returncode:
+            raise Failure("copy-failed")
+        os.fchown(dest_dir, uid, gid)
+        os.fchmod(dest_dir, os.fstat(source_dir).st_mode & 0o777)
+    finally:
+        if dest_dir is not None:
+            os.close(dest_dir)
+        os.close(parent)
+        os.close(source_dir)
+
+
+def _rekey_config(cfg, custom):
+    skeleton = bytearray()
+    parent = None
+    temporary = None
+    try:
+        skfd = os.open(cfg["skeleton"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(skfd, "rb") as src:
+            skeleton = bytearray(src.read())
+        if skeleton.endswith(b"\n"):
+            del skeleton[-1:]
+        if b'"""' in skeleton or b"\n" in skeleton or b"\r" in skeleton or b"\0" in skeleton:
+            raise Failure("copy-failed")
+        parent = _open_dir_path(custom / "conf")
+        _check_destination_mount(cfg, parent)
+        ini = _regular(parent, "app.ini", _mount_id(parent))
+        with os.fdopen(ini, "rb") as src:
+            lines = src.read().splitlines(keepends=True)
+        section = None
+        count = 0
+        for i, line in enumerate(lines):
+            section_match = re.match(rb"^[ \t]*\[([^]]+)\]", line)
+            if section_match:
+                section = section_match.group(1).strip().lower()
+            if section == b"database":
+                match = re.match(rb"^([ \t]*PASSWD[ \t]*[=:][ \t]*).*?(\r\n|\n|\r)?$", line, re.I)
+                if match:
+                    lines[i] = match.group(1) + b'"""' + skeleton + b'"""' + (match.group(2) or b"")
+                    count += 1
+        if count != 1:
+            raise Failure("copy-failed")
+        temporary = ".app.ini.restore-" + uuid.uuid4().hex
+        out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=parent)
+        with os.fdopen(out, "wb") as dst:
+            dst.write(b"".join(lines))
+            dst.flush()
+            os.fchown(dst.fileno(), pwd.getpwnam(cfg["file_user"]).pw_uid,
+                      cfg["file_group"] if isinstance(cfg["file_group"], int) else grp.getgrnam(cfg["file_group"]).gr_gid)
+            os.fchmod(dst.fileno(), 0o640)
+            os.fsync(dst.fileno())
+        os.replace(temporary, "app.ini", src_dir_fd=parent, dst_dir_fd=parent)
+        temporary = None
+    finally:
+        skeleton[:] = b"\0" * len(skeleton)
+        if parent is not None:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary, dir_fd=parent)
+                except FileNotFoundError:
+                    pass
+            os.close(parent)
+
+
+def _pause(cfg):
+    if cfg["pause"] is None:
+        return
+    ready = str(cfg["pause"]) + ".ready"
+    proceed = str(cfg["pause"]) + ".continue"
+    fd = os.open(ready, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    os.close(fd)
+    deadline = time.monotonic() + 120
+    while not os.path.exists(proceed):
+        if time.monotonic() >= deadline:
+            raise Failure("launch-failed")
+        time.sleep(0.1)
+
+
 def worker():
-    reason, stage, fd, stopped, cfg, url = "launch-failed", None, None, False, None, None
+    reason, stage, fd, stopped, was_active, cfg, url = "launch-failed", None, None, False, False, None, None
+    staged = None
+    source = None
     try:
         cfg = settings()
         fd = acquire(cfg)
@@ -635,13 +883,38 @@ def worker():
         _stop_guard(cfg)
         repo, database, url = forge_config(cfg)
         _stop_guard(cfg)
-        stopped = True  # a timed-out stop can have taken effect
+        state = _active_state(cfg, "stop-failed")
+        if state not in ("active", "inactive"):
+            raise Failure("stop-failed")
+        was_active = state == "active"
+        stopped = was_active  # a timed-out stop can have taken effect
         _systemctl(cfg, "stop", "stop-failed")
         if _active_state(cfg, "stop-failed") != "inactive":
             raise Failure("stop-failed")
+        names = _db_inventory(cfg)
+        if "forgejo" not in names and "forgejo_before_restore" in names:
+            raise Failure("db-failed")
         gate(cfg, repo, database)
-        # The restore is incomplete: never record success without a commit.
-        # Unwind restarts the prior forge; R3b must replace this refusal.
+        staged = _staged_paths(cfg, repo)
+        _drop_stage_db(cfg)
+        if "forgejo_before_restore" in names:
+            _db_command(cfg, 'DROP DATABASE "forgejo_before_restore" WITH (FORCE)')
+        try:
+            for path in staged:
+                _remove_stage_tree(cfg, path)
+        except Exception as error:
+            raise Failure("copy-failed") from error
+        _db_command(cfg, 'CREATE DATABASE "forgejo_restore" OWNER "git"')
+        source = _source_fd(cfg)
+        _load_dump(cfg, source)
+        try:
+            for name, path in zip(("repositories", "data", "custom"), staged):
+                _copy_tree(cfg, source, name, path)
+            _rekey_config(cfg, staged[2])
+        except Exception as error:
+            raise Failure("copy-failed") from error
+        _pause(cfg)
+        # R3b1 ends here: no swap and no health commit.
         raise Failure("launch-failed")
     except SourceError as error:
         reason = error.reason
@@ -650,6 +923,18 @@ def worker():
     except Exception:
         reason = "launch-failed"
     finally:
+        if source is not None:
+            os.close(source)
+        if staged is not None:
+            try:
+                _drop_stage_db(cfg)
+            except Exception:
+                stage = "cleanup-failed"
+            for path in staged:
+                try:
+                    _remove_stage_tree(cfg, path)
+                except Exception:
+                    stage = "cleanup-failed"
         if stopped and cfg is not None and url:
             try:
                 _systemctl(cfg, "start", "start-failed")
