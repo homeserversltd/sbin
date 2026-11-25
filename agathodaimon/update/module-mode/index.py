@@ -20,7 +20,7 @@ class Refusal(ValueError):
 def _receipt(module=None, mode=None, modules=None, *, ok=True, changed=False, signal="none"):
     return {"ok": ok, "module": module, "mode": mode, "safe_modules": modules if modules is not None else [],
             "changed": changed, "mutationPerformed": changed, "exceptionType": "",
-            "backup_path": None, "firstMissingSignal": signal}
+            "firstMissingSignal": signal}
 
 
 def _load(raw):
