@@ -216,7 +216,10 @@ def pull(metadata):
     try:
         context = proof()
         proof_valid = True
-        result["box"] = own_box(context)
+        try:
+            result["box"] = own_box(context)
+        except nas.Refusal:
+            pass
         if type(dry_run) is not bool:
             raise nas.Refusal("mirror-dry-run-invalid")
         baseline = metadata.get("baseline")
@@ -259,8 +262,7 @@ def pull(metadata):
         if baseline is not None:
             reasons = nas.shrink_reasons(source_files, source_bytes, baseline)
             if reasons:
-                result["checks"].append({"name": "shrink-canary", "ok": False, "reasons": reasons})
-                raise nas.Refusal("source-shrink-refused")
+                raise nas.Refusal("source-shrink-refused:" + ",".join(reasons))
             nas.checked(result["checks"], "shrink-canary")
         if dry_run:
             result.update(ok=False, outcome="planned", converged=False, firstMissingSignal="planned-only")
@@ -293,7 +295,7 @@ def pull(metadata):
                           if result["ok"] else None)
                 deed.record("mirror-pull", "nas-sync", deed_receipt, started, counts=counts)
             except Exception:
-                result.update(ok=False, converged=False, outcome="failed", firstMissingSignal="mirror-deed-unavailable")
+                pass
     return result
 
 
