@@ -218,7 +218,7 @@ def settings():
         values = {key: os.environ["FORGEJO_NAS_RESTORE_PROOF_" + key] for key in PROOF_KEYS}
         if not re.fullmatch(r"forgejo-restore-proof-[a-z0-9-]+\.service", values["UNIT"]):
             raise Failure("launch-failed")
-        if not values["PG_PORT"].isdigit() or not 1024 <= int(values["PG_PORT"]) <= 65535 or values["PG_PORT"] == "5432":
+        if not values["PG_PORT"].isdigit() or not 1024 <= int(values["PG_PORT"]) <= 65535 or int(values["PG_PORT"]) == 5432:
             raise Failure("launch-failed")
         if values["OS_USER"] != "owner":
             raise Failure("launch-failed")
