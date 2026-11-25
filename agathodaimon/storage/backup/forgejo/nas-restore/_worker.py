@@ -184,7 +184,7 @@ def validate_source(mount: str) -> None:
 
 PREFIX = "forgejo-nas-restore-"
 # Values are read only after the scratch root is present and validated.
-PROOF_KEYS = ("MOUNT", "WORK", "LOCK", "UNIT", "PG_PORT", "OS_USER")
+PROOF_KEYS = ("MOUNT", "WORK", "LOCK", "UNIT", "PG_PORT", "PG_SOCKET", "OS_USER")
 INTENT = "storage/backup/forgejo/nas-restore"
 
 
@@ -225,7 +225,7 @@ def settings():
             raise Failure("launch-failed")
         return {"proof": True, "base": base, "mount": _inside(base, values["MOUNT"]),
                 "work": _inside(base, values["WORK"]), "lock": _inside(base, values["LOCK"]),
-                "unit": values["UNIT"], "host": "127.0.0.1", "port": values["PG_PORT"],
+                "unit": values["UNIT"], "host": str(_inside(base, values["PG_SOCKET"])), "port": values["PG_PORT"],
                 "os_user": values["OS_USER"], "psql": "/usr/bin/psql"}
     except (OSError, KeyError, ValueError) as error:
         raise Failure("launch-failed") from error
@@ -279,6 +279,13 @@ def _run(args, reason, timeout=15):
 
 
 def _sql(cfg, database, statement):
+    if cfg["proof"]:
+        try:
+            sock = _inside(cfg["base"], str(Path(cfg["host"]) / (".s.PGSQL." + str(int(cfg["port"])))))
+            if not stat.S_ISSOCK(os.lstat(sock).st_mode):
+                raise Failure("forge-unobserved")
+        except (OSError, ValueError):
+            raise Failure("forge-unobserved") from None
     return _run(["/usr/sbin/runuser", "-u", cfg["os_user"], "--", cfg["psql"],
                  "-X", "-qAt", "--no-password", "--host", cfg["host"], "--port", cfg["port"],
                  "--username", "postgres", "--dbname", database, "--command", statement],
@@ -314,6 +321,19 @@ def forge_config(cfg):
         repo = Path(_expand_ini_value(ini, "repository", raw))
         db = ini.get("database", "NAME").strip()
         kind = ini.get("database", "DB_TYPE").strip().lower()
+        host = ini.get("database", "HOST").strip()
+        user = ini.get("database", "USER").strip()
+        expected_host = "127.0.0.1:" + (cfg["port"] if cfg["proof"] else "5432")
+        configured_work = Path(ini.get("__top__", "WORK_PATH", fallback=str(cfg["work"])).strip().strip('"'))
+        if configured_work != cfg["work"] or host != expected_host or user != "git" or db != "forgejo":
+            raise Failure("forge-unobserved")
+        if not cfg["proof"]:
+            unit = _run(["/usr/bin/systemctl", "show", cfg["unit"], "--property=WorkingDirectory", "--property=ExecStart"], "forge-unobserved")
+            rows = dict(line.split("=", 1) for line in unit.splitlines() if "=" in line)
+            match = re.search(r"--config\s+([^ ;}]+)", rows.get("ExecStart", ""))
+            if (rows.get("WorkingDirectory") != str(cfg["work"]) or not match
+                    or match.group(1) != str(cfg["work"] / "custom/conf/app.ini")):
+                raise Failure("forge-unobserved")
         if not repo.is_absolute() or ".." in repo.parts or kind not in ("postgres", "postgresql") or not re.fullmatch(r"[A-Za-z0-9_.-]{1,63}", db):
             raise Failure("forge-unobserved")
         if cfg["proof"]:
@@ -408,14 +428,23 @@ def gate(cfg, repo, database):
 def _unit_checked(cfg):
     if not cfg["proof"]:
         return
-    info = _run(["/usr/bin/systemctl", "show", cfg["unit"], "--property=FragmentPath",
-                 "--property=WorkingDirectory", "--property=ExecStart"], "launch-failed")
+    properties = ("FragmentPath", "WorkingDirectory", "ExecCondition", "ExecStartPre",
+                  "ExecStart", "ExecStartPost", "ExecReload", "ExecStop", "ExecStopPost")
+    info = _run(["/usr/bin/systemctl", "show", cfg["unit"],
+                 *("--property=" + name for name in properties)], "launch-failed")
     rows = dict(line.split("=", 1) for line in info.splitlines() if "=" in line)
-    match = re.search(r"(?:^|[ {;])path=([^ ;}]+)", rows.get("ExecStart", ""))
-    if not match:
+    paths = re.findall(r"(?:^|[ {;])path=([^ ;}]+)", rows.get("ExecStart", ""))
+    if len(paths) != 1:
         raise Failure("launch-failed")
-    for value in (rows.get("FragmentPath", ""), rows.get("WorkingDirectory", ""), match.group(1)):
+    for value in (rows.get("FragmentPath", ""), rows.get("WorkingDirectory", ""), *paths):
         _inside(cfg["base"], value)
+    for name in properties[2:]:
+        value = rows.get(name, "")
+        commands = re.findall(r"(?:^|[ {;])path=([^ ;}]+)", value)
+        if value and not commands:
+            raise Failure("launch-failed")
+        for command in commands:
+            _inside(cfg["base"], command)
 
 
 def _systemctl(cfg, action, reason):
@@ -477,8 +506,55 @@ def _healthy(cfg, url):
         time.sleep(0.1)
 
 
+def _scratch_deed_listener(base):
+    """Do not let a scratch receipt reach a listener outside this bench."""
+    try:
+        config = _inside(base, str(_envelope.appliance_runtime_path("config")))
+        bind = json.loads(config.read_text(encoding="utf-8"))["caduceus"]["bind"]
+        parsed = urlsplit(bind if "://" in bind else "http://" + bind)
+        port = parsed.port
+        if port is None or not 1024 <= port <= 65535:
+            return False
+        with open("/proc/net/tcp", encoding="ascii") as stream:
+            next(stream)
+            inodes = {row[9] for line in stream if len(row := line.split()) >= 10
+                      and row[1] == f"0100007F:{port:04X}" and row[3] == "0A"}
+        if not inodes:
+            return False
+        for process in Path("/proc").iterdir():
+            if not process.name.isdigit():
+                continue
+            try:
+                if not (process / "cwd").resolve(strict=True).is_relative_to(base):
+                    continue
+                argv = (process / "cmdline").read_bytes().split(b"\0")
+                if not any(arg.startswith(os.fsencode(str(base) + "/")) for arg in argv):
+                    continue
+                for fd in (process / "fd").iterdir():
+                    try:
+                        target = os.readlink(fd)
+                    except OSError:
+                        continue
+                    match = re.fullmatch(r"socket:\[(\d+)\]", target)
+                    if match and match.group(1) in inodes:
+                        return True
+            except (OSError, ValueError):
+                continue
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        pass
+    return False
+
+
 def _deed_once(reason, stage=None):
-    if not os.environ.get("AGATHODAIMON_SCRATCH_ROOT") and any(k.startswith("FORGEJO_NAS_RESTORE_PROOF_") for k in os.environ):
+    root = os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
+    if root:
+        try:
+            base = Path(root).resolve(strict=True)
+            if not Path(root).is_absolute() or base == Path("/") or not _scratch_deed_listener(base):
+                return False
+        except (OSError, ValueError):
+            return False
+    elif any(k.startswith("FORGEJO_NAS_RESTORE_PROOF_") for k in os.environ):
         return False
     return _deed.send("sbin", "forgejo-nas-restore", reason == "none", target="forgejo",
                       outcome="ok" if reason == "none" else "failed",
