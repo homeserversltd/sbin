@@ -634,14 +634,15 @@ def worker():
         validate_source(str(cfg["mount"]))
         _stop_guard(cfg)
         repo, database, url = forge_config(cfg)
+        _stop_guard(cfg)
         stopped = True  # a timed-out stop can have taken effect
         _systemctl(cfg, "stop", "stop-failed")
         if _active_state(cfg, "stop-failed") != "inactive":
             raise Failure("stop-failed")
         gate(cfg, repo, database)
-        reason = "none"
-        # R3a ends here, deliberately before staging. Do not admit this section alone.
-        stopped = False
+        # The restore is incomplete: never record success without a commit.
+        # Unwind restarts the prior forge; R3b must replace this refusal.
+        raise Failure("launch-failed")
     except SourceError as error:
         reason = error.reason
     except Failure as error:
