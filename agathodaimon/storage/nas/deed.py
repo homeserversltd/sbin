@@ -30,7 +30,7 @@ def record(verb: str, target: str, receipt: dict, started: float, *, request=Non
                        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
                        "id": uuid.uuid4().hex, "signal": signal,
                        "first_missing_field": step}
-    if verb == "nas-sync-mirror" and receipt.get("outcome") in {"ok", "failed", "refused"}:
+    if verb in {"nas-sync-mirror", "mirror-pull"} and receipt.get("outcome") in {"ok", "failed", "refused"}:
         fields["outcome"] = receipt["outcome"]
     if verb == "nas-sync-mirror" and type(transferred_bytes) is int and transferred_bytes >= 0:
         fields["transferred_bytes"] = transferred_bytes

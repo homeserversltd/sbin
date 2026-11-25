@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import re
 import shlex
+import socket
 import subprocess
 import sys
+import threading
 import time
 
 from agathodaimon import _envelope
@@ -79,14 +81,50 @@ def run_rsync(host, port, username, password, dest, cap, dry_run):
         env.update(CADUCEUS_MIRROR_CREDENTIAL_FD=str(read_fd), CADUCEUS_MIRROR_IPV4=host,
                    CADUCEUS_MIRROR_PORT=str(port))
         remote_shell = shlex.join([sys.executable, str(HERE.parents[1] / "tunnel.py")])
+        idle = 600
+        if os.environ.get("AGATHODAIMON_SCRATCH_ROOT"):
+            idle = int(os.environ.get("CADUCEUS_MIRROR_PROOF_IDLE_SECONDS", "600"))
+            if not 0 < idle <= 600:
+                raise nas.Refusal("mirror-scratch-invalid")
         argv = ["/usr/bin/rsync", "-aH", "--stats", "--delete-delay", "--exclude=lost+found",
-                "--max-delete=" + str(cap), "-e", remote_shell]
+                "--timeout=" + str(idle), "-e", remote_shell]
         if dry_run:
             argv.append("-n")
+        else:
+            argv.append("--max-delete=" + str(cap))
         argv.extend(["homeserver:/", str(dest) + "/"])
-        return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, text=True, env=env,
-                              pass_fds=(read_fd,), check=False)
+        process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=env, pass_fds=(read_fd,))
+        first = bytearray()
+        def drain():
+            line_done = False
+            while True:
+                chunk = process.stderr.read(4096)
+                if not chunk:
+                    break
+                if not line_done:
+                    part, separator, _ = chunk.partition(b"\n")
+                    first.extend(part[:max(0, 4097 - len(first))])
+                    line_done = bool(separator) or len(first) > 4096
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        stdout = process.stdout.read().decode("utf-8", "replace")
+        code = process.wait()
+        reader.join()
+        signal = None
+        if len(first) <= 4096:
+            try:
+                value = json.loads(first)
+                candidate = value.get("signal") if value.get("ok") is False else None
+                if isinstance(candidate, str) and (candidate in {
+                    "mirror-copy-stalled", "mirror-tunnel-failed", "mirror-upgrade-invalid",
+                    "mirror-remote-command-invalid", "mirror-credential-invalid", "backup-mirror-busy",
+                    "mirror-serve-lock-busy", "backup-pair-unknown", "backup-mirror-child-failed",
+                } or re.fullmatch(r"mirror-http-([0-9]{3}|invalid)", candidate)):
+                    signal = candidate
+            except (ValueError, AttributeError, UnicodeError):
+                pass
+        return subprocess.CompletedProcess(argv, code, stdout, signal)
     finally:
         os.close(read_fd)
         if write_fd >= 0:
@@ -114,19 +152,46 @@ def source_measure(stats):
     return count, int(size.group(1).replace(",", ""))
 
 
-def destination():
-    # Proof only: scratch destination must live below AGATHODAIMON_SCRATCH_ROOT.
-    root = os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
-    raw = os.environ.get("CADUCEUS_MIRROR_SCRATCH_DESTINATION")
-    if raw is None:
-        return Path("/mnt/nas_backup"), False
-    if root is None:
+def proof():
+    names = ("AGATHODAIMON_SCRATCH_ROOT", "BACKUP_DRIVE_PROOF_KEYMAN",
+             "BACKUP_DRIVE_PROOF_SEAT", "CADUCEUS_MIRROR_SCRATCH_DESTINATION")
+    values = [os.environ.get(name) for name in names]
+    if all(value is None for value in values):
+        return None
+    if not all(values):
         raise nas.Refusal("mirror-scratch-invalid")
-    base = Path(root).resolve(strict=True)
-    path = Path(raw).resolve(strict=True)
-    if base == Path("/") or path == base or not path.is_relative_to(base) or not path.is_dir():
-        raise nas.Refusal("mirror-scratch-invalid")
-    return path, True
+    try:
+        root, keyman, target, dest = values
+        if not all(Path(p).is_absolute() for p in (root, keyman, dest)):
+            raise ValueError("relative path")
+        base = Path(root).resolve(strict=True)
+        executable = Path(keyman).resolve(strict=True)
+        path = Path(dest).resolve(strict=True)
+        host, port = target.rsplit(":", 1)
+        port = int(port)
+        if (base == Path("/") or not base.is_dir() or not executable.is_relative_to(base)
+                or not executable.is_file() or not os.access(executable, os.X_OK)
+                or path == base or not path.is_relative_to(base) or not path.is_dir()
+                or host != "127.0.0.1" or not 0 < port < 65536):
+            raise ValueError("invalid proof")
+        return base, str(executable), host, port, path
+    except (OSError, ValueError, RuntimeError):
+        raise nas.Refusal("mirror-scratch-invalid") from None
+
+
+def own_box(context):
+    path = context[0] / "ruyi.json" if context else Path("/etc/appliance/ruyi.json")
+    try:
+        mac = json.loads(path.read_text()).get("self", {}).get("mac")
+        if not isinstance(mac, str) or not re.fullmatch(r"[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}", mac):
+            raise ValueError("invalid mac")
+        return {"mac": mac.lower(), "hostname": socket.gethostname()}
+    except (OSError, ValueError, AttributeError, TypeError):
+        raise nas.Refusal("backup-drive-mac-unavailable") from None
+
+
+def rsync_failure(run, fallback):
+    return run.stderr or ("mirror-copy-stalled" if run.returncode == 30 else fallback)
 
 
 def pull(metadata):
@@ -137,9 +202,14 @@ def pull(metadata):
     lock = None
     username = password = None
     attempted = False
+    context = None
+    proof_valid = False
     dry_run = metadata.get("dryRun", False)
     result["planned"] = dry_run is True
     try:
+        context = proof()
+        proof_valid = True
+        result["box"] = own_box(context)
         if type(dry_run) is not bool:
             raise nas.Refusal("mirror-dry-run-invalid")
         baseline = metadata.get("baseline")
@@ -148,7 +218,7 @@ def pull(metadata):
             raise nas.Refusal("mirror-baseline-invalid")
         lock = nas.acquire_lock()
         nas.checked(result["checks"], "single-instance-lock")
-        dest, scratch = destination()
+        dest, scratch = (context[4], True) if context else (Path("/mnt/nas_backup"), False)
         if not scratch:
             source, _ = nas.mount_info(dest, nas.command)
             facts = nas.device_facts(source, nas.command)
@@ -162,26 +232,28 @@ def pull(metadata):
             nas.checked(result["checks"], "proof-only-scratch-destination")
         files, size = nas.measure(dest)
         nas.checked(result["checks"], "destination-measured", fileCount=files, totalBytes=size)
-        reference = baseline["fileCount"] if baseline is not None else files
-        cap = max(1000, reference * 20 // 100)
-        result["maxDelete"] = cap
-        host, port = seat()
+        host, port = (context[2], context[3]) if context else seat()
         result["homeserver"] = {"ipv4": host, "port": port}
-        username, password = export_credential("backup_pair")
+        username, password = (export_credential("backup_pair", scratch_root=context[0], exporter=context[1])
+                              if context else export_credential("backup_pair"))
         if not username or not password:
             raise nas.Refusal("backup-pair-credential-unavailable")
         # A dry traversal supplies remote source counts before any delete-capable pull.
-        scan = run_rsync(host, port, username, password, dest, cap, True)
+        scan = run_rsync(host, port, username, password, dest, None, True)
         result["rsyncExitCode"] = scan.returncode
         result["rsyncStats"] = nas.parse_rsync_stats(scan.stdout)
         if scan.returncode:
-            raise nas.Refusal("mirror-source-scan-failed")
+            raise nas.Refusal(rsync_failure(scan, "mirror-source-scan-failed"))
         source_files, source_bytes = source_measure(result["rsyncStats"])
         nas.checked(result["checks"], "source-measured", fileCount=source_files, totalBytes=source_bytes)
+        reference = baseline["fileCount"] if baseline is not None else source_files
+        cap = max(1000, reference * 20 // 100)
+        result["maxDelete"] = cap
         if baseline is not None:
             reasons = nas.shrink_reasons(source_files, source_bytes, baseline)
             if reasons:
-                raise nas.Refusal("source-shrink-refused:" + ",".join(reasons))
+                result["checks"].append({"name": "shrink-canary", "ok": False, "reasons": reasons})
+                raise nas.Refusal("source-shrink-refused")
             nas.checked(result["checks"], "shrink-canary")
         if dry_run:
             result.update(ok=False, outcome="planned", converged=False, firstMissingSignal="planned-only")
@@ -191,7 +263,10 @@ def pull(metadata):
             result["rsyncExitCode"] = run.returncode
             result["rsyncStats"] = nas.parse_rsync_stats(run.stdout)
             if run.returncode:
-                raise nas.Refusal("rsync-delete-cap-exceeded" if run.returncode == 25 else "mirror-rsync-failed")
+                raise nas.Refusal(rsync_failure(run, "rsync-delete-cap-exceeded" if run.returncode == 25 else "mirror-rsync-failed"))
+            final_files, final_bytes = source_measure(result["rsyncStats"])
+            nas.checked(result["checks"], "source-remeasured-after-sync", fileCount=final_files, totalBytes=final_bytes)
+            result.update(finalFileCount=final_files, finalTotalBytes=final_bytes)
             result.update(ok=True, converged=True, outcome="ok", firstMissingSignal="none")
     except nas.Refusal as error:
         result.update(outcome="failed" if attempted else "refused", firstMissingSignal=str(error))
@@ -202,10 +277,14 @@ def pull(metadata):
         wipe(password)
         if lock is not None:
             os.close(lock)
-        if not result["planned"]:
+        if not result["planned"] and proof_valid:
             try:
                 deed_receipt = {**result, "firstMissingSignal": result["firstMissingSignal"].split(":", 1)[0]}
-                deed.record("mirror-pull", "nas-sync", deed_receipt, started)
+                if deed_receipt["firstMissingSignal"] == "current-boot-kernel-error-names-backing-drive":
+                    deed_receipt["firstMissingSignal"] = "kernel-error-on-backup-drive"
+                counts = ({"file_count": result["finalFileCount"], "total_bytes": result["finalTotalBytes"]}
+                          if result["ok"] else None)
+                deed.record("mirror-pull", "nas-sync", deed_receipt, started, counts=counts)
             except Exception:
                 result.update(ok=False, converged=False, outcome="failed", firstMissingSignal="mirror-deed-unavailable")
     return result
