@@ -2,6 +2,7 @@
   "children": [
     "credential",
     "backup-b2",
+    "nas-export",
     "skip-check"
   ],
   "sclerite": {
