@@ -176,6 +176,8 @@ def main():
                 return refuse("mirror-tunnel-failed")
             sock.settimeout(remaining)
             chunk = sock.recv(1)
+            if not chunk and not header:
+                return refuse("mirror-tunnel-failed")
             if not chunk or len(header) >= 65536:
                 return refuse("mirror-upgrade-invalid")
             header.extend(chunk)
