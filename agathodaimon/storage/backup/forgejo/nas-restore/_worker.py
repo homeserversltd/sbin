@@ -196,8 +196,8 @@ INTENT = "storage/backup/forgejo/nas-restore"
 
 
 class Failure(Exception):
-    def __init__(self, reason, count=None):
-        self.reason, self.count = reason, count
+    def __init__(self, reason, count=None, kept=()):
+        self.reason, self.count, self.kept = reason, count, kept
         super().__init__(reason)
 
 
@@ -210,8 +210,9 @@ def _inside(base, value):
 
 def _checkout_fault():
     """A root-owned proof file may fault an uninstalled checkout only."""
-    module = Path(__file__).resolve(strict=True)
-    if module.is_relative_to(Path('/usr/local/sbin')):
+    invoked = Path(os.path.abspath(__file__))
+    module = invoked.resolve(strict=True)
+    if invoked.is_relative_to(Path('/usr/local/sbin')) or module.is_relative_to(Path('/usr/local/sbin')):
         return ''
     checkout = module.parents[5]
     proof = checkout / '.forgejo-nas-restore-fault'
@@ -610,7 +611,7 @@ def _scratch_deed_listener(base):
     return False
 
 
-def _deed_once(reason, stage=None):
+def _deed_once(reason, stage=None, kept=()):
     root = os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
     if root:
         try:
@@ -624,7 +625,7 @@ def _deed_once(reason, stage=None):
     return _deed.send("sbin", "forgejo-nas-restore", reason == "none", target="forgejo",
                       outcome="ok" if reason == "none" else "failed",
                       signal="none" if reason == "none" else PREFIX + reason,
-                      stages=[["forge", stage]] if stage else None)
+                      stages=([["forge", stage]] if stage else []) + [["prior", token] for token in kept])
 
 
 def _answer(error, step):
@@ -644,6 +645,7 @@ def launch():
             require_primary(cfg)
             validate_source(str(cfg["mount"]))
             repo, database, _ = forge_config(cfg)
+            _check_prior(cfg, repo)
             gate(cfg, repo, database)
             _unit_checked(cfg)
         finally:
@@ -657,7 +659,7 @@ def launch():
                 args.append("--setenv=" + PROOF_PAUSE + "=" + os.environ[PROOF_PAUSE])
             if PROOF_FAULT in os.environ:
                 args.append("--setenv=" + PROOF_FAULT + "=" + os.environ[PROOF_FAULT])
-        args += ["--", sys.executable, str(Path(__file__).resolve()), "--worker"]
+        args += ["--", sys.executable, os.path.abspath(__file__), "--worker"]
         try:
             _run(args, "launch-failed")
         except Failure as error:
@@ -675,7 +677,7 @@ def launch():
         failure = exc
     except Exception:
         failure = Failure("launch-failed")
-    _deed_once(failure.reason)
+    _deed_once(failure.reason, kept=getattr(failure, "kept", ()))
     return _answer(failure, "preflight")
 
 
@@ -725,14 +727,37 @@ def _drop_stage_db(cfg):
 
 
 def _staged_paths(cfg, repo):
-    paths = [repo.with_name(repo.name + ".restore"),
-             cfg["work"] / "data.restore", cfg["work"] / "custom.restore"]
+    paths = [repo.with_name(repo.name + ".restore-staged"),
+             cfg["work"] / "data.restore-staged", cfg["work"] / "custom.restore-staged"]
     live = [repo, cfg["work"] / "data", cfg["work"] / "custom"]
     # Refuse overlapping names, including a staged parent of a live tree.
     if len(set(paths)) != len(paths) or any(a == b or a in b.parents or b in a.parents
                                             for a in paths for b in live):
         raise Failure("copy-failed")
     return paths
+
+
+def _prior_paths(cfg, repo):
+    return [repo.with_name(repo.name + ".restore-prior"),
+            cfg["work"] / "data.restore-prior", cfg["work"] / "custom.restore-prior"]
+
+
+def _kept_prior(cfg, repo):
+    kept = []
+    if "forgejo_before_restore" in _db_inventory(cfg):
+        kept.append("kept-prior-db")
+    for name, path in zip(("repositories", "data", "custom"), _prior_paths(cfg, repo)):
+        if os.path.lexists(path):
+            kept.append("kept-prior-" + name)
+    return kept
+
+
+def _check_prior(cfg, repo):
+    kept = _kept_prior(cfg, repo)
+    if kept:
+        error = Failure("db-failed" if "kept-prior-db" in kept else "copy-failed")
+        error.kept = kept
+        raise error
 
 
 def _check_destination_mount(cfg, parent):
@@ -903,6 +928,31 @@ def _pause(cfg):
         time.sleep(0.1)
 
 
+def _move_tree(cfg, source, destination):
+    """Move a same-parent tree to an absent name, never replacing a tree."""
+    if source.parent != destination.parent:
+        raise Failure("copy-failed")
+    parent = _open_dir_path(source.parent)
+    handle = None
+    try:
+        _check_destination_mount(cfg, parent)
+        handle = _directory(parent, source.name, _mount_id(parent))
+        observed = os.stat(source.name, dir_fd=parent, follow_symlinks=False)
+        held = os.fstat(handle)
+        if (observed.st_dev, observed.st_ino) != (held.st_dev, held.st_ino):
+            raise Failure("copy-failed")
+        fn = ctypes.CDLL(None, use_errno=True).renameat2
+        fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        if fn(parent, os.fsencode(source.name), parent, os.fsencode(destination.name), 1):
+            raise Failure("copy-failed")
+    except (OSError, SourceError) as error:
+        raise Failure("copy-failed") from error
+    finally:
+        if handle is not None:
+            os.close(handle)
+        os.close(parent)
+
+
 def _exchange_trees(cfg, live, staged):
     if live.parent != staged.parent:
         raise Failure("copy-failed")
@@ -932,6 +982,9 @@ def _exchange_trees(cfg, live, staged):
 def worker():
     reason, stage, fd, stopped, was_active, cfg, url = "launch-failed", None, None, False, False, None, None
     staged = None
+    prior = None
+    repo = None
+    kept = []
     source = None
     changed_trees = []
     db_may_swap = False
@@ -944,6 +997,7 @@ def worker():
         validate_source(str(cfg["mount"]))
         _stop_guard(cfg)
         repo, database, url = forge_config(cfg)
+        _check_prior(cfg, repo)
         _stop_guard(cfg)
         state = _active_state(cfg, "stop-failed")
         if state not in ("active", "inactive"):
@@ -954,23 +1008,16 @@ def worker():
         _systemctl(cfg, "stop", "stop-failed")
         if _active_state(cfg, "stop-failed") != "inactive":
             raise Failure("stop-failed")
-        names = _db_inventory(cfg)
-        # A previous interrupted reversal can leave the prior database under
-        # this name even when forgejo also exists. Do not guess its identity.
-        if "forgejo_before_restore" in names:
-            stopped, stage = False, "stopped"
-            raise Failure("db-failed")
+        try:
+            _check_prior(cfg, repo)
+        except Failure as error:
+            if getattr(error, "kept", None):
+                stopped, stage = False, "stopped"
+            raise
         gate(cfg, repo, database)
-        candidates = _staged_paths(cfg, repo)
-        # A leftover may be the only prior tree after an interrupted or failed
-        # exchange-back. Its name cannot establish its contents; preserve it.
-        if any(os.path.lexists(path) for path in candidates):
-            stopped, stage = False, "stopped"
-            raise Failure("copy-failed")
-        staged = candidates
+        staged = _staged_paths(cfg, repo)
+        prior = _prior_paths(cfg, repo)
         _drop_stage_db(cfg)
-        if "forgejo_before_restore" in names:
-            _db_command(cfg, 'DROP DATABASE "forgejo_before_restore" WITH (FORCE)')
         try:
             for path in staged:
                 _remove_stage_tree(cfg, path)
@@ -992,9 +1039,11 @@ def worker():
         db_may_swap = True
         _db_command(cfg, 'ALTER DATABASE "forgejo" RENAME TO "forgejo_before_restore"')
         _db_command(cfg, 'ALTER DATABASE "forgejo_restore" RENAME TO "forgejo"')
-        for live, path in zip((repo, cfg["work"] / "data", cfg["work"] / "custom"), staged):
-            _exchange_trees(cfg, live, path)
-            changed_trees.append((live, path))
+        for live, path, old in zip((repo, cfg["work"] / "data", cfg["work"] / "custom"), staged, prior):
+            _move_tree(cfg, live, old)
+            changed_trees.append((live, old, path, False))
+            _move_tree(cfg, path, live)
+            changed_trees[-1] = (live, old, path, True)
         if cfg.get("fault") in ("start", "start-and-exchange-back"):
             raise Failure("start-failed")
         _systemctl(cfg, "start", "start-failed")
@@ -1007,6 +1056,7 @@ def worker():
         reason = error.reason
     except Failure as error:
         reason = error.reason
+        kept = getattr(error, "kept", [])
     except Exception:
         reason = "launch-failed"
     finally:
@@ -1017,7 +1067,7 @@ def worker():
                 _db_command(cfg, 'DROP DATABASE "forgejo_before_restore" WITH (FORCE)')
             except Exception:
                 stage = "cleanup-failed"
-            for path in staged:
+            for path in prior:
                 try:
                     _remove_stage_tree(cfg, path)
                 except Exception:
@@ -1052,16 +1102,20 @@ def worker():
                     reversed_all = False
             unreversed = set()
             if safe_to_reverse:
-                for live, path in reversed(changed_trees):
+                for live, old, path, installed in reversed(changed_trees):
                     try:
                         if cfg.get("fault") == "start-and-exchange-back" and not unreversed:
                             raise Failure("copy-failed")
-                        _exchange_trees(cfg, live, path)
+                        if installed:
+                            # The live tree is the NAS copy; move it to the
+                            # removable staged name before returning the prior.
+                            _move_tree(cfg, live, path)
+                        _move_tree(cfg, old, live)
                     except Exception:
-                        unreversed.add(path)
+                        unreversed.add(old)
                         reversed_all = False
             else:
-                unreversed = {path for _, path in changed_trees}
+                unreversed = {old for _, old, _, _ in changed_trees}
             if staged is not None and safe_to_reverse:
                 try:
                     _drop_stage_db(cfg)
@@ -1090,7 +1144,13 @@ def worker():
                         stage = state + "-cleanup-failed" if stage == "cleanup-failed" else state
                     except Exception:
                         stage = "unknown-cleanup-failed" if stage == "cleanup-failed" else "unknown"
-        _deed_once(reason, stage)
+        if cfg is not None and repo is not None:
+            try:
+                kept = _kept_prior(cfg, repo)
+            except Failure:
+                # Preserve any earlier observed names if PostgreSQL cannot be read.
+                pass
+        _deed_once(reason, stage, kept)
         if fd is not None:
             os.close(fd)
     return 0 if reason == "none" else 1
