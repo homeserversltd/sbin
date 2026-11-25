@@ -101,7 +101,7 @@ def kernel_gate(a,b,runner):
    roots=[(tokens(facts),times[disks[0]])]
   elif disks and len(paths)==len(disks):
    for path in paths:
-    probe=run([LSBLK,"-d","-n","-r","-P","-o","NAME,KNAME,PATH,MAJ:MIN","--",path],runner)
+    probe=run([LSBLK,"-d","-n","-P","-o","NAME,KNAME,PATH,MAJ:MIN","--",path],runner)
     try:
      lines=probe.stdout.splitlines()
      if probe.returncode or len(lines)!=1: raise ValueError("root identity")
@@ -115,7 +115,7 @@ def kernel_gate(a,b,runner):
   if mapped_roots and len(disks)>1:
    for alias in sorted(v for v in facts["identities"] if str(v).startswith("/dev/")):
     if any(names_device(alias,root_tokens) for root_tokens,_ in roots): continue
-    probe=run([LSBLK,"-s","-n","-r","-P","-o","NAME,KNAME,PKNAME,PATH,MAJ:MIN","--",alias],runner)
+    probe=run([LSBLK,"-s","-n","-P","-o","NAME,KNAME,PKNAME,PATH,MAJ:MIN","--",alias],runner)
     try:
      rows=[dict(item.split("=",1) for item in shlex.split(line)) for line in probe.stdout.splitlines()]
      if probe.returncode or not rows or os.path.realpath(rows[0]["PATH"])!=os.path.realpath(alias): raise ValueError("alias identity")

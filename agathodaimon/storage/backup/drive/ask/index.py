@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import hashlib
 import http.client
+import io
 import json
 import os
+from contextlib import redirect_stderr
 from pathlib import Path
 import re
 import secrets
 import socket
 import subprocess
-import sys
 import time
 
-from agathodaimon.lib.keyman_export.index import KeymanExportError, exchange_session
+from agathodaimon.lib.keyman_export.index import KeymanExportError, MISSING_KEY, exchange_session, export_credential
+from agathodaimon._deed import send
 from agathodaimon.keyman.custody import call as custody_call
 from agathodaimon.storage.backup.mirror.pull.index import seat
 
@@ -51,7 +53,7 @@ def own_mac(context):
     value = json.loads(path.read_text()).get("self", {}).get("mac")
     if not isinstance(value, str) or not MAC.fullmatch(value):
         raise ValueError("backup-drive-mac-unavailable")
-    return value
+    return value.lower()
 
 
 def homeserver(context):
@@ -69,6 +71,8 @@ def post(host, port, route, body):
         if response.status == 401:
             return 401, None
         value = json.loads(raw)
+        if response.status != 200 and isinstance(value, dict) and value.get("signal") == "backup-pair-already-accepted":
+            raise ValueError("backup-pair-already-accepted")
         if response.status != 200 or not isinstance(value, dict) or value.get("ok") is not True or value.get("state") not in {"pending", "accepted"}:
             raise ValueError("backup-drive-response-invalid")
         return response.status, value["state"]
@@ -101,32 +105,63 @@ def new_pair(mac, credential, context):
 
 
 def ask():
-    credential = None
+    username = credential = body = None
     try:
         context = proof()
         mac = own_mac(context)
         host, port = homeserver(context)
+        try:
+            if context:
+                username, credential = export_credential("backup_pair", scratch_root=str(context[0]), exporter=context[1])
+            else:
+                username, credential = export_credential("backup_pair")
+        except KeymanExportError as error:
+            if error.signal != MISSING_KEY:
+                raise
+        if credential is not None:
+            stored_mac = username.decode("ascii")
+            token = credential.decode("ascii")
+            if not MAC.fullmatch(stored_mac) or not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
+                raise ValueError("backup-drive-credential-invalid")
+            body = bytearray(json.dumps({"mac": mac, "credential": token}, separators=(",", ":")), "ascii")
+            del token
+            status, state = post(host, port, "/api/v1/storage/backup/pair/status", body)
+            wipe(body)
+            body = None
+            if status == 200:
+                return {"ok": True, "state": state, "homeserver": {"ipv4": host, "port": port}}
+            wipe(credential)
         credential = bytearray(secrets.token_urlsafe(48), "ascii")
         new_pair(mac, credential, context)
-        body = json.dumps({"mac": mac, "hostname": socket.gethostname(),
-                           "credential_sha256": hashlib.sha256(credential).hexdigest()}, separators=(",", ":")).encode()
+        body = bytearray(json.dumps({"mac": mac, "hostname": socket.gethostname(),
+                                     "credential_sha256": hashlib.sha256(credential).hexdigest()}, separators=(",", ":")), "ascii")
         status, state = post(host, port, "/api/v1/storage/backup/pair/request", body)
         if status != 200:
             raise ValueError("backup-drive-request-refused")
         return {"ok": True, "state": state, "homeserver": {"ipv4": host, "port": port}}
-    except (OSError, ValueError, TypeError, AttributeError, RuntimeError, http.client.HTTPException, KeymanExportError, subprocess.SubprocessError):
+    except ValueError as error:
+        signal = "backup-pair-already-accepted" if str(error) == "backup-pair-already-accepted" else "backup-drive-ask-failed"
+        return {"ok": False, "firstMissingSignal": signal}
+    except (OSError, TypeError, AttributeError, RuntimeError, http.client.HTTPException, KeymanExportError, subprocess.SubprocessError):
         return {"ok": False, "firstMissingSignal": "backup-drive-ask-failed"}
     finally:
+        wipe(username)
         wipe(credential)
+        wipe(body)
 
 
 def main(_argv=None):
     started = time.monotonic()
     result = ask()
-    # A change emits one secret-free canonical deed; the status read emits none.
-    print(json.dumps({"who": "agathodaimon", "verb": "backup-drive-ask", "target": "backup_pair",
-                      "outcome": "ok" if result["ok"] else "failed", "duration_ms": int((time.monotonic() - started) * 1000),
-                      "signal": "none" if result["ok"] else result["firstMissingSignal"]}, separators=(",", ":")), file=sys.stderr)
+    # A failed deed is never the answer to the pairing request.
+    try:
+        with redirect_stderr(io.StringIO()):
+            send("sbin", "backup-drive-ask", result["ok"], target="backup_pair",
+                 duration_ms=int((time.monotonic() - started) * 1000), counts={},
+                 outcome="ok" if result["ok"] else "failed",
+                 signal="none" if result["ok"] else result["firstMissingSignal"])
+    except Exception:
+        pass
     print(json.dumps(result, separators=(",", ":")))
     return 0 if result["ok"] else 1
 
