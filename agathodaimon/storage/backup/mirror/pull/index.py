@@ -182,7 +182,14 @@ def proof():
 def own_box(context):
     path = context[0] / "ruyi.json" if context else Path("/etc/appliance/ruyi.json")
     try:
-        mac = json.loads(path.read_text()).get("self", {}).get("mac")
+        if context:
+            # Never follow a scratch identity link into the live appliance.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                info = json.load(stream)
+        else:
+            info = json.loads(path.read_text())
+        mac = info.get("self", {}).get("mac")
         if not isinstance(mac, str) or not re.fullmatch(r"[0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5}", mac):
             raise ValueError("invalid mac")
         return {"mac": mac.lower(), "hostname": socket.gethostname()}
