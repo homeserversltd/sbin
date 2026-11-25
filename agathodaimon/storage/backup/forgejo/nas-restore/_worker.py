@@ -23,6 +23,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
 from agathodaimon import _deed, _envelope, _seat
+from agathodaimon.storage.nas import runtime as _nas
 
 
 class SourceError(Exception):
@@ -228,6 +229,24 @@ def settings():
                 "os_user": values["OS_USER"], "psql": "/usr/bin/psql"}
     except (OSError, KeyError, ValueError) as error:
         raise Failure("launch-failed") from error
+
+
+def require_primary(cfg):
+    """Prove the fixed primary role, not merely a mount at its pathname."""
+    if cfg["proof"]:
+        # The independent source validator checks the actual scratch mount.
+        return
+    try:
+        partition = _nas.role_partition("primary")
+        info = _nas._observed_holder_info({}, _nas._info_for("primary", partition))
+        mapper = _nas._mapper_state({}, info)
+        mount = _nas._mount_readback(info)
+        if (mapper.get("exists") is not True or mapper.get("backingMatches") is not True
+                or mount.get("mounted") is not True or mount.get("sourceMatches") is not True
+                or mount.get("fstype") != "xfs"):
+            raise SourceError("source-missing")
+    except (OSError, _nas.Refusal) as error:
+        raise SourceError("source-missing") from error
 
 
 def acquire(cfg):
@@ -481,6 +500,7 @@ def launch():
         cfg = settings()
         fd = acquire(cfg)
         try:
+            require_primary(cfg)
             validate_source(str(cfg["mount"]))
             repo, database, _ = forge_config(cfg)
             gate(cfg, repo, database)
@@ -519,6 +539,7 @@ def worker():
     try:
         cfg = settings()
         fd = acquire(cfg)
+        require_primary(cfg)
         validate_source(str(cfg["mount"]))
         repo, database, url = forge_config(cfg)
         _unit_checked(cfg)
