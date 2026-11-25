@@ -742,14 +742,16 @@ def _prior_paths(cfg, repo):
             cfg["work"] / "data.restore-prior", cfg["work"] / "custom.restore-prior"]
 
 
+def _prior_tree_tokens(cfg, repo):
+    return ["kept-prior-" + name
+            for name, path in zip(("repositories", "data", "custom"), _prior_paths(cfg, repo))
+            if os.path.lexists(path)]
+
+
 def _kept_prior(cfg, repo):
-    kept = []
-    if "forgejo_before_restore" in _db_inventory(cfg):
-        kept.append("kept-prior-db")
-    for name, path in zip(("repositories", "data", "custom"), _prior_paths(cfg, repo)):
-        if os.path.lexists(path):
-            kept.append("kept-prior-" + name)
-    return kept
+    trees = _prior_tree_tokens(cfg, repo)
+    names = _db_inventory(cfg)
+    return (["kept-prior-db"] if "forgejo_before_restore" in names else []) + trees
 
 
 def _check_prior(cfg, repo):
@@ -1148,8 +1150,9 @@ def worker():
             try:
                 kept = _kept_prior(cfg, repo)
             except Failure:
-                # Preserve any earlier observed names if PostgreSQL cannot be read.
-                pass
+                # A database outage must not hide observable retained trees.
+                trees = _prior_tree_tokens(cfg, repo)
+                kept = (["kept-prior-db"] if "kept-prior-db" in kept else []) + trees
         _deed_once(reason, stage, kept)
         if fd is not None:
             os.close(fd)
