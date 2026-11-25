@@ -124,6 +124,8 @@
     "unit/start",
     "unit/status",
     "unit/stop",
+    "update/module-mode",
+    "update/module-toggle",
     "update/service",
     "update/sources-reseed",
     "woodpecker/agent",

@@ -1,0 +1,19 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": ["module", "mode"]
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {"band": false, "verbs": [], "routes": []}
+      }
+    }
+  }
+}

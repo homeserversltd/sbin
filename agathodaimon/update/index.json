@@ -1,5 +1,6 @@
 {
   "children": [
+    "module-mode",
     "module-toggle",
     "profile-refresh",
     "sources-reseed",

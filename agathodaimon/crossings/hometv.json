@@ -95,6 +95,8 @@
     "storage/vault/open/unlock",
     "storage/vault/policy/read",
     "storage/vault/policy/write",
+    "update/module-mode",
+    "update/module-toggle",
     "update/service",
     "update/sources-reseed"
   ],
