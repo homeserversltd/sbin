@@ -18,7 +18,7 @@ def status():
             username, password = export_credential("backup_pair", scratch_root=str(context[0]), exporter=context[1])
         else:
             username, password = export_credential("backup_pair")
-        mac = username.decode("ascii")
+        mac = username.decode("ascii").lower()
         token = password.decode("ascii")
         if not MAC.fullmatch(mac) or not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
             raise ValueError("backup-drive-credential-invalid")
