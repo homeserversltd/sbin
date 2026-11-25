@@ -34,7 +34,7 @@ def refusal_signal(sock, lines, allowed, bound):
         return fallback
     remaining = int(lengths[0]) if lengths else None
     body = bytearray()
-    deadline = time.monotonic() + bound
+    deadline = time.monotonic() + min(bound, 15.0)
     try:
         while remaining is None or remaining:
             timeout = deadline - time.monotonic()
