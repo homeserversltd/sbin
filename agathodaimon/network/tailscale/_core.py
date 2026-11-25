@@ -920,6 +920,7 @@ def _tailnet(name: str, dry_run: bool = False) -> dict[str, Any]:
     native_inventory: dict[str, Any] = {}
     sans: list[str] = []
     stage = "preflight"
+    stages: list[str] = []
     write_started = False
     trust_update_attempted = False
     signal_previous: dict[int, Any] = {}
@@ -1045,7 +1046,7 @@ def _tailnet(name: str, dry_run: bool = False) -> dict[str, Any]:
         return make_receipt(
             False,
             failed_signal if good else "tailscale-tailnet-rollback-failed",
-            attempt={"failedStage": failed_stage, "rollback": "restored" if good else "failed",
+            attempt={"stages": stages, "failedStage": failed_stage, "rollback": "restored" if good else "failed",
                      "rollbackFailures": sorted(set(errors)), "nginxTestReturnCode": test.returncode if test else None,
                      "nginxReloadReturnCode": reload.returncode if reload else None},
             final={"declaredTailnet": prior_tailnet if good else normalized, "changedFiles": public_paths(mismatches),
@@ -1175,7 +1176,6 @@ def _tailnet(name: str, dry_run: bool = False) -> dict[str, Any]:
         observed.update({"prospectiveSeatCount": len(images), "trustUpdater": native_inventory.get("updater", {}).get("program") if isinstance(native_inventory.get("updater"), Mapping) and native_inventory.get("updater", {}).get("enabled") else "not-needed"})
         signal_state = {"rolling_back": False}
         _signal_handlers(signal_previous, signal_state)
-        stages = []
 
         if config_changed:
             stages.append("write-config")
