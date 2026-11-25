@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import datetime
 import importlib.util
 import ipaddress
 import json
@@ -25,6 +24,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
 from agathodaimon._nidus.lock import household_config_held
+from agathodaimon._nidus.path import runtime_root
 
 NOUN = "tailscale"
 TAILSCALE = "/usr/bin/tailscale"
@@ -39,7 +39,7 @@ SECRET_MARKER = re.compile(r"tskey-", re.IGNORECASE)
 SITES_AVAILABLE = Path("/etc/nginx/sites-available")
 NGINX_CONF_D = Path("/etc/nginx/conf.d")
 OG_CONFIG = Path("/var/www/homeserver/src/config/homeserver.json")
-BACKUP_ROOT = Path("/var/lib/agathodaimon/tailscale/backups")
+TAILNET_BACKUP_REMAINDER = Path("var/lib/agathodaimon/tailscale/backups")
 
 
 class Refused(ValueError):
@@ -363,15 +363,6 @@ def _prepare_home(action: str, before: dict[str, Any]) -> tuple[dict[str, Any] |
     return {"observed": observed, "desired": desired, "routeSignal": route_signal, "changed": needs_change}, None
 
 
-def _validate_backup_argument(value: str | None) -> str | None:
-    if value is None:
-        return None
-    path = Path(value)
-    if not path.is_absolute() or path == Path("/") or any(part in {".", ".."} for part in path.parts):
-        raise Refused("tailscale-tailnet-backup-path-invalid")
-    return str(path)
-
-
 def _tailnet_label_from_url(value: str, *, origin: bool = False) -> str:
     try:
         parsed = urlsplit(value)
@@ -617,50 +608,6 @@ def _nginx_plan(old_names: set[str], new_name: str) -> tuple[dict[Path, bytes], 
     return plan, affected_aliases, observed_names
 
 
-def _safe_components(path: Path, *, allow_missing_leaf: bool = False) -> None:
-    if not path.is_absolute():
-        raise Refused("tailscale-tailnet-backup-path-invalid")
-    current = Path("/")
-    components = path.parts[1:]
-    for index, part in enumerate(components):
-        current = current / part
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            if allow_missing_leaf and index == len(components) - 1:
-                return
-            raise Refused("tailscale-tailnet-backup-parent-unavailable")
-        except OSError as error:
-            raise Refused("tailscale-tailnet-backup-parent-unavailable") from error
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise Refused("tailscale-tailnet-backup-path-refused")
-
-
-def _mkdir_chain(path: Path) -> None:
-    missing: list[Path] = []
-    current = path
-    while current != Path("/"):
-        try:
-            info = os.lstat(current)
-        except FileNotFoundError:
-            missing.append(current)
-            current = current.parent
-            continue
-        except OSError as error:
-            raise Refused("tailscale-tailnet-backup-parent-unavailable") from error
-        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-            raise Refused("tailscale-tailnet-backup-path-refused")
-        _safe_components(current)
-        break
-    for directory in reversed(missing):
-        try:
-            os.mkdir(directory, 0o750)
-            os.chmod(directory, 0o750)
-            _fsync_directory(directory.parent)
-        except OSError as error:
-            raise Refused("tailscale-tailnet-backup-parent-create-failed") from error
-
-
 def _fsync_directory(path: Path) -> None:
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
     try:
@@ -676,80 +623,6 @@ def _write_all(fd: int, data: bytes) -> None:
         if written <= 0:
             raise OSError("short durable write")
         view = view[written:]
-
-
-def _backup(directory: str | None, images: Mapping[Path, Image], directory_contents: Mapping[Path, Sequence[str]]) -> str:
-    if directory is None:
-        _mkdir_chain(BACKUP_ROOT)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-        root = BACKUP_ROOT / stamp
-        for suffix in range(100):
-            candidate = root if suffix == 0 else BACKUP_ROOT / f"{stamp}-{suffix:02d}"
-            try:
-                os.mkdir(candidate, 0o700)
-                root = candidate
-                break
-            except FileExistsError:
-                continue
-            except OSError as error:
-                raise Refused("tailscale-tailnet-backup-create-failed") from error
-        else:
-            raise Refused("tailscale-tailnet-backup-create-failed")
-    else:
-        root = Path(directory)
-        if root.exists() or root.is_symlink():
-            raise Refused("tailscale-tailnet-backup-path-exists")
-        _safe_components(root.parent)
-        try:
-            os.mkdir(root, 0o700)
-        except OSError as error:
-            raise Refused("tailscale-tailnet-backup-create-failed") from error
-    try:
-        os.chmod(root, 0o700)
-        files_dir = root / "files"
-        os.mkdir(files_dir, 0o700)
-        rows: list[dict[str, Any]] = []
-        for index, (path, image) in enumerate(sorted(images.items(), key=lambda pair: str(pair[0]))):
-            data_file = None
-            if image.existed and image.kind != "directory":
-                data_file = f"files/{index:05d}.bin"
-                fd = os.open(files_dir / f"{index:05d}.bin", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-                try:
-                    _write_all(fd, image.data or b"")
-                    os.fchmod(fd, 0o600)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
-            rows.append({
-                "path": str(path), "state": image.kind, "existed": image.existed,
-                "mode": image.mode, "uid": image.uid, "gid": image.gid,
-                "dataFile": data_file,
-            })
-        manifest = {
-            "schema": "agathodaimon.tailscale.preimage.v1",
-            "files": rows,
-            "directoryEntries": {str(path): list(names) for path, names in sorted(directory_contents.items(), key=lambda pair: str(pair[0]))},
-            "restore": "Manual restore only; sidecars retain bytes and symlink targets, rows retain mode/uid/gid and absent/directory states.",
-        }
-        encoded = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        fd = os.open(root / "snapshot.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        try:
-            _write_all(fd, encoded)
-            os.fchmod(fd, 0o600)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        _fsync_directory(files_dir)
-        _fsync_directory(root)
-        _fsync_directory(root.parent)
-        return str(root)
-    except BaseException as error:
-        shutil.rmtree(root, ignore_errors=True)
-        if isinstance(error, Refused):
-            raise
-        if isinstance(error, TransactionInterrupted):
-            raise
-        raise Refused("tailscale-tailnet-backup-create-failed") from error
 
 
 def _atomic_write(path: Path, temp: Path, data: bytes, image: Image, owned: set[Path] | None = None) -> None:
@@ -941,18 +814,6 @@ def _certificate_module() -> Any:
     return module
 
 
-def _safe_backup_parent(path: Path) -> None:
-    if path.exists() or path.is_symlink():
-        raise Refused("tailscale-tailnet-backup-path-exists")
-    _safe_components(path.parent)
-
-
-def _refuse_backup_overlap(path: Path, managed_paths: Sequence[Path]) -> None:
-    for managed in managed_paths:
-        if path == managed or path in managed.parents or managed in path.parents:
-            raise Refused("tailscale-tailnet-backup-managed-path-overlap")
-
-
 def _image_if_regular(path: Path) -> Image:
     image = _image(path)
     if image.kind == "symlink":
@@ -1019,7 +880,7 @@ def _current_tree_paths(trees: Sequence[Path]) -> set[Path]:
     return result
 
 
-def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[str, Any]:
+def _tailnet(name: str, dry_run: bool = False) -> dict[str, Any]:
     if type(dry_run) is not bool:
         return _receipt("tailnet", False, "tailscale-tailnet-dry-run-invalid", attempt="validate-dry-run", dry_run=False)
     prior_tailnet: str | None = None
@@ -1028,20 +889,12 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
     except Refused as error:
         return _receipt("tailnet", False, error.signal, observed={"nameSupplied": bool(name)},
                         attempt="read-live-name", priorTailnet=None, newTailnet=None,
-                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
+                        changedFiles=[], attemptedFiles=[], subjectAltNames=[], dry_run=dry_run)
     if not isinstance(name, str) or (name and name.lower() != normalized):
         return _receipt("tailnet", False, "tailscale-tailnet-name-mismatch",
                         observed={"typedName": name, "liveTailnet": normalized, "liveName": live_name},
                         attempt="compare-live-name", priorTailnet=None, newTailnet=normalized,
-                        changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
-    try:
-        backup_override = _validate_backup_argument(backup_dir)
-    except Refused as error:
-        return _receipt("tailnet", False, error.signal,
-                        observed={"normalizedName": normalized, "backupArgumentValidated": False},
-                        attempt="validate-backup-argument-before-lock", final={"newTailnet": normalized},
-                        priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
-
+                        changedFiles=[], attemptedFiles=[], subjectAltNames=[], dry_run=dry_run)
     config_path = appliance_runtime_path("config")
     config_lock = None
     try:
@@ -1051,7 +904,7 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
     except OSError:
         return _receipt("tailnet", False, "tailscale-tailnet-config-lock-unavailable",
                         observed={"configPath": str(config_path)}, attempt="serialize-config-transaction",
-                        priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], backupPath=None, subjectAltNames=[], dry_run=dry_run)
+                        priorTailnet=None, newTailnet=normalized, changedFiles=[], attemptedFiles=[], subjectAltNames=[], dry_run=dry_run)
 
     images: dict[Path, Image] = {}
     directory_contents: dict[Path, list[str]] = {}
@@ -1064,7 +917,6 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
     owned_changed_paths: set[Path] = set()
     changed_files: list[str] = []
     aliases_for_changed: dict[Path, list[Path]] = {}
-    backup_path: str | None = None
     native_inventory: dict[str, Any] = {}
     sans: list[str] = []
     stage = "preflight"
@@ -1090,7 +942,7 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
             priorTailnet=prior_tailnet, newTailnet=normalized, liveName=live_name, hestiaSites=site_results,
             dry_run=dry_run,
             changedFiles=sorted(set(public_paths(changed))), attemptedFiles=sorted(set(public_paths(attempted))),
-            backupPath=backup_path, subjectAltNames=sans,
+            subjectAltNames=sans,
             nginxAliases={str(path): [str(alias) for alias in aliases_for_changed.get(path, [])] for path in sorted(aliases_for_changed, key=str)},
             **extra,
         )
@@ -1220,8 +1072,6 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
             raise Refused("tailscale-tailnet-house-ca-unavailable")
         raw_config, new_config_bytes, config_meta, prior_tailnet, config_old_names, config_changed = _plan_runtime_config(config_path, normalized)
         observed.update({"configReadable": True, "declaredTailnet": prior_tailnet})
-        if backup_override is not None:
-            _safe_backup_parent(Path(backup_override))
 
         optional_raw, optional_new, optional_meta, optional_old_names = _plan_optional_config(OG_CONFIG, normalized)
         optional_changed = optional_raw is not None and optional_new is not None and optional_raw != optional_new
@@ -1246,16 +1096,22 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
                 "servedCertificate": {"names": served, "verdict": "standing" if f"home.{normalized}.ts.net" in served else "pending"},
             }
             return make_receipt(True, attempt={"stages": ["read-live-name", "plan-old-side", "inspect-hestia-leaves"]},
-                                final={"declaredTailnet": prior_tailnet, "backupCreated": False,
+                                final={"declaredTailnet": prior_tailnet,
                                        "certificateRefreshed": False, "nginxReloaded": False}, mutation=False)
         old_current = (prior_tailnet == normalized and not config_changed and not optional_changed and not nginx_plan
                        and f"home.{normalized}.ts.net" in _served_certificate_sans())
         if old_current and all(site["standing"] for site in sites):
             observed["unchangedAcrossConfigNginxCertificate"] = True
             return make_receipt(True, attempt="unchanged-declared-tailnet-no-op",
-                                final={"declaredTailnet": prior_tailnet, "changedFiles": [], "backupCreated": False,
+                                final={"declaredTailnet": prior_tailnet, "changedFiles": [],
                                        "certificateRefreshed": False, "nginxReloaded": False},
                                 mutation=False, changed=[], attempted=[])
+        try:
+            shutil.rmtree(runtime_root() / TAILNET_BACKUP_REMAINDER)
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError):
+            print("tailscale: could not remove legacy backup remainder", file=sys.stderr)
         if not sans or not all(isinstance(item, str) for item in sans):
             raise Refused("tailscale-tailnet-certificate-inventory-invalid")
         tree_roots = [Path(item) for item in native_inventory.get("trees", [])]
@@ -1313,18 +1169,13 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
             planned_paths.append(temp)
             images[temp] = Image(False)
             staging_paths.add(temp)
-        if backup_override is not None:
-            _refuse_backup_overlap(Path(backup_override), [*planned_paths, *tree_roots])
         for path in restore_temps.values():
             if images.get(path, Image(False)).kind != "absent":
                 raise Refused("tailscale-tailnet-restore-temporary-exists")
         observed.update({"prospectiveSeatCount": len(images), "trustUpdater": native_inventory.get("updater", {}).get("program") if isinstance(native_inventory.get("updater"), Mapping) and native_inventory.get("updater", {}).get("enabled") else "not-needed"})
         signal_state = {"rolling_back": False}
         _signal_handlers(signal_previous, signal_state)
-        stage = "backup"
-        backup_path = _backup(backup_override, images, directory_contents)
-        observed["backupComplete"] = True
-        stages = ["backup"]
+        stages = []
 
         if config_changed:
             stages.append("write-config")
@@ -1425,7 +1276,7 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
             True,
             attempt={"stages": stages},
             final={"declaredTailnet": normalized, "subjectAltNames": sans, "changedFiles": sorted(set(public_paths(changed_files))),
-                   "nginxReloaded": True, "tlsHostnameVerified": True, "backupComplete": True,
+                   "nginxReloaded": True, "tlsHostnameVerified": True,
                    "certificateRefreshed": not old_current, "hestiaPortsVerified": len(sites)},
             mutation=write_started,
             changed=changed_files,
@@ -1438,12 +1289,12 @@ def _tailnet(name: str, backup_dir: str | None, dry_run: bool = False) -> dict[s
             failed_signal = error.signal
         else:
             failed_signal = f"tailscale-tailnet-{stage}-failed"
-        if write_started and images and backup_path is not None:
+        if write_started and images:
             return rollback(failed_signal, stage)
         return make_receipt(
             False, failed_signal,
             attempt={"failedStage": stage, "rollback": "not-needed-before-first-write"},
-            final={"declaredTailnet": prior_tailnet, "changedFiles": [], "backupComplete": bool(backup_path)},
+            final={"declaredTailnet": prior_tailnet, "changedFiles": []},
             mutation=False, changed=[],
         )
     finally:
