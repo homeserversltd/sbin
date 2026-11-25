@@ -6,6 +6,7 @@ it must not be admitted without the remaining restore sections.
 from __future__ import annotations
 
 import configparser
+import ctypes
 import fcntl
 import ipaddress
 import json
@@ -191,6 +192,7 @@ PROOF_KEYS = ("MOUNT", "WORK", "LOCK", "UNIT", "PG_PORT", "PG_SOCKET", "OS_USER"
 # Optional, scratch-only rendezvous: worker creates <PAUSE>.ready and waits for
 # <PAUSE>.continue, before removing the staged objects.
 PROOF_PAUSE = "FORGEJO_NAS_RESTORE_PROOF_PAUSE"
+PROOF_FAULT = "FORGEJO_NAS_RESTORE_PROOF_FAULT"
 INTENT = "storage/backup/forgejo/nas-restore"
 
 
@@ -240,7 +242,10 @@ def settings():
             raise Failure("launch-failed")
         if values["OS_USER"] != "owner":
             raise Failure("launch-failed")
-        return {"proof": True, "base": base, "mount": _inside(base, values["MOUNT"]),
+        fault = os.environ.get(PROOF_FAULT, "")
+        if fault not in ("", "start", "start-and-exchange-back"):
+            raise Failure("launch-failed")
+        return {"proof": True, "base": base, "fault": fault, "mount": _inside(base, values["MOUNT"]),
                 "work": _inside(base, values["WORK"]), "lock": _inside(base, values["LOCK"]),
                 "unit": values["UNIT"], "host": str(_inside(base, values["PG_SOCKET"])), "port": values["PG_PORT"],
                 "os_user": values["OS_USER"], "psql": "/usr/bin/psql",
@@ -625,6 +630,8 @@ def launch():
                 args.append("--setenv=" + name + "=" + os.environ[name])
             if PROOF_PAUSE in os.environ:
                 args.append("--setenv=" + PROOF_PAUSE + "=" + os.environ[PROOF_PAUSE])
+            if PROOF_FAULT in os.environ:
+                args.append("--setenv=" + PROOF_FAULT + "=" + os.environ[PROOF_FAULT])
         args += ["--", sys.executable, str(Path(__file__).resolve()), "--worker"]
         try:
             _run(args, "launch-failed")
@@ -871,10 +878,40 @@ def _pause(cfg):
         time.sleep(0.1)
 
 
+def _exchange_trees(cfg, live, staged):
+    if live.parent != staged.parent:
+        raise Failure("copy-failed")
+    parent = _open_dir_path(live.parent)
+    opened = []
+    try:
+        _check_destination_mount(cfg, parent)
+        for name in (live.name, staged.name):
+            opened.append(_directory(parent, name, _mount_id(parent)))
+        for name, handle in zip((live.name, staged.name), opened):
+            observed = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            held = os.fstat(handle)
+            if (observed.st_dev, observed.st_ino) != (held.st_dev, held.st_ino):
+                raise Failure("copy-failed")
+        fn = ctypes.CDLL(None, use_errno=True).renameat2
+        fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        if fn(parent, os.fsencode(live.name), parent, os.fsencode(staged.name), 2):
+            raise Failure("copy-failed")
+    except (OSError, SourceError) as error:
+        raise Failure("copy-failed") from error
+    finally:
+        for handle in opened:
+            os.close(handle)
+        os.close(parent)
+
+
 def worker():
     reason, stage, fd, stopped, was_active, cfg, url = "launch-failed", None, None, False, False, None, None
     staged = None
     source = None
+    changed_trees = []
+    db_may_swap = False
+    committed = False
+    stop_attempted = False
     try:
         cfg = settings()
         fd = acquire(cfg)
@@ -888,6 +925,7 @@ def worker():
             raise Failure("stop-failed")
         was_active = state == "active"
         stopped = was_active  # a timed-out stop can have taken effect
+        stop_attempted = True
         _systemctl(cfg, "stop", "stop-failed")
         if _active_state(cfg, "stop-failed") != "inactive":
             raise Failure("stop-failed")
@@ -914,8 +952,23 @@ def worker():
         except Exception as error:
             raise Failure("copy-failed") from error
         _pause(cfg)
-        # R3b1 ends here: no swap and no health commit.
-        raise Failure("launch-failed")
+        # After the first ALTER the outcome can be ambiguous on timeout.
+        # Inspect the database names during unwind rather than assuming failure
+        # means the server did not apply the statement.
+        db_may_swap = True
+        _db_command(cfg, 'ALTER DATABASE "forgejo" RENAME TO "forgejo_before_restore"')
+        _db_command(cfg, 'ALTER DATABASE "forgejo_restore" RENAME TO "forgejo"')
+        for live, path in zip((repo, cfg["work"] / "data", cfg["work"] / "custom"), staged):
+            _exchange_trees(cfg, live, path)
+            changed_trees.append((live, path))
+        if cfg.get("fault") in ("start", "start-and-exchange-back"):
+            raise Failure("start-failed")
+        _systemctl(cfg, "start", "start-failed")
+        if _active_state(cfg, "start-failed") != "active":
+            raise Failure("start-failed")
+        _healthy(cfg, url)
+        committed = True
+        reason = "none"
     except SourceError as error:
         reason = error.reason
     except Failure as error:
@@ -925,9 +978,9 @@ def worker():
     finally:
         if source is not None:
             os.close(source)
-        if staged is not None:
+        if committed:
             try:
-                _drop_stage_db(cfg)
+                _db_command(cfg, 'DROP DATABASE "forgejo_before_restore" WITH (FORCE)')
             except Exception:
                 stage = "cleanup-failed"
             for path in staged:
@@ -935,18 +988,75 @@ def worker():
                     _remove_stage_tree(cfg, path)
                 except Exception:
                     stage = "cleanup-failed"
-        if stopped and cfg is not None and url:
-            try:
-                _systemctl(cfg, "start", "start-failed")
-                if _active_state(cfg, "start-failed") != "active":
-                    raise Failure("start-failed")
-                _healthy(cfg, url)
-            except Exception:
+        else:
+            safe_to_reverse = True
+            if stop_attempted and (db_may_swap or changed_trees):
                 try:
                     _systemctl(cfg, "stop", "stop-failed")
-                    stage = "stopped" if _active_state(cfg, "stop-failed") == "inactive" else "unknown"
+                    if _active_state(cfg, "stop-failed") != "inactive":
+                        raise Failure("stop-failed")
                 except Exception:
+                    safe_to_reverse = False
                     stage = "unknown"
+            reversed_all = safe_to_reverse
+            if safe_to_reverse and db_may_swap:
+                # Attempt both renames independently. Re-observe before each:
+                # a failed or timed-out SQL call can have reached PostgreSQL.
+                try:
+                    names = _db_inventory(cfg)
+                    if "forgejo_before_restore" in names and "forgejo" in names:
+                        _db_command(cfg, 'ALTER DATABASE "forgejo" RENAME TO "forgejo_restore"')
+                except Exception:
+                    reversed_all = False
+                try:
+                    names = _db_inventory(cfg)
+                    if "forgejo_before_restore" in names:
+                        _db_command(cfg, 'ALTER DATABASE "forgejo_before_restore" RENAME TO "forgejo"')
+                    elif "forgejo" not in names:
+                        reversed_all = False
+                except Exception:
+                    reversed_all = False
+            unreversed = set()
+            if safe_to_reverse:
+                for live, path in reversed(changed_trees):
+                    try:
+                        if cfg.get("fault") == "start-and-exchange-back" and not unreversed:
+                            raise Failure("copy-failed")
+                        _exchange_trees(cfg, live, path)
+                    except Exception:
+                        unreversed.add(path)
+                        reversed_all = False
+            else:
+                unreversed = {path for _, path in changed_trees}
+            if staged is not None and safe_to_reverse:
+                # A failed exchange-back leaves the previous live tree at the
+                # staged name; preserve that only copy rather than deleting it.
+                if reversed_all:
+                    try:
+                        _drop_stage_db(cfg)
+                    except Exception:
+                        stage = "cleanup-failed"
+                for path in staged:
+                    if path in unreversed:
+                        continue
+                    try:
+                        _remove_stage_tree(cfg, path)
+                    except Exception:
+                        stage = "cleanup-failed"
+            if stop_attempted and not reversed_all:
+                stage = "stopped" if safe_to_reverse else "unknown"
+            elif stopped and cfg is not None and url:
+                try:
+                    _systemctl(cfg, "start", "start-failed")
+                    if _active_state(cfg, "start-failed") != "active":
+                        raise Failure("start-failed")
+                    _healthy(cfg, url)
+                except Exception:
+                    try:
+                        _systemctl(cfg, "stop", "stop-failed")
+                        stage = "stopped" if _active_state(cfg, "stop-failed") == "inactive" else "unknown"
+                    except Exception:
+                        stage = "unknown"
         _deed_once(reason, stage)
         if fd is not None:
             os.close(fd)
