@@ -200,6 +200,7 @@
     "storage/nas/drives",
     "storage/nas/folders",
     "storage/nas/key/probe",
+      "storage/nas/key/rekey",
     "storage/nas/list",
     "storage/nas/role/observe",
     "storage/nas/role/swap",
@@ -332,6 +333,10 @@
     [
       "key",
       "probe"
+    ],
+    [
+      "key",
+      "rekey"
     ],
     [
       "keyman",
@@ -759,6 +764,7 @@
     "/api/v1/storage/nas/detach",
     "/api/v1/storage/nas/drives",
     "/api/v1/storage/nas/key/probe",
+      "/api/v1/storage/nas/key/rekey",
     "/api/v1/storage/nas/list",
     "/api/v1/storage/nas/role/observe",
     "/api/v1/storage/nas/role/swap",
@@ -889,6 +895,7 @@
       "storage/nas/detach",
       "storage/nas/folders",
       "storage/nas/key/probe",
+      "storage/nas/key/rekey",
       "storage/nas/list",
       "storage/nas/role/swap",
       "storage/nas/seat",
@@ -929,6 +936,10 @@
       [
         "key",
         "probe"
+      ],
+      [
+        "key",
+        "rekey"
       ],
       [
         "keyman",
@@ -1136,6 +1147,7 @@
       "/api/v1/storage/nas/attach",
       "/api/v1/storage/nas/detach",
       "/api/v1/storage/nas/key/probe",
+      "/api/v1/storage/nas/key/rekey",
       "/api/v1/storage/nas/role/swap",
       "/api/v1/storage/nas/seat",
       "/api/v1/storage/nas/setup",

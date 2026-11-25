@@ -1,0 +1,10 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": "seat",
+  "sclerite": {"name": "nas", "features": {"nas": {
+    "band": true, "verbs": [["key", "rekey"]],
+    "routes": ["/api/v1/storage/nas/key/rekey"],
+    "administrative": {"band": true, "verbs": [["key", "rekey"]], "routes": ["/api/v1/storage/nas/key/rekey"]}
+  }}}
+}
