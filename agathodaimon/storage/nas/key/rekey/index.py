@@ -207,6 +207,29 @@ def perform(role, partition, old, keep):
         need = int(need_old) + int(need_own)
         if len(free) < need or room < need or (need_old and not any(s >= 2 for s in free)):
             _refuse("nas-rekey-no-free-slot", "slot-space")
+        # Empty target slots also consume area. Simulate the exact order and
+        # require enough peak space before changing the header.
+        planned_used, planned_own = set(used), set(own)
+        peak = 0
+        if need_old:
+            planned_used.add(min(s for s in free if s >= 2))
+            peak = len(planned_used) - len(used)
+        if need_own:
+            available = sorted(set(range(32)) - planned_used)
+            if not available:
+                _refuse("nas-rekey-no-free-slot", "slot-space")
+            temporary = available[0]
+            planned_used.add(temporary)
+            planned_own.add(temporary)
+            peak = max(peak, len(planned_used) - len(used))
+        for slot in (0, 1):
+            if slot not in planned_own:
+                planned_used.discard(slot)
+                planned_used.add(slot)
+                planned_own.add(slot)
+                peak = max(peak, len(planned_used) - len(used))
+        if len(free) < peak or room < peak:
+            _refuse("nas-rekey-no-free-slot", "slot-space")
 
         def add(slot, authorizer, new_key, kind):
             nonlocal writing
@@ -301,7 +324,9 @@ def main(argv=None):
         try:
             deed.record("nas-rekey", "nas-partition", receipt, started)
         except (OSError, ValueError, runtime.Refusal):
-            pass
+            if receipt["ok"]:
+                receipt.update(ok=False, firstMissingSignal="nas-rekey-slot-write-failed",
+                               failedStep="deed-log")
     if request is not None:
         receipt = attach(receipt, replace(request, secret_fields=(), secret_bytes={}))
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
