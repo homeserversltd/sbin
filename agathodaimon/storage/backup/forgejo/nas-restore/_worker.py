@@ -447,6 +447,21 @@ def _unit_checked(cfg):
             _inside(cfg["base"], command)
 
 
+def _stop_guard(cfg):
+    """Refuse before stop unless the service is the expected notify forge."""
+    try:
+        _unit_checked(cfg)
+    except Failure as error:
+        raise Failure("stop-failed") from error
+    info = _run(["/usr/bin/systemctl", "show", cfg["unit"],
+                 "--property=Type", "--property=ExecStart"], "stop-failed")
+    rows = dict(line.split("=", 1) for line in info.splitlines() if "=" in line)
+    paths = re.findall(r"(?:^|[ {;])path=([^ ;}]+)", rows.get("ExecStart", ""))
+    expected = str(cfg["work"] / "forgejo")
+    if rows.get("Type") != "notify" or paths != [expected]:
+        raise Failure("stop-failed")
+
+
 def _systemctl(cfg, action, reason):
     _unit_checked(cfg)
     return _run(["/usr/bin/systemctl", action, cfg["unit"]], reason, timeout=120)
@@ -617,8 +632,8 @@ def worker():
         fd = acquire(cfg)
         require_primary(cfg)
         validate_source(str(cfg["mount"]))
+        _stop_guard(cfg)
         repo, database, url = forge_config(cfg)
-        _unit_checked(cfg)
         stopped = True  # a timed-out stop can have taken effect
         _systemctl(cfg, "stop", "stop-failed")
         if _active_state(cfg, "stop-failed") != "inactive":
