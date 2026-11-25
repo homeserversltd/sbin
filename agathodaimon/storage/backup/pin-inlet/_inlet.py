@@ -109,18 +109,11 @@ def main(verb):
         if not isinstance(name, str) or NAME.fullmatch(name) is None:
             name = None
             raise ValueError("pin-inlet-name-invalid")
-        if password and password in name.encode():
-            name = None
-            raise ValueError("pin-inlet-value-invalid")
         if verb == "put":
             username = request.payload.get("username")
             if not isinstance(username, str) or MAC.fullmatch(username) is None:
                 raise ValueError("pin-inlet-username-invalid")
             if not isinstance(password, bytearray) or not 1 <= len(password) <= 511 or any(x in password for x in b'\0\r\n"'):
-                raise ValueError("pin-inlet-value-invalid")
-            # Public fields are passed on argv and can otherwise contain the PIN.
-            if password in name.encode() or password in username.encode():
-                name = None
                 raise ValueError("pin-inlet-value-invalid")
             result["name"] = name
         root = context()
