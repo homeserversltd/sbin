@@ -125,6 +125,7 @@
     "storage/backup/forgejo/backup-b2/run",
     "storage/backup/forgejo/credential",
     "storage/backup/forgejo/nas-export",
+    "storage/backup/forgejo/nas-restore",
     "storage/backup/forgejo/skip-check",
     "storage/backup/ledger",
     "storage/backup/mirror/serve",

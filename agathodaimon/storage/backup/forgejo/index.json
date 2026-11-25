@@ -3,6 +3,7 @@
     "credential",
     "backup-b2",
     "nas-export",
+    "nas-restore",
     "skip-check"
   ],
   "sclerite": {
