@@ -50,15 +50,10 @@ def _health(disk, transport):
 
 
 def _errors(disk):
-    name = disk.removeprefix("/dev/")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
-        return None
-    try:
-        text = Path("/sys/block", name, "device/ioerr_cnt").read_text(encoding="ascii").strip()
-        value = int(text, 16)
-        return value if value >= 0 else None
-    except (OSError, ValueError, UnicodeError):
-        return None
+    # Linux's ioerr_cnt counts failed SCSI commands of every kind, not just
+    # reads.  It cannot truthfully populate the seat's read-error field.
+    del disk
+    return None
 
 
 def observe():
@@ -132,16 +127,18 @@ def observe():
 
         for row in tree:
             visit(row)
-        if len(matches) > 1:
-            return result
-        # Compare the active mount's device with the labelled partition tree,
-        # including a mapped descendant such as a LUKS volume.
+        # Only matching partitions backing the active mount can be the card.
+        # Other attached disks may legitimately carry the same role label.
         result.update(ok=True, firstMissingSignal="none")
-        if not matches or mounted_id is None:
+        if mounted_id is None:
             return result
-        disk, partition = matches[0]
-        if mounted_id not in descendants(partition):
+        mounted_matches = [(disk, part) for disk, part in matches if mounted_id in descendants(part)]
+        if len(mounted_matches) > 1:
+            result.update(ok=False, firstMissingSignal="backup-drive-card-unavailable")
             return result
+        if not mounted_matches:
+            return result
+        disk, partition = mounted_matches[0]
         model = disk.get("model")
         if not isinstance(model, str) or len(model) > 64 or not re.fullmatch(r"[\x20-\x2e\x30-\x7e]*", model):
             model = None
@@ -153,12 +150,22 @@ def observe():
             size = None
         result.update(present=True, model=model, sizeBytes=size, transport=transport,
                       health=_health(disk["path"], disk.get("tran")), readErrors=_errors(disk["path"]))
+        fd = None
         try:
-            space = os.statvfs(MOUNT)
-            result["usedBytes"] = (space.f_blocks - space.f_bfree) * space.f_frsize
-            result["freeBytes"] = space.f_bavail * space.f_frsize
+            # Pin the mount used for the space measurement. If it changed
+            # after the census, leave those facts unknown rather than mixing
+            # the backup drive with a replacement filesystem.
+            fd = os.open(MOUNT, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+            stat = os.fstat(fd)
+            if f"{os.major(stat.st_dev)}:{os.minor(stat.st_dev)}" == mounted_id:
+                space = os.fstatvfs(fd)
+                result["usedBytes"] = (space.f_blocks - space.f_bfree) * space.f_frsize
+                result["freeBytes"] = space.f_bavail * space.f_frsize
         except OSError:
             pass
+        finally:
+            if fd is not None:
+                os.close(fd)
         return result
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, UnicodeError, RecursionError):
         result.update(ok=False, present=False, model=None, sizeBytes=None, usedBytes=None,
