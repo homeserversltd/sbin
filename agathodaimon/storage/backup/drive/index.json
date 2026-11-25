@@ -1,4 +1,4 @@
 {
-  "children": ["ask", "status"],
+  "children": ["ask", "status", "card"],
   "sclerite": {"name": "backup-drive", "features": {}}
 }

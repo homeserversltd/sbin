@@ -171,6 +171,7 @@
     "storage/backup/backblaze/snapshots",
     "storage/backup/backblaze/status",
     "storage/backup/drive/ask",
+    "storage/backup/drive/card",
     "storage/backup/drive/status",
     "storage/backup/forgejo/backup-b2/plan",
     "storage/backup/forgejo/backup-b2/run",
