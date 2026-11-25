@@ -253,15 +253,32 @@ def destination(cfg, create):
             os.mkdir("forgejo", mode=0o750, dir_fd=cur)
             basefd = directory(cur, "forgejo", mount_id)
         opened.append(basefd)
+        try:
+            container = directory(basefd, "nas", mount_id)
+            created = False
+        except FileNotFoundError:
+            if not create:
+                return None, None, None
+            os.mkdir("nas", mode=0o750, dir_fd=basefd)
+            container = directory(basefd, "nas", mount_id)
+            created = True
+        opened.append(container)
+        info = os.fstat(container)
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise Failure("copy-failed")
+        if created:
+            gid = 0 if cfg["proof"] else grp.getgrnam("git").gr_gid
+            os.fchown(container, 0, gid)
+            os.fchmod(container, 0o750)
         generations = []
         for name in ("export", "export.new"):
             try:
-                item = directory(basefd, name, mount_id)
+                item = directory(container, name, mount_id)
                 opened.append(item)
             except FileNotFoundError:
                 item = None
             generations.append(item)
-        result = (basefd, *generations)
+        result = (container, *generations)
         for item in result:
             if item is not None:
                 opened.remove(item)
