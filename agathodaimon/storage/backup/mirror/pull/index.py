@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import http.client
 import ipaddress
 import json
 import os
@@ -64,6 +65,27 @@ def seat():
     if type(port) is not int or not 0 < port < 65536:
         port = 8787
     return host, port
+
+
+def prove_home(host, port, mac):
+    connection = None
+    try:
+        connection = http.client.HTTPConnection(host, port, timeout=5)
+        connection.request("GET", "/api/v1/ruyi?seat=1")
+        response = connection.getresponse()
+        body = response.read(65536)
+        if response.status != 200 or len(body) == 65536:
+            raise ValueError("invalid seat response")
+        value = json.loads(body)
+        peer = value.get("seat", {}).get("mac")
+        if (value.get("ok") is not True or value.get("service") != "caduceus"
+                or not isinstance(peer, str) or peer.lower() != mac):
+            raise ValueError("unproven seat")
+    except Exception:
+        raise nas.Refusal("mirror-home-unproven") from None
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def run_rsync(host, port, username, password, dest, cap, dry_run):
@@ -226,6 +248,13 @@ def pull(metadata):
         if baseline is not None and (not isinstance(baseline, dict) or any(
                 type(baseline.get(k)) is not int or baseline[k] < 0 for k in ("fileCount", "totalBytes"))):
             raise nas.Refusal("mirror-baseline-invalid")
+        home = metadata.get("home")
+        if home is None:
+            raise nas.Refusal("mirror-home-unenrolled")
+        if (not isinstance(home, dict) or set(home) != {"mac"}
+                or not isinstance(home["mac"], str)
+                or not re.fullmatch(r"[0-9a-f]{2}(?::[0-9a-f]{2}){5}", home["mac"])):
+            raise nas.Refusal("mirror-request-invalid")
         lock = nas.acquire_lock()
         nas.checked(result["checks"], "single-instance-lock")
         dest, scratch = (context[4], True) if context else (Path("/mnt/nas_backup"), False)
@@ -243,7 +272,8 @@ def pull(metadata):
         files, size = nas.measure(dest)
         nas.checked(result["checks"], "destination-measured", fileCount=files, totalBytes=size)
         host, port = (context[2], context[3]) if context else seat()
-        result["homeserver"] = {"ipv4": host, "port": port}
+        prove_home(host, port, home["mac"])
+        result["homeserver"] = {"ipv4": host, "port": port, "mac": home["mac"]}
         username, password = (export_credential("backup_pair", scratch_root=context[0], exporter=context[1])
                               if context else export_credential("backup_pair"))
         if not username or not password:
