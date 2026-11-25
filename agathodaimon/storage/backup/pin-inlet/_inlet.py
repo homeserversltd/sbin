@@ -120,6 +120,22 @@ def main(verb):
         with held("pin-inlet", path=identity_lock_path().parent / "pin-inlet.lock"):
             if verb == "put":
                 result["replaced"] = exists(root, name)
+                if result["replaced"]:
+                    try:
+                        if root:
+                            username_bytes, exported = export_credential(name, scratch_root=root, exporter=KEYMAN)
+                        else:
+                            username_bytes, exported = export_credential(name)
+                        matches = username_bytes == username.encode("ascii")
+                    except KeymanExportError:
+                        matches = False
+                    finally:
+                        if username_bytes is not None:
+                            wipe_bytes(username_bytes)
+                        if exported is not None:
+                            wipe_bytes(exported)
+                    if not matches:
+                        raise ValueError("pin-inlet-name-taken")
                 if not newkey(name, username, password):
                     raise RuntimeError("store")
             elif verb == "delete":
@@ -144,7 +160,7 @@ def main(verb):
                 result["password"] = exported.decode("utf-8")
         result.update(ok=True, firstMissingSignal="none")
     except ValueError as error:
-        if str(error) in {"pin-inlet-name-invalid", "pin-inlet-username-invalid", "pin-inlet-value-invalid", "pin-inlet-missing"}:
+        if str(error) in {"pin-inlet-name-invalid", "pin-inlet-username-invalid", "pin-inlet-value-invalid", "pin-inlet-missing", "pin-inlet-name-taken"}:
             result["firstMissingSignal"] = str(error)
     except Exception:
         pass
