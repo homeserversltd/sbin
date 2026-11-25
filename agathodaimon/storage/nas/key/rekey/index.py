@@ -324,9 +324,7 @@ def main(argv=None):
         try:
             deed.record("nas-rekey", "nas-partition", receipt, started)
         except (OSError, ValueError, runtime.Refusal):
-            if receipt["ok"]:
-                receipt.update(ok=False, firstMissingSignal="nas-rekey-slot-write-failed",
-                               failedStep="deed-log")
+            runtime._record(receipt, "deed-log", False)
     if request is not None:
         receipt = attach(receipt, replace(request, secret_fields=(), secret_bytes={}))
     print(json.dumps(receipt, sort_keys=True, separators=(",", ":")))
