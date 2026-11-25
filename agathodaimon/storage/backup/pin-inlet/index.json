@@ -1,0 +1,4 @@
+{
+  "children": ["put", "delete", "export"],
+  "sclerite": {"name": "all", "features": {}}
+}

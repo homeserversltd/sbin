@@ -1,0 +1,7 @@
+{
+  "children": [],
+  "mutation_allowed": "seat",
+  "envelope": {"stdin": "json"},
+  "hand": "envelope",
+  "sclerite": {"name": "gateway", "features": {"gateway": {"band": true, "administrative": {"band": true}}}}
+}
