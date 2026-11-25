@@ -1,8 +1,10 @@
 """Set or observe the household Harmonia safe-module list."""
 from importlib import import_module
 import json
+import os
 import re
 import stat
+import tempfile
 
 from agathodaimon import _deed, _envelope
 from agathodaimon._nidus.lock import household_config_held
@@ -51,6 +53,37 @@ def _splice(raw, document, modules):
     return _writer._insert_member(raw, section_start, section_end, "safe_modules", rendered)
 
 
+def _atomic_write(path, payload, metadata):
+    # Unlike the sibling helper, the replace is the last fallible step that
+    # can change the answer. Directory sync and cleanup cannot undo the act.
+    fd, temporary = tempfile.mkstemp(prefix=".config.", dir=path.parent)
+    replaced = False
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fchmod(handle.fileno(), stat.S_IMODE(metadata.st_mode))
+            if os.geteuid() == 0:
+                os.fchown(handle.fileno(), metadata.st_uid, metadata.st_gid)
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        replaced = True
+    finally:
+        if not replaced:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+    try:
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except OSError:
+        pass
+
+
 def _operate(module, mode):
     path = appliance_runtime_path("config")
     if module is None:
@@ -78,12 +111,7 @@ def _operate(module, mode):
                 return _receipt(module, mode, modules)
             updated = _splice(raw, document, modules).encode("utf-8")
             metadata = path.stat()
-            try:
-                _writer._atomic_write(path, updated, stat.S_IMODE(metadata.st_mode), metadata.st_uid, metadata.st_gid, ".config.")
-            except OSError:
-                # The shared writer may fail in directory fsync after replace.
-                if path.read_bytes() != updated:
-                    raise
+            _atomic_write(path, updated, metadata)
             committed = _receipt(module, mode, modules, changed=True)
     except OSError:
         if committed is None:
