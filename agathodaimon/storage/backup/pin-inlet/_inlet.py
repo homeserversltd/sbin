@@ -116,6 +116,10 @@ def main(verb):
             if not isinstance(password, bytearray) or not 1 <= len(password) <= 511 or any(x in password for x in b'\0\r\n"'):
                 raise ValueError("pin-inlet-value-invalid")
             result["name"] = name
+        elif verb == "delete":
+            username = request.payload.get("username")
+            if not isinstance(username, str) or MAC.fullmatch(username) is None:
+                raise ValueError("pin-inlet-username-invalid")
         root = context()
         with held("pin-inlet", path=identity_lock_path().parent / "pin-inlet.lock"):
             if verb == "put":
@@ -140,9 +144,23 @@ def main(verb):
                     raise RuntimeError("store")
             elif verb == "delete":
                 if exists(root, name):
-                    if not delete(root, name):
-                        raise RuntimeError("delete")
-                    result["deleted"] = True
+                    try:
+                        if root:
+                            username_bytes, exported = export_credential(name, scratch_root=root, exporter=KEYMAN)
+                        else:
+                            username_bytes, exported = export_credential(name)
+                        matches = username_bytes == username.encode("ascii")
+                    except Exception:
+                        matches = False
+                    finally:
+                        if username_bytes is not None:
+                            wipe_bytes(username_bytes)
+                        if exported is not None:
+                            wipe_bytes(exported)
+                    if matches:
+                        if not delete(root, name):
+                            raise RuntimeError("delete")
+                        result["deleted"] = True
             else:
                 try:
                     if root:
