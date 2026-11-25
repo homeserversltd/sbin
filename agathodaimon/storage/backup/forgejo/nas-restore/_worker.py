@@ -1,7 +1,6 @@
-"""Forgejo NAS restore preflight and R3a worker.
+"""Forgejo NAS restore through the health commit (R3b2).
 
-This section stops after the second no-stomp gate. It is not a full restore;
-it must not be admitted without the remaining restore sections.
+Owner re-key and CI adoption remain R3c; do not admit this partial restore.
 """
 from __future__ import annotations
 
@@ -1029,22 +1028,18 @@ def worker():
             else:
                 unreversed = {path for _, path in changed_trees}
             if staged is not None and safe_to_reverse:
-                # A failed exchange-back leaves the previous live tree at the
-                # staged name; preserve that only copy rather than deleting it.
-                if reversed_all:
-                    try:
-                        _drop_stage_db(cfg)
-                    except Exception:
-                        stage = "cleanup-failed"
+                try:
+                    _drop_stage_db(cfg)
+                except Exception:
+                    stage = "cleanup-failed"
                 for path in staged:
-                    if path in unreversed:
-                        continue
                     try:
                         _remove_stage_tree(cfg, path)
                     except Exception:
                         stage = "cleanup-failed"
             if stop_attempted and not reversed_all:
-                stage = "stopped" if safe_to_reverse else "unknown"
+                state = "stopped" if safe_to_reverse else "unknown"
+                stage = state + "-cleanup-failed" if stage == "cleanup-failed" else state
             elif stopped and cfg is not None and url:
                 try:
                     _systemctl(cfg, "start", "start-failed")
@@ -1054,9 +1049,10 @@ def worker():
                 except Exception:
                     try:
                         _systemctl(cfg, "stop", "stop-failed")
-                        stage = "stopped" if _active_state(cfg, "stop-failed") == "inactive" else "unknown"
+                        state = "stopped" if _active_state(cfg, "stop-failed") == "inactive" else "unknown"
+                        stage = state + "-cleanup-failed" if stage == "cleanup-failed" else state
                     except Exception:
-                        stage = "unknown"
+                        stage = "unknown-cleanup-failed" if stage == "cleanup-failed" else "unknown"
         _deed_once(reason, stage)
         if fd is not None:
             os.close(fd)
