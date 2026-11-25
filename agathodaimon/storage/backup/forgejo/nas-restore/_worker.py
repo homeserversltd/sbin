@@ -750,7 +750,11 @@ def _prior_tree_tokens(cfg, repo):
 
 def _kept_prior(cfg, repo):
     trees = _prior_tree_tokens(cfg, repo)
-    names = _db_inventory(cfg)
+    try:
+        names = _db_inventory(cfg)
+    except Failure as error:
+        error.kept = trees
+        raise
     return (["kept-prior-db"] if "forgejo_before_restore" in names else []) + trees
 
 
