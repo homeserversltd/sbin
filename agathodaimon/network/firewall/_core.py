@@ -22,6 +22,7 @@ DEFAULT_POLICY = Path("/etc/unbound/unbound.conf.d/agathodaimon-child-policy.con
 DEFAULT_UNBOUND_CONFIG = Path("/etc/unbound/unbound.conf")
 DEFAULT_NFT = Path("/etc/nftables.d/caduceus-child-filter.nft")
 DEFAULT_NFTABLES_CONFIG = Path("/etc/nftables.conf")
+HOME_ZONES = ("home.arpa.", "home.local.")
 CHECKCONF = Path("/usr/sbin/unbound-checkconf")
 NFT = Path("/usr/sbin/nft")
 UNBOUND_CONTROL = Path("/usr/sbin/unbound-control")
@@ -64,6 +65,7 @@ class FileImage:
 class NftState:
     policies: dict[str, dict[str, Any]]
     doh_resolvers: tuple[str, ...]
+    has_set: bool = False
 
 
 def _receipt(action: str, ok: bool, changed: bool, message: str,
@@ -129,26 +131,7 @@ def view_name(mac: str) -> str:
 
 
 def _global_local_zones(path: Path, runner: Callable[[list[str]], tuple[bool, str, str]]) -> tuple[str, ...]:
-    ok, output, _error = runner([str(CHECKCONF), "-o", "local-zone", str(path)])
-    if not ok or not isinstance(output, str) or len(output.encode("utf-8")) > MAX_OUTPUT_BYTES:
-        raise FirewallRefused("firewall-operation-unavailable")
-    zones: set[str] = set()
-    for raw in output.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("local-zone:"):
-            line = line[len("local-zone:"):].strip()
-        match = re.fullmatch(r'(?:"([^"\s]+)"|(\S+))\s+([A-Za-z][A-Za-z0-9_-]*)', line)
-        if match is None:
-            raise FirewallRefused("firewall-operation-unavailable")
-        name = (match.group(1) or match.group(2)).lower()
-        if name != "." and not name.endswith("."):
-            name += "."
-        if name == "." or not _valid_unbound_zone_name(name):
-            raise FirewallRefused("firewall-operation-unavailable")
-        zones.add(name)
-    return tuple(sorted(zones))
+    return HOME_ZONES
 
 
 def _wan_interface(path: Path) -> str:
@@ -172,7 +155,7 @@ def _wan_interface(path: Path) -> str:
     return values[0]
 
 
-def _render_unbound(policies: dict[str, dict[str, Any]], global_zones: Sequence[str]) -> bytes | None:
+def _render_unbound(policies: dict[str, dict[str, Any]], global_zones: Sequence[str], *, preserve_legacy: bool = False) -> bytes | None:
     allowlisted = {mac: policy for mac, policy in policies.items()
                    if policy.get("way", "allowlist") == "allowlist"}
     if not allowlisted:
@@ -191,12 +174,15 @@ def _render_unbound(policies: dict[str, dict[str, Any]], global_zones: Sequence[
     for mac, policy in sorted(allowlisted.items()):
         lines.append(f'    access-control-view: {policy["ip"]}/32 "{view_name(mac)}"')
     for mac, policy in sorted(allowlisted.items()):
-        lines.extend(("view:", f'    name: "{view_name(mac)}"', "    view-first: yes",
-                      '    local-zone: "." refuse'))
+        legacy = preserve_legacy and policy.get("legacy_dns", False)
+        lines.extend(("view:", f'    name: "{view_name(mac)}"'))
+        if not legacy:
+            lines.append("    view-first: yes")
+        lines.append('    local-zone: "." refuse')
         hostnames = canonical_fqdns(policy.get("hostnames", []))
         if set(hostnames) & normalized_global:
             raise FirewallRefused("firewall-hostname-global-zone-conflict")
-        zones = normalized_global | set(hostnames)
+        zones = set(hostnames) if legacy else normalized_global | set(hostnames)
         lines.extend(f'    local-zone: "{name}" transparent' for name in sorted(zones))
     return ("\n".join(lines) + "\n").encode("ascii")
 
@@ -232,12 +218,13 @@ def _parse_unbound(data: bytes, global_zones: Sequence[str]) -> dict[str, dict[s
     parsed: dict[str, dict[str, Any]] = {}
     expected_global = set(global_zones)
     while cursor < len(lines):
-        if lines[cursor] != "view:" or cursor + 3 >= len(lines):
+        if lines[cursor] != "view:" or cursor + 2 >= len(lines):
             raise FirewallRefused("firewall-unbound-owned-file-foreign-content")
         name_match = VIEW_NAME.fullmatch(lines[cursor + 1])
-        root_match = ZONE.fullmatch(lines[cursor + 3])
-        if (name_match is None or lines[cursor + 2] != "    view-first: yes"
-                or root_match is None or root_match.groups() != (".", "refuse")):
+        legacy = lines[cursor + 2] != "    view-first: yes"
+        root_index = cursor + (2 if legacy else 3)
+        root_match = ZONE.fullmatch(lines[root_index]) if root_index < len(lines) else None
+        if name_match is None or root_match is None or root_match.groups() != (".", "refuse"):
             raise FirewallRefused("firewall-unbound-owned-file-foreign-content")
         name = name_match.group(1)
         prefix = "agathodaimon-child-"
@@ -246,7 +233,7 @@ def _parse_unbound(data: bytes, global_zones: Sequence[str]) -> dict[str, dict[s
         mac = canonical_mac(name[len(prefix):])
         if mac in parsed or access.get(mac) is None or name != view_name(mac):
             raise FirewallRefused("firewall-unbound-policy-mismatch")
-        cursor += 4
+        cursor = root_index + 1
         transparent: list[str] = []
         while cursor < len(lines) and lines[cursor] != "view:":
             zone = ZONE.fullmatch(lines[cursor])
@@ -257,18 +244,18 @@ def _parse_unbound(data: bytes, global_zones: Sequence[str]) -> dict[str, dict[s
                 raise FirewallRefused("firewall-unbound-owned-file-invalid")
             transparent.append(zone_name)
             cursor += 1
-        if not expected_global.issubset(set(transparent)):
+        if not legacy and not expected_global.issubset(set(transparent)):
             raise FirewallRefused("firewall-unbound-policy-mismatch")
-        names = [zone for zone in transparent if zone not in expected_global]
+        names = transparent if legacy else [zone for zone in transparent if zone not in expected_global]
         if len(names) > MAX_FQDNS:
             raise FirewallRefused("firewall-unbound-owned-file-invalid")
         canonical = canonical_fqdns(names)
         if canonical != sorted(names):
             raise FirewallRefused("firewall-unbound-owned-file-invalid")
-        parsed[mac] = {"mac": mac, "ip": access[mac], "way": "allowlist", "hostnames": canonical}
+        parsed[mac] = {"mac": mac, "ip": access[mac], "way": "allowlist", "hostnames": canonical, "legacy_dns": legacy}
     if set(parsed) != set(access):
         raise FirewallRefused("firewall-unbound-policy-mismatch")
-    if _render_unbound(parsed, global_zones) != data:
+    if _render_unbound(parsed, global_zones, preserve_legacy=True) != data:
         raise FirewallRefused("firewall-unbound-owned-file-foreign-content")
     return parsed
 
@@ -316,17 +303,19 @@ def _canonical_resolvers(values: Sequence[str]) -> tuple[str, ...]:
 
 
 def _nft_bytes(policies: dict[str, dict[str, Any]], wan_if: str,
-               doh_resolvers: Sequence[str] | None = None) -> bytes:
+               doh_resolvers: Sequence[str] | None = None, *, preserve_legacy: bool = False) -> bytes:
     allowlisted = {mac: policy for mac, policy in policies.items()
                    if policy.get("way", "allowlist") == "allowlist"}
-    if allowlisted:
+    modern = {mac: policy for mac, policy in allowlisted.items()
+              if not (preserve_legacy and policy.get("legacy_nft", False))}
+    if modern:
         resolvers = _canonical_resolvers(doh_resolvers) if doh_resolvers is not None else _resolver_addresses()
-        if not resolvers:
+        if doh_resolvers is None and not resolvers:
             raise FirewallRefused("firewall-nft-resolver-presets-invalid")
     else:
         resolvers = ()
     lines = ["table inet caduceus_child_filter {"]
-    if allowlisted:
+    if modern:
         lines.extend(("    set doh_resolvers {", "        type ipv4_addr",
                       "        elements = { " + ", ".join(resolvers) + " }", "    }"))
     lines.extend(("    chain forward {", "        type filter hook forward priority -5; policy accept;"))
@@ -340,6 +329,8 @@ def _nft_bytes(policies: dict[str, dict[str, Any]], wan_if: str,
         ip, router = policy["ip"], policy["router"]
         lines.append(f"        ether saddr {mac} ip saddr {ip} udp dport 53 ip daddr != {router} drop")
         lines.append(f"        ether saddr {mac} ip saddr {ip} tcp dport 53 ip daddr != {router} drop")
+        if preserve_legacy and policy.get("legacy_nft", False):
+            continue
         lines.append(f'        ether saddr {mac} oifname "{wan_if}" udp dport 853 drop')
         lines.append(f'        ether saddr {mac} oifname "{wan_if}" tcp dport 853 drop')
         lines.append(f'        ether saddr {mac} oifname "{wan_if}" ip daddr @doh_resolvers tcp dport 443 drop')
@@ -353,7 +344,7 @@ def _nft_inert_bytes(data: bytes) -> bool:
 
 
 def _policy_state(rules: list[dict[str, Any]], doh_resolvers: tuple[str, ...],
-                  *, signal: str) -> NftState:
+                  *, signal: str, has_set: bool) -> NftState:
     seen: set[tuple[tuple[str, Any], ...]] = set()
     grouped: dict[str, dict[str, Any]] = {}
     counts: dict[str, dict[str, set[str]]] = {}
@@ -414,12 +405,14 @@ def _policy_state(rules: list[dict[str, Any]], doh_resolvers: tuple[str, ...],
                 raise FirewallRefused(signal)
             continue
         expected = {"dns": {"tcp", "udp"}, "dot": {"tcp", "udp"}, "doh": {"tcp", "udp"}}
-        if counts.get(mac) != expected or policy["ip"] is None or policy["router"] is None:
+        legacy = counts.get(mac) == {"dns": {"tcp", "udp"}}
+        if (not legacy and counts.get(mac) != expected) or policy["ip"] is None or policy["router"] is None:
             raise FirewallRefused(signal)
-    allowlisted = any(policy["way"] == "allowlist" for policy in grouped.values())
-    if allowlisted != bool(doh_resolvers):
+        policy["legacy_nft"] = legacy
+    modern = any(policy["way"] == "allowlist" and not policy.get("legacy_nft") for policy in grouped.values())
+    if modern != has_set:
         raise FirewallRefused(signal)
-    return NftState(grouped, doh_resolvers)
+    return NftState(grouped, doh_resolvers, has_set)
 
 
 def _parse_nft(data: bytes, wan_if: str) -> NftState:
@@ -436,13 +429,14 @@ def _parse_nft(data: bytes, wan_if: str) -> NftState:
         raise FirewallRefused("firewall-nft-owned-file-foreign-content")
     cursor = 1
     resolvers: tuple[str, ...] = ()
-    if cursor < len(lines) and lines[cursor] == "    set doh_resolvers {":
+    has_set = cursor < len(lines) and lines[cursor] == "    set doh_resolvers {"
+    if has_set:
         if cursor + 3 >= len(lines) or lines[cursor + 1] != "        type ipv4_addr" or lines[cursor + 3] != "    }":
             raise FirewallRefused("firewall-nft-owned-file-foreign-content")
-        element_match = re.fullmatch(r"        elements = \{ (.+) \}", lines[cursor + 2])
+        element_match = re.fullmatch(r"        elements = \{ (.*?) \}", lines[cursor + 2])
         if element_match is None:
             raise FirewallRefused("firewall-nft-owned-file-foreign-content")
-        resolvers = _canonical_resolvers([part.strip() for part in element_match.group(1).split(",")])
+        resolvers = _canonical_resolvers([part.strip() for part in element_match.group(1).split(",")] if element_match.group(1) else [])
         cursor += 4
     if (cursor + 3 > len(lines) or lines[cursor] != "    chain forward {"
             or lines[cursor + 1] != "        type filter hook forward priority -5; policy accept;"
@@ -481,8 +475,12 @@ def _parse_nft(data: bytes, wan_if: str) -> NftState:
                           "protocol": match.group(3), "dport": 443, "doh": "doh_resolvers"})
             continue
         raise FirewallRefused("firewall-nft-owned-file-foreign-content")
-    state = _policy_state(rules, resolvers, signal="firewall-nft-owned-file-invalid")
-    if _nft_bytes(state.policies, wan_if, state.doh_resolvers) != data:
+    state = _policy_state(rules, resolvers, signal="firewall-nft-owned-file-invalid", has_set=has_set)
+    rendered = _nft_bytes(state.policies, wan_if, state.doh_resolvers, preserve_legacy=True)
+    if has_set:
+        canonical_line = "        elements = { " + ", ".join(state.doh_resolvers) + " }"
+        rendered = rendered.replace(canonical_line.encode("ascii"), lines[3].encode("ascii"), 1)
+    if rendered != data:
         raise FirewallRefused("firewall-nft-owned-file-foreign-content")
     return state
 
@@ -640,10 +638,7 @@ def _parse_live_nft(text: str, wan_if: str) -> NftState:
             raise FirewallRefused("firewall-nft-live-table-mismatch")
     if table_count != 1 or chain_count != 1 or set_count > 1 or metainfo_count > 1:
         raise FirewallRefused("firewall-nft-live-table-mismatch")
-    state = _policy_state(rules, resolvers, signal="firewall-nft-live-rule-mismatch")
-    has_allowlist = any(policy["way"] == "allowlist" for policy in state.policies.values())
-    if set_count != (1 if has_allowlist else 0):
-        raise FirewallRefused("firewall-nft-live-set-mismatch")
+    state = _policy_state(rules, resolvers, signal="firewall-nft-live-rule-mismatch", has_set=bool(set_count))
     return state
 
 
@@ -654,12 +649,12 @@ def _nft_policy_key(policies: dict[str, dict[str, Any]]) -> tuple[tuple[Any, ...
         if way == "blocked":
             values.append((mac, way, None, None))
         else:
-            values.append((mac, way, policy.get("ip"), policy.get("router")))
+            values.append((mac, way, policy.get("ip"), policy.get("router"), bool(policy.get("legacy_nft"))))
     return tuple(sorted(values))
 
 
-def _nft_state_key(state: NftState) -> tuple[tuple[tuple[Any, ...], ...], tuple[str, ...]]:
-    return _nft_policy_key(state.policies), tuple(sorted(state.doh_resolvers))
+def _nft_state_key(state: NftState) -> tuple[Any, ...]:
+    return _nft_policy_key(state.policies), tuple(sorted(state.doh_resolvers)), state.has_set
 
 
 def _expected_live_table(image: FileImage) -> bool:
@@ -994,7 +989,7 @@ def _valid_unbound_zone_name(name: str) -> bool:
 
 
 def _prove_live_dns(mac: str, hostnames: list[str], global_zones: Sequence[str],
-                    runner: Callable[[list[str]], tuple[bool, str, str]]) -> None:
+                    runner: Callable[[list[str]], tuple[bool, str, str]], *, legacy: bool = False) -> None:
     requested_view = view_name(mac)
     ok, output, error = runner([str(UNBOUND_CONTROL), "view_list_local_zones", requested_view])
     if _unbound_view_missing(output, requested_view):
@@ -1021,7 +1016,8 @@ def _prove_live_dns(mac: str, hostnames: list[str], global_zones: Sequence[str],
             raise FirewallRefused("firewall-unbound-live-readback-invalid")
         zones.add(pair)
     expected = {(".", "refuse")}
-    expected.update((name, "transparent") for name in global_zones)
+    if not legacy:
+        expected.update((name, "transparent") for name in global_zones)
     expected.update((name, "transparent") for name in hostnames)
     if zones != expected:
         raise FirewallRefused("firewall-unbound-live-zone-mismatch")
@@ -1294,14 +1290,16 @@ def _validate_intent(intent: Any) -> tuple[str, str | None, list[str] | None, st
 def _live_state(policies: dict[str, dict[str, Any]], doh_resolvers: Sequence[str], expected_table: bool,
                 global_zones: Sequence[str], wan_if: str,
                 runner: Callable[[list[str]], tuple[bool, str, str]]) -> None:
-    expected = NftState(policies, tuple(doh_resolvers))
+    has_set = any(policy.get("way", "allowlist") == "allowlist" and not policy.get("legacy_nft", False)
+                  for policy in policies.values())
+    expected = NftState(policies, tuple(doh_resolvers), has_set)
     _prove_live_nft(expected, expected_table, runner, wan_if)
     for mac, policy in policies.items():
         way = policy.get("way", "allowlist")
         if way == "blocked":
             _prove_live_dns_absent(mac, runner)
         elif way == "allowlist":
-            _prove_live_dns(mac, policy["hostnames"], global_zones, runner)
+            _prove_live_dns(mac, policy["hostnames"], global_zones, runner, legacy=policy.get("legacy_dns", False))
         else:
             raise FirewallRefused("firewall-way-invalid")
 
@@ -1326,7 +1324,7 @@ def _read_images(policy_path: Path, nft_path: Path, parents: dict[str, int],
         unbound = unbound_policies[mac]
         if unbound["ip"] != item["ip"]:
             raise FirewallRefused("firewall-owned-policy-mismatch")
-        policies[mac] = {**item, "hostnames": list(unbound["hostnames"])}
+        policies[mac] = {**item, "hostnames": list(unbound["hostnames"]), "legacy_dns": unbound["legacy_dns"]}
     return (policy_image, nft_image, policies, nft_state.doh_resolvers, global_zones,
             _revision(policy_image, nft_image))
 
@@ -1356,6 +1354,8 @@ def _apply_transaction(action: str, policy_path: Path, nft_path: Path, parents: 
                        global_zones: Sequence[str], wan_if: str,
                        runner: Callable[[list[str]], tuple[bool, str, str]],
                        removed_mac: str | None = None) -> dict[str, Any]:
+    new_policies = {mac: {key: value for key, value in policy.items() if key not in {"legacy_dns", "legacy_nft"}}
+                    for mac, policy in new_policies.items()}
     policy_parent, nft_parent = parents[str(policy_path.parent)], parents[str(nft_path.parent)]
     expected_table = _expected_live_table(nft_source)
     old_nft_state = _parse_nft(nft_source.data, wan_if) if nft_source.exists else NftState({}, ())
@@ -1499,7 +1499,8 @@ def _apply_transaction(action: str, policy_path: Path, nft_path: Path, parents: 
                     if old_policy.get("way", "allowlist") == "blocked":
                         _prove_live_dns_absent(old_mac, runner)
                     else:
-                        _prove_live_dns(old_mac, old_policy["hostnames"], global_zones, runner)
+                        _prove_live_dns(old_mac, old_policy["hostnames"], global_zones, runner,
+                                        legacy=old_policy.get("legacy_dns", False))
                 for added_mac in sorted(set(new_policies) - set(old_policies)):
                     _prove_live_dns_absent(added_mac, runner)
             except Exception:
@@ -1537,9 +1538,6 @@ def _enforce_readback(policy_path: Path, nft_path: Path, policy_image: FileImage
     manager = _dhcp_manager(manager_factory)
     bound = _bind_policies(policies, manager)
     disk_nft = _parse_nft(nft_image.data, wan_if) if nft_image.exists else NftState({}, ())
-    if any(policy.get("way", "allowlist") == "allowlist" for policy in bound.values()):
-        if disk_nft.doh_resolvers != _resolver_addresses():
-            raise FirewallRefused("firewall-nft-resolver-presets-mismatch")
     for mac, policy in bound.items():
         if policy.get("way", "allowlist") == "allowlist" and disk_nft.policies[mac]["router"] != policy["router"]:
             raise FirewallRefused("firewall-dhcp-router-binding-mismatch")
