@@ -22,7 +22,7 @@ DEFAULT_POLICY = Path("/etc/unbound/unbound.conf.d/agathodaimon-child-policy.con
 DEFAULT_UNBOUND_CONFIG = Path("/etc/unbound/unbound.conf")
 DEFAULT_NFT = Path("/etc/nftables.d/caduceus-child-filter.nft")
 DEFAULT_NFTABLES_CONFIG = Path("/etc/nftables.conf")
-HOME_ZONES = ("home.arpa.", "home.local.")
+HOME_ZONES = ("home.arpa.", "home.local.", "168.192.in-addr.arpa.", "10.in-addr.arpa.")
 CHECKCONF = Path("/usr/sbin/unbound-checkconf")
 NFT = Path("/usr/sbin/nft")
 UNBOUND_CONTROL = Path("/usr/sbin/unbound-control")
@@ -180,9 +180,9 @@ def _render_unbound(policies: dict[str, dict[str, Any]], global_zones: Sequence[
             lines.append("    view-first: yes")
         lines.append('    local-zone: "." refuse')
         hostnames = canonical_fqdns(policy.get("hostnames", []))
-        if set(hostnames) & normalized_global:
-            raise FirewallRefused("firewall-hostname-global-zone-conflict")
-        zones = set(hostnames) if legacy else normalized_global | set(hostnames)
+        view_global = (set(policy.get("legacy_global_zones", normalized_global))
+                       if preserve_legacy else normalized_global)
+        zones = set(hostnames) if legacy else view_global | set(hostnames)
         lines.extend(f'    local-zone: "{name}" transparent' for name in sorted(zones))
     return ("\n".join(lines) + "\n").encode("ascii")
 
@@ -244,15 +244,21 @@ def _parse_unbound(data: bytes, global_zones: Sequence[str]) -> dict[str, dict[s
                 raise FirewallRefused("firewall-unbound-owned-file-invalid")
             transparent.append(zone_name)
             cursor += 1
+        view_global = expected_global
         if not legacy and not expected_global.issubset(set(transparent)):
-            raise FirewallRefused("firewall-unbound-policy-mismatch")
-        names = transparent if legacy else [zone for zone in transparent if zone not in expected_global]
+            prior_global = set(HOME_ZONES[:2])
+            if not prior_global.issubset(set(transparent)):
+                raise FirewallRefused("firewall-unbound-policy-mismatch")
+            view_global = prior_global
+        names = transparent if legacy else [zone for zone in transparent if zone not in view_global]
         if len(names) > MAX_FQDNS:
             raise FirewallRefused("firewall-unbound-owned-file-invalid")
         canonical = canonical_fqdns(names)
         if canonical != sorted(names):
             raise FirewallRefused("firewall-unbound-owned-file-invalid")
         parsed[mac] = {"mac": mac, "ip": access[mac], "way": "allowlist", "hostnames": canonical, "legacy_dns": legacy}
+        if not legacy and view_global != expected_global:
+            parsed[mac]["legacy_global_zones"] = tuple(sorted(view_global))
     if set(parsed) != set(access):
         raise FirewallRefused("firewall-unbound-policy-mismatch")
     if _render_unbound(parsed, global_zones, preserve_legacy=True) != data:
@@ -1007,7 +1013,9 @@ def _prove_live_dns(mac: str, hostnames: list[str], global_zones: Sequence[str],
             raise FirewallRefused("firewall-unbound-live-readback-invalid")
         name = (match.group(1) or match.group(2)).lower()
         kind = match.group(3)
-        if not _valid_unbound_zone_name(name) or kind not in {"refuse", "transparent"}:
+        if kind not in {"refuse", "transparent"}:
+            continue
+        if not _valid_unbound_zone_name(name):
             raise FirewallRefused("firewall-unbound-live-readback-invalid")
         if name != "." and not name.endswith("."):
             name += "."
@@ -1242,6 +1250,11 @@ def _validate_intent(intent: Any) -> tuple[str, str | None, list[str] | None, st
             raise FirewallRefused("firewall-intent-shape-invalid")
     way: str | None = None
     names: list[str] | None = None
+    supplied_names = intent.get("hostnames")
+    if (action in {"register", "way-set", "whitelist-set"} and isinstance(supplied_names, list)
+            and any(isinstance(name, str) and name.lower().rstrip(".") + "." in HOME_ZONES
+                    for name in supplied_names)):
+        raise FirewallRefused("firewall-hostname-global-zone-conflict")
     if action == "register":
         supplied_way = intent.get("way")
         has_names = "hostnames" in keys
@@ -1278,6 +1291,8 @@ def _validate_intent(intent: Any) -> tuple[str, str | None, list[str] | None, st
                 raise FirewallRefused("firewall-allowlist-empty")
     elif action == "whitelist-set":
         names = canonical_fqdns(intent["hostnames"])
+    if names is not None and set(names) & set(HOME_ZONES):
+        raise FirewallRefused("firewall-hostname-global-zone-conflict")
     mac = canonical_mac(intent.get("mac"))
     revision = intent.get("revision") if "revision" in keys else None
     if "revision" in keys and (not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision)):
@@ -1299,7 +1314,8 @@ def _live_state(policies: dict[str, dict[str, Any]], doh_resolvers: Sequence[str
         if way == "blocked":
             _prove_live_dns_absent(mac, runner)
         elif way == "allowlist":
-            _prove_live_dns(mac, policy["hostnames"], global_zones, runner, legacy=policy.get("legacy_dns", False))
+            _prove_live_dns(mac, policy["hostnames"], policy.get("legacy_global_zones", global_zones),
+                            runner, legacy=policy.get("legacy_dns", False))
         else:
             raise FirewallRefused("firewall-way-invalid")
 
@@ -1327,6 +1343,8 @@ def _read_images(policy_path: Path, nft_path: Path, parents: dict[str, int],
         if unbound["ip"] != item["ip"]:
             raise FirewallRefused("firewall-owned-policy-mismatch")
         policies[mac] = {**item, "hostnames": list(unbound["hostnames"]), "legacy_dns": unbound["legacy_dns"]}
+        if "legacy_global_zones" in unbound:
+            policies[mac]["legacy_global_zones"] = unbound["legacy_global_zones"]
     return (policy_image, nft_image, policies, nft_state.doh_resolvers, global_zones,
             _revision(policy_image, nft_image))
 
@@ -1356,7 +1374,7 @@ def _apply_transaction(action: str, policy_path: Path, nft_path: Path, parents: 
                        global_zones: Sequence[str], wan_if: str,
                        runner: Callable[[list[str]], tuple[bool, str, str]],
                        removed_mac: str | None = None) -> dict[str, Any]:
-    new_policies = {mac: {key: value for key, value in policy.items() if key not in {"legacy_dns", "legacy_nft"}}
+    new_policies = {mac: {key: value for key, value in policy.items() if key not in {"legacy_dns", "legacy_nft", "legacy_global_zones"}}
                     for mac, policy in new_policies.items()}
     policy_parent, nft_parent = parents[str(policy_path.parent)], parents[str(nft_path.parent)]
     expected_table = _expected_live_table(nft_source)
@@ -1501,7 +1519,7 @@ def _apply_transaction(action: str, policy_path: Path, nft_path: Path, parents: 
                     if old_policy.get("way", "allowlist") == "blocked":
                         _prove_live_dns_absent(old_mac, runner)
                     else:
-                        _prove_live_dns(old_mac, old_policy["hostnames"], global_zones, runner,
+                        _prove_live_dns(old_mac, old_policy["hostnames"], old_policy.get("legacy_global_zones", global_zones), runner,
                                         legacy=old_policy.get("legacy_dns", False))
                 for added_mac in sorted(set(new_policies) - set(old_policies)):
                     _prove_live_dns_absent(added_mac, runner)
@@ -1685,12 +1703,11 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                                                  bound, candidate_unbound, candidate_nft, candidate,
                                                  global_zones, wan_if, runner)
                 if not transaction["ok"]:
-                    enforcement = _enforcement(mac, selected, leases or {}, nft_proven=False)
                     return _receipt(action, False, bool(transaction["changed"] or created),
                                     "Firewall registration did not converge.",
                                     transaction.get("revision", revision), transaction.get("firstMissingSignal", "none"),
-                                    pinned={"ip": pinned_ip, "created": created}, mac=mac, way=selected_way,
-                                    hostnames=selected_names, enforcement=enforcement,
+                                    pinned={"ip": pinned_ip, "created": created}, mac=mac, way=None,
+                                    hostnames=None, enforcement=None,
                                     rollback=transaction.get("rollback", "failed"),
                                     **{key: value for key, value in transaction.items()
                                        if key not in {"ok", "changed", "revision", "firstMissingSignal", "rollback"}})
@@ -1729,7 +1746,8 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                 transaction = _apply_transaction(action, policy_path, nft_path, parents, policy_image, nft_image,
                                                  bound, candidate_unbound, _nft_bytes(candidate, wan_if), candidate,
                                                  global_zones, wan_if, runner, removed_mac=mac)
-                enforcement = _enforcement(mac, bound[mac], leases or {}, nft_proven=bool(transaction["ok"]))
+                enforcement = (_enforcement(mac, bound[mac], leases or {})
+                               if not transaction["ok"] and transaction.get("rollback") == "restored" else None)
                 return _receipt(action, bool(transaction["ok"]), bool(transaction["changed"]),
                                 ("Child firewall registration removed; DHCP reservation retained." if transaction["ok"]
                                  else "Child firewall removal did not converge."),
@@ -1758,7 +1776,8 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                     return _receipt(action, False, bool(transaction["changed"]), "Child whitelist update did not converge.",
                                     transaction.get("revision", revision), transaction.get("firstMissingSignal", "none"),
                                     mac=mac, way=bound[mac]["way"], **fields,
-                                    enforcement=_enforcement(mac, candidate[mac], leases or {}, nft_proven=False),
+                                    enforcement=(_enforcement(mac, bound[mac], leases or {})
+                                                 if rollback_state == "restored" else None),
                                     rollback=transaction.get("rollback", "failed"),
                                     **{key: value for key, value in transaction.items()
                                        if key not in {"ok", "changed", "revision", "firstMissingSignal", "rollback"}})
@@ -1803,7 +1822,7 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                                     "Firewall way update did not converge.",
                                     transaction.get("revision", revision), transaction.get("firstMissingSignal", "none"),
                                     mac=mac, way=actual["way"], hostnames=list(actual["hostnames"]),
-                                    enforcement=_enforcement(mac, actual, leases or {}, nft_proven=False),
+                                    enforcement=_enforcement(mac, actual, leases or {}) if restored else None,
                                     rollback=transaction.get("rollback", "failed"),
                                     **{key: value for key, value in transaction.items()
                                        if key not in {"ok", "changed", "revision", "firstMissingSignal", "rollback"}})
