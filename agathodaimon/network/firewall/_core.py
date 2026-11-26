@@ -737,6 +737,32 @@ def _open_directory(path: Path) -> int:
         raise
 
 
+def _ensure_nft_parent(nft_path: Path, policy_path: Path) -> None:
+    parent = nft_path.parent
+    try:
+        fd = _open_directory(parent)
+    except FileNotFoundError:
+        if parent == policy_path.parent:
+            raise
+        ancestor_fd = _open_directory(parent.parent)
+        try:
+            try:
+                os.mkdir(parent.name, 0o755, dir_fd=ancestor_fd)
+            except FileExistsError:
+                return
+            fd = _open_directory(parent)
+            try:
+                if os.geteuid() == 0:
+                    os.fchown(fd, 0, 0)
+                os.fchmod(fd, 0o755)
+            finally:
+                os.close(fd)
+        finally:
+            os.close(ancestor_fd)
+    else:
+        os.close(fd)
+
+
 def _lock_parents(paths: Sequence[Path]) -> dict[str, int]:
     result: dict[str, int] = {}
     try:
@@ -1664,6 +1690,7 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
         if policy_path.name != "agathodaimon-child-policy.conf" or nft_path.name != "caduceus-child-filter.nft":
             raise FirewallRefused("firewall-owned-path-invalid")
         wan_if = _wan_interface(base_firewall_path)
+        _ensure_nft_parent(nft_path, policy_path)
         parents = _lock_parents([policy_path, nft_path])
         try:
             policy_image, nft_image, policies, doh_resolvers, global_zones, revision = _read_images(
