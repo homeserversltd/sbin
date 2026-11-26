@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import codecs
 import http.client
 import ipaddress
 import json
@@ -230,19 +231,33 @@ def report_home(result, password, started):
     if result["planned"] or not password or not home or not box:
         return
     connection = None
+    body = bytearray()
     try:
-        credential = bytes(password).decode("utf-8")
         signal = "none" if result["outcome"] == "ok" else result["firstMissingSignal"].split(":", 1)[0]
         if signal == "current-boot-kernel-error-names-backing-drive":
             signal = "kernel-error-on-backup-drive"
-        if not re.fullmatch(r"[a-z0-9-]{1,40}", signal) or credential in signal:
+        if not re.fullmatch(r"[a-z0-9-]{1,40}", signal) or password in signal.encode("ascii"):
             signal = "pull-failed"
         # Even the fallback must not contain a coincidentally short credential.
-        if credential in signal:
+        if password in signal.encode("ascii"):
             return
-        body = json.dumps({"mac": box["mac"], "credential": credential, "outcome": result["outcome"],
-                           "signal": signal, "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                           "durationMs": max(0, int((time.monotonic() - started) * 1000))})
+        body.extend(json.dumps({"mac": box["mac"], "outcome": result["outcome"], "signal": signal,
+                                "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                                "durationMs": max(0, int((time.monotonic() - started) * 1000))},
+                               separators=(",", ":")).encode("ascii")[:-1])
+        body.extend(b',"credential":"')
+        decoder = codecs.getincrementaldecoder("utf-8")("strict")
+        digits = b"0123456789abcdef"
+        for byte in password:
+            decoder.decode(bytes((byte,)), final=False)
+            if byte in (34, 92):
+                body.extend((92, byte))
+            elif byte < 32:
+                body.extend((92, 117, 48, 48, digits[byte >> 4], digits[byte & 15]))
+            else:
+                body.append(byte)
+        decoder.decode(b"", final=True)
+        body.extend(b'"}')
         connection = http.client.HTTPConnection(home["ipv4"], home["port"], timeout=5)
         connection.request("POST", "/api/v1/storage/backup/pair/report", body=body,
                            headers={"Content-Type": "application/json"})
@@ -250,6 +265,7 @@ def report_home(result, password, started):
     except Exception:
         pass
     finally:
+        wipe(body)
         if connection is not None:
             try:
                 connection.close()
