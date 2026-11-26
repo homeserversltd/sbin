@@ -227,7 +227,7 @@ def _checkout_fault():
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 32:
             raise Failure('launch-failed')
         value = os.read(fd, 33).decode('ascii').strip()
-        if value not in ('start', 'exchange-back', 'inventory-after-stop', 'tree-lookup-error', 'owner-patch-fails'):
+        if value not in ('start', 'exchange-back', 'inventory-after-stop', 'tree-lookup-error', 'owner-patch-fails', 'mint-timeout'):
             raise Failure('launch-failed')
         return 'start-and-exchange-back' if value == 'exchange-back' else value
     except (OSError, UnicodeError) as error:
@@ -339,6 +339,54 @@ def _run_raw(args, reason, timeout=15):
         return bytearray(result.stdout)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise Failure(reason) from error
+
+
+def _forge_cli(args, reason, timeout=90):
+    """Own the session, including runuser's children, before revocation."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(previous), 0, 0, 0) or libc.prctl(36, 1, 0, 0, 0):
+        raise Failure(reason, kept=("token-left",))
+    child = None
+    try:
+        child = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, start_new_session=True,
+                                 env={"PATH": "/usr/bin:/bin", "LANG": "C", "PGCONNECT_TIMEOUT": "3"})
+        try:
+            output, _ = child.communicate(timeout=timeout)
+            succeeded = child.returncode == 0
+        except subprocess.TimeoutExpired:
+            # The leader remains unreaped, so its group identity cannot be reused.
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                child.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                raise Failure(reason, kept=("token-left",)) from None
+            output, succeeded = b"", False
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                while os.waitpid(-child.pid, os.WNOHANG)[0]:
+                    pass
+            except ChildProcessError:
+                pass
+            try:
+                os.killpg(child.pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                raise Failure(reason, kept=("token-left",))
+            time.sleep(0.05)
+        if not succeeded:
+            raise Failure(reason)
+        return bytearray(output)
+    except OSError as error:
+        raise Failure(reason, kept=(("token-left",) if child else ())) from error
+    finally:
+        libc.prctl(36, previous.value, 0, 0, 0)
 
 
 def _run(args, reason, timeout=15):
@@ -1065,6 +1113,7 @@ def _owner_rekey(cfg, url):
     failed = False
     basic_attempted = False
     patch_attempted = False
+    mint_quiescent = True
     try:
         skfd = os.open(cfg["skeleton"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         with os.fdopen(skfd, "rb") as stream:
@@ -1075,16 +1124,27 @@ def _owner_rekey(cfg, url):
             raise Failure("owner-rekey-failed")
         cli = ["/usr/sbin/runuser", "-u", cfg["file_user"], "--", str(cfg["forgejo"]), "admin", "user"]
         opts = ["--config", str(cfg["work"] / "custom/conf/app.ini"), "--work-path", str(cfg["work"])]
-        _run(cli + ["must-change-password"] + opts + ["--unset", "owner"], "owner-rekey-failed", timeout=90)
+        response = _forge_cli(cli + ["must-change-password"] + opts + ["--unset", "owner"], "owner-rekey-failed")
+        response[:] = b"\0" * len(response)
         identity = _sql(cfg, "forgejo", 'SELECT id FROM "user" WHERE lower_name=\'owner\' AND is_admin').strip()
         if not identity.isascii() or not identity.isdecimal() or int(identity) < 1:
             raise Failure("owner-rekey-failed")
         owner_id = int(identity)
-        # A timed-out CLI can have created the row before the caller sees it.
+        # The checkout-only wrapper holds the would-be mint child through the deadline.
+        mint = cli + ["generate-access-token"] + opts + ["--username", "owner", "--token-name", name, "--scopes", "write:admin", "--raw"]
+        timeout = 90
+        if cfg.get("fault") == "mint-timeout":
+            hold = ("import os,signal,sys; p=os.fork(); "
+                    "(os.kill(os.getpid(),signal.SIGSTOP),os.execv(sys.argv[1],sys.argv[1:])) "
+                    "if p==0 else os.waitpid(p,0)")
+            mint = cli[:4] + ["/usr/bin/python3", "-c", hold] + mint[4:]
+            timeout = 2
         may_exist = True
-        token = _run_raw(cli + ["generate-access-token"] + opts +
-                         ["--username", "owner", "--token-name", name, "--scopes", "write:admin", "--raw"],
-                         "owner-rekey-failed", timeout=90)
+        try:
+            token = _forge_cli(mint, "owner-rekey-failed", timeout=timeout)
+        except Failure as error:
+            mint_quiescent = "token-left" not in error.kept
+            raise
         while token and token[-1] in (10, 13):
             del token[-1]
         if not re.fullmatch(rb"[0-9a-f]{40}", token):
@@ -1114,7 +1174,7 @@ def _owner_rekey(cfg, url):
         failed = True
     finally:
         # The PATCH may have reached the server despite a lost response.
-        if may_exist and not revoked and patch_attempted and not basic_attempted and skeleton:
+        if may_exist and mint_quiescent and not revoked and patch_attempted and not basic_attempted and skeleton:
             try:
                 authorization[:] = b"\0" * len(authorization)
                 authorization.clear()
@@ -1124,14 +1184,15 @@ def _owner_rekey(cfg, url):
                 revoked = status == 204
             except Exception:
                 pass
-        if may_exist and not revoked and owner_id is not None:
+        if may_exist and mint_quiescent and owner_id is not None:
             # Name is generated locally from a fixed prefix and UUID hex;
             # owner_id was read as a positive integer before token creation.
             predicate = f"uid={owner_id} AND name='{name}'"
-            try:
-                _sql(cfg, "forgejo", "DELETE FROM access_token WHERE " + predicate)
-            except Exception:
-                pass  # a timeout may still have committed; observe separately
+            if not revoked:
+                try:
+                    _sql(cfg, "forgejo", "DELETE FROM access_token WHERE " + predicate)
+                except Exception:
+                    pass  # a timeout may still have committed; observe separately
             try:
                 revoked = _sql(cfg, "forgejo", "SELECT count(*) FROM access_token WHERE " + predicate).strip() == "0"
             except Exception:
@@ -1442,12 +1503,6 @@ def worker():
             if lookup_failed and "tree-lookup-error" not in kept:
                 kept.append("tree-lookup-error")
         _deed_once(reason, stage, kept, token_left=token_left, cleanup_left=cleanup_left)
-        if committed and cleanup_left:
-            # The caller already received the asynchronous accepted result;
-            # this bounded worker stop reports which cleanup was unconfirmed.
-            print(json.dumps({"ok": reason == "none", "status": "committed",
-                              "reason": "cleanup-unconfirmed:" + ",".join(cleanup_left)},
-                             separators=(",", ":")), flush=True)
         if fd is not None:
             os.close(fd)
         for sig, handler in previous_handlers.items():
