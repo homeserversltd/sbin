@@ -4,6 +4,8 @@
   "bands": [
     "appliance/harmonia-press",
     "appliance/journal-vacuum",
+    "appliance/journal-vacuum/converge",
+    "appliance/journal-vacuum/verify",
     "appliance/power/poweroff",
     "appliance/power/reboot",
     "appliance/service",

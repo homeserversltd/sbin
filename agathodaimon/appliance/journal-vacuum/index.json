@@ -1,6 +1,6 @@
 {
   "hand": "envelope",
-  "children": [],
+  "children": ["converge", "verify"],
   "sclerite": {
     "name": "all",
     "features": {

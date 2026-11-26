@@ -40,16 +40,14 @@ def _freed_bytes(output: str) -> int:
     return total
 
 
-def _run_vacuum() -> tuple[int, int]:
-    command = ["/usr/bin/journalctl", "--vacuum-size=300M"]
-    freed_bytes = 0
+def _run_bounded(command: list[str], consume_line) -> int:
     pending = bytearray()
     discarding_line = False
 
     def finish_line() -> None:
-        nonlocal freed_bytes, discarding_line
+        nonlocal discarding_line
         if not discarding_line:
-            freed_bytes += _freed_bytes(pending.decode("utf-8", errors="replace"))
+            consume_line(pending.decode("utf-8", errors="replace"))
         pending.clear()
         discarding_line = False
 
@@ -100,7 +98,18 @@ def _run_vacuum() -> tuple[int, int]:
             raise
 
     if pending and not discarding_line:
-        freed_bytes += _freed_bytes(pending.decode("utf-8", errors="replace"))
+        consume_line(pending.decode("utf-8", errors="replace"))
+    return returncode
+
+
+def _run_vacuum(command: list[str] | None = None) -> tuple[int, int]:
+    freed_bytes = 0
+
+    def consume(line: str) -> None:
+        nonlocal freed_bytes
+        freed_bytes += _freed_bytes(line)
+
+    returncode = _run_bounded(command or ["/usr/bin/journalctl", "--vacuum-size=300M"], consume)
     return returncode, freed_bytes
 
 
