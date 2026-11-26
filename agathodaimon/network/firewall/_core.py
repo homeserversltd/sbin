@@ -38,6 +38,7 @@ ACCESS_LINE = re.compile(r'^    access-control-view: ([0-9.]+)/32 "([a-z0-9-]+)"
 VIEW_NAME = re.compile(r'^    name: "([a-z0-9-]+)"$')
 ZONE = re.compile(r'^    local-zone: "([a-z0-9.-]+)" (refuse|transparent)$')
 WAN_DEFINE = re.compile(r'^\s*define\s+wan_if\s*=\s*(?:"([A-Za-z0-9_.-]{1,15})"|([A-Za-z0-9_.-]{1,15}))\s*(?:#.*)?$')
+LAN_DEFINE = re.compile(r'^\s*define\s+lan_if\s*=\s*(?:"([A-Za-z0-9_.-]{1,15})"|([A-Za-z0-9_.-]{1,15}))\s*(?:#.*)?$')
 
 
 class FirewallRefused(ValueError):
@@ -153,6 +154,21 @@ def _wan_interface(path: Path) -> str:
     if len(values) != 1:
         raise FirewallRefused("firewall-operation-unavailable")
     return values[0]
+
+
+def _lan_interface(path: Path) -> str | None:
+    try:
+        data = path.read_bytes()
+        if len(data) > MAX_FILE_BYTES or b"\x00" in data:
+            return None
+        text = data.decode("ascii")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = [line for line in text.splitlines() if re.match(r"^\s*define\s+lan_if\b", line)]
+    if len(lines) != 1:
+        return None
+    match = LAN_DEFINE.fullmatch(lines[0])
+    return (match.group(1) or match.group(2)) if match else None
 
 
 def _render_unbound(policies: dict[str, dict[str, Any]], global_zones: Sequence[str], *, preserve_legacy: bool = False) -> bytes | None:
@@ -1171,7 +1187,21 @@ def _lease_rows(manager: Any) -> tuple[list[dict[str, Any]], dict[str, dict[str,
     return observed, leases
 
 
-def _neighbor_rows(runner: Callable[[list[str]], tuple[bool, str, str]]) -> list[dict[str, str]]:
+def _neighbor_rows(runner: Callable[[list[str]], tuple[bool, str, str]],
+                   manager: Any, base_firewall_path: Path) -> list[dict[str, str]]:
+    try:
+        config = manager.get_config()
+    except (DhcpError, OSError, ValueError, TypeError) as exc:
+        raise FirewallRefused("firewall-dhcp-config-readback-unavailable") from exc
+    dhcp = config.get("Dhcp4", config) if isinstance(config, dict) else None
+    subnets = dhcp.get("subnet4") if isinstance(dhcp, dict) else None
+    if not isinstance(subnets, list):
+        raise FirewallRefused("firewall-dhcp-subnets-invalid")
+    try:
+        networks = [ipaddress.IPv4Network(subnet["subnet"], strict=False) for subnet in subnets]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise FirewallRefused("firewall-dhcp-subnets-invalid") from exc
+    lan_if = _lan_interface(base_firewall_path)
     ok, output, error = runner(["ip", "-j", "neigh", "show"])
     if not ok:
         raise FirewallRefused(error if error != "none" else "firewall-neighbor-readback-unavailable")
@@ -1188,20 +1218,30 @@ def _neighbor_rows(runner: Callable[[list[str]], tuple[bool, str, str]]) -> list
         if not isinstance(item, dict) or not isinstance(item.get("lladdr"), str) or not isinstance(item.get("dst"), str):
             continue
         try:
-            result.append({"mac": canonical_mac(item["lladdr"]), "ip": str(ipaddress.ip_address(item["dst"]))})
+            mac = canonical_mac(item["lladdr"])
+            address = ipaddress.ip_address(item["dst"])
+            if isinstance(address, ipaddress.IPv4Address):
+                if not any(address in network for network in networks):
+                    continue
+            elif not lan_if or item.get("dev") != lan_if:
+                continue
+            result.append({"mac": mac, "ip": str(address)})
         except (FirewallRefused, ValueError):
             continue
     return result
 
 
 def _observed_projection(manager: Any, policies: dict[str, dict[str, Any]],
-                         runner: Callable[[list[str]], tuple[bool, str, str]]) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+                         runner: Callable[[list[str]], tuple[bool, str, str]],
+                         base_firewall_path: Path) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
     lease_observed, leases = _lease_rows(manager)
     merged: dict[str, dict[str, Any]] = {}
-    for item in lease_observed + _neighbor_rows(runner):
+    for item in lease_observed + _neighbor_rows(runner, manager, base_firewall_path):
         prior = merged.setdefault(item["mac"], {"mac": item["mac"], "ip": None, "hostname": None})
         for field in ("ip", "hostname"):
-            if item.get(field):
+            if (item.get(field) and not (field == "ip" and prior["ip"]
+                    and ipaddress.ip_address(prior["ip"]).version == 4
+                    and ipaddress.ip_address(item["ip"]).version == 6)):
                 prior[field] = item[field]
     rows = []
     for mac, value in sorted(merged.items()):
@@ -1644,7 +1684,7 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
             if action in {"observed", "list"}:
                 manager = manager or _dhcp_manager(dhcp_manager_factory)
                 if action == "observed":
-                    rows, observed_leases = _observed_projection(manager, policies, runner)
+                    rows, observed_leases = _observed_projection(manager, policies, runner, base_firewall_path)
                     for row in rows:
                         item_mac = row["mac"]
                         if item_mac in bound:
@@ -1674,7 +1714,7 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
 
             if action == "register":
                 manager = manager or _dhcp_manager(dhcp_manager_factory)
-                observed, leases = _observed_projection(manager, policies, runner)
+                observed, leases = _observed_projection(manager, policies, runner, base_firewall_path)
                 if mac not in {row["mac"] for row in observed}:
                     raise FirewallRefused("firewall-mac-not-observed")
                 pinned_ip, created, reservation_error = _reservation_for(manager, mac)
