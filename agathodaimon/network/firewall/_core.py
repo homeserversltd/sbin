@@ -1209,8 +1209,10 @@ def _observed_projection(manager: Any, policies: dict[str, dict[str, Any]],
 
 def _enforcement(mac: str, policy: dict[str, Any], leases: dict[str, dict[str, str]],
                  *, nft_proven: bool = True) -> str:
+    if not nft_proven:
+        return "pending-renewal"
     if policy.get("way", "allowlist") == "blocked":
-        return "applied" if nft_proven else "pending-renewal"
+        return "applied"
     lease = leases.get(mac)
     return "pending-renewal" if lease is None or lease["ip"] != policy["ip"] else "applied"
 
@@ -1535,6 +1537,9 @@ def _enforce_readback(policy_path: Path, nft_path: Path, policy_image: FileImage
     manager = _dhcp_manager(manager_factory)
     bound = _bind_policies(policies, manager)
     disk_nft = _parse_nft(nft_image.data, wan_if) if nft_image.exists else NftState({}, ())
+    if any(policy.get("way", "allowlist") == "allowlist" for policy in bound.values()):
+        if disk_nft.doh_resolvers != _resolver_addresses():
+            raise FirewallRefused("firewall-nft-resolver-presets-mismatch")
     for mac, policy in bound.items():
         if policy.get("way", "allowlist") == "allowlist" and disk_nft.policies[mac]["router"] != policy["router"]:
             raise FirewallRefused("firewall-dhcp-router-binding-mismatch")
@@ -1727,7 +1732,8 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                 return _receipt(action, bool(transaction["ok"]), bool(transaction["changed"]),
                                 "Child firewall registration removed; DHCP reservation retained.",
                                 transaction.get("revision", revision), transaction.get("firstMissingSignal", "none"),
-                                mac=mac, enforcement=enforcement, rollback=transaction.get("rollback", "not-needed"),
+                                mac=mac, way=bound[mac]["way"], enforcement=enforcement,
+                                rollback=transaction.get("rollback", "not-needed"),
                                 **{key: value for key, value in transaction.items()
                                    if key not in {"ok", "changed", "revision", "firstMissingSignal", "rollback"}})
 
