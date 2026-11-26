@@ -8,8 +8,8 @@ _worker = import_module("agathodaimon.storage.backup.forgejo.nas-export._worker"
 
 def main(argv=None):
     try:
-        request = _envelope.read_fields()
-        result = _worker.launch()
+        request = _envelope.read_fields("wait")
+        result = _worker.launch(wait=request.payload.get("wait") is True)
         result = _envelope.attach(result, request)
     except (Exception, _envelope.EnvelopeError):
         result = {"ok": False, "step": "launch", "reason": "launch-failed",

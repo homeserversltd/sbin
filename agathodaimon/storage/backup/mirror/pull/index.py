@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 
 from agathodaimon import _envelope
 from agathodaimon.lib.keyman_export.index import export_credential
@@ -223,6 +224,39 @@ def rsync_failure(run, fallback):
     return run.stderr or ("mirror-copy-stalled" if run.returncode == 30 else fallback)
 
 
+def report_home(result, password, started):
+    """Best-effort report to the already-proven peer; never echo its token."""
+    home, box = result.get("homeserver"), result.get("box")
+    if result["planned"] or not password or not home or not box:
+        return
+    connection = None
+    try:
+        credential = bytes(password).decode("utf-8")
+        signal = "none" if result["outcome"] == "ok" else result["firstMissingSignal"].split(":", 1)[0]
+        if signal == "current-boot-kernel-error-names-backing-drive":
+            signal = "kernel-error-on-backup-drive"
+        if not re.fullmatch(r"[a-z0-9-]{1,40}", signal) or credential in signal:
+            signal = "pull-failed"
+        # Even the fallback must not contain a coincidentally short credential.
+        if credential in signal:
+            return
+        body = json.dumps({"mac": box["mac"], "credential": credential, "outcome": result["outcome"],
+                           "signal": signal, "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                           "durationMs": max(0, int((time.monotonic() - started) * 1000))})
+        connection = http.client.HTTPConnection(home["ipv4"], home["port"], timeout=5)
+        connection.request("POST", "/api/v1/storage/backup/pair/report", body=body,
+                           headers={"Content-Type": "application/json"})
+        connection.getresponse().close()
+    except Exception:
+        pass
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+
 def pull(metadata):
     started = time.monotonic()
     result = {"ok": False, "converged": False, "outcome": "refused",
@@ -312,6 +346,7 @@ def pull(metadata):
     except Exception:
         result.update(outcome="failed" if attempted else "refused", firstMissingSignal="mirror-pull-unavailable")
     finally:
+        report_home(result, password, started)
         wipe(username)
         wipe(password)
         if lock is not None:

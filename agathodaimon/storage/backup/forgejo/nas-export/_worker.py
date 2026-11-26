@@ -103,7 +103,7 @@ def call(args, failure, timeout=None, **kwargs):
         raise Failure(failure)
 
 
-def launch():
+def launch(wait=False):
     try:
         cfg = settings()
         fd = acquire(cfg)
@@ -118,10 +118,28 @@ def launch():
             os.close(fd)
         unit = PREFIX + uuid.uuid4().hex
         cmd = ["/usr/bin/systemd-run", "--quiet", "--unit=" + unit, "--property=Type=exec"]
+        if wait:
+            # systemd-run holds the unit reference while it waits and prints
+            # Result before releasing it; a later systemctl show can race GC.
+            cmd.remove("--quiet")
+            cmd += ["--wait", "--collect"]
         if cfg["proof"]:
             for key in ("AGATHODAIMON_SCRATCH_ROOT", "CADUCEUS_NAS_LOCK", *("FORGEJO_NAS_EXPORT_PROOF_" + k for k in PROOF)):
                 cmd.append("--setenv=" + key + "=" + os.environ[key])
         cmd += ["--", sys.executable, str(Path(__file__).resolve()), "--worker"]
+        if wait:
+            try:
+                completed = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.PIPE, check=False, env={**os.environ, "LC_ALL": "C"})
+            except OSError:
+                raise Failure("launch-failed", "refused")
+            match = re.search(rb"^Finished with result: ([a-z0-9-]+)\s*$", completed.stderr, re.M)
+            if not match:
+                raise Failure("launch-failed", "refused")
+            result = match.group(1).decode("ascii")
+            ok = completed.returncode == 0 and result == "success"
+            return {"ok": ok, "status": "done", "unit": unit, "result": result,
+                    "firstMissingSignal": "none" if ok else PREFIX + "run-failed"}
         call(cmd, "launch-failed", timeout=15, stdout=subprocess.DEVNULL)
         return {"ok": True, "status": "accepted", "unit": unit, "firstMissingSignal": "none"}
     except Failure as e:
