@@ -15,6 +15,7 @@ import pwd
 import grp
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -651,7 +652,11 @@ def launch():
         finally:
             os.close(fd)
         unit = PREFIX + uuid.uuid4().hex
-        args = ["/usr/bin/systemd-run", "--quiet", "--unit=" + unit, "--property=Type=exec"]
+        # Stop signals go to the worker first, not its in-flight child.  Allow
+        # the worker time to finish that step and carry out its own unwind.
+        args = ["/usr/bin/systemd-run", "--quiet", "--unit=" + unit,
+                "--property=Type=exec", "--property=KillMode=mixed",
+                "--property=TimeoutStopSec=1h"]
         if cfg["proof"]:
             for name in ("AGATHODAIMON_SCRATCH_ROOT", *("FORGEJO_NAS_RESTORE_PROOF_" + key for key in PROOF_KEYS)):
                 args.append("--setenv=" + name + "=" + os.environ[name])
@@ -996,15 +1001,31 @@ def worker():
     db_may_swap = False
     committed = False
     stop_attempted = False
+    pending_signal = False
+
+    def defer_signal(_number, _frame):
+        nonlocal pending_signal
+        pending_signal = True
+
+    def checkpoint():
+        if pending_signal:
+            raise Failure("launch-failed")
+
+    previous_handlers = {sig: signal.signal(sig, defer_signal)
+                         for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         cfg = settings()
+        checkpoint()
         fd = acquire(cfg)
+        checkpoint()
         require_primary(cfg)
         validate_source(str(cfg["mount"]))
+        checkpoint()
         _stop_guard(cfg)
         repo, database, url = forge_config(cfg)
         _check_prior(cfg, repo)
         _stop_guard(cfg)
+        checkpoint()
         state = _active_state(cfg, "stop-failed")
         if state not in ("active", "inactive"):
             raise Failure("stop-failed")
@@ -1012,6 +1033,7 @@ def worker():
         stopped = was_active  # a timed-out stop can have taken effect
         stop_attempted = True
         _systemctl(cfg, "stop", "stop-failed")
+        checkpoint()
         if _active_state(cfg, "stop-failed") != "inactive":
             raise Failure("stop-failed")
         try:
@@ -1021,42 +1043,64 @@ def worker():
                 stopped, stage = False, "stopped"
             raise
         gate(cfg, repo, database)
+        checkpoint()
         staged = _staged_paths(cfg, repo)
         prior = _prior_paths(cfg, repo)
         _drop_stage_db(cfg)
+        checkpoint()
         try:
             for path in staged:
                 _remove_stage_tree(cfg, path)
+                checkpoint()
         except Exception as error:
             raise Failure("copy-failed") from error
         _db_command(cfg, 'CREATE DATABASE "forgejo_restore" OWNER "git"')
+        checkpoint()
         source = _source_fd(cfg)
         _load_dump(cfg, source)
+        checkpoint()
         try:
             for name, path in zip(("repositories", "data", "custom"), staged):
                 _copy_tree(cfg, source, name, path)
+                checkpoint()
             _rekey_config(cfg, staged[2])
+            checkpoint()
         except Exception as error:
             raise Failure("copy-failed") from error
         _pause(cfg)
+        checkpoint()
         # After the first ALTER the outcome can be ambiguous on timeout.
         # Inspect the database names during unwind rather than assuming failure
         # means the server did not apply the statement.
         db_may_swap = True
         _db_command(cfg, 'ALTER DATABASE "forgejo" RENAME TO "forgejo_before_restore"')
+        checkpoint()
         _db_command(cfg, 'ALTER DATABASE "forgejo_restore" RENAME TO "forgejo"')
+        checkpoint()
         for live, path, old in zip((repo, cfg["work"] / "data", cfg["work"] / "custom"), staged, prior):
             _move_tree(cfg, live, old)
             changed_trees.append((live, old, path, False))
+            checkpoint()
             _move_tree(cfg, path, live)
             changed_trees[-1] = (live, old, path, True)
+            checkpoint()
         if cfg.get("fault") in ("start", "start-and-exchange-back"):
             raise Failure("start-failed")
         _systemctl(cfg, "start", "start-failed")
+        checkpoint()
         if _active_state(cfg, "start-failed") != "active":
             raise Failure("start-failed")
         _healthy(cfg, url)
-        committed = True
+        # The checkpoint and health commit form one boundary: do not accept
+        # a signal in the gap as though it arrived after the commit.
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, (signal.SIGTERM, signal.SIGINT))
+        try:
+            if signal.sigpending().intersection((signal.SIGTERM, signal.SIGINT)):
+                raise Failure("launch-failed")
+            checkpoint()
+            committed = True
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
         reason = "none"
     except SourceError as error:
         reason = error.reason
@@ -1160,6 +1204,8 @@ def worker():
         _deed_once(reason, stage, kept)
         if fd is not None:
             os.close(fd)
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
     return 0 if reason == "none" else 1
 
 
