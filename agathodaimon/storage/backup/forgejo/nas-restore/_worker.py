@@ -226,7 +226,7 @@ def _checkout_fault():
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 32:
             raise Failure('launch-failed')
         value = os.read(fd, 33).decode('ascii').strip()
-        if value not in ('start', 'exchange-back'):
+        if value not in ('start', 'exchange-back', 'inventory-after-stop'):
             raise Failure('launch-failed')
         return 'start-and-exchange-back' if value == 'exchange-back' else value
     except (OSError, UnicodeError) as error:
@@ -753,9 +753,11 @@ def _prior_tree_tokens(cfg, repo):
             if os.path.lexists(path)]
 
 
-def _kept_prior(cfg, repo):
+def _kept_prior(cfg, repo, inventory_unreadable=False):
     trees = _prior_tree_tokens(cfg, repo)
     try:
+        if inventory_unreadable:
+            raise Failure("db-failed")
         names = _db_inventory(cfg)
     except Failure as error:
         error.kept = ["unknown-prior-db"] + trees
@@ -763,8 +765,8 @@ def _kept_prior(cfg, repo):
     return (["kept-prior-db"] if "forgejo_before_restore" in names else []) + trees
 
 
-def _check_prior(cfg, repo):
-    kept = _kept_prior(cfg, repo)
+def _check_prior(cfg, repo, inventory_unreadable=False):
+    kept = _kept_prior(cfg, repo, inventory_unreadable)
     if kept:
         error = Failure("db-failed" if "kept-prior-db" in kept else "copy-failed")
         error.kept = kept
@@ -1037,9 +1039,11 @@ def worker():
         if _active_state(cfg, "stop-failed") != "inactive":
             raise Failure("stop-failed")
         try:
-            _check_prior(cfg, repo)
+            _check_prior(cfg, repo, inventory_unreadable=cfg.get("fault") == "inventory-after-stop")
         except Failure as error:
-            if getattr(error, "kept", None):
+            if any(token in ("kept-prior-db", "kept-prior-repositories",
+                             "kept-prior-data", "kept-prior-custom")
+                   for token in getattr(error, "kept", ())):
                 stopped, stage = False, "stopped"
             raise
         gate(cfg, repo, database)
