@@ -1,11 +1,10 @@
-"""Forgejo NAS restore through the health commit (R3b2).
-
-Owner re-key and CI adoption remain R3c; do not admit this partial restore.
-"""
+"""Forgejo NAS restore with post-commit owner and CI adoption."""
 from __future__ import annotations
 
 import configparser
 import ctypes
+import errno
+import base64
 import fcntl
 import ipaddress
 import json
@@ -23,7 +22,7 @@ import time
 import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
 from agathodaimon import _deed, _envelope, _seat
@@ -189,6 +188,8 @@ def validate_source(mount: str) -> None:
 PREFIX = "forgejo-nas-restore-"
 # Values are read only after the scratch root is present and validated.
 PROOF_KEYS = ("MOUNT", "WORK", "LOCK", "UNIT", "PG_PORT", "PG_SOCKET", "OS_USER", "SKELETON")
+# Optional paths remain confined under AGATHODAIMON_SCRATCH_ROOT.
+PROOF_POST_KEYS = ("FORGEJO", "WOODPECKER_ENV", "WOODPECKER_SETUP", "SYSTEMCTL")
 # Optional, scratch-only rendezvous: worker creates <PAUSE>.ready and waits for
 # <PAUSE>.continue, before removing the staged objects.
 PROOF_PAUSE = "FORGEJO_NAS_RESTORE_PROOF_PAUSE"
@@ -226,7 +227,7 @@ def _checkout_fault():
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 32:
             raise Failure('launch-failed')
         value = os.read(fd, 33).decode('ascii').strip()
-        if value not in ('start', 'exchange-back', 'inventory-after-stop'):
+        if value not in ('start', 'exchange-back', 'inventory-after-stop', 'tree-lookup-error'):
             raise Failure('launch-failed')
         return 'start-and-exchange-back' if value == 'exchange-back' else value
     except (OSError, UnicodeError) as error:
@@ -247,6 +248,10 @@ def settings():
                 "host": "/var/run/postgresql", "port": "5432", "os_user": "postgres",
                 "psql": "/opt/homeserver/postgresql/bin/psql", "skeleton": Path("/root/key/skeleton.key"),
                 "file_user": "git", "file_group": "git", "pause": None,
+                "forgejo": Path("/opt/forgejo/forgejo"),
+                "woodpecker_env": Path("/etc/default/woodpecker-server"),
+                "woodpecker_setup": Path("/usr/local/sbin/woodpecker-setup.py"),
+                "post_systemctl": Path("/usr/bin/systemctl"),
                 "fault": _checkout_fault()}
     try:
         base = Path(root).resolve(strict=True)
@@ -272,11 +277,17 @@ def settings():
         fault = os.environ.get(PROOF_FAULT, "")
         if fault not in ("", "start", "start-and-exchange-back"):
             raise Failure("launch-failed")
+        post = {key: _inside(base, os.environ["FORGEJO_NAS_RESTORE_PROOF_" + key])
+                for key in PROOF_POST_KEYS if "FORGEJO_NAS_RESTORE_PROOF_" + key in os.environ}
         return {"proof": True, "base": base, "fault": fault, "mount": _inside(base, values["MOUNT"]),
                 "work": _inside(base, values["WORK"]), "lock": _inside(base, values["LOCK"]),
                 "unit": values["UNIT"], "host": str(_inside(base, values["PG_SOCKET"])), "port": values["PG_PORT"],
                 "os_user": values["OS_USER"], "psql": "/usr/bin/psql",
                 "skeleton": _inside(base, values["SKELETON"]),
+                "forgejo": post.get("FORGEJO", base / "opt/forgejo/forgejo"),
+                "woodpecker_env": post.get("WOODPECKER_ENV", base / "etc/default/woodpecker-server"),
+                "woodpecker_setup": post.get("WOODPECKER_SETUP", base / "usr/local/sbin/woodpecker-setup.py"),
+                "post_systemctl": post.get("SYSTEMCTL", base / "usr/bin/systemctl"),
                 "file_user": values["OS_USER"], "file_group": pwd.getpwnam(values["OS_USER"]).pw_gid,
                 "pause": _inside(base, os.environ[PROOF_PAUSE]) if PROOF_PAUSE in os.environ else None}
     except (OSError, KeyError, ValueError) as error:
@@ -664,6 +675,10 @@ def launch():
                 args.append("--setenv=" + PROOF_PAUSE + "=" + os.environ[PROOF_PAUSE])
             if PROOF_FAULT in os.environ:
                 args.append("--setenv=" + PROOF_FAULT + "=" + os.environ[PROOF_FAULT])
+            for key in PROOF_POST_KEYS:
+                name = "FORGEJO_NAS_RESTORE_PROOF_" + key
+                if name in os.environ:
+                    args.append("--setenv=" + name + "=" + os.environ[name])
         args += ["--", sys.executable, os.path.abspath(__file__), "--worker"]
         try:
             _run(args, "launch-failed")
@@ -747,10 +762,22 @@ def _prior_paths(cfg, repo):
             cfg["work"] / "data.restore-prior", cfg["work"] / "custom.restore-prior"]
 
 
+def _tree_present(cfg, path, inject=False):
+    try:
+        if inject and cfg.get("fault") == "tree-lookup-error":
+            raise OSError(errno.EIO, "proof lookup failure")
+        os.lstat(path)
+        return True
+    except OSError as error:
+        if error.errno == errno.ENOENT:
+            return False
+        raise Failure("copy-failed", kept=["tree-lookup-error"]) from error
+
+
 def _prior_tree_tokens(cfg, repo):
     return ["kept-prior-" + name
-            for name, path in zip(("repositories", "data", "custom"), _prior_paths(cfg, repo))
-            if os.path.lexists(path)]
+            for index, (name, path) in enumerate(zip(("repositories", "data", "custom"), _prior_paths(cfg, repo)))
+            if _tree_present(cfg, path, inject=index == 0)]
 
 
 def _kept_prior(cfg, repo, inventory_unreadable=False):
@@ -771,6 +798,9 @@ def _check_prior(cfg, repo, inventory_unreadable=False):
         error = Failure("db-failed" if "kept-prior-db" in kept else "copy-failed")
         error.kept = kept
         raise error
+    # Staged names may be removed, but unknown is not the same as absent.
+    for path in _staged_paths(cfg, repo):
+        _tree_present(cfg, path)
 
 
 def _check_destination_mount(cfg, parent):
@@ -992,6 +1022,133 @@ def _exchange_trees(cfg, live, staged):
         os.close(parent)
 
 
+def _forge_request(url, method, path, authorization, payload=None):
+    class LocalOnly(HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    parsed = urlsplit(url)
+    if parsed.scheme != "http" or not ipaddress.ip_address(parsed.hostname).is_loopback:
+        raise Failure("owner-rekey-failed")
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = Request(base + path, data=data, method=method,
+                      headers={"Authorization": authorization, "Content-Type": "application/json"})
+    with build_opener(ProxyHandler({}), LocalOnly()).open(request, timeout=10) as response:
+        raw = response.read(65537)
+        if len(raw) > 65536:
+            raise Failure("owner-rekey-failed")
+        return response.status, json.loads(raw) if raw else {}
+
+
+def _owner_rekey(cfg, url):
+    skeleton, token = bytearray(), bytearray()
+    name = "forgejo-restore-" + uuid.uuid4().hex
+    minted = False
+    try:
+        skfd = os.open(cfg["skeleton"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        with os.fdopen(skfd, "rb") as stream:
+            skeleton = bytearray(stream.read(65537).rstrip(b"\r\n"))
+        if not skeleton or len(skeleton) > 65536 or b"\0" in skeleton:
+            raise Failure("owner-rekey-failed")
+        cli = ["/usr/sbin/runuser", "-u", cfg["file_user"], "--", str(cfg["forgejo"]), "admin", "user"]
+        opts = ["--config", str(cfg["work"] / "custom/conf/app.ini"), "--work-path", str(cfg["work"])]
+        _run(cli + ["must-change-password"] + opts + ["--unset", "owner"], "owner-rekey-failed", timeout=90)
+        if _sql(cfg, "forgejo", 'SELECT is_admin FROM "user" WHERE lower_name=\'owner\'').strip() != "t":
+            raise Failure("owner-rekey-failed")
+        raw = _run(cli + ["generate-access-token"] + opts +
+                   ["--username", "owner", "--token-name", name, "--scopes", "write:admin", "--raw"],
+                   "owner-rekey-failed", timeout=90)
+        token = bytearray(raw.strip().encode("ascii"))
+        raw = ""
+        minted = True
+        if not re.fullmatch(rb"[0-9a-f]{40}", token):
+            raise Failure("owner-rekey-failed")
+        status, user = _forge_request(url, "PATCH", "/api/v1/admin/users/owner",
+                                      "token " + token.decode("ascii"),
+                                      {"password": skeleton.decode("utf-8"), "must_change_password": False})
+        if status != 200 or user.get("login") != "owner":
+            raise Failure("owner-rekey-failed")
+        basic = "Basic " + base64.b64encode(b"owner:" + skeleton).decode("ascii")
+        status, _ = _forge_request(url, "DELETE", "/api/v1/users/owner/tokens/" + name, basic)
+        if status != 204:
+            raise Failure("owner-rekey-failed")
+        minted = False
+    except Exception as error:
+        raise Failure("owner-rekey-failed") from error
+    finally:
+        # A timed-out PATCH may have landed. Attempt only this run's token
+        # deletion with the new Basic credential even on an uncertain failure.
+        if minted and skeleton:
+            try:
+                basic = "Basic " + base64.b64encode(b"owner:" + skeleton).decode("ascii")
+                _forge_request(url, "DELETE", "/api/v1/users/owner/tokens/" + name, basic)
+            except Exception:
+                pass
+        skeleton[:] = b"\0" * len(skeleton)
+        token[:] = b"\0" * len(token)
+
+
+def _reset_woodpecker_env(cfg):
+    path = cfg["woodpecker_env"]
+    parent = _open_dir_path(path.parent)
+    fd = None
+    original = bytearray()
+    rendered = bytearray()
+    try:
+        fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd = os.open(path.name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 65536:
+            raise Failure("ci-adopt-failed")
+        original = bytearray(os.read(fd, 65537))
+        if len(original) > 65536:
+            raise Failure("ci-adopt-failed")
+        names = (b"WOODPECKER_FORGEJO_CLIENT", b"WOODPECKER_FORGEJO_SECRET")
+        counts = {name: 0 for name in names}
+        for line in original.splitlines(keepends=True):
+            matched = False
+            for name in names:
+                if line.startswith(name + b"="):
+                    ending = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
+                    rendered.extend(name + b"=${" + name + b"}" + ending)
+                    counts[name] += 1
+                    matched = True
+                    break
+            if not matched:
+                rendered.extend(line)
+        if any(value != 1 for value in counts.values()):
+            raise Failure("ci-adopt-failed")
+        os.lseek(fd, 0, os.SEEK_SET)
+        view = memoryview(rendered)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise Failure("ci-adopt-failed")
+            view = view[written:]
+        os.ftruncate(fd, len(rendered))
+        os.fsync(fd)
+    finally:
+        original[:] = b"\0" * len(original)
+        rendered[:] = b"\0" * len(rendered)
+        if fd is not None:
+            os.close(fd)
+        os.close(parent)
+
+
+def _adopt_ci(cfg, url):
+    try:
+        _reset_woodpecker_env(cfg)
+        parsed = urlsplit(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        _run([str(cfg["woodpecker_setup"]), "--forgejo-url", base,
+              "--env-file", str(cfg["woodpecker_env"]), "--skeleton", str(cfg["skeleton"]),
+              "--systemctl", str(cfg["post_systemctl"])], "ci-adopt-failed", timeout=180)
+        _run([str(cfg["post_systemctl"]), "restart", "woodpecker-server.service"],
+             "ci-adopt-failed", timeout=120)
+    except Exception as error:
+        raise Failure("ci-adopt-failed") from error
+
+
 def worker():
     reason, stage, fd, stopped, was_active, cfg, url = "launch-failed", None, None, False, False, None, None
     staged = None
@@ -1126,6 +1283,15 @@ def worker():
                     _remove_stage_tree(cfg, path)
                 except Exception:
                     stage = "cleanup-failed"
+            try:
+                _owner_rekey(cfg, url)
+            except Exception:
+                reason = "owner-rekey-failed"
+            else:
+                try:
+                    _adopt_ci(cfg, url)
+                except Exception:
+                    reason = "ci-adopt-failed"
         else:
             safe_to_reverse = True
             if stop_attempted and (db_may_swap or changed_trees):
