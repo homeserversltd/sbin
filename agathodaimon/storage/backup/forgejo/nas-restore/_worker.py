@@ -227,7 +227,7 @@ def _checkout_fault():
         if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 32:
             raise Failure('launch-failed')
         value = os.read(fd, 33).decode('ascii').strip()
-        if value not in ('start', 'exchange-back', 'inventory-after-stop', 'tree-lookup-error'):
+        if value not in ('start', 'exchange-back', 'inventory-after-stop', 'tree-lookup-error', 'owner-patch-fails'):
             raise Failure('launch-failed')
         return 'start-and-exchange-back' if value == 'exchange-back' else value
     except (OSError, UnicodeError) as error:
@@ -329,16 +329,26 @@ def acquire(cfg):
         raise Failure("launch-failed") from error
 
 
-def _run(args, reason, timeout=15):
+def _run_raw(args, reason, timeout=15):
     try:
         result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, check=False, timeout=timeout,
                                 env={"PATH": "/usr/bin:/bin", "LANG": "C", "PGCONNECT_TIMEOUT": "3"})
         if result.returncode:
             raise Failure(reason)
-        return result.stdout.decode("utf-8", errors="strict")
-    except (OSError, UnicodeError, subprocess.TimeoutExpired) as error:
+        return bytearray(result.stdout)
+    except (OSError, subprocess.TimeoutExpired) as error:
         raise Failure(reason) from error
+
+
+def _run(args, reason, timeout=15):
+    raw = _run_raw(args, reason, timeout)
+    try:
+        return raw.decode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise Failure(reason) from error
+    finally:
+        raw[:] = b"\0" * len(raw)
 
 
 def _sql(cfg, database, statement):
@@ -623,7 +633,7 @@ def _scratch_deed_listener(base):
     return False
 
 
-def _deed_once(reason, stage=None, kept=()):
+def _deed_once(reason, stage=None, kept=(), *, token_left=False, cleanup_left=()):
     root = os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
     if root:
         try:
@@ -637,7 +647,9 @@ def _deed_once(reason, stage=None, kept=()):
     # Hyalos projects the target but does not retain arbitrary stage tokens.
     # Keep the contracted copy-failed signal and identify a lookup failure in
     # the stored deed's target instead of relying on a discarded stage.
-    target = "forgejo-tree-lookup-error" if "tree-lookup-error" in kept else "forgejo"
+    target = ("forgejo-restore-token-left" if token_left else
+              "forgejo-restore-committed-cleanup-left" if cleanup_left else
+              "forgejo-tree-lookup-error" if "tree-lookup-error" in kept else "forgejo")
     return _deed.send("sbin", "forgejo-nas-restore", reason == "none", target=target,
                       outcome="ok" if reason == "none" else "failed",
                       signal="none" if reason == "none" else PREFIX + reason,
@@ -1034,7 +1046,7 @@ def _forge_request(url, method, path, authorization, payload=None):
     if parsed.scheme != "http" or not ipaddress.ip_address(parsed.hostname).is_loopback:
         raise Failure("owner-rekey-failed")
     base = f"{parsed.scheme}://{parsed.netloc}"
-    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    data = payload
     request = Request(base + path, data=data, method=method,
                       headers={"Authorization": authorization, "Content-Type": "application/json"})
     with build_opener(ProxyHandler({}), LocalOnly()).open(request, timeout=10) as response:
@@ -1045,51 +1057,89 @@ def _forge_request(url, method, path, authorization, payload=None):
 
 
 def _owner_rekey(cfg, url):
-    skeleton, token = bytearray(), bytearray()
+    skeleton, token, payload, authorization = bytearray(), bytearray(), bytearray(), bytearray()
     name = "forgejo-restore-" + uuid.uuid4().hex
-    minted = False
+    owner_id = None
+    may_exist = False
+    revoked = False
+    failed = False
+    basic_attempted = False
     try:
         skfd = os.open(cfg["skeleton"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         with os.fdopen(skfd, "rb") as stream:
-            skeleton = bytearray(stream.read(65537).rstrip(b"\r\n"))
+            skeleton = bytearray(stream.read(65537))
+        while skeleton and skeleton[-1] in (10, 13):
+            del skeleton[-1]
         if not skeleton or len(skeleton) > 65536 or b"\0" in skeleton:
             raise Failure("owner-rekey-failed")
         cli = ["/usr/sbin/runuser", "-u", cfg["file_user"], "--", str(cfg["forgejo"]), "admin", "user"]
         opts = ["--config", str(cfg["work"] / "custom/conf/app.ini"), "--work-path", str(cfg["work"])]
         _run(cli + ["must-change-password"] + opts + ["--unset", "owner"], "owner-rekey-failed", timeout=90)
-        if _sql(cfg, "forgejo", 'SELECT is_admin FROM "user" WHERE lower_name=\'owner\'').strip() != "t":
+        identity = _sql(cfg, "forgejo", 'SELECT id FROM "user" WHERE lower_name=\'owner\' AND is_admin').strip()
+        if not identity.isascii() or not identity.isdecimal() or int(identity) < 1:
             raise Failure("owner-rekey-failed")
-        raw = _run(cli + ["generate-access-token"] + opts +
-                   ["--username", "owner", "--token-name", name, "--scopes", "write:admin", "--raw"],
-                   "owner-rekey-failed", timeout=90)
-        token = bytearray(raw.strip().encode("ascii"))
-        raw = ""
-        minted = True
+        owner_id = int(identity)
+        # A timed-out CLI can have created the row before the caller sees it.
+        may_exist = True
+        token = _run_raw(cli + ["generate-access-token"] + opts +
+                         ["--username", "owner", "--token-name", name, "--scopes", "write:admin", "--raw"],
+                         "owner-rekey-failed", timeout=90)
+        while token and token[-1] in (10, 13):
+            del token[-1]
         if not re.fullmatch(rb"[0-9a-f]{40}", token):
             raise Failure("owner-rekey-failed")
-        status, user = _forge_request(url, "PATCH", "/api/v1/admin/users/owner",
-                                      "token " + token.decode("ascii"),
-                                      {"password": skeleton.decode("utf-8"), "must_change_password": False})
+        if cfg.get("fault") == "owner-patch-fails":
+            raise Failure("owner-rekey-failed")
+        authorization.extend(b"token ")
+        authorization.extend(token)
+        # Python's JSON and HTTP layers make immutable copies which cannot be
+        # overwritten; all mutable buffers under our control are wiped below.
+        payload.extend(json.dumps({"password": skeleton.decode("utf-8"),
+                                   "must_change_password": False}).encode("utf-8"))
+        status, user = _forge_request(url, "PATCH", "/api/v1/admin/users/owner", authorization, payload)
         if status != 200 or user.get("login") != "owner":
             raise Failure("owner-rekey-failed")
-        basic = "Basic " + base64.b64encode(b"owner:" + skeleton).decode("ascii")
-        status, _ = _forge_request(url, "DELETE", "/api/v1/users/owner/tokens/" + name, basic)
+        authorization[:] = b"\0" * len(authorization)
+        authorization.clear()
+        authorization.extend(b"Basic ")
+        authorization.extend(base64.b64encode(b"owner:" + skeleton))
+        basic_attempted = True
+        status, _ = _forge_request(url, "DELETE", "/api/v1/users/owner/tokens/" + name, authorization)
         if status != 204:
             raise Failure("owner-rekey-failed")
-        minted = False
-    except Exception as error:
-        raise Failure("owner-rekey-failed") from error
+        revoked = True
+    except Exception:
+        failed = True
     finally:
-        # A timed-out PATCH may have landed. Attempt only this run's token
-        # deletion with the new Basic credential even on an uncertain failure.
-        if minted and skeleton:
+        # The PATCH may have reached the server despite a lost response.
+        if may_exist and not revoked and not basic_attempted and skeleton:
             try:
-                basic = "Basic " + base64.b64encode(b"owner:" + skeleton).decode("ascii")
-                _forge_request(url, "DELETE", "/api/v1/users/owner/tokens/" + name, basic)
+                authorization[:] = b"\0" * len(authorization)
+                authorization.clear()
+                authorization.extend(b"Basic ")
+                authorization.extend(base64.b64encode(b"owner:" + skeleton))
+                status, _ = _forge_request(url, "DELETE", "/api/v1/users/owner/tokens/" + name, authorization)
+                revoked = status == 204
             except Exception:
                 pass
-        skeleton[:] = b"\0" * len(skeleton)
-        token[:] = b"\0" * len(token)
+        if may_exist and not revoked and owner_id is not None:
+            # Name is generated locally from a fixed prefix and UUID hex;
+            # owner_id was read as a positive integer before token creation.
+            predicate = f"uid={owner_id} AND name='{name}'"
+            try:
+                _sql(cfg, "forgejo", "DELETE FROM access_token WHERE " + predicate)
+            except Exception:
+                pass  # a timeout may still have committed; observe separately
+            try:
+                revoked = _sql(cfg, "forgejo", "SELECT count(*) FROM access_token WHERE " + predicate).strip() == "0"
+            except Exception:
+                revoked = False
+        for value in (skeleton, token, payload, authorization):
+            value[:] = b"\0" * len(value)
+    if may_exist and not revoked:
+        raise Failure("owner-rekey-failed", kept=("token-left",))
+    if failed:
+        raise Failure("owner-rekey-failed")
 
 
 def _reset_woodpecker_env(cfg):
@@ -1109,17 +1159,21 @@ def _reset_woodpecker_env(cfg):
             raise Failure("ci-adopt-failed")
         names = (b"WOODPECKER_FORGEJO_CLIENT", b"WOODPECKER_FORGEJO_SECRET")
         counts = {name: 0 for name in names}
-        for line in original.splitlines(keepends=True):
+        pos = 0
+        while pos < len(original):
+            newline = original.find(b"\n", pos)
+            end = newline + 1 if newline >= 0 else len(original)
             matched = False
             for name in names:
-                if line.startswith(name + b"="):
-                    ending = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
+                if original.startswith(name + b"=", pos, end):
+                    ending = b"\r\n" if original[end - 2:end] == b"\r\n" else b"\n" if original[end - 1:end] == b"\n" else b""
                     rendered.extend(name + b"=${" + name + b"}" + ending)
                     counts[name] += 1
                     matched = True
                     break
             if not matched:
-                rendered.extend(line)
+                rendered.extend(memoryview(original)[pos:end])
+            pos = end
         if any(value != 1 for value in counts.values()):
             raise Failure("ci-adopt-failed")
         os.lseek(fd, 0, os.SEEK_SET)
@@ -1163,6 +1217,8 @@ def worker():
     changed_trees = []
     db_may_swap = False
     committed = False
+    cleanup_left = []
+    token_left = False
     stop_attempted = False
     pending_signal = False
 
@@ -1281,14 +1337,20 @@ def worker():
             try:
                 _db_command(cfg, 'DROP DATABASE "forgejo_before_restore" WITH (FORCE)')
             except Exception:
-                stage = "cleanup-failed"
-            for path in prior:
-                try:
-                    _remove_stage_tree(cfg, path)
-                except Exception:
-                    stage = "cleanup-failed"
+                cleanup_left.append("forgejo_before_restore")
+            if prior is None:
+                cleanup_left.append("prior-trees-unknown")
+            else:
+                for name, path in zip(("repositories", "data", "custom"), prior):
+                    try:
+                        _remove_stage_tree(cfg, path)
+                    except Exception:
+                        cleanup_left.append(name + ".restore-prior")
             try:
                 _owner_rekey(cfg, url)
+            except Failure as error:
+                reason = "owner-rekey-failed"
+                token_left = "token-left" in error.kept
             except Exception:
                 reason = "owner-rekey-failed"
             else:
@@ -1377,7 +1439,13 @@ def worker():
                 kept = list(error.kept)
             if lookup_failed and "tree-lookup-error" not in kept:
                 kept.append("tree-lookup-error")
-        _deed_once(reason, stage, kept)
+        _deed_once(reason, stage, kept, token_left=token_left, cleanup_left=cleanup_left)
+        if committed and cleanup_left:
+            # The caller already received the asynchronous accepted result;
+            # this bounded worker stop reports which cleanup was unconfirmed.
+            print(json.dumps({"ok": reason == "none", "status": "committed",
+                              "reason": "cleanup-unconfirmed:" + ",".join(cleanup_left)},
+                             separators=(",", ":")), flush=True)
         if fd is not None:
             os.close(fd)
         for sig, handler in previous_handlers.items():
