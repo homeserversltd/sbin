@@ -234,5 +234,7 @@ def _write_config(data):
 def deed(verb, bucket, outcome, started, error='none', byte_counts=None):
     from agathodaimon._deed import send
     send('sbin', verb, outcome == 'ok', target=bucket[:48],
-         duration_ms=int((time.monotonic() - started) * 1000))
+         duration_ms=int((time.monotonic() - started) * 1000),
+         signal=error if outcome != 'ok' and error != 'none' else 'operation-failed',
+         counts=byte_counts)
 
