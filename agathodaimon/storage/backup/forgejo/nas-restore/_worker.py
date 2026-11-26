@@ -1064,6 +1064,7 @@ def _owner_rekey(cfg, url):
     revoked = False
     failed = False
     basic_attempted = False
+    patch_attempted = False
     try:
         skfd = os.open(cfg["skeleton"], os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
         with os.fdopen(skfd, "rb") as stream:
@@ -1096,6 +1097,7 @@ def _owner_rekey(cfg, url):
         # overwritten; all mutable buffers under our control are wiped below.
         payload.extend(json.dumps({"password": skeleton.decode("utf-8"),
                                    "must_change_password": False}).encode("utf-8"))
+        patch_attempted = True  # the call can reach Forgejo despite a lost response
         status, user = _forge_request(url, "PATCH", "/api/v1/admin/users/owner", authorization, payload)
         if status != 200 or user.get("login") != "owner":
             raise Failure("owner-rekey-failed")
@@ -1112,7 +1114,7 @@ def _owner_rekey(cfg, url):
         failed = True
     finally:
         # The PATCH may have reached the server despite a lost response.
-        if may_exist and not revoked and not basic_attempted and skeleton:
+        if may_exist and not revoked and patch_attempted and not basic_attempted and skeleton:
             try:
                 authorization[:] = b"\0" * len(authorization)
                 authorization.clear()
