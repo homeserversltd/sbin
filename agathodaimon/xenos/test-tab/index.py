@@ -146,17 +146,26 @@ def main(argv=None):
         wait(crown + '/api/registry', 'coronatio-not-ready', deadline)
         key = skeleton()
         try:
-            status, raw = request(forge + '/api/v1/repos/owner/cartridge-test', key=key)
-            if status == 404:
-                payload = {'clone_addr': GITHUB_REPO, 'repo_owner': 'owner', 'repo_name': 'cartridge-test', 'mirror': True, 'private': True}
-                status, raw = request(forge + '/api/v1/repos/migrate', method='POST', data=payload, key=key)
-                if status not in (200, 201, 202):
-                    raise Failure('mirror-create-failed')
-                changed = True
-            elif status != 200:
-                raise Failure('mirror-create-failed')
-        except (OSError, ValueError, urllib.error.URLError, Failure):
-            raise Failure('mirror-create-failed') from None
+            while True:
+                try:
+                    status, raw = request(forge + '/api/v1/repos/owner/cartridge-test', key=key)
+                    if status == 200:
+                        break
+                    if status == 404:
+                        payload = {'clone_addr': GITHUB_REPO, 'repo_owner': 'owner', 'repo_name': 'cartridge-test', 'mirror': True, 'private': True}
+                        status, raw = request(forge + '/api/v1/repos/migrate', method='POST', data=payload, key=key)
+                        if status in (200, 201, 202):
+                            changed = True
+                            break
+                    last = str(status)
+                except Exception as exc:
+                    last = type(exc).__name__
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise Failure('mirror-create-failed:' + last) from None
+                time.sleep(min(2, remaining))
+                if time.monotonic() >= deadline:
+                    raise Failure('mirror-create-failed:' + last) from None
         finally:
             key = b''
         status, raw = request(caduceus + '/api/v1/xenia/status/test')
