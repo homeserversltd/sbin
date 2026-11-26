@@ -1309,6 +1309,8 @@ def _read_images(policy_path: Path, nft_path: Path, parents: dict[str, int],
                  runner: Callable[[list[str]], tuple[bool, str, str]]) -> tuple[FileImage, FileImage, dict[str, dict[str, Any]], tuple[str, ...], tuple[str, ...], str]:
     policy_image = _snapshot(policy_path, parents[str(policy_path.parent)])
     nft_image = _snapshot(nft_path, parents[str(nft_path.parent)])
+    if policy_image.exists and not policy_image.data:
+        raise FirewallRefused("firewall-unbound-owned-file-foreign-content")
     global_zones = (_global_local_zones(unbound_config_path, runner)
                     if policy_image.exists and policy_image.data else ())
     unbound_policies = _parse_unbound(policy_image.data if policy_image.exists else b"", global_zones)
@@ -1719,7 +1721,6 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
             if action == "unregister":
                 if mac not in bound:
                     raise FirewallRefused("firewall-child-not-registered")
-                enforcement = _enforcement(mac, bound[mac], leases or {})
                 candidate = {key: dict(value) for key, value in bound.items() if key != mac}
                 if any(item.get("way", "allowlist") == "allowlist" for item in candidate.values()):
                     global_zones = _global_local_zones(unbound_config_path, runner)
@@ -1727,8 +1728,10 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                 transaction = _apply_transaction(action, policy_path, nft_path, parents, policy_image, nft_image,
                                                  bound, candidate_unbound, _nft_bytes(candidate, wan_if), candidate,
                                                  global_zones, wan_if, runner, removed_mac=mac)
+                enforcement = _enforcement(mac, bound[mac], leases or {}, nft_proven=bool(transaction["ok"]))
                 return _receipt(action, bool(transaction["ok"]), bool(transaction["changed"]),
-                                "Child firewall registration removed; DHCP reservation retained.",
+                                ("Child firewall registration removed; DHCP reservation retained." if transaction["ok"]
+                                 else "Child firewall removal did not converge."),
                                 transaction.get("revision", revision), transaction.get("firstMissingSignal", "none"),
                                 mac=mac, way=bound[mac]["way"], enforcement=enforcement,
                                 rollback=transaction.get("rollback", "not-needed"),
