@@ -346,21 +346,23 @@ def pull(metadata):
     except Exception:
         result.update(outcome="failed" if attempted else "refused", firstMissingSignal="mirror-pull-unavailable")
     finally:
-        report_home(result, password, started)
-        wipe(username)
-        wipe(password)
-        if lock is not None:
-            os.close(lock)
-        if not result["planned"] and proof_valid:
-            try:
-                deed_receipt = {**result, "firstMissingSignal": result["firstMissingSignal"].split(":", 1)[0]}
-                if deed_receipt["firstMissingSignal"] == "current-boot-kernel-error-names-backing-drive":
-                    deed_receipt["firstMissingSignal"] = "kernel-error-on-backup-drive"
-                counts = ({"file_count": result["finalFileCount"], "total_bytes": result["finalTotalBytes"]}
-                          if result["ok"] else None)
-                deed.record("mirror-pull", "nas-sync", deed_receipt, started, counts=counts)
-            except Exception:
-                pass
+        try:
+            if lock is not None:
+                os.close(lock)
+            if not result["planned"] and proof_valid:
+                try:
+                    deed_receipt = {**result, "firstMissingSignal": result["firstMissingSignal"].split(":", 1)[0]}
+                    if deed_receipt["firstMissingSignal"] == "current-boot-kernel-error-names-backing-drive":
+                        deed_receipt["firstMissingSignal"] = "kernel-error-on-backup-drive"
+                    counts = ({"file_count": result["finalFileCount"], "total_bytes": result["finalTotalBytes"]}
+                              if result["ok"] else None)
+                    deed.record("mirror-pull", "nas-sync", deed_receipt, started, counts=counts)
+                except Exception:
+                    pass
+            report_home(result, password, started)
+        finally:
+            wipe(username)
+            wipe(password)
     return result
 
 
