@@ -1594,6 +1594,7 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
     mac: str | None = None
     bound: dict[str, dict[str, Any]] = {}
     leases: dict[str, dict[str, str]] | None = None
+    requested_way: str | None = None
     created = False
     pinned_ip: str | None = None
     revision: str | None = None
@@ -1802,7 +1803,7 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                                     "Firewall way update did not converge.",
                                     transaction.get("revision", revision), transaction.get("firstMissingSignal", "none"),
                                     mac=mac, way=actual["way"], hostnames=list(actual["hostnames"]),
-                                    enforcement=_enforcement(mac, actual, leases or {}, nft_proven=restored),
+                                    enforcement=_enforcement(mac, actual, leases or {}, nft_proven=False),
                                     rollback=transaction.get("rollback", "failed"),
                                     **{key: value for key, value in transaction.items()
                                        if key not in {"ok", "changed", "revision", "firstMissingSignal", "rollback"}})
@@ -1845,5 +1846,7 @@ def dispatch(intent: Any, *, policy_path: Path = DEFAULT_POLICY, nft_path: Path 
                 extra["way"] = bound[mac]["way"]
         if action == "register":
             extra["pinned"] = {"ip": pinned_ip, "created": created}
+            if mac not in bound and requested_way is not None:
+                extra["way"] = requested_way
         return _receipt(action if isinstance(action, str) else "invalid", False, created,
                         "Firewall request refused.", revision, signal, **extra)
