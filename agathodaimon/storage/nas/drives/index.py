@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 
 from _envelope import EnvelopeError, attach, read
 from agathodaimon.storage.nas import runtime
@@ -12,17 +13,32 @@ LSBLK = "/usr/bin/lsblk"
 SMARTCTL = "/usr/sbin/smartctl"
 
 
-def _health(disk, transport):
-    commands = [[SMARTCTL, "-H", "-j", disk]]
+def _health(disk, transport, deadline=None):
+    if deadline is None:
+        deadline = time.monotonic() + 16
+    commands = []
     if transport == "usb":
-        commands.append([SMARTCTL, "-H", "-j", "-d", "sat", disk])
-    for command in commands:
+        commands.append(([SMARTCTL, "-d", "sat", "-A", "-j", disk], True))
+    commands.append(([SMARTCTL, "-H", "-j", disk], False))
+    for command, attributes in commands:
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            return "unknown"
         try:
-            result = runtime._run(command, timeout=15, step="smart-health")
+            result = runtime._run(command, timeout=min(8, remaining), step="smart-health")
             data = json.loads(result.stdout)
-            passed = data.get("smart_status", {}).get("passed")
-            if isinstance(passed, bool):
-                return "passed" if passed else "failed"
+            if attributes:
+                table = data.get("ata_smart_attributes", {}).get("table")
+                if (isinstance(table, list) and table and
+                        all(isinstance(row, dict) and isinstance(row.get("flags"), dict)
+                            and "prefailure" in row["flags"] and "when_failed" in row
+                            for row in table)):
+                    return "failed" if any(row["flags"]["prefailure"] is True and
+                                           row["when_failed"] == "now" for row in table) else "passed"
+            else:
+                passed = data.get("smart_status", {}).get("passed")
+                if isinstance(passed, bool):
+                    return "passed" if passed else "failed"
         except (runtime.Refusal, ValueError, TypeError, AttributeError):
             pass
     return "unknown"
@@ -40,10 +56,11 @@ def _errors(disk):
 
 
 def observe():
+    deadline = time.monotonic() + 16
     receipt = {"ok": False, "drives": [], "firstMissingSignal": "agathodaimon-nas-not-complete"}
     try:
         runtime._require_root({})
-        result = runtime._run([LSBLK, "--json", "--tree", "--bytes", "--paths", "--output", "PATH,TYPE,PARTLABEL,MAJ:MIN,MODEL,SIZE,TRAN"], timeout=15, step="drive-census")
+        result = runtime._run([LSBLK, "--json", "--tree", "--bytes", "--paths", "--output", "PATH,TYPE,PARTLABEL,MAJ:MIN,MODEL,SIZE,TRAN"], timeout=min(4, max(0, deadline - time.monotonic())), step="drive-census")
         if result.returncode:
             raise runtime.Refusal("agathodaimon-nas-drive-census-failed", "drive-census")
         tree = json.loads(result.stdout)["blockdevices"]
@@ -92,7 +109,7 @@ def observe():
                 row.update(present=True, model=disk.get("model"), sizeBytes=disk.get("size"),
                            transport=disk.get("tran"), mounted=mounted,
                            mountpoint=info["mountpoint"] if mounted else None,
-                           health=_health(disk["path"], disk.get("tran")), readErrors=_errors(disk["path"]))
+                           health=_health(disk["path"], disk.get("tran"), deadline), readErrors=_errors(disk["path"]))
                 if mounted:
                     try:
                         space = os.statvfs(runtime.runtime_path(info["mountpoint"]))

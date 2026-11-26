@@ -6,9 +6,10 @@ import os
 from pathlib import Path
 import re
 import socket
-import subprocess
+import time
 
 from agathodaimon import _envelope
+from agathodaimon.storage.nas import runtime
 
 LSBLK = "/usr/bin/lsblk"
 SMARTCTL = "/usr/sbin/smartctl"
@@ -32,19 +33,33 @@ def own_box():
         return None
 
 
-def _health(disk, transport):
-    commands = [[SMARTCTL, "-H", "-j", disk]]
+def _health(disk, transport, deadline=None):
+    if deadline is None:
+        deadline = time.monotonic() + 16
+    commands = []
     if transport == "usb":
-        commands.append([SMARTCTL, "-H", "-j", "-d", "sat", disk])
-    for command in commands:
+        commands.append(([SMARTCTL, "-d", "sat", "-A", "-j", disk], True))
+    commands.append(([SMARTCTL, "-H", "-j", disk], False))
+    for command, attributes in commands:
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            return "unknown"
         try:
-            result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL, timeout=15, check=False)
+            result = runtime._run(command, timeout=min(8, remaining), step="smart-health")
             data = json.loads(result.stdout)
-            passed = data.get("smart_status", {}).get("passed")
-            if isinstance(passed, bool):
-                return "passed" if passed else "failed"
-        except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError):
+            if attributes:
+                table = data.get("ata_smart_attributes", {}).get("table")
+                if (isinstance(table, list) and table and
+                        all(isinstance(row, dict) and isinstance(row.get("flags"), dict)
+                            and "prefailure" in row["flags"] and "when_failed" in row
+                            for row in table)):
+                    return "failed" if any(row["flags"]["prefailure"] is True and
+                                           row["when_failed"] == "now" for row in table) else "passed"
+            else:
+                passed = data.get("smart_status", {}).get("passed")
+                if isinstance(passed, bool):
+                    return "passed" if passed else "failed"
+        except (runtime.Refusal, ValueError, TypeError, AttributeError):
             pass
     return "unknown"
 
@@ -57,6 +72,7 @@ def _errors(disk):
 
 
 def observe():
+    deadline = time.monotonic() + 16
     result = {"ok": False, "present": False, "model": None, "sizeBytes": None,
               "usedBytes": None, "freeBytes": None, "health": "unknown",
               "readErrors": None, "transport": None,
@@ -67,10 +83,9 @@ def observe():
     try:
         if os.geteuid() != 0:
             return result
-        census = subprocess.run([LSBLK, "--all", "--json", "--tree", "--bytes", "--paths", "--output",
-                                 "PATH,TYPE,PARTLABEL,MAJ:MIN,MODEL,SIZE,TRAN"],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, timeout=15, check=False)
+        census = runtime._run([LSBLK, "--all", "--json", "--tree", "--bytes", "--paths", "--output",
+                               "PATH,TYPE,PARTLABEL,MAJ:MIN,MODEL,SIZE,TRAN"],
+                              timeout=min(4, max(0, deadline - time.monotonic())), step="drive-census")
         if census.returncode:
             return result
         tree = json.loads(census.stdout)["blockdevices"]
@@ -106,14 +121,15 @@ def observe():
             if (row.get("type") == "part" and label is None and mounted_id is not None
                     and mounted_id in descendants(row)):
                 path = row.get("path")
-                if isinstance(path, str) and re.fullmatch(r"/dev/[A-Za-z0-9_.-]+", path):
+                remaining = deadline - time.monotonic()
+                if (remaining >= 1 and isinstance(path, str)
+                        and re.fullmatch(r"/dev/[A-Za-z0-9_.-]+", path)):
                     try:
-                        probe = subprocess.run(["/usr/sbin/blkid", "-p", "-s", "PART_ENTRY_NAME", "-o", "value", path],
-                                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                               stderr=subprocess.DEVNULL, timeout=15, check=False)
+                        probe = runtime._run(["/usr/sbin/blkid", "-p", "-s", "PART_ENTRY_NAME", "-o", "value", path],
+                                             timeout=min(4, remaining), step="drive-label")
                         if probe.returncode == 0:
                             label = probe.stdout.decode("utf-8").strip()
-                    except (OSError, subprocess.SubprocessError, UnicodeError):
+                    except (OSError, runtime.Refusal, UnicodeError):
                         pass
             if row.get("type") == "part" and label == ROLE:
                 if disk is None or not isinstance(disk.get("path"), str) or not disk["path"].startswith("/dev/"):
@@ -149,7 +165,7 @@ def observe():
         if type(size) is not int or size < 0:
             size = None
         result.update(present=True, model=model, sizeBytes=size, transport=transport,
-                      health=_health(disk["path"], disk.get("tran")), readErrors=_errors(disk["path"]))
+                      health=_health(disk["path"], disk.get("tran"), deadline), readErrors=_errors(disk["path"]))
         fd = None
         try:
             # Pin the mount used for the space measurement. If it changed
@@ -167,7 +183,7 @@ def observe():
             if fd is not None:
                 os.close(fd)
         return result
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, UnicodeError, RecursionError):
+    except (OSError, runtime.Refusal, ValueError, KeyError, TypeError, UnicodeError, RecursionError):
         result.update(ok=False, present=False, model=None, sizeBytes=None, usedBytes=None,
                       freeBytes=None, health="unknown", readErrors=None, transport=None,
                       firstMissingSignal="backup-drive-card-unavailable")
