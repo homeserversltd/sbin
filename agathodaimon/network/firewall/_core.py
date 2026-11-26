@@ -746,10 +746,7 @@ def _ensure_nft_parent(nft_path: Path, policy_path: Path) -> None:
             raise
         ancestor_fd = _open_directory(parent.parent)
         try:
-            try:
-                os.mkdir(parent.name, 0o755, dir_fd=ancestor_fd)
-            except FileExistsError:
-                return
+            os.mkdir(parent.name, 0o755, dir_fd=ancestor_fd)
             fd = _open_directory(parent)
             try:
                 if os.geteuid() == 0:
