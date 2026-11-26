@@ -1,0 +1,19 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "sclerite": {
+    "name": "firewall",
+    "features": {
+      "firewall": {
+        "administrative": {
+          "band": true,
+          "routes": ["POST /api/v1/network/firewall/way/set"],
+          "verbs": []
+        },
+        "band": true,
+        "routes": [],
+        "verbs": []
+      }
+    }
+  }
+}

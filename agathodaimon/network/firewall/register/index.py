@@ -6,7 +6,7 @@ from agathodaimon.network.firewall import _core
 
 def main(argv=None):
     try:
-        request = _envelope.read_fields('mac')
+        request = _envelope.read_fields('mac', 'way', 'hostnames')
     except _envelope.EnvelopeError as exc:
         value = _core._receipt("invalid", False, False, "Firewall envelope refused.", None, str(exc))
     else:

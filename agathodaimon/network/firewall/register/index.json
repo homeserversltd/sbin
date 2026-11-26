@@ -7,7 +7,7 @@
       "firewall": {
         "administrative": {
           "band": true,
-          "routes": ["POST /api/v1/network/firewall/children"],
+          "routes": ["POST /api/v1/network/firewall/children", "POST /api/v1/network/firewall/register"],
           "verbs": []
         },
         "band": true,

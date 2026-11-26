@@ -842,7 +842,7 @@ def _observed_projection(manager: Any, policies: dict[str, dict[str, Any]],
 
 def _enforcement(mac: str, policy: dict[str, Any], leases: dict[str, dict[str, str]]) -> str:
     lease = leases.get(mac)
-    return "pending-renewal" if lease is not None and lease["ip"] != policy["ip"] else "applied"
+    return "pending-renewal" if lease is None or lease["ip"] != policy["ip"] else "applied"
 
 
 def _validate_intent(intent: Any) -> tuple[str, str | None, list[str] | None, str | None]:
@@ -850,7 +850,7 @@ def _validate_intent(intent: Any) -> tuple[str, str | None, list[str] | None, st
         raise FirewallRefused("firewall-intent-invalid")
     action = intent.get("action")
     if not isinstance(action, str) or action not in {
-            "observed", "list", "register", "unregister", "whitelist-get", "whitelist-set"}:
+            "observed", "list", "register", "unregister", "whitelist-get", "whitelist-set", "way-set"}:
         raise FirewallRefused("firewall-action-invalid")
     keys = set(intent)
     if action in {"observed", "list"}:
@@ -863,9 +863,20 @@ def _validate_intent(intent: Any) -> tuple[str, str | None, list[str] | None, st
     elif action in {"register", "unregister"}:
         if "hostnames" in keys:
             raise FirewallRefused("firewall-intent-shape-invalid")
+        if action == "register" and intent.get("way") is not None:
+            raise FirewallRefused("firewall-operation-unavailable")
     elif action == "whitelist-set":
         if "revision" not in keys or "hostnames" not in keys:
             raise FirewallRefused("firewall-intent-shape-invalid")
+    elif action == "way-set":
+        if "revision" not in keys or "way" not in keys:
+            raise FirewallRefused("firewall-intent-shape-invalid")
+        if intent["way"] not in ("blocked", "allowlist"):
+            raise FirewallRefused("firewall-way-invalid")
+        if intent["way"] == "blocked" and "hostnames" in keys:
+            raise FirewallRefused("firewall-way-hostnames-refused")
+        if intent["way"] == "allowlist" and not canonical_fqdns(intent.get("hostnames", [])):
+            raise FirewallRefused("firewall-allowlist-empty")
     mac = canonical_mac(intent.get("mac"))
     names = canonical_fqdns(intent["hostnames"]) if action == "whitelist-set" else None
     revision = intent.get("revision") if "revision" in keys else None
