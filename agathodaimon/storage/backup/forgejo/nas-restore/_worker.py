@@ -634,7 +634,11 @@ def _deed_once(reason, stage=None, kept=()):
             return False
     elif any(k.startswith("FORGEJO_NAS_RESTORE_PROOF_") for k in os.environ):
         return False
-    return _deed.send("sbin", "forgejo-nas-restore", reason == "none", target="forgejo",
+    # Hyalos projects the target but does not retain arbitrary stage tokens.
+    # Keep the contracted copy-failed signal and identify a lookup failure in
+    # the stored deed's target instead of relying on a discarded stage.
+    target = "forgejo-tree-lookup-error" if "tree-lookup-error" in kept else "forgejo"
+    return _deed.send("sbin", "forgejo-nas-restore", reason == "none", target=target,
                       outcome="ok" if reason == "none" else "failed",
                       signal="none" if reason == "none" else PREFIX + reason,
                       stages=([["forge", stage]] if stage else []) + [["prior", token] for token in kept])
@@ -1365,11 +1369,14 @@ def worker():
                     except Exception:
                         stage = "unknown-cleanup-failed" if stage == "cleanup-failed" else "unknown"
         if cfg is not None and repo is not None:
+            lookup_failed = "tree-lookup-error" in kept
             try:
                 kept = _kept_prior(cfg, repo)
             except Failure as error:
                 # A failed inventory is not evidence the prior DB remains.
-                kept = error.kept
+                kept = list(error.kept)
+            if lookup_failed and "tree-lookup-error" not in kept:
+                kept.append("tree-lookup-error")
         _deed_once(reason, stage, kept)
         if fd is not None:
             os.close(fd)
