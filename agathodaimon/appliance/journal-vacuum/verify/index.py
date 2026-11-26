@@ -38,7 +38,15 @@ def main(argv=None):
                 pass
 
     try:
-        command = [os.environ.get('AGATHODAIMON_JOURNALCTL', '/usr/bin/journalctl'), '--disk-usage']
+        executable = '/usr/bin/journalctl'
+        scratch = os.environ.get('AGATHODAIMON_SCRATCH_ROOT')
+        if scratch and os.environ.get('AGATHODAIMON_JOURNALCTL'):
+            root = os.path.realpath(scratch)
+            candidate = os.path.realpath(os.environ['AGATHODAIMON_JOURNALCTL'])
+            if root == '/' or os.path.commonpath([root, candidate]) != root or candidate == root:
+                raise OSError('journalctl stand-in outside scratch root')
+            executable = candidate
+        command = [executable, '--disk-usage']
         code = _band._run_bounded(command, consume)
         if code != 0:
             usage = None

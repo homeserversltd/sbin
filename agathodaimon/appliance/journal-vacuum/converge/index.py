@@ -20,7 +20,15 @@ def main(argv=None):
         print(json.dumps(_band._receipt(False, 'journal-vacuum-payload-invalid')))
         return 1
     try:
-        command = [os.environ.get('AGATHODAIMON_JOURNALCTL', '/usr/bin/journalctl'), '--vacuum-size=300M']
+        executable = '/usr/bin/journalctl'
+        scratch = os.environ.get('AGATHODAIMON_SCRATCH_ROOT')
+        if scratch and os.environ.get('AGATHODAIMON_JOURNALCTL'):
+            root = os.path.realpath(scratch)
+            candidate = os.path.realpath(os.environ['AGATHODAIMON_JOURNALCTL'])
+            if root == '/' or os.path.commonpath([root, candidate]) != root or candidate == root:
+                raise OSError('journalctl stand-in outside scratch root')
+            executable = candidate
+        command = [executable, '--vacuum-size=300M']
         code, freed = _band._run_vacuum(command)
     except (OSError, subprocess.SubprocessError):
         print(json.dumps(_band._receipt(False, 'journal-vacuum-command-failed')))
