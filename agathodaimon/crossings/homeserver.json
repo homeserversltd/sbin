@@ -221,6 +221,10 @@
     ],
     [
       "forgejo",
+      "nas-restore"
+    ],
+    [
+      "forgejo",
       "skip-check"
     ],
     [
@@ -556,6 +560,7 @@
     "/api/v1/settings/ssh/password/off",
     "/api/v1/settings/ssh/password/on",
     "/api/v1/settings/ssh/status",
+    "/api/v1/storage/backup/forgejo/nas-restore",
     "/api/v1/storage/backup/forgejo/skip-check",
     "/api/v1/storage/backup/ledger",
     "/api/v1/storage/backup/nas-sync/hold",
@@ -660,6 +665,7 @@
       "storage/backup/backblaze/bucket-run",
       "storage/backup/backblaze/bucket-save",
       "storage/backup/backblaze/bucket-verify",
+      "storage/backup/forgejo/nas-restore",
       "storage/backup/forgejo/skip-check",
       "storage/backup/mirror/serve",
       "storage/backup/nas-sync/hold",
@@ -711,6 +717,10 @@
       [
         "exousia",
         "reset-default"
+      ],
+      [
+        "forgejo",
+        "nas-restore"
       ],
       [
         "forgejo",
@@ -875,6 +885,7 @@
       "/api/v1/settings/ssh/on",
       "/api/v1/settings/ssh/password/off",
       "/api/v1/settings/ssh/password/on",
+      "/api/v1/storage/backup/forgejo/nas-restore",
       "/api/v1/storage/backup/nas-sync/hold",
       "/api/v1/storage/backup/nas-sync/release",
       "/api/v1/storage/backup/nas-sync/schedule/disable",

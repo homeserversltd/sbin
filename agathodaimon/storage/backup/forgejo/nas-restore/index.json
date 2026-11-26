@@ -1,5 +1,10 @@
 {
   "children": [],
   "hand": "envelope",
-  "sclerite": {"name": "gateway", "features": {"gateway": {"band": true}}}
+  "mutation_allowed": "seat",
+  "sclerite": {"name": "nas", "features": {"nas": {
+    "band": true, "verbs": [["forgejo", "nas-restore"]],
+    "routes": ["/api/v1/storage/backup/forgejo/nas-restore"],
+    "administrative": {"band": true, "verbs": [["forgejo", "nas-restore"]], "routes": ["/api/v1/storage/backup/forgejo/nas-restore"]}
+  }}}
 }
