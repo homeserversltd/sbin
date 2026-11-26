@@ -23,6 +23,7 @@ from agathodaimon._nidus.lock import identity_locked
 from agathodaimon._nidus.refusal import Refusal
 from agathodaimon._nidus.run import run
 from agathodaimon._nidus.write import WriteError, write
+from agathodaimon.network.firewall._held import held_macs
 
 
 class DhcpError(Refusal):
@@ -377,6 +378,12 @@ class DhcpManager:
         self.changed = False
         self.mutation_performed = False
         config = self.get_config()
+        held = held_macs()
+        for subnet in self._subnets(config):
+            for item in subnet.get("reservations", []):
+                mac = str(item.get("hw-address", "")).lower()
+                if (mac == identifier.lower() or item.get("ip-address") == identifier) and mac.replace("-", ":") in held:
+                    raise DhcpError("dhcp-reservation-held-by-firewall")
         removed = False
         for subnet in self._subnets(config):
             before = subnet.get("reservations", [])
@@ -403,6 +410,9 @@ class DhcpManager:
                     matches = item
         if matches is None:
             raise DhcpError("reservation not found")
+        mac = str(matches.get("hw-address", "")).lower().replace("-", ":")
+        if matches.get("ip-address") != new_ip and mac in held_macs():
+            raise DhcpError("dhcp-reservation-held-by-firewall")
         matches["ip-address"] = new_ip
         self.update_config(config)
         return {"hw-address": matches.get("hw-address", ""), "ip-address": new_ip, "hostname": matches.get("hostname", "")}
