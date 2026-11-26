@@ -758,7 +758,7 @@ def _kept_prior(cfg, repo):
     try:
         names = _db_inventory(cfg)
     except Failure as error:
-        error.kept = trees
+        error.kept = ["unknown-prior-db"] + trees
         raise
     return (["kept-prior-db"] if "forgejo_before_restore" in names else []) + trees
 
@@ -999,7 +999,6 @@ def worker():
     source = None
     changed_trees = []
     db_may_swap = False
-    db_prior_at_risk = False
     committed = False
     stop_attempted = False
     pending_signal = False
@@ -1074,9 +1073,6 @@ def worker():
         # Inspect the database names during unwind rather than assuming failure
         # means the server did not apply the statement.
         db_may_swap = True
-        # A timeout can hide a successful rename; keep custody conservatively
-        # until an inventory or a successful reversal proves otherwise.
-        db_prior_at_risk = True
         _db_command(cfg, 'ALTER DATABASE "forgejo" RENAME TO "forgejo_before_restore"')
         checkpoint()
         _db_command(cfg, 'ALTER DATABASE "forgejo_restore" RENAME TO "forgejo"')
@@ -1119,7 +1115,6 @@ def worker():
         if committed:
             try:
                 _db_command(cfg, 'DROP DATABASE "forgejo_before_restore" WITH (FORCE)')
-                db_prior_at_risk = False
             except Exception:
                 stage = "cleanup-failed"
             for path in prior:
@@ -1143,17 +1138,14 @@ def worker():
                 # a failed or timed-out SQL call can have reached PostgreSQL.
                 try:
                     names = _db_inventory(cfg)
-                    db_prior_at_risk = "forgejo_before_restore" in names
                     if "forgejo_before_restore" in names and "forgejo" in names:
                         _db_command(cfg, 'ALTER DATABASE "forgejo" RENAME TO "forgejo_restore"')
                 except Exception:
                     reversed_all = False
                 try:
                     names = _db_inventory(cfg)
-                    db_prior_at_risk = "forgejo_before_restore" in names
                     if "forgejo_before_restore" in names:
                         _db_command(cfg, 'ALTER DATABASE "forgejo_before_restore" RENAME TO "forgejo"')
-                        db_prior_at_risk = False
                     elif "forgejo" not in names:
                         reversed_all = False
                 except Exception:
@@ -1205,11 +1197,9 @@ def worker():
         if cfg is not None and repo is not None:
             try:
                 kept = _kept_prior(cfg, repo)
-            except Failure:
-                # Preserve the last observed prior DB on an inventory outage.
-                # A timed-out rename may have landed; this is conservative.
-                trees = _prior_tree_tokens(cfg, repo)
-                kept = (["kept-prior-db"] if db_prior_at_risk or "kept-prior-db" in kept else []) + trees
+            except Failure as error:
+                # A failed inventory is not evidence the prior DB remains.
+                kept = error.kept
         _deed_once(reason, stage, kept)
         if fd is not None:
             os.close(fd)
