@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
+from agathodaimon._nidus.run import run as nidus_run
+
 SCHEMA = "caduceus.household.tls.v1"
 PLATFORMS = {"windows", "android", "chromeos", "linux", "macos"}
 CSR_MAX_BYTES = 64 * 1024
@@ -533,9 +535,9 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
     if module.is_symlink():
         moved = False
         try:
-            owner = subprocess.run(
+            owner = nidus_run(
                 [*command, "--listpackage", logical],
-                check=False, text=True, capture_output=True,
+                timeout=None,
             )
             if owner.returncode != 0:
                 return owner.returncode, False
@@ -553,13 +555,13 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
                     if new_seat.exists():
                         return 1, False
                 else:
-                    current = subprocess.run([*command, "--truename", logical], check=False, text=True, capture_output=True)
+                    current = nidus_run([*command, "--truename", logical], timeout=None)
                     if current.returncode != 0:
                         return current.returncode, False
                     if current.stdout.strip() == logical + ".distrib":
                         if new_seat.exists():
                             return 1, False
-                        removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
+                        removed = nidus_run([*package, "--remove", logical], timeout=None)
                         if removed.returncode != 0:
                             return removed.returncode, False
                         moved = True
@@ -568,12 +570,12 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
                         return 1, False
                 if not owned:
                     try:
-                        added = subprocess.run([*package, "--divert", logical_seat, "--add", logical], check=False, text=True, capture_output=True)
+                        added = nidus_run([*package, "--divert", logical_seat, "--add", logical], timeout=None)
                     except OSError:
-                        subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                        nidus_run([*package, "--divert", logical + ".distrib", "--add", logical], timeout=None)
                         return 1, moved
                     if added.returncode != 0:
-                        subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                        nidus_run([*package, "--divert", logical + ".distrib", "--add", logical], timeout=None)
                         return added.returncode, moved
                     moved = True
                 if new_seat.exists():
@@ -582,9 +584,9 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
                     try:
                         os.rename(old_seat, new_seat)
                     except OSError:
-                        removed = subprocess.run([*package, "--remove", logical], check=False, text=True, capture_output=True)
+                        removed = nidus_run([*package, "--remove", logical], timeout=None)
                         if removed.returncode == 0:
-                            subprocess.run([*package, "--divert", logical + ".distrib", "--add", logical], check=False, text=True, capture_output=True)
+                            nidus_run([*package, "--divert", logical + ".distrib", "--add", logical], timeout=None)
                         return 1, moved
                 moved = True
             elif not owned:
@@ -606,7 +608,7 @@ def _bridge_browser(module: Path) -> tuple[int | None, bool]:
     command.extend(["--package", "homeserver-house-trust", "--divert", logical_seat, "--rename", logical])
     diverted = False
     try:
-        result = subprocess.run(command, check=False, text=True, capture_output=True)
+        result = nidus_run(command, timeout=None)
         if result.returncode != 0:
             return result.returncode, False
         diverted = True
@@ -651,11 +653,9 @@ def _trust_refresh_command(arch: bool, store: Path) -> tuple[str, list[str], str
 
 def _trust_bundle_readback(system_bundle: Path, anchor: Path) -> bool:
     try:
-        result = subprocess.run(
+        result = nidus_run(
             ["openssl", "verify", "-CAfile", str(system_bundle), str(anchor)],
-            check=False,
-            text=True,
-            capture_output=True,
+            timeout=None,
         )
     except OSError:
         return False
@@ -895,8 +895,8 @@ def trust_install(
     if refresh_needed:
         store_refresh["attempted"] = True
         try:
-            refreshed = subprocess.run(
-                refresh_command, check=False, text=True, capture_output=True,
+            refreshed = nidus_run(
+                refresh_command, timeout=None,
             )
             store_refresh["exit"] = refreshed.returncode
         except OSError as error:

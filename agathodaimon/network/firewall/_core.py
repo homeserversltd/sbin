@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from agathodaimon._envelope import EnvelopeError
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.network.dhcp._manager import DhcpError, DhcpManager
 
 DEFAULT_POLICY = Path("/etc/unbound/unbound.conf.d/agathodaimon-child-policy.conf")
@@ -690,7 +691,7 @@ def _unbound_view_missing(output: Any, view: str) -> bool:
 
 def _run(argv: list[str]) -> tuple[bool, str, str]:
     try:
-        result = subprocess.run(argv, text=True, capture_output=True, timeout=20, check=False)
+        result = nidus_run(argv, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return False, "", "firewall-command-unavailable"
     is_view_query = len(argv) == 3 and argv[:2] == [str(UNBOUND_CONTROL), "view_list_local_zones"]

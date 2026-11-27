@@ -7,6 +7,8 @@ import socket
 import subprocess
 from typing import Any
 
+from agathodaimon._nidus.run import run as nidus_run
+
 _MAC = re.compile(r"^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$|^[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5}$")
 _PING_RTT = re.compile(r"(?:time|rtt)=([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
 
@@ -46,11 +48,9 @@ def send(mac_value: str, broadcast_value: str = "255.255.255.255") -> dict[str, 
 def probe(ip_value: str) -> dict[str, Any]:
     ip = _ipv4(ip_value, "IP")
     try:
-        result = subprocess.run(
+        result = nidus_run(
             ["/usr/bin/ping", "-c", "1", "-W", "1", ip],
-            capture_output=True,
-            text=True,
-            check=False,
+            timeout=None,
         )
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
