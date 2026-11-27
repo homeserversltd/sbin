@@ -13,17 +13,18 @@ from pathlib import Path
 from typing import Sequence
 
 from agathodaimon.reload import FingerprintGate, reload_services
+from agathodaimon._nidus.run import run as nidus_run
 
 FLOOR = ("matrix-synapse-py3", "nginx", "postgresql-client", "logrotate", "openssl", "unbound", "ca-certificates", "curl", "tar", "python3")
 
 
 def result(argv: list[str], **kwargs: object) -> dict:
-    completed = subprocess.run(argv, text=True, capture_output=True, check=False)
+    completed = nidus_run(argv, timeout=None)
     return {"argv": argv, "exit": completed.returncode, "stdout": completed.stdout.strip(), "stderr": completed.stderr.strip(), **kwargs}
 
 
 def require_floor() -> None:
-    missing = [package for package in FLOOR if subprocess.run(["dpkg-query", "-W", "-f=${db:Status-Status}", package], text=True, capture_output=True, check=False).stdout.strip() != "installed"]
+    missing = [package for package in FLOOR if nidus_run(["dpkg-query", "-W", "-f=${db:Status-Status}", package], timeout=None).stdout.strip() != "installed"]
     if missing:
         raise RuntimeError("matrix-floor-missing:" + ",".join(missing))
     for path, signal in ((Path("/usr/share/element-web/index.html"), "element-web-index"), (Path("/usr/share/element-web/.artifact-sha256"), "element-web-artifact-sha256")):

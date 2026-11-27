@@ -12,6 +12,7 @@ import uuid
 
 from agathodaimon import _envelope
 from agathodaimon._envelope import appliance_runtime_path
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.lib.receipts.index import emit
 from agathodaimon.unit import _control
 
@@ -46,7 +47,7 @@ def _unit_identity():
     argv = ["systemctl", "--user", "-M", "hermes@.host", "show", UNIT,
             "--property=MainPID,ActiveEnterTimestamp"]
     try:
-        result = subprocess.run(argv, text=True, capture_output=True, timeout=30, check=False)
+        result = nidus_run(argv, timeout=30)
     except (OSError, subprocess.SubprocessError):
         raise Refusal("hermes-unit-observation-failed") from None
     values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)

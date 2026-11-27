@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from agathodaimon import _envelope
+from agathodaimon._nidus.run import run as nidus_run
 
 MAX_INPUT_BYTES = 64 * 1024
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -51,7 +52,7 @@ def _redacted(argv: Sequence[str]) -> list[str]:
 
 
 def _run(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, text=True, capture_output=True, check=False)
+    return nidus_run(argv, timeout=None)
 
 
 def _must(result: subprocess.CompletedProcess[str], signal: str) -> None:

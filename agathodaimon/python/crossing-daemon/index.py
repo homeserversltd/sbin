@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from agathodaimon.lib.crossing_daemon.index import CrossingDaemon
+from agathodaimon._nidus.run import run as nidus_run
 
 UNIT_NAME = "agathodaimon-crossing-daemon.service"
 UNIT = """[Unit]
@@ -48,7 +49,7 @@ def unit_change(directory: Path, remove: bool, plan: bool) -> dict:
         os.chmod(temporary, 0o644)
         os.replace(temporary, target)
     for command in commands:
-        step = subprocess.run(command, capture_output=True, text=True, check=False)
+        step = nidus_run(command, timeout=None)
         if step.returncode:
             return {**result, 'ok': False, 'error': 'unit-command-failed', 'command': command}
     return result

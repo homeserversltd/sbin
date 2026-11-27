@@ -2,6 +2,7 @@ from __future__ import annotations
 import errno,fcntl,json,os,re,shlex,stat,subprocess,sys,time
 from pathlib import Path
 from agathodaimon import _envelope
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.storage.nas import deed
 
 RSYNC="/usr/bin/rsync"; FINDMNT="/usr/bin/findmnt"; LSBLK="/usr/bin/lsblk"; BLKID="/usr/sbin/blkid"; JOURNALCTL="/usr/bin/journalctl"
@@ -30,7 +31,7 @@ def receipt(action,outcome,planned=False,mutation=False,**fields):
  return {"action":action,"ok":outcome=="ok","outcome":outcome,"planned":planned,"mutationPerformed":mutation,"firstMissingSignal":"none" if outcome=="ok" else fields.get("reason",outcome),**defaults,**fields}
 def finish(v): return v
 def refused(action,reason,checks=None,**fields): return finish(receipt(action,"refused",reason=reason,checks=checks or [],**fields))
-def command(argv): return subprocess.run(argv,text=True,capture_output=True,check=False)
+def command(argv): return nidus_run(argv,timeout=None)
 def run(argv,runner):
  try: r=runner(list(argv))
  except FileNotFoundError as e: raise Refusal("required-tool-missing:"+argv[0]) from e

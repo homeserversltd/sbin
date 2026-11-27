@@ -7,6 +7,7 @@ import subprocess
 
 from agathodaimon import _envelope, _seat
 from agathodaimon._nidus.path import appliance_runtime_path
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.storage.nas import runtime
 
 
@@ -17,7 +18,7 @@ class ObservationError(Exception):
 
 def _run(command):
     try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=15, check=False)
+        return nidus_run(command, timeout=15)
     except (OSError, subprocess.SubprocessError, UnicodeError):
         raise ObservationError("nas-prefire-command-failed") from None
 
