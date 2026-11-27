@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import grp
 import hashlib
+import http.client
+import importlib.util
 import ipaddress
 import json
 import os
 from pathlib import Path
 import re
+import socket
+import ssl
 import stat
 import subprocess
 import time
@@ -37,9 +41,56 @@ class Failure(Exception):
 class SameHostRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         target = urllib.parse.urlsplit(newurl)
-        if target.scheme != 'https' or target.hostname != 'git.home.arpa':
+        try:
+            valid = (target.scheme == 'https' and target.hostname == 'git.home.arpa' and
+                     not target.username and not target.password and target.port in (None, 443))
+        except ValueError:
+            valid = False
+        if not valid:
             raise Failure('release-redirect-refused')
         return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+class LoopbackConnectError(OSError):
+    pass
+
+class OwnForgeConnection(http.client.HTTPSConnection):
+    def connect(self):
+        try:
+            sock = socket.create_connection(('127.0.0.1', 443), self.timeout, self.source_address)
+            try:
+                self.sock = self._context.wrap_socket(sock, server_hostname='git.home.arpa')
+            except BaseException:
+                sock.close()
+                raise
+        except (OSError, TimeoutError) as exc:
+            raise LoopbackConnectError() from exc
+
+    def getresponse(self):
+        response = super().getresponse()
+        self._status_seen[0] = True
+        return response
+
+class OwnForgeHandler(urllib.request.HTTPSHandler):
+    def __init__(self, context, status_seen):
+        super().__init__(context=context)
+        self.status_seen = status_seen
+
+    def https_open(self, req):
+        def connection(host, **kwargs):
+            conn = OwnForgeConnection(host, **kwargs)
+            conn._status_seen = self.status_seen
+            return conn
+        return self.do_open(connection, req, context=self._context)
+
+def own_forge_context():
+    path = Path(__file__).resolve().parents[1] / 'network/cert/house-ca/_ca.py'
+    spec = importlib.util.spec_from_file_location('_xenia_house_ca', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    ca = module.cert_dir() / 'ca.pem'
+    if ca.is_file() and os.access(ca, os.R_OK):
+        return ssl.create_default_context(cafile=str(ca))
+    return ssl.create_default_context()
 
 GITHUB_HOSTS = frozenset(('api.github.com', 'github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'))
 
@@ -95,9 +146,18 @@ def fetch(url: str, token: str | None, maximum: int = MAX_ASSET) -> bytes:
     if token:
         headers['Authorization'] = 'token ' + token
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameHostRedirect())
-        with opener.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
-            data = response.read(maximum + 1)
+        status_seen = [False]
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameHostRedirect(),
+                                            OwnForgeHandler(own_forge_context(), status_seen))
+        try:
+            with opener.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
+                data = response.read(maximum + 1)
+        except urllib.error.URLError as exc:
+            if status_seen[0] or not isinstance(exc.reason, LoopbackConnectError):
+                raise
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameHostRedirect())
+            with opener.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
+                data = response.read(maximum + 1)
     except urllib.error.HTTPError as exc:
         raise Failure('release-http-' + str(exc.code)) from exc
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
