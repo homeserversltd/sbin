@@ -51,7 +51,7 @@ class Redirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def request(url, method='GET', data=None, key=None, public=False, deadline=None, multipart=None):
+def request(url, method='GET', data=None, key=None, public=False, deadline=None, multipart=None, on_success=None):
     headers = {'Accept': 'application/json', 'User-Agent': 'agathodaimon'}
     if key is not None:
         headers['Authorization'] = 'Basic ' + base64.b64encode(b'owner:' + key).decode('ascii')
@@ -71,6 +71,8 @@ def request(url, method='GET', data=None, key=None, public=False, deadline=None,
     except urllib.error.HTTPError as exc:
         response = exc
     with response:
+        if on_success is not None and response.status in (200, 201):
+            on_success()
         raw = response.read(MAX_RESPONSE + 1)
         if len(raw) > MAX_RESPONSE:
             raise ValueError('response-too-large')
@@ -195,6 +197,9 @@ def seed_request(forge, path, key, deadline, **kwargs):
 def seed_push(forge, key, root, seed, deadline, changed):
     repo_api = '/api/v1/repos/owner/cartridge-test'
 
+    def mark_changed():
+        changed[0] = True
+
     def observe(path):
         status, raw = request(forge + path, key=key, deadline=deadline)
         if status == 404:
@@ -203,22 +208,31 @@ def seed_push(forge, key, root, seed, deadline, changed):
             raise SeedStatus(str(status))
         return decode(raw)
 
+    repo_attempted = False
     def create():
+        nonlocal repo_attempted
         repo = observe(repo_api)
+        if repo is not None and repo_attempted:
+            mark_changed()
         if repo is None:
+            repo_attempted = True
             seed_request(forge, '/api/v1/user/repos', key, deadline, method='POST',
-                         data={'name': 'cartridge-test', 'private': True, 'auto_init': False})
-            changed[0] = True
+                         data={'name': 'cartridge-test', 'private': True, 'auto_init': False},
+                         on_success=mark_changed)
             repo = observe(repo_api)
         if not repo or repo.get('private') is not True:
             raise ValueError('repo-not-private')
     seed_step('seed-repo-create-failed', deadline, create)
 
+    push_attempted = False
     def push():
+        nonlocal push_attempted
         ref = observe(repo_api + '/branches/main')
         if ref is not None:
             if ref.get('commit', {}).get('id') != seed['commit']:
                 raise Failure('seed-branch-diverged')
+            if push_attempted:
+                mark_changed()
             return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -229,6 +243,7 @@ def seed_push(forge, key, root, seed, deadline, changed):
             os.write(fd, ('[http "' + forge + '/"]\n\textraHeader = Authorization: Basic ' + header + '\n').encode())
             env = os.environ.copy()
             env.update({'GIT_TERMINAL_PROMPT': '0', 'GIT_CONFIG_NOSYSTEM': '1', 'HOME': '/nonexistent'})
+            push_attempted = True
             subprocess.run(['git', '-c', 'include.path=/proc/self/fd/' + str(fd), '-C', str(root / 'repo'),
                             'push', forge + '/owner/cartridge-test.git', seed['commit'] + ':refs/heads/main'],
                            pass_fds=(fd,), env=env, timeout=remaining, check=True,
@@ -243,13 +258,18 @@ def seed_push(forge, key, root, seed, deadline, changed):
             raise Failure('seed-branch-diverged')
     seed_step('seed-push-failed', deadline, push)
 
+    release_attempted = False
     def release():
+        nonlocal release_attempted
         path = repo_api + '/releases/tags/' + seed['tag']
         item = observe(path)
+        if item is not None and release_attempted:
+            mark_changed()
         if item is None:
+            release_attempted = True
             data = {'tag_name': seed['tag'], 'target_commitish': seed['commit'], 'name': seed['tag']}
-            seed_request(forge, repo_api + '/releases', key, deadline, method='POST', data=data)
-            changed[0] = True
+            seed_request(forge, repo_api + '/releases', key, deadline, method='POST', data=data,
+                         on_success=mark_changed)
             item = observe(path)
         if not item or item.get('tag_name') != seed['tag'] or item.get('target_commitish') != seed['commit'] or type(item.get('id')) is not int:
             raise ValueError('release-mismatch')
@@ -277,7 +297,9 @@ def seed_push(forge, key, root, seed, deadline, changed):
         return size, digest.hexdigest()
 
     for name in ASSET_NAMES:
+        attempted = False
         def upload(name=name):
+            nonlocal attempted
             content = (root / 'release' / name).read_bytes()
             expected = next(a['sha256'] for a in seed['assets'] if a['name'] == name)
             if hashlib.sha256(content).hexdigest() != expected:
@@ -292,9 +314,12 @@ def seed_push(forge, key, root, seed, deadline, changed):
             if len(matches) > 1:
                 raise Failure('seed-asset-conflict')
             uploaded = not matches
+            if matches and attempted:
+                mark_changed()
             if uploaded:
-                result = seed_request(forge, path, key, deadline, method='POST', multipart=(name, content))
-                changed[0] = True
+                attempted = True
+                result = seed_request(forge, path, key, deadline, method='POST', multipart=(name, content),
+                                      on_success=mark_changed)
                 asset = decode(result)
             else:
                 asset = matches[0]
