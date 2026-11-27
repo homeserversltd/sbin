@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from agathodaimon._nidus.refusal import named_signal
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon._nidus.write import WriteError, write
 from agathodaimon.settings import _options, _shared, _sway_overrides
 from agathodaimon.settings.display import backends
@@ -83,7 +84,7 @@ def _region_values() -> dict[str, Any]:
         try:
             environment = os.environ.copy()
             environment["LC_ALL"] = measurement
-            result = subprocess.run(["locale", "-k", "LC_MEASUREMENT"], capture_output=True, text=True, timeout=3, env=environment, check=False)
+            result = nidus_run(["locale", "-k", "LC_MEASUREMENT"], timeout=3, env=environment)
             match = re.search(r"^measurement=([12])$", result.stdout, re.MULTILINE)
             if result.returncode == 0 and not result.stderr and match:
                 values["measurement_units"] = "metric" if match.group(1) == "1" else "imperial"

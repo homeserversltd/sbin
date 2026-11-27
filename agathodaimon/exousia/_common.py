@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from agathodaimon._envelope import EnvelopeError, attach, read
+from agathodaimon._nidus.run import run as nidus_run
 
 
 class MalformedInput(ValueError):
@@ -84,13 +85,11 @@ def invoke_library(verb, value):
         part for part in (str(shelf), existing_pythonpath) if part
     )
     command = [python, str(cli_path), "lib", "bind_derived", verb]
-    completed = subprocess.run(
+    completed = nidus_run(
         command,
         input=json.dumps(value, separators=(",", ":")),
-        capture_output=True,
-        text=True,
-        check=False,
         env=env,
+        timeout=None,
     )
     child_stderr = (
         _REDACTED

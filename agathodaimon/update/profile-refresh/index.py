@@ -4,6 +4,7 @@ import argparse, fcntl, json, os, shutil, subprocess, tempfile
 from pathlib import Path
 from typing import Sequence
 
+from agathodaimon._nidus.run import run as nidus_run
 PROFILES = ("chia-farmer-01", "chia-harvester-01", "chia-harvester-02")
 SERVICE = """[Unit]
 Description=Refresh the Chia Harmonia profile after its possessed source advances
@@ -29,7 +30,7 @@ WantedBy=multi-user.target
 """
 
 def run(argv: list[str], env: dict[str, str] | None = None) -> dict:
-    p = subprocess.run(argv, text=True, capture_output=True, check=False, env=env)
+    p = nidus_run(argv, timeout=None, env=env)
     return {"argv": argv, "exit": p.returncode, "stdout": p.stdout.strip(), "stderr": p.stderr.strip()}
 
 def atomic(path: Path, content: str) -> None:

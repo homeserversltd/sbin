@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import subprocess
 
+from agathodaimon._nidus.run import run as nidus_run
 
 OWNER = "owner"  # Same owner identity as console/restart.
 ACTIONS = frozenset({"start", "stop", "restart", "enable", "disable", "status"})
@@ -13,7 +14,7 @@ PROPERTIES = {"LoadState": "load_state", "ActiveState": "active_state", "SubStat
 
 def _run(argv, timeout=30):
     try:
-        result = subprocess.run(argv, text=True, capture_output=True, check=False, timeout=timeout)
+        result = nidus_run(argv, timeout=timeout)
         return result.returncode, result.stdout
     except (OSError, subprocess.SubprocessError):
         return None, ""

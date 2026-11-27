@@ -13,6 +13,7 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon._nidus.write import WriteError, write
 
 FORMATS = {
@@ -202,7 +203,7 @@ def set_format(home: Path, name: str) -> dict:
     # nidus must not traverse a writable home directory with root privileges.
     argv = ["/usr/sbin/runuser", "-u", "owner", "--", sys.executable, "-I", "-B",
             str(Path(__file__).resolve()), str(home), name]
-    child = subprocess.run(argv, capture_output=True, text=True, timeout=8, check=False)
+    child = nidus_run(argv, timeout=8)
     try:
         result = json.loads(child.stdout)
     except ValueError as error:

@@ -16,6 +16,7 @@ from typing import Any
 from urllib.request import Request, urlopen
 
 from agathodaimon._nidus.path import runtime_root
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.settings._timezone_guard import require_timezone_change_allowed
 
 PROVIDER = "ip-api.com"
@@ -177,7 +178,7 @@ def _hold_seconds() -> int:
 
 
 def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True, check=False)
+    return nidus_run(command, timeout=None)
 
 
 def timedatectl() -> str:

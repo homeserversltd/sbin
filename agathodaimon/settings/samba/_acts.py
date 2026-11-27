@@ -7,6 +7,7 @@ import sys
 from typing import Any, Sequence
 
 from agathodaimon._envelope import EnvelopeError, attach, read
+from agathodaimon._nidus.run import run as nidus_run
 
 SYSTEMCTL = "/usr/bin/systemctl"
 UNITS = (("smbd", "smbd.service"), ("nmbd", "nmbd.service"))
@@ -30,14 +31,7 @@ class ObservationFailure(RuntimeError):
 
 def _run(command: list[str], launch_signal: str) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
-            command,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-        )
+        return nidus_run(command, timeout=None, encoding="utf-8", errors="replace")
     except OSError as exc:
         raise ObservationFailure(launch_signal) from exc
 

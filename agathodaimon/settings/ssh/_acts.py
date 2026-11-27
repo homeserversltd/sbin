@@ -15,6 +15,7 @@ import subprocess
 import sys
 from typing import Any, Sequence
 from agathodaimon._envelope import EnvelopeError, attach, read
+from agathodaimon._nidus.run import run as nidus_run
 
 SYSTEMCTL = "/usr/bin/systemctl"
 SSHD = "/usr/sbin/sshd"
@@ -40,7 +41,7 @@ def _sudo(argv: Sequence[str]) -> list[str]:
 
 
 def _run(argv: Sequence[str], *, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(argv), input=input_text, text=True, capture_output=True, check=False)
+    return nidus_run(list(argv), input=input_text, timeout=None)
 
 
 def _must(result: subprocess.CompletedProcess[str], signal: str) -> None:
