@@ -173,6 +173,8 @@ def seed_step_retry(signal, deadline, action):
     while time.monotonic() < deadline:
         try:
             return action()
+        except Failure:
+            raise
         except SeedStatus as exc:
             last = str(exc)
         except Exception as exc:
@@ -190,26 +192,37 @@ def seed_request(forge, path, key, deadline, **kwargs):
     return raw
 
 
-def seed_push(forge, key, root, seed, deadline):
+def seed_push(forge, key, root, seed, deadline, changed):
     repo_api = '/api/v1/repos/owner/cartridge-test'
-    created = False
+
+    def observe(path):
+        status, raw = request(forge + path, key=key, deadline=deadline)
+        if status == 404:
+            return None
+        if status != 200:
+            raise SeedStatus(str(status))
+        return decode(raw)
+
     def create():
-        nonlocal created
-        if not created:
+        repo = observe(repo_api)
+        if repo is None:
             seed_request(forge, '/api/v1/user/repos', key, deadline, method='POST',
                          data={'name': 'cartridge-test', 'private': True, 'auto_init': False})
-            created = True
-        repo = decode(seed_request(forge, repo_api, key, deadline))
-        if repo.get('private') is not True:
+            changed[0] = True
+            repo = observe(repo_api)
+        if not repo or repo.get('private') is not True:
             raise ValueError('repo-not-private')
     seed_step('seed-repo-create-failed', deadline, create)
 
     def push():
+        ref = observe(repo_api + '/branches/main')
+        if ref is not None:
+            if ref.get('commit', {}).get('id') != seed['commit']:
+                raise Failure('seed-branch-diverged')
+            return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise SeedStatus('timeout')
-        # Anonymous memfd config supplies Git's HTTP header; neither argv nor
-        # environment contains the credential, and no persistent file exists.
         fd = os.memfd_create('xenia-git-config', 0)
         try:
             header = base64.b64encode(b'owner:' + key).decode('ascii')
@@ -220,43 +233,76 @@ def seed_push(forge, key, root, seed, deadline):
                             'push', forge + '/owner/cartridge-test.git', seed['commit'] + ':refs/heads/main'],
                            pass_fds=(fd,), env=env, timeout=remaining, check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            changed[0] = True
         finally:
             os.close(fd)
-        ref = decode(seed_request(forge, repo_api + '/branches/main', key, deadline))
+        ref = observe(repo_api + '/branches/main')
+        if ref is None:
+            raise SeedStatus('branch-missing')
         if ref.get('commit', {}).get('id') != seed['commit']:
-            raise ValueError('branch-commit-mismatch')
+            raise Failure('seed-branch-diverged')
     seed_step('seed-push-failed', deadline, push)
 
-    release_created = False
     def release():
-        nonlocal release_created
-        if not release_created:
+        path = repo_api + '/releases/tags/' + seed['tag']
+        item = observe(path)
+        if item is None:
             data = {'tag_name': seed['tag'], 'target_commitish': seed['commit'], 'name': seed['tag']}
             seed_request(forge, repo_api + '/releases', key, deadline, method='POST', data=data)
-            release_created = True
-        item = decode(seed_request(forge, repo_api + '/releases/tags/' + seed['tag'], key, deadline))
-        if item.get('tag_name') != seed['tag'] or item.get('target_commitish') != seed['commit'] or not isinstance(item.get('id'), int):
+            changed[0] = True
+            item = observe(path)
+        if not item or item.get('tag_name') != seed['tag'] or item.get('target_commitish') != seed['commit'] or type(item.get('id')) is not int:
             raise ValueError('release-mismatch')
         return item['id']
     release_id = seed_step('seed-release-create-failed', deadline, release)
+    path = repo_api + '/releases/' + str(release_id) + '/assets'
+
+    def asset_digest(asset):
+        url = urllib.parse.urlsplit(asset.get('browser_download_url', ''))
+        if (url.scheme != 'https' or url.netloc != 'git.home.arpa' or url.query or url.fragment
+                or not url.path.startswith('/owner/cartridge-test/releases/download/')):
+            raise ValueError('asset-url-invalid')
+        req = urllib.request.Request(forge + url.path, headers={
+            'Authorization': 'Basic ' + base64.b64encode(b'owner:' + key).decode('ascii')})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), Redirect(False))
+        digest = hashlib.sha256()
+        size = 0
+        with opener.open(req, timeout=min(3, max(0.001, deadline - time.monotonic()))) as response:
+            while True:
+                block = response.read(65536)
+                if not block:
+                    break
+                size += len(block)
+                digest.update(block)
+        return size, digest.hexdigest()
+
     for name in ASSET_NAMES:
-        asset_id = None
         def upload(name=name):
-            nonlocal asset_id
             content = (root / 'release' / name).read_bytes()
-            if hashlib.sha256(content).hexdigest() != next(a['sha256'] for a in seed['assets'] if a['name'] == name):
+            expected = next(a['sha256'] for a in seed['assets'] if a['name'] == name)
+            if hashlib.sha256(content).hexdigest() != expected:
                 raise ValueError('seed-asset-digest-invalid')
-            path = repo_api + '/releases/' + str(release_id) + '/assets'
-            if asset_id is None:
-                result = decode(seed_request(forge, path, key, deadline, method='POST', multipart=(name, content)))
-                asset_id = result.get('id')
-                if not isinstance(asset_id, int):
-                    raise ValueError('asset-id-invalid')
-            asset = decode(seed_request(forge, path + '/' + str(asset_id), key, deadline))
-            url = urllib.parse.urlsplit(asset.get('browser_download_url', ''))
-            if (asset.get('name') != name or asset.get('size') != len(content)
-                    or url.scheme != 'https' or url.netloc != 'git.home.arpa'):
-                raise ValueError('asset-mismatch')
+            status, raw = request(forge + path, key=key, deadline=deadline)
+            if status != 200:
+                raise SeedStatus(str(status))
+            assets = json.loads(raw)
+            if not isinstance(assets, list):
+                raise ValueError('assets-invalid')
+            matches = [a for a in assets if isinstance(a, dict) and a.get('name') == name]
+            if len(matches) > 1:
+                raise Failure('seed-asset-conflict')
+            uploaded = not matches
+            if uploaded:
+                result = seed_request(forge, path, key, deadline, method='POST', multipart=(name, content))
+                changed[0] = True
+                asset = decode(result)
+            else:
+                asset = matches[0]
+            if asset.get('name') != name or asset.get('size') != len(content):
+                raise Failure('seed-asset-upload-failed' if uploaded else 'seed-asset-conflict')
+            size, digest = asset_digest(asset)
+            if size != len(content) or digest != expected:
+                raise Failure('seed-asset-upload-failed' if uploaded else 'seed-asset-conflict')
         seed_step('seed-asset-upload-failed', deadline, upload)
 
 
@@ -269,6 +315,8 @@ def main(argv=None):
         print(json.dumps({'ok': False, 'changed': False, 'firstMissingSignal': 'request-invalid'}))
         return 1
     changed = False
+    seed_changed = [False]
+    seed_touched = False
     signal = 'none'
     alarm_handler = None
     deadline_signal = 'seed-repo-create-failed:timeout'
@@ -310,18 +358,16 @@ def main(argv=None):
             except Exception as exc:
                 raise Failure('seed-repo-create-failed:' + type(exc).__name__) from None
         try:
-            while True:
+            if seed is not None:
+                seed_touched = True
+                seed_push(forge, key, seed_root, seed, deadline, seed_changed)
+            while seed is None:
                 seeding = False
                 try:
                     status, raw = request(forge + '/api/v1/repos/owner/cartridge-test', key=key)
                     if status == 200:
                         break
                     if status == 404:
-                        if seed is not None:
-                            seeding = True
-                            seed_push(forge, key, seed_root, seed, deadline)
-                            changed = True
-                            break
                         payload = {'clone_addr': GITHUB_REPO, 'repo_owner': 'owner', 'repo_name': 'cartridge-test', 'mirror': True, 'private': True}
                         status, raw = request(forge + '/api/v1/repos/migrate', method='POST', data=payload, key=key)
                         if status in (200, 201, 202):
@@ -394,7 +440,9 @@ def main(argv=None):
     except Exception:
         signal = 'test-tab-operation-failed'
     try:
-        if (changed or signal != 'none') and (alarm_handler is None or time.monotonic() < deadline):
+        if seed_touched or changed or signal != 'none':
+            if alarm_handler is not None and time.monotonic() >= deadline:
+                signals.setitimer(signals.ITIMER_REAL, 0.25)
             from agathodaimon._deed import send
             send('sbin', 'xenos-test-tab', signal == 'none', target='test',
                  duration_ms=int((time.monotonic() - started) * 1000))
@@ -404,6 +452,7 @@ def main(argv=None):
         if alarm_handler is not None:
             signals.setitimer(signals.ITIMER_REAL, 0)
             signals.signal(signals.SIGALRM, alarm_handler)
+    changed = changed or seed_changed[0]
     receipt = {'ok': signal == 'none', 'changed': changed, 'firstMissingSignal': signal}
     print(json.dumps(attach(receipt, envelope), separators=(',', ':'), sort_keys=True))
     return 0 if receipt['ok'] else 1
