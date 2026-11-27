@@ -159,6 +159,7 @@
     "storage/nas/setup/format",
     "storage/nas/setup/key-create",
     "storage/nas/setup/plan",
+    "storage/nas/setup/prefire",
     "storage/nas/setup/rollback",
     "storage/nas/setup/seat",
     "storage/shares/converge",
