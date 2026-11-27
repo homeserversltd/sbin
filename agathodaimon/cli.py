@@ -1785,7 +1785,11 @@ def _scoped_main(argv=None):
             and answer.get("schema") != "caduceus.chord.receipt.v1"
             and not _front_dry_run and isinstance(_stamp_target, str)
             and any(_stamp_target.startswith(prefix) for prefix in
-                    ("network/dhcp/", "network/dns/", "network/identity/"))):
+                    ("network/dhcp/", "network/dns/", "network/identity/",
+                     "network/kea-dhcp/", "network/unbound-dns-device-name/",
+                     "network/unbound-dns-alias/", "network/unbound-dns-records/",
+                     "network/unbound-resolver/", "network/unbound-dns-blocklist/",
+                     "network/unbound-dns-drop-in/", "network/lan-device-identity/"))):
         try:
             target = _slash_target(_stamp_target)
             if target is not None and target.is_file() and (answer["ok"] is False or _stage_changed(answer) is True):
@@ -1793,8 +1797,10 @@ def _scoped_main(argv=None):
                 changed = _stage_changed(answer)
                 word = ("refused" if not answer["ok"] else "completed" if changed is None
                         else "changed" if changed else "kept")
-                send("sbin", _stamp_target.rsplit("/", 1)[-1], answer["ok"],
-                     target=_stamp_target.replace("/", "."), outcome=word,
+                noun, leaf = _stamp_target.rsplit("/", 1)
+                old_path = _stamp_target.startswith(("network/dhcp/", "network/dns/", "network/identity/"))
+                send("sbin", leaf if old_path else leaf.split("-", 1)[0], answer["ok"],
+                     target=(_stamp_target if old_path else noun).replace("/", "."), outcome=word,
                      signal=answer.get("firstMissingSignal") or "operation-failed",
                      duration_ms=int((time.monotonic() - started) * 1000))
         except Exception:

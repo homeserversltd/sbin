@@ -9,6 +9,10 @@
     "restart",
     "restartable",
     "service",
-    "sudo-passwordless"
+    "sudo-passwordless",
+    "xenia-guest-register",
+    "restartable-services",
+    "household-notification-ledger",
+    "harmonia-module-profile"
   ]
 }

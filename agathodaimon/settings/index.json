@@ -12,7 +12,8 @@
     "default-apps",
     "notifications",
     "ssh",
-    "samba"
+    "samba",
+    "gtk-settings-shell"
   ],
   "sclerite": {
     "name": "all",

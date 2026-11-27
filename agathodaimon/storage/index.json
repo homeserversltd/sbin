@@ -8,6 +8,7 @@
     "nas",
     "nas-import",
     "shares",
-    "upload"
+    "upload",
+    "keyman-vault"
   ]
 }
