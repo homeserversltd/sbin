@@ -393,14 +393,17 @@ def main(argv=None):
         signal = str(exc)
     except Exception:
         signal = 'test-tab-operation-failed'
+    try:
+        if (changed or signal != 'none') and (alarm_handler is None or time.monotonic() < deadline):
+            from agathodaimon._deed import send
+            send('sbin', 'xenos-test-tab', signal == 'none', target='test',
+                 duration_ms=int((time.monotonic() - started) * 1000))
+    except SeedDeadline:
+        signal = deadline_signal
     finally:
         if alarm_handler is not None:
             signals.setitimer(signals.ITIMER_REAL, 0)
             signals.signal(signals.SIGALRM, alarm_handler)
     receipt = {'ok': signal == 'none', 'changed': changed, 'firstMissingSignal': signal}
-    if changed or signal != 'none':
-        from agathodaimon._deed import send
-        send('sbin', 'xenos-test-tab', signal == 'none', target='test',
-             duration_ms=int((time.monotonic() - started) * 1000))
     print(json.dumps(attach(receipt, envelope), separators=(',', ':'), sort_keys=True))
     return 0 if receipt['ok'] else 1
