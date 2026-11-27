@@ -4,6 +4,7 @@
     "namespace",
     "hold",
     "resolve",
+    "configured",
     "rollback-stop",
     "release-trip"
   ],

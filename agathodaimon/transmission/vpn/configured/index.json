@@ -1,0 +1,10 @@
+{
+  "hand": "envelope",
+  "envelope": {"stdin": "stream"},
+  "children": [],
+  "mutation_allowed": "seat",
+  "sclerite": {"name": "transmission", "features": {"transmission": {
+    "band": true, "verbs": [["vpn", "configured"]], "routes": [],
+    "administrative": {"band": false, "verbs": [], "routes": []}
+  }}}
+}
