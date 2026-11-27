@@ -10,7 +10,7 @@ from agathodaimon.storage.nas.setup import _setup
 def main(argv=None):
     started = time.monotonic()
     try:
-        envelope = _envelope.read_fields("device", "role")
+        envelope = _envelope.read_fields("device", "role", "flash")
         request = _setup._request(envelope)
     except (_envelope.EnvelopeError, _setup.Refusal) as error:
         failure = _setup._envelope_refusal(error) if isinstance(error, _envelope.EnvelopeError) else error

@@ -470,7 +470,7 @@ def _validate_vault_and_protected_mounts(receipt: dict[str, Any], target_compone
         raise Refusal("agathodaimon-nas-vault-source-not-block", "vault-source-preflight")
 
 
-def _preflight(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any]:
+def _preflight(receipt: dict[str, Any], device: str, role: str, flash: bool = False) -> dict[str, Any]:
     if os.geteuid() != 0:
         _record(receipt, "root-preflight", False, uid=os.geteuid())
         raise Refusal("agathodaimon-nas-root-required", "root-preflight")
@@ -508,11 +508,25 @@ def _preflight(receipt: dict[str, Any], device: str, role: str) -> dict[str, Any
     target_labels = [row for row in _walk_nodes(tree) if row.get("type") == "part"
                      and _normalize_pkname(row.get("pkname")) == os.path.basename(device)
                      and row.get("partlabel") == other_label]
-    if requested_labels or target_labels:
+    if flash:
+        role_labels = [row for row in _walk_nodes(tree)
+                       if row.get("partlabel") in {expected["partlabel"], other_label}]
+        foreign_labels = [row for row in role_labels if row.get("type") != "part"
+                          or _normalize_pkname(row.get("pkname")) != os.path.basename(device)]
+        _record(receipt, "partlabel-preflight", not bool(foreign_labels),
+                partlabel=expected["partlabel"], flash=flash,
+                requestedLabelCount=len(requested_labels), oppositeRoleOnTarget=len(target_labels),
+                roleLabelCount=len(role_labels), foreignLabelCount=len(foreign_labels),
+                labelParents=[_normalize_pkname(row.get("pkname")) for row in role_labels])
+        if foreign_labels:
+            raise Refusal("agathodaimon-nas-partlabel-already-taken", "partlabel-preflight")
+    elif requested_labels or target_labels:
         _record(receipt, "partlabel-preflight", False, partlabel=expected["partlabel"],
-                requestedLabelCount=len(requested_labels), oppositeRoleOnTarget=len(target_labels))
+                flash=flash, requestedLabelCount=len(requested_labels), oppositeRoleOnTarget=len(target_labels))
         raise Refusal("agathodaimon-nas-partlabel-already-taken", "partlabel-preflight")
-    _record(receipt, "partlabel-preflight", True, partlabel=expected["partlabel"], matches=0)
+    else:
+        _record(receipt, "partlabel-preflight", True, partlabel=expected["partlabel"], flash=flash,
+                requestedLabelCount=len(requested_labels), oppositeRoleOnTarget=len(target_labels), matches=0)
     partition = _partition_path(device)
     mapper = expected["mapper"]
     mapper_path = runtime_path(f"/dev/mapper/{mapper}")
@@ -663,7 +677,7 @@ def _probe_partition_type(receipt: dict[str, Any], device: str) -> bool:
 
 
 def _preflight_reobserve(receipt: dict[str, Any], request: dict[str, Any], first: dict[str, Any]) -> dict[str, Any]:
-    second = _preflight(receipt, request["device"], request["role"])
+    second = _preflight(receipt, request["device"], request["role"], request.get("flash", False))
     if second["deviceIdentity"] != first["deviceIdentity"]:
         raise Refusal("agathodaimon-nas-device-changed-before-erasure", "device-stability-preflight")
     if second["serviceRole"] != first["serviceRole"]:
@@ -2305,7 +2319,7 @@ def _perform(request: dict[str, Any]) -> dict[str, Any]:
             sync_guard.__exit__(None, None, None)
 
 
-def _request(value: Any) -> dict[str, str]:
+def _request(value: Any) -> dict[str, Any]:
     if not all(hasattr(value, field) for field in ("value", "payload", "envelope")):
         raise Refusal("agathodaimon-nas-request-invalid", "request")
     raw = value.value
@@ -2321,7 +2335,10 @@ def _request(value: Any) -> dict[str, str]:
         raise Refusal("agathodaimon-nas-device-invalid", "request")
     if not isinstance(role, str) or role not in ROLE:
         raise Refusal("agathodaimon-nas-role-invalid", "request")
-    return {"device": device, "role": role}
+    flash = payload.get("flash", False)
+    if not isinstance(flash, bool):
+        raise Refusal("agathodaimon-nas-request-invalid", "request")
+    return {"device": device, "role": role, "flash": flash}
 
 
 def _read_envelope_text(raw: str):
@@ -2371,7 +2388,7 @@ def key_create(request: dict[str, Any]) -> dict[str, Any]:
         except (OSError, BlockingIOError):
             raise Refusal("agathodaimon-nas-transaction-lock-unavailable", "transaction-lock")
         _record(receipt, "transaction-lock", True, acquired=True)
-        info = _preflight(receipt, request["device"], request["role"])
+        info = _preflight(receipt, request["device"], request["role"], request.get("flash", False))
         receipt.update(partition=info["partition"], partlabel=info["partlabel"],
                        mapper=info["mapper"], mountpoint=info["mountpoint"])
         info.update(_preflight_reobserve(receipt, request, info))
@@ -2434,7 +2451,7 @@ def format(request: dict[str, Any]) -> dict[str, Any]:
         except (OSError, BlockingIOError):
             raise Refusal("agathodaimon-nas-transaction-lock-unavailable", "transaction-lock")
         _record(receipt, "transaction-lock", True, acquired=True)
-        info = _preflight(receipt, request["device"], request["role"])
+        info = _preflight(receipt, request["device"], request["role"], request.get("flash", False))
         receipt.update(partition=info["partition"], partlabel=info["partlabel"],
                        mapper=info["mapper"], mountpoint=info["mountpoint"])
         info.update(_preflight_reobserve(receipt, request, info))
@@ -2721,7 +2738,7 @@ def plan(request: dict[str, Any]) -> dict[str, Any]:
     try:
         if os.geteuid() != 0:
             raise Refusal("agathodaimon-nas-root-required", "root-preflight")
-        info = _preflight(receipt, request["device"], request["role"])
+        info = _preflight(receipt, request["device"], request["role"], request.get("flash", False))
         receipt.update(partition=info["partition"], partlabel=info["partlabel"],
                        mapper=info["mapper"], mountpoint=info["mountpoint"],
                        ok=True, firstMissingSignal="none")
