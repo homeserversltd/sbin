@@ -31,8 +31,11 @@ def _signatures(device):
 def _fields():
     catalog = _seat.read_intent_seats(appliance_runtime_path("seats"))
     try:
-        return catalog[0]["storage/nas/setup/prefire"]["payload"]["fields"]
-    except (TypeError, KeyError, IndexError):
+        if catalog is None:
+            raise KeyError("intent seats unavailable")
+        fields = catalog[0]["storage/nas/setup/prefire"]["payload"]["fields"]
+        return json.loads(_seat.dump_intent_projection(fields))
+    except (TypeError, KeyError, IndexError, ValueError):
         raise ObservationError("nas-prefire-command-failed") from None
 
 
