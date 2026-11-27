@@ -20,6 +20,7 @@ from urllib.parse import urlsplit, unquote
 
 # Direct execution by the transient service and dynamic staff loading share a root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.storage.backup.backblaze import shared as backblaze
 
 ACTUATOR = "backblaze-forgejo-b2-push"
@@ -519,8 +520,8 @@ def backup(bucket):
             deed_ok = log_deed(bucket, started, outcome, included, len(excluded), snapshot, failure, byte_counts, ci_count, restic_error)
         if restart_required:
             try:
-                restarted = subprocess.run(["/usr/bin/systemctl", "start", "forgejo.service"], stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                restarted = nidus_run(["/usr/bin/systemctl", "start", "forgejo.service"], stdin=subprocess.DEVNULL,
+                                      discard_stdout=True, discard_stderr=True, timeout=None)
                 if restarted.returncode:
                     outcome, failure = "failed", "forgejo-start-failed"
             except OSError:

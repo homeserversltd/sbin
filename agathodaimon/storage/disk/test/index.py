@@ -193,7 +193,7 @@ def _worker(device: str, mode: str) -> int:
             raise Refusal("disk-test-root-required")
         _device_path(device)
         _mounted(device)
-        result = subprocess.run([_TEST, device, mode], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        result = run([_TEST, device, mode], stdin=subprocess.DEVNULL, discard_stdout=True, discard_stderr=True, timeout=None)
         if result.returncode:
             signal = "disk-test-script-failed"
         else:

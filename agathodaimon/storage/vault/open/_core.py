@@ -11,6 +11,7 @@ from typing import Any, Sequence
 
 import agathodaimon.lib.sacred_credential.index as sacred_credential
 from agathodaimon import _envelope
+from agathodaimon._nidus.run import run as nidus_run
 
 MAX_INPUT_BYTES = 131072
 _INVALID_REQUEST = "agathodaimon-vault-open-request-invalid"
@@ -338,13 +339,13 @@ def _run_vault_init_rite() -> dict[str, Any]:
         argv = _command_argv([_BASH, init_script])
         path = (os.path.dirname(argv[0]) if os.environ.get("AGATHODAIMON_SCRATCH_ROOT")
                 else "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-        result = subprocess.run(
+        result = nidus_run(
             argv,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
+            discard_stdout=True,
+            discard_stderr=True,
             env={"PATH": path},
+            timeout=None,
         )
     except (OSError, subprocess.SubprocessError):
         return {"result": "failed", "exit_code": None}
@@ -409,12 +410,11 @@ def _attach_nas_roles() -> tuple[dict[str, Any], Exception | None]:
 
 def _close_mapper(mapper: str) -> bool:
     try:
-        result = subprocess.run(
+        result = nidus_run(
             _command_argv([_CRYPTSETUP, "close", mapper]),
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
+            discard_stdout=True,
+            discard_stderr=True,
             timeout=30,
         )
         return result.returncode == 0

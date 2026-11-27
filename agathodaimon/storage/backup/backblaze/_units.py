@@ -1,6 +1,7 @@
 from __future__ import annotations
 from ._store import hashlib, os, subprocess, time, socket, struct, sys, Path, select, signal, json, re, Refusal, fail, scratch_root, row_for, load, valid_items, manager, deed
 from ._restic import restic_environment, ensure_repository, backup_files, add_counts
+from agathodaimon._nidus.run import run as nidus_run
 
 # The unchanged worker bodies resolve paths relative to the facade entrypoint.
 __file__ = str(Path(__file__).with_name('shared.py'))
@@ -21,13 +22,13 @@ def release_result(bucket):
     state = unit_status(bucket)
     if state.get('LoadState') == 'not-found':
         return
-    p = subprocess.run(['/usr/bin/systemctl', 'stop', run_unit(bucket)], stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5, check=False)
+    p = nidus_run(['/usr/bin/systemctl', 'stop', run_unit(bucket)], stdin=subprocess.DEVNULL,
+                  discard_stdout=True, discard_stderr=True, timeout=5)
     if p.returncode:
         fail('run', 'finished-unit-stop-failed')
-    reset = subprocess.run(['/usr/bin/systemctl', 'reset-failed', run_unit(bucket)],
-                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=5, check=False)
+    reset = nidus_run(['/usr/bin/systemctl', 'reset-failed', run_unit(bucket)],
+                      stdin=subprocess.DEVNULL, discard_stdout=True,
+                      discard_stderr=True, timeout=5)
     if reset.returncode and unit_status(bucket).get('LoadState') != 'not-found':
         fail('run', 'finished-unit-reset-failed')
     for _ in range(20):
@@ -81,8 +82,8 @@ def launch(bucket, scheduled=False):
             cmd += ['--worker-scheduled', bucket, address]
         else:
             cmd += ['--worker', bucket]
-        process = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, timeout=8, check=False)
+        process = nidus_run(cmd, stdin=subprocess.DEVNULL, discard_stdout=True,
+                            discard_stderr=True, timeout=8)
         if process.returncode:
             fail('run', 'bucket-launch-refused')
         if scheduled:
