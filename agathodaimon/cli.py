@@ -1135,14 +1135,19 @@ def _admit_caduceus_crossing(args: list[str]) -> bool:
     return True
 
 
-def _pin_required() -> bool:
+def _pin_required() -> bool | str:
     try:
         value = _read_json_nofollow(appliance_runtime_path("config"))
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+    except FileNotFoundError:
         return False
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return "untrusted"
     global_config = value.get("global") if isinstance(value, dict) else None
     admin = global_config.get("admin") if isinstance(global_config, dict) else None
-    return isinstance(admin, dict) and admin.get("pin_required") is True
+    if not isinstance(admin, dict) or "pin_required" not in admin:
+        return False
+    required = admin["pin_required"]
+    return required if isinstance(required, bool) else "untrusted"
 
 
 def _take_envelope_pin(value: object) -> tuple[bool, object]:
@@ -1502,7 +1507,7 @@ def _administrative_pin_admits(
     target: str | None,
     remainder: list[str],
     envelope: dict | None,
-    pin_required: bool,
+    pin_required: bool | str,
     caduceus_root: bool,
     pin_present: bool,
     pin: object,
@@ -1520,6 +1525,9 @@ def _administrative_pin_admits(
             return True
     if _boolean_word(_intent_seat(ROOT / target), "exousia") is False:
         return True
+    if pin_required == "untrusted":
+        _refuse_administrative("exousia-config-unreadable")
+        return False
     if not pin_present:
         tty_available, pin = _prompt_administrative_pin()
         if not tty_available:
