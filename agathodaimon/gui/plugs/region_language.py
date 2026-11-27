@@ -6,6 +6,8 @@ import re
 import subprocess
 import threading
 
+from agathodaimon._nidus.run import run as nidus_run
+
 from ._common import _group, _json, _page, _receipt_ok, _request
 
 PLUG = {"id": "region-language", "title": "Region & Language", "icon": "preferences-desktop-locale-symbolic", "order": 95, "parent": None}
@@ -31,9 +33,9 @@ def _english_name(table: str, code: str | None) -> str | None:
 def _paper_and_weekday(locale_id: str) -> tuple[str | None, str | None] | None:
     """Read the locale's formats, or return None if glibc could not load it."""
     try:
-        result = subprocess.run(
+        result = nidus_run(
             ["locale", "-k", "LC_PAPER", "LC_TIME"], env={**os.environ, "LC_ALL": locale_id},
-            capture_output=True, text=True, errors="replace", timeout=3, check=False,
+            errors="replace", timeout=3,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

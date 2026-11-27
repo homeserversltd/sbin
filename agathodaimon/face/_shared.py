@@ -22,6 +22,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from agathodaimon import _load_trace
 from agathodaimon._envelope import EnvelopeError, Request, appliance_runtime_path, attach, read
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.lib.receipts.index import emit
 
 OWNER_USER = "owner"
@@ -260,7 +261,7 @@ def _systemctl_environment_observed(
         environment["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus}"
     try:
         command, outer = _runuser_command([utility, "--user", "show-environment"], environment)
-        result = subprocess.run(command, capture_output=True, text=True, timeout=2, check=False, env=outer)
+        result = nidus_run(command, timeout=2, env=outer)
     except (OSError, subprocess.SubprocessError, FaceError):
         return {}, False
     if result.returncode != 0:
@@ -447,7 +448,7 @@ def _owner_run(
 ) -> subprocess.CompletedProcess[str]:
     command, outer = owner_session_command(argv, environment)
     try:
-        return subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=outer)
+        return nidus_run(command, timeout=timeout, env=outer)
     except (OSError, subprocess.TimeoutExpired) as error:
         return subprocess.CompletedProcess(command, 127, "", type(error).__name__)
 
@@ -467,7 +468,7 @@ def _root_process_run(
 ) -> subprocess.CompletedProcess[str]:
     def run() -> subprocess.CompletedProcess[str]:
         try:
-            return subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout, check=False, env=environment)
+            return nidus_run(list(argv), timeout=timeout, env=environment)
         except (OSError, subprocess.SubprocessError) as error:
             return subprocess.CompletedProcess(list(argv), 127, "", type(error).__name__)
 
@@ -2771,7 +2772,7 @@ def _cpu_percent() -> int:
 
 def _run_text(argv: Sequence[str], signal: str) -> str:
     try:
-        result = subprocess.run(list(argv), capture_output=True, text=True, timeout=5, check=False)
+        result = nidus_run(list(argv), timeout=5)
     except (OSError, subprocess.SubprocessError):
         raise FaceError(signal)
     if result.returncode != 0:

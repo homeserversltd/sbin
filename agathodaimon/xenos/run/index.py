@@ -7,6 +7,7 @@ import subprocess
 from typing import Sequence
 
 from agathodaimon._envelope import EnvelopeError, attach, read_fields
+from agathodaimon._nidus.run import run as nidus_run
 
 LAUNCHER = Path("/usr/local/sbin/agathodaimon/caduceus-xenos-run")
 
@@ -30,12 +31,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = _receipt("xenos-band-missing")
     else:
         try:
-            completed = subprocess.run(
+            completed = nidus_run(
                 [str(LAUNCHER), xenos_id, "band", band],
                 input=request.raw_envelope,
-                capture_output=True,
-                text=True,
-                check=False,
+                timeout=None,
             )
         except OSError:
             result = _receipt("xenos-run-launcher-unavailable")

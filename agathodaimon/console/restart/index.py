@@ -3,6 +3,7 @@ from __future__ import annotations
 import json, subprocess
 
 from agathodaimon import _envelope
+from agathodaimon._nidus.run import run as nidus_run
 
 OWNER="owner"
 SUNSHINE_UNIT="app-dev.lizardbyte.app.Sunshine.service"; SEAT_UNIT="sddm.service"
@@ -14,14 +15,14 @@ def _result(argv, completed=None, *, error=None):
 
 
 def _command(argv):
-    try: return _result(argv, subprocess.run(argv,text=True,capture_output=True,check=False,timeout=30))
+    try: return _result(argv, nidus_run(argv,timeout=30))
     except (OSError,subprocess.SubprocessError) as exc: return _result(argv,error=f"{type(exc).__name__}: {exc}")
 
 
 def _unit_state(unit,user):
     prefix=["systemctl"]+(["--user","-M",f"{OWNER}@.host"] if user else [])
     argv=[*prefix,"show",unit,"--property=LoadState","--value"]
-    try: c=subprocess.run(argv,text=True,capture_output=True,check=False,timeout=30)
+    try: c=nidus_run(argv,timeout=30)
     except (OSError,subprocess.SubprocessError) as exc: return False,[_result(argv,error=f"{type(exc).__name__}: {exc}")]
     return c.returncode==0 and c.stdout.strip()=="loaded",[_result(argv,c)]
 
@@ -29,7 +30,7 @@ def _unit_state(unit,user):
 def _active_readback(unit,user):
     prefix=["systemctl"]+(["--user","-M",f"{OWNER}@.host"] if user else [])
     argv=[*prefix,"is-active",unit]
-    try: return _result(argv,subprocess.run(argv,text=True,capture_output=True,check=False,timeout=30))
+    try: return _result(argv,nidus_run(argv,timeout=30))
     except (OSError,subprocess.SubprocessError) as exc: return _result(argv,error=f"{type(exc).__name__}: {exc}")
 
 

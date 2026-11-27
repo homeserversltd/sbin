@@ -11,6 +11,7 @@ import subprocess
 from typing import Any
 
 from agathodaimon._envelope import EnvelopeError, attach, read
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.settings._cmd import owner_session_command
 
 HDMI_STATUS_ROOT = Path("/sys/class/drm")
@@ -39,12 +40,9 @@ def _command_for_owner(argv: list[str], *, metadata: bool = False) -> tuple[list
 def _run_command(argv: list[str], *, timeout: float = 8.0, metadata: bool = False) -> subprocess.CompletedProcess[str]:
     command_argv, environment = _command_for_owner(argv, metadata=metadata)
     try:
-        return subprocess.run(
+        return nidus_run(
             command_argv,
-            capture_output=True,
-            text=True,
             timeout=timeout,
-            check=False,
             env=environment,
         )
     except subprocess.TimeoutExpired as error:

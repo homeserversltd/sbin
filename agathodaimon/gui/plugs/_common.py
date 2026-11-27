@@ -14,6 +14,8 @@ from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Callable
 
+from agathodaimon._nidus.run import run as nidus_run
+
 def _caduceus_url() -> str:
     configured = os.environ.get("CADUCEUS_URL")
     if configured:
@@ -54,7 +56,7 @@ def _json(path: str) -> dict[str, Any]:
 
 def _command(*args: str) -> str:
     try:
-        result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=3)
+        result = nidus_run(args, timeout=3)
     except (OSError, subprocess.SubprocessError, ValueError):
         return ""
     return result.stdout.strip()
