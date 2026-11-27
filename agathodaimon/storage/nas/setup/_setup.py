@@ -511,8 +511,8 @@ def _preflight(receipt: dict[str, Any], device: str, role: str, flash: bool = Fa
     if flash:
         role_labels = [row for row in _walk_nodes(tree)
                        if row.get("partlabel") in {expected["partlabel"], other_label}]
-        foreign_labels = [row for row in role_labels if row.get("type") != "part"
-                          or _normalize_pkname(row.get("pkname")) != os.path.basename(device)]
+        foreign_labels = [row for row in requested_labels if row.get("type") == "part"
+                          and _normalize_pkname(row.get("pkname")) != os.path.basename(device)]
         _record(receipt, "partlabel-preflight", not bool(foreign_labels),
                 partlabel=expected["partlabel"], flash=flash,
                 requestedLabelCount=len(requested_labels), oppositeRoleOnTarget=len(target_labels),
