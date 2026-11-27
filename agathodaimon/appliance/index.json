@@ -1,7 +1,9 @@
 {
   "children": [
     "factory-fallback",
+    "harmonia-pending-interactables",
     "harmonia-press",
+    "harmonia-update-engine",
     "journal-vacuum",
     "power",
     "restart",

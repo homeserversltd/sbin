@@ -1,0 +1,8 @@
+{
+  "children": [
+    "converge-one-named-harmonia-module-on-this-appliance-now",
+    "converge-this-appliance-to-the-latest-harmonia-sources-now",
+    "verify-one-named-harmonia-module-on-this-appliance-without-applying",
+    "verify-whether-a-harmonia-update-is-available-and-record-the-check"
+  ]
+}
