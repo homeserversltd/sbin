@@ -314,6 +314,7 @@ def seed_push(forge, key, root, seed, deadline, changed):
             if len(matches) > 1:
                 raise Failure('seed-asset-conflict')
             uploaded = not matches
+            own_upload = uploaded or attempted
             if matches and attempted:
                 mark_changed()
             if uploaded:
@@ -324,10 +325,13 @@ def seed_push(forge, key, root, seed, deadline, changed):
             else:
                 asset = matches[0]
             if asset.get('name') != name or asset.get('size') != len(content):
-                raise Failure('seed-asset-upload-failed' if uploaded else 'seed-asset-conflict')
-            size, digest = asset_digest(asset)
+                raise Failure('seed-asset-upload-failed' if own_upload else 'seed-asset-conflict')
+            try:
+                size, digest = asset_digest(asset)
+            except (TypeError, ValueError):
+                raise Failure('seed-asset-upload-failed' if own_upload else 'seed-asset-conflict') from None
             if size != len(content) or digest != expected:
-                raise Failure('seed-asset-upload-failed' if uploaded else 'seed-asset-conflict')
+                raise Failure('seed-asset-upload-failed' if own_upload else 'seed-asset-conflict')
         seed_step('seed-asset-upload-failed', deadline, upload)
 
 
