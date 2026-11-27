@@ -71,16 +71,20 @@ def observe(device, role):
                 visit(child)
         for row in nodes:
             visit(row)
-        if not flat:
+        matches = [row for row in flat if isinstance(row.get("path"), str)
+                   and os.path.realpath(row["path"]) == os.path.realpath(device)]
+        if not matches:
             raise ObservationError("nas-prefire-device-unobservable")
-        disk = flat[0]
+        if len(matches) != 1:
+            raise ValueError
+        disk = matches[0]
         if disk.get("type") not in ("disk", "loop"):
             raise ObservationError("nas-prefire-device-invalid")
         disk_path = disk["path"]
         disk_size = disk["size"]
         if not isinstance(disk_path, str) or type(disk_size) is not int or disk_size < 0:
             raise ValueError
-        parts = [row for row in flat[1:] if row.get("type") == "part"
+        parts = [row for row in flat if row.get("type") == "part"
                  and row.get("pkname") in (disk_path, os.path.basename(disk_path))]
         signatures = _signatures(device)
         contents = [{"partition": disk_path, "partlabel": None, "type": sig,
