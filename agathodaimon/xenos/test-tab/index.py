@@ -296,6 +296,18 @@ def seed_push(forge, key, root, seed, deadline, changed):
                 digest.update(block)
         return size, digest.hexdigest()
 
+    def listed_assets(name):
+        status, raw = request(forge + path, key=key, deadline=deadline)
+        if status != 200:
+            raise SeedStatus(str(status))
+        assets = json.loads(raw)
+        if not isinstance(assets, list):
+            raise ValueError('assets-invalid')
+        matches = [a for a in assets if isinstance(a, dict) and a.get('name') == name]
+        if len(matches) > 1:
+            raise Failure('seed-asset-conflict')
+        return matches
+
     for name in ASSET_NAMES:
         attempted = False
         def upload(name=name):
@@ -304,26 +316,19 @@ def seed_push(forge, key, root, seed, deadline, changed):
             expected = next(a['sha256'] for a in seed['assets'] if a['name'] == name)
             if hashlib.sha256(content).hexdigest() != expected:
                 raise ValueError('seed-asset-digest-invalid')
-            status, raw = request(forge + path, key=key, deadline=deadline)
-            if status != 200:
-                raise SeedStatus(str(status))
-            assets = json.loads(raw)
-            if not isinstance(assets, list):
-                raise ValueError('assets-invalid')
-            matches = [a for a in assets if isinstance(a, dict) and a.get('name') == name]
-            if len(matches) > 1:
-                raise Failure('seed-asset-conflict')
+            matches = listed_assets(name)
             uploaded = not matches
             own_upload = uploaded or attempted
             if matches and attempted:
                 mark_changed()
             if uploaded:
                 attempted = True
-                result = seed_request(forge, path, key, deadline, method='POST', multipart=(name, content),
-                                      on_success=mark_changed)
-                asset = decode(result)
-            else:
-                asset = matches[0]
+                seed_request(forge, path, key, deadline, method='POST', multipart=(name, content),
+                             on_success=mark_changed)
+                matches = listed_assets(name)
+                if not matches:
+                    raise SeedStatus('asset-missing')
+            asset = matches[0]
             if asset.get('name') != name or asset.get('size') != len(content):
                 raise Failure('seed-asset-upload-failed' if own_upload else 'seed-asset-conflict')
             try:
