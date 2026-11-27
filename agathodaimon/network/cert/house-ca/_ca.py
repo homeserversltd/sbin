@@ -71,7 +71,7 @@ def house_ca_lock():
 
 
 def _run(command: list[str], timeout=None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, check=True, text=True, capture_output=True, timeout=timeout)
+    return nidus_run(command, check=True, timeout=timeout)
 
 
 def _fingerprint(path: Path, encoding: str = "pem") -> str:

@@ -10,6 +10,7 @@ import sys
 from typing import Sequence
 
 from agathodaimon._envelope import EnvelopeError, attach, read
+from agathodaimon._nidus.run import run as nidus_run
 
 _DIRECTORY = "/etc/sudoers.d"
 _TARGET = "owner-nopasswd"
@@ -181,14 +182,12 @@ def _install_fragment(directory_fd: int) -> None:
         descriptor = None
 
         try:
-            result = subprocess.run(
+            result = nidus_run(
                 ["/usr/sbin/visudo", "-cf", f"{_DIRECTORY}/{temporary_name}"],
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
+                discard_stdout=True,
+                discard_stderr=True,
                 timeout=30,
-                check=False,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise _VisudoRefused from exc

@@ -1666,9 +1666,9 @@ def _dictate_roster_seat() -> str:
         local = row.get("ipv4") == gateway if isinstance(row, dict) else False
         # Mirror gateway_is_local, including secondary IPv4 addresses.
         try:
-            addresses = subprocess.run(
+            addresses = nidus_run(
                 ["/usr/bin/ip", "-4", "-o", "addr", "show"], stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=2, check=False,
+                discard_stderr=True, timeout=2,
             )
             local = local or (addresses.returncode == 0 and any(
                 word.split("/", 1)[0] == gateway for word in addresses.stdout.split()
@@ -2887,10 +2887,7 @@ def badge(payload: dict[str, Any]) -> Mapping[str, Any]:
             argv = ["/usr/local/bin/harmonia", "interactable", "list", "--json"]
             if os.geteuid() != 0:
                 argv = ["sudo", "-n", *argv]
-            feed_text = subprocess.run(
-                argv,
-                check=True, capture_output=True, text=True,
-            ).stdout
+            feed_text = nidus_run(argv, check=True, timeout=None).stdout
         feed = json.loads(feed_text)
     except (OSError, UnicodeError, ValueError, RecursionError, subprocess.SubprocessError):
         raise FaceError("harmonia-feed-observation-failed")

@@ -89,8 +89,7 @@ def main(arguments=None):
         data = json.dumps({"password": password, "secret": secrets.token_hex(32)})
         password = None
         try:
-            result = subprocess.run(argv, input=data, text=True, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, timeout=30, check=False)
+            result = nidus_run(argv, input=data, discard_stdout=True, discard_stderr=True, timeout=30)
         finally:
             data = None
             _envelope.wipe_bytes(password_bytes)

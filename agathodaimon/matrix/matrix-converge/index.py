@@ -53,7 +53,7 @@ def reload_if_material_changed(service: str, paths: Sequence[Path], state_root: 
 
 def ensure_secret(path: Path) -> bool:
     if path.exists(): return False
-    secret = subprocess.run(["openssl", "rand", "-hex", "32"], text=True, capture_output=True, check=True).stdout.strip()
+    secret = nidus_run(["openssl", "rand", "-hex", "32"], check=True, timeout=None).stdout.strip()
     atomic_text(path, "registration_shared_secret: '" + secret + "'\n", 0o640)
     try:
         identity = pwd.getpwnam("matrix-synapse"); os.chown(path, identity.pw_uid, grp.getgrnam("matrix-synapse").gr_gid)

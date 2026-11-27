@@ -11,6 +11,7 @@ from pathlib import Path
 
 from agathodaimon import _envelope
 from agathodaimon._local_ai import _optional_request
+from agathodaimon._nidus.run import run as nidus_run
 
 HERE = Path(__file__).resolve().parent
 
@@ -51,7 +52,7 @@ def dispatch(request=None, *, dry_run=False, user_id=None):
             command = ["/usr/sbin/runuser", "-u", account, "--", *command]
 
         env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "MEM0_TELEMETRY": "false", "NO_PROXY": "*", "no_proxy": "*", "PYTHONDONTWRITEBYTECODE": "1"}
-        result = subprocess.run(command, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, check=False)
+        result = nidus_run(command, env=env, stdin=subprocess.DEVNULL, discard_stderr=True, timeout=None)
         reply = json.loads(result.stdout)
         if not isinstance(reply, dict) or result.returncode and reply.get("ok") is not False:
             raise ValueError("account-pass-failed")
