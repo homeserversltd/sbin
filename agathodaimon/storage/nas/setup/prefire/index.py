@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import stat
 import subprocess
 
 from agathodaimon import _envelope, _seat
@@ -29,8 +30,8 @@ def _signatures(device):
 
 
 def _fields():
-    catalog = _seat.read_intent_seats(appliance_runtime_path("seats"))
     try:
+        catalog = _seat.read_intent_seats(appliance_runtime_path("seats"))
         if catalog is None:
             raise KeyError("intent seats unavailable")
         fields = catalog[0]["storage/nas/setup/prefire"]["payload"]["fields"]
@@ -48,6 +49,14 @@ def observe(device, role):
     except (KeyError, TypeError, ValueError, re.error):
         raise ObservationError("nas-prefire-command-failed") from None
     if not valid:
+        raise ObservationError("nas-prefire-device-invalid")
+    try:
+        metadata = os.stat(device)
+    except FileNotFoundError:
+        raise ObservationError("nas-prefire-device-unobservable") from None
+    except OSError:
+        raise ObservationError("nas-prefire-command-failed") from None
+    if not stat.S_ISBLK(metadata.st_mode):
         raise ObservationError("nas-prefire-device-invalid")
     result = _run(["/usr/bin/lsblk", "--json", "--bytes", "--paths", "--output",
                    "PATH,TYPE,MAJ:MIN,PKNAME,PARTLABEL,PARTUUID,SIZE", "--", device])
