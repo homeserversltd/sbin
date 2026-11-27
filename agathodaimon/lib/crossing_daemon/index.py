@@ -245,6 +245,9 @@ def _child(conn, notice, control, stdout_fd, stderr_fd, identity, band, raw, dea
                            'SHELL': '/bin/bash'})
         if identity == 'caduceus':
             os.environ['SUDO_USER'] = 'caduceus'
+        # This in-process marker is set from SO_PEERCRED, not the request or
+        # inherited environment. Every non-Caduceus peer is a person's call.
+        setattr(cli, '_crossing_peer_identity', identity)
         # Bound the front door's internal envelope-hand capture as well as the
         # OS-level pipes drained by the parent.
         cli.StringIO = lambda: BoundedText(STDOUT_LIMIT)

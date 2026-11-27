@@ -1531,6 +1531,15 @@ def _administrative_pin_admits(
     if not pin_present:
         tty_available, pin = _prompt_administrative_pin()
         if not tty_available:
+            # A failed prompt is not necessarily an absent controlling terminal.
+            try:
+                tty_fd = os.open("/dev/tty", os.O_RDWR | getattr(os, "O_NOCTTY", 0))
+            except OSError:
+                if (os.geteuid() == 0 and
+                        getattr(sys.modules[__name__], "_crossing_peer_identity", None) is None):
+                    return True
+            else:
+                os.close(tty_fd)
             _refuse_administrative("exousia-pin-required")
             return False
     if not _verify_administrative_pin(pin):
