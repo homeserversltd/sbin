@@ -65,20 +65,21 @@ class OwnForgeConnection(http.client.HTTPSConnection):
         except (OSError, TimeoutError) as exc:
             raise LoopbackConnectError() from exc
 
-    def getresponse(self):
-        response = super().getresponse()
-        self._status_seen[0] = True
-        return response
-
 class OwnForgeHandler(urllib.request.HTTPSHandler):
     def __init__(self, context, status_seen):
         super().__init__(context=context)
         self.status_seen = status_seen
 
     def https_open(self, req):
+        status_seen = self.status_seen
+        class Response(http.client.HTTPResponse):
+            def _read_status(self):
+                status = super()._read_status()
+                status_seen[0] = True
+                return status
         def connection(host, **kwargs):
             conn = OwnForgeConnection(host, **kwargs)
-            conn._status_seen = self.status_seen
+            conn.response_class = Response
             return conn
         return self.do_open(connection, req, context=self._context)
 
@@ -152,8 +153,9 @@ def fetch(url: str, token: str | None, maximum: int = MAX_ASSET) -> bytes:
         try:
             with opener.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
                 data = response.read(maximum + 1)
-        except urllib.error.URLError as exc:
-            if status_seen[0] or not isinstance(exc.reason, LoopbackConnectError):
+        except (urllib.error.URLError, ssl.SSLError) as exc:
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            if status_seen[0] or not isinstance(reason, (LoopbackConnectError, ssl.SSLError)):
                 raise
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), SameHostRedirect())
             with opener.open(urllib.request.Request(url, headers=headers), timeout=30) as response:
