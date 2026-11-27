@@ -43,7 +43,7 @@ class SameHostRedirect(urllib.request.HTTPRedirectHandler):
         target = urllib.parse.urlsplit(newurl)
         try:
             valid = (target.scheme == 'https' and target.hostname == 'git.home.arpa' and
-                     not target.username and not target.password and target.port in (None, 443))
+                     target.username is None and target.password is None and target.port in (None, 443))
         except ValueError:
             valid = False
         if not valid:
@@ -141,7 +141,7 @@ def credential() -> str | None:
 
 def fetch(url: str, token: str | None, maximum: int = MAX_ASSET) -> bytes:
     parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != 'https' or parsed.hostname != 'git.home.arpa' or parsed.username or parsed.password or parsed.port not in (None, 443):
+    if parsed.scheme != 'https' or parsed.hostname != 'git.home.arpa' or parsed.username is not None or parsed.password is not None or parsed.port not in (None, 443):
         raise Failure('release-url-refused')
     headers = {'Accept': 'application/json'}
     if token:
