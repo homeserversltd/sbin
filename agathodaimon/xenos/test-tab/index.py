@@ -8,6 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 import re
+import signal as signals
 import stat
 import time
 import urllib.error
@@ -29,6 +30,14 @@ def setting(name, default):
 
 class Failure(Exception):
     pass
+
+
+class SeedDeadline(BaseException):
+    pass
+
+
+def seed_deadline_expired(_signum, _frame):
+    raise SeedDeadline()
 
 
 class Redirect(urllib.request.HTTPRedirectHandler):
@@ -100,6 +109,8 @@ def wait(url, signal, deadline):
             status, _ = request(url)
             if status == 200:
                 return
+        except SeedDeadline:
+            raise Failure(signal) from None
         except (OSError, ValueError, urllib.error.URLError, Failure):
             pass
         remaining = deadline - time.monotonic()
@@ -151,6 +162,13 @@ def seed_load(root):
 
 
 def seed_step(signal, deadline, action):
+    try:
+        return seed_step_retry(signal, deadline, action)
+    except SeedDeadline:
+        raise Failure(signal + ':timeout') from None
+
+
+def seed_step_retry(signal, deadline, action):
     last = 'timeout'
     while time.monotonic() < deadline:
         try:
@@ -252,6 +270,8 @@ def main(argv=None):
         return 1
     changed = False
     signal = 'none'
+    alarm_handler = None
+    deadline_signal = 'seed-repo-create-failed:timeout'
     try:
         if not PROOF and os.geteuid() != 0:
             raise Failure('root-required')
@@ -272,11 +292,16 @@ def main(argv=None):
         if not math.isfinite(wait_seconds) or not 0 < wait_seconds <= 120:
             raise Failure('wait-duration-invalid')
         deadline = time.monotonic() + wait_seconds
+        seed_root = Path(setting('XENIA_TEST_SEED', '/var/lib/xenia/seed/cartridge-test'))
+        if seed_root.exists():
+            if signals.getitimer(signals.ITIMER_REAL)[0]:
+                raise Failure('seed-repo-create-failed:timer-busy')
+            alarm_handler = signals.signal(signals.SIGALRM, seed_deadline_expired)
+            signals.setitimer(signals.ITIMER_REAL, max(0.001, deadline - time.monotonic()))
         wait(forge + '/api/healthz', 'forge-not-ready', deadline)
         wait(caduceus + '/api/v1/doors', 'caduceus-not-ready', deadline)
         wait(crown + '/api/registry', 'coronatio-not-ready', deadline)
         key = skeleton()
-        seed_root = Path(setting('XENIA_TEST_SEED', '/var/lib/xenia/seed/cartridge-test'))
         seed = None
         manifest = None
         if seed_root.exists():
@@ -286,12 +311,14 @@ def main(argv=None):
                 raise Failure('seed-repo-create-failed:' + type(exc).__name__) from None
         try:
             while True:
+                seeding = False
                 try:
                     status, raw = request(forge + '/api/v1/repos/owner/cartridge-test', key=key)
                     if status == 200:
                         break
                     if status == 404:
                         if seed is not None:
+                            seeding = True
                             seed_push(forge, key, seed_root, seed, deadline)
                             changed = True
                             break
@@ -301,8 +328,10 @@ def main(argv=None):
                             changed = True
                             break
                     last = str(status)
-                except Failure:
-                    raise
+                except Failure as exc:
+                    if seeding:
+                        raise
+                    last = type(exc).__name__
                 except Exception as exc:
                     last = type(exc).__name__
                 remaining = deadline - time.monotonic()
@@ -313,6 +342,7 @@ def main(argv=None):
                     raise Failure(('seed-repo-create-failed:' if seed is not None else 'mirror-create-failed:') + last) from None
         finally:
             key = b''
+        deadline_signal = 'admit-refused:timeout'
         status, raw = request(caduceus + '/api/v1/xenia/status/test')
         if status != 200:
             raise Failure('admit-refused:' + message(raw))
@@ -357,10 +387,16 @@ def main(argv=None):
                     raise Failure('admit-refused:' + message(raw))
                 if door == 'admit':
                     changed = True
+    except SeedDeadline:
+        signal = deadline_signal
     except Failure as exc:
         signal = str(exc)
     except Exception:
         signal = 'test-tab-operation-failed'
+    finally:
+        if alarm_handler is not None:
+            signals.setitimer(signals.ITIMER_REAL, 0)
+            signals.signal(signals.SIGALRM, alarm_handler)
     receipt = {'ok': signal == 'none', 'changed': changed, 'firstMissingSignal': signal}
     if changed or signal != 'none':
         from agathodaimon._deed import send
