@@ -6,6 +6,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from agathodaimon._nidus.run import run as nidus_run
 from agathodaimon.gui.plugs._common import _page
 
 PLUG = {"id": "fonts", "title": "Fonts", "icon": "preferences-desktop-font-symbolic", "order": 45, "parent": None}
@@ -61,9 +62,9 @@ def _installed_fonts(roots: dict[Path, str]) -> FontGroups:
     # Use primary names, not their aliases or localized spellings. Unquote data
     # with shlex, never a shell, so spaces and punctuation in paths stay intact.
     fmt = "%{file|shescape} %{family[0]|shescape} %{style[0]|shescape}\n"
-    result = subprocess.run(
+    result = nidus_run(
         ["fc-list", "-f", fmt, ":", "file", "family", "style"],
-        check=True, capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+        check=True, encoding="utf-8", errors="replace", timeout=10,
     )
     fields = iter(shlex.split(result.stdout))
     configured: set[Path] | None = None

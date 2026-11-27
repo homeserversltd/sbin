@@ -8,6 +8,7 @@ import subprocess
 from typing import Any, Sequence
 
 from agathodaimon import _envelope
+from agathodaimon._nidus.run import run as nidus_run
 
 WIPEFS = "/usr/sbin/wipefs"
 _COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -34,7 +35,7 @@ def _step_name(argv: list[str]) -> str:
 
 def _run(argv: Sequence[str]) -> subprocess.CompletedProcess[Any]:
     try:
-        return subprocess.run(argv, capture_output=True, check=False)
+        return nidus_run(argv, text=False, timeout=None)
     except OSError:
         raise Refusal("agathodaimon-disk-command-start-refused", _step_name(list(argv))) from None
 

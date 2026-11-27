@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, NoReturn
 
+from agathodaimon._nidus.run import run as nidus_run
+
 KEYMAN = "/vault/keyman/keyman"
 SERVICE_NAMES = frozenset({"nas", "nas_backup", "service_suite"})
 # Credential exports (username and password) take any plain Keyman service name.
@@ -418,8 +420,8 @@ def _open_child_directory(parent_fd: int, name: str) -> int:
 
 def _silent_command(argv: list[str]) -> tuple[bool, int | None]:
     try:
-        result = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, check=False, close_fds=True)
+        result = nidus_run(argv, stdin=subprocess.DEVNULL, discard_stdout=True,
+                           discard_stderr=True, timeout=None)
     except OSError:
         return False, None
     return result.returncode == 0, int(result.returncode)
