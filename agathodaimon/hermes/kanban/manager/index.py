@@ -87,12 +87,35 @@ def _observe(receipt, user, home, cli):
 
 def _restart(user):
     override = os.environ.get("CADUCEUS_HERMES_GATEWAY_RESTART")
-    argv = [override] if override else ["systemctl", "--user", "-M", f"{user}@.host", "restart", "hermes-gateway.service"]
+    prefix = [override or "systemctl", "--user", "-M", f"{user}@.host"]
+    unit = "hermes-gateway.service"
+
+    def identity():
+        result = subprocess.run([*prefix, "show", unit, "--property=ActiveState,InvocationID"],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return None
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        if not values.get("ActiveState") or "InvocationID" not in values:
+            return None
+        return values
+
     try:
-        result = subprocess.run(argv, capture_output=True, timeout=30)
-        return result.returncode == 0
+        before = identity()
+        if before is None:
+            return None
+        result = subprocess.run([*prefix, "try-restart", unit], capture_output=True, timeout=30)
+        if result.returncode != 0:
+            return None
+        after = identity()
+        if after is None:
+            return None
+        if before["ActiveState"] != "active":
+            return False
+        return bool(before["InvocationID"] and after["InvocationID"] and
+                    before["InvocationID"] != after["InvocationID"])
     except (OSError, subprocess.SubprocessError):
-        return False
+        return None
 
 
 def main(arguments=None):
@@ -125,9 +148,10 @@ def main(arguments=None):
                 if result.returncode != 0:
                     raise Refusal("hermes-kanban-config-write-failed")
                 receipt["mutationPerformed"] = True
-                if not _restart(user):
+                restarted = _restart(user)
+                if restarted is None:
                     raise Refusal("hermes-kanban-gateway-restart-failed")
-                receipt["gateway_restarted"] = True
+                receipt["gateway_restarted"] = restarted
             _observe(receipt, user, home, cli)
         receipt["ok"] = True
     except Refusal as error:
