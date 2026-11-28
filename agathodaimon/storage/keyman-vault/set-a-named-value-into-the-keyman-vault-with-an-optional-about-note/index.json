@@ -1,0 +1,23 @@
+{
+  "children": [],
+  "mutation_allowed": "seat",
+  "envelope": {
+    "stdin": "json"
+  },
+  "hand": "envelope",
+  "sclerite": {
+    "name": "keyman",
+    "features": {
+      "keyman": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

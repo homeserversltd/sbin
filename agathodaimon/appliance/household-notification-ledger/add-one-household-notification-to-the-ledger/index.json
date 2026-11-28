@@ -1,0 +1,26 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "envelope": {
+    "stdin": "json",
+    "keys": [
+      "notification"
+    ],
+    "actions": []
+  },
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

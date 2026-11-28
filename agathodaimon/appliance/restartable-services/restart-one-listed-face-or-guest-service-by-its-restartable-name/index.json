@@ -1,0 +1,20 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "mutation_allowed": "seat",
+  "sclerite": {
+    "name": "pid2-unit",
+    "features": {
+      "pid2-unit": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

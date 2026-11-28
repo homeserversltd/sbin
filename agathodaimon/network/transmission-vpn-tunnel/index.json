@@ -1,3 +1,6 @@
 {
-  "children": []
+  "children": [
+    "off-the-transmission-daemon-and-verify-its-vpn-namespace-and-host-veth-are-gone",
+    "status-the-five-onness-conditions-of-the-transmission-vpn-tunnel"
+  ]
 }

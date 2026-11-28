@@ -1,0 +1,19 @@
+{
+  "hand": "envelope",
+  "children": [],
+  "sclerite": {
+    "features": {
+      "transmission": {
+        "administrative": {
+          "band": false,
+          "routes": [],
+          "verbs": []
+        },
+        "band": true,
+        "routes": [],
+        "verbs": []
+      }
+    },
+    "name": "transmission"
+  }
+}

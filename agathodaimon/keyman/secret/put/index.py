@@ -276,7 +276,7 @@ def _safe_refusal_signal(signal, secrets, *, deed=False):
     return _PREFIX + "error"
 
 
-def main(argv=None):
+def main(argv=None, *, band=_BAND):
     started = time.monotonic()
     receipt = {"ok": False, "firstMissingSignal": "none", "mutationPerformed": False,
                "name": None, "about": None, "replaced": False}
@@ -320,5 +320,5 @@ def main(argv=None):
     # The slash stream bypasses the stdout wrapper. Use the front door's own
     # receipt stamper here too so that both invocation forms answer identically.
     from agathodaimon.cli import _stamp_receipt
-    print(json.dumps(_stamp_receipt(receipt, _BAND), separators=(",", ":")))
+    print(json.dumps(_stamp_receipt(receipt, band), separators=(",", ":")))
     return 0 if receipt["ok"] else 1

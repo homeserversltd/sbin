@@ -11,6 +11,7 @@
     "appliance/harmonia-update-engine/converge-this-appliance-to-the-latest-harmonia-sources-now",
     "appliance/harmonia-update-engine/verify-one-named-harmonia-module-on-this-appliance-without-applying",
     "appliance/harmonia-update-engine/verify-whether-a-harmonia-update-is-available-and-record-the-check",
+    "appliance/household-notification-ledger/add-one-household-notification-to-the-ledger",
     "appliance/journal-vacuum",
     "appliance/journal-vacuum/converge",
     "appliance/journal-vacuum/verify",
