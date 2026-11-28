@@ -19,7 +19,7 @@ for spec in SPECS:
     spec.setdefault("absent", "No mouse or touchpad is connected")
 def build_widget():
     page = build_settings_widget(PLUG, "keyboard", "Keyboard", KEYBOARD_SPECS,
-                                 required_route="/api/v1/settings/keyboard")
+                                 required_route="/api/v1/settings/keyboard/read")
     build_settings_widget(PLUG, "input", "Mouse &amp; Touchpad", SPECS,
-                          required_route="/api/v1/settings/input", page=page)
+                          required_route="/api/v1/settings/input/read", page=page)
     return page

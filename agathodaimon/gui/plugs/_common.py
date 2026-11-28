@@ -170,6 +170,78 @@ def _direct_request(path: str, method: str = "GET", payload: dict[str, Any] | No
     return value
 
 
+_DOOR_LIST = "/api/v1/appliance/caduceus-doors/read-the-door-route-list-of-the-active-profile"
+
+
+def _settings_request(path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Ask a named door with its fields, retaining HTTP refusal semantics."""
+    from ._attendance import GATE
+
+    refused = None
+    try:
+        data = json.dumps(payload).encode('utf-8')
+        request_headers = {'Content-Type': 'application/json', **GATE.headers()}
+        request = urllib.request.Request(CADUCEUS_URL + path, data=data, headers=request_headers, method='POST')
+        status = 200
+        refusal_header = ''
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=30) as response:
+                status = response.status
+                refusal_header = response.headers.get('x-caduceus-refusal', '')
+                raw = response.read(256 * 1024)
+        except urllib.error.HTTPError as error:
+            status = error.code
+            refusal_header = error.headers.get('x-caduceus-refusal', '') if error.headers else ''
+            if 400 <= status < 500:
+                refused = f'Caduceus refused with HTTP {status}'
+            with error:
+                raw = error.read(256 * 1024)
+        try:
+            value = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError('Caduceus returned an unreadable receipt') from error
+        if not isinstance(value, dict):
+            raise RuntimeError('Caduceus returned an invalid receipt')
+        if not 200 <= status < 300 and value.get('ok') is True:
+            word = refusal_header or value.get('doorSignal') or ''
+            raise _HTTPRefusal(f'Caduceus refused with HTTP {status}: {word}')
+        if refused is not None and (_receipt_ok(value) or not _refusal_signal(value)):
+            raise RuntimeError(refused)
+        return value
+    except _HTTPRefusal:
+        raise
+    except Exception as error:
+        if refused is not None:
+            raise _HTTPRefusal(refused) from error
+        if isinstance(error, (OSError, HTTPException)):
+            raise RuntimeError('Caduceus is unavailable') from error
+        if isinstance(error, RuntimeError):
+            raise
+        raise RuntimeError('Caduceus request failed') from error
+
+
+def _read_settings(family: str, required_route: str | None = None) -> dict[str, Any]:
+    path = f'/api/v1/settings/{family}'
+    if required_route is not None:
+        try:
+            doors = _request('/api/v1/doors') if family == 'display' else _settings_request(_DOOR_LIST, {})
+        except RuntimeError as error:
+            raise RuntimeError(f'missing door: {required_route} (discovery failed: {error})') from error
+        routes = doors.get('routes')
+        if not isinstance(routes, list) or required_route not in routes:
+            raise RuntimeError(f'missing door: {required_route}')
+    return _request(path) if family == 'display' else _settings_request(f'{path}/read', {})
+
+
+def _write_settings(family: str, field: str, value: Any, door: str | None = None,
+                    mutation_method: str = 'PATCH') -> dict[str, Any]:
+    path = f'/api/v1/settings/{family}'
+    if family == 'display':
+        return _request(path, mutation_method, {field: value})
+    return _settings_request(door, {}) if door is not None else _settings_request(f'{path}/set', {field: value})
+
+
 def _signal(receipt: dict[str, Any]) -> str:
     value = receipt.get("firstMissingSignal", receipt.get("first_missing_signal", ""))
     return value if isinstance(value, str) and value != "none" else ""
@@ -481,7 +553,7 @@ def add_manager_row(page: Any, title: str, button_text: str, program: str, *,
         _background(GLib, toggle, finished)
 
     button.connect("clicked", on_click)
-    _background(GLib, lambda: _request("/api/v1/doors"), checked)
+    _background(GLib, lambda: _settings_request(_DOOR_LIST, {}), checked)
 
 
 _SWAY_ONLY_SIGNALS = {"sway-session-unavailable", "unsupported:sway-session-unavailable"}
@@ -692,8 +764,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     if page is None:
         page = _page(Adw, plug)
     group = _group(Adw, page, group_title)
-    path = f"/api/v1/settings/{family}"
-    discovery_path = "/api/v1/doors"
+
     state: dict[str, Any] = {"hydrating": False, "hydrated": False, "read_generation": 0, "values": {}, "status": {}}
     rows: dict[str, Any] = {}
     status_rows: dict[str, Any] = {}
@@ -1280,15 +1351,7 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
         return False
 
     def read_door() -> dict[str, Any]:
-        if required_route is not None:
-            try:
-                doors = _request(discovery_path)
-            except RuntimeError as error:
-                raise RuntimeError(f"missing door: {required_route} (discovery failed: {error})") from error
-            routes = doors.get("routes")
-            if not isinstance(routes, list) or required_route not in routes:
-                raise RuntimeError(f"missing door: {required_route}")
-        return _request(path)
+        return _read_settings(family, required_route)
 
     def refresh(message_field: str | None = None) -> bool:
         if message_field is not None:
@@ -1380,7 +1443,8 @@ def build_settings_widget(plug: dict[str, Any], family: str, group_title: str, s
     def start_mutation(field: str, value: Any, previous: Any) -> None:
         def write() -> tuple[dict[str, Any] | None, str]:
             try:
-                return _request(path, mutation_method, {field: value}), ""
+                door = next((spec.get("door") for spec in specs if spec["field"] == field), None)
+                return _write_settings(family, field, value, door, mutation_method), ""
             except _HTTPRefusal as refusal:
                 return None, str(refusal)
 
