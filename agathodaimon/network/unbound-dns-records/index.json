@@ -1,3 +1,6 @@
 {
-  "children": []
+  "children": [
+    "list-every-local-dns-record-with-where-it-is-declared",
+    "status-the-owned-local-dns-records-file-and-its-validation-state"
+  ]
 }

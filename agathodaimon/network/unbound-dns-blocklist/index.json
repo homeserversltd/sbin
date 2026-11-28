@@ -1,3 +1,6 @@
 {
-  "children": []
+  "children": [
+    "add-one-blocklist-source-by-its-url",
+    "remove-one-blocklist-source-by-its-url"
+  ]
 }

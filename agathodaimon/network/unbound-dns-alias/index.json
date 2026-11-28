@@ -1,3 +1,6 @@
 {
-  "children": []
+  "children": [
+    "add-one-alias-by-its-label-and-hostname",
+    "remove-one-alias-by-its-label-and-hostname"
+  ]
 }

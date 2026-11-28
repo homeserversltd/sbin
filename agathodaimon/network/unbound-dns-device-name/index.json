@@ -1,3 +1,6 @@
 {
-  "children": []
+  "children": [
+    "add-one-device-name-by-its-hostname-and-ip",
+    "remove-one-device-name-by-its-hostname-and-ip"
+  ]
 }
