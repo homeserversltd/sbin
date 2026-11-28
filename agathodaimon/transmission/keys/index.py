@@ -635,7 +635,7 @@ def main(argv: Any = None, *, action=None, service=None) -> int:
         password_present, password_value = _field(request, "password")
         request = _sanitize_request(request)
         request_sanitized = True
-        if action is None:
+        if _action_value(action) is None:
             receipt = _fail(_receipt(None), "transmission-keys-action-invalid")
         elif action == "status":
             receipt = _status()
