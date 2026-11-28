@@ -1,3 +1,9 @@
 {
-  "children": []
+  "children": [
+    "connect-the-tailscaled-link-to-the-tailnet-with-an-auth-key-read-from-stdin",
+    "off-the-tailscaled-link",
+    "on-the-tailscaled-link-and-offer-the-home-network-route",
+    "status-the-tailscale-backend-state-live-tailnet-and-declared-tailnet",
+    "sync-the-appliance-config-and-nginx-sources-to-the-live-tailnet-name"
+  ]
 }

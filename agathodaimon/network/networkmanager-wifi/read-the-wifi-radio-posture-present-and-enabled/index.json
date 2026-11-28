@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "mutation_allowed": "seat",
+  "sclerite": {
+    "name": "nmcli",
+    "features": {
+      "nmcli": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

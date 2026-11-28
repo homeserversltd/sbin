@@ -1,3 +1,7 @@
 {
-  "children": []
+  "children": [
+    "connect-one-network-device-by-its-interface-name",
+    "disconnect-one-network-device-by-its-interface-name",
+    "set-the-ipv4-method-of-one-network-device-by-its-interface-name"
+  ]
 }

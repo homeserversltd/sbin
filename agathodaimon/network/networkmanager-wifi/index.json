@@ -1,3 +1,8 @@
 {
-  "children": []
+  "children": [
+    "connect-the-wifi-network-named-by-its-ssid-with-an-optional-password",
+    "read-the-wifi-radio-posture-present-and-enabled",
+    "remove-one-saved-wifi-connection-by-its-uuid",
+    "set-the-ipv4-method-of-one-saved-wifi-connection-by-its-uuid"
+  ]
 }
