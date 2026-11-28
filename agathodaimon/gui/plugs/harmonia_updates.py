@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import re
 import threading
-import urllib.parse
 from datetime import datetime, timezone
 
 from typing import Any, Callable
@@ -25,7 +24,7 @@ TIMER_DOOR = "/api/v1/update/service/status"
 TIMER_TOGGLE_DOOR = "/api/v1/update/service/toggle"
 UPDATE_DOOR = "/api/v1/appliance/harmonia-update-engine/converge-this-appliance-to-the-latest-harmonia-sources-now"
 MODULES_DOOR = "/api/v1/appliance/harmonia-module-profile/list-all-modules-with-enabled-state-and-metadata"
-MODULE_TOGGLE_DOOR = "/api/v1/update/modules"
+MODULE_TOGGLE_DOOR = "/api/v1/appliance/harmonia-module-profile/set-one-module-enabled-state-by-its-id"
 HISTORY_DOOR = "/api/v1/appliance/harmonia-update-engine/list-every-harmonia-update-history-entry"
 INTERACTABLES_DOOR = "/api/v1/appliance/harmonia-pending-interactables/list-every-pending-harmonia-interactable"
 INTERACTABLE_RUN_DOOR = "/api/v1/appliance/harmonia-pending-interactables/run-one-pending-harmonia-interactable-by-its-id"
@@ -92,8 +91,8 @@ def _toggle_timer(payload: dict[str, Any] | None, prompt: Callable[[], str | Non
 
 
 def _toggle_module(identifier: str, payload: dict[str, Any], prompt: Callable[[], str | None]) -> dict[str, Any]:
-    path = f"{MODULE_TOGGLE_DOOR}/{urllib.parse.quote(identifier, safe='')}"
-    return _attended_request(path, payload, prompt)
+    body = {"id": identifier, "state": "on" if payload["enabled"] else "off"}
+    return _attended_request(MODULE_TOGGLE_DOOR, body, prompt, flat=True)
 
 
 def _module_card_class(Gtk: Any) -> Any:
