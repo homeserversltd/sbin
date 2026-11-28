@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ._attendance import GATE, PIN_REFUSALS
-from ._common import _direct_request, _receipt_ok, _refusal_signal, _request
+from ._common import _direct_request, _receipt_ok, _refusal_signal, _request, _settings_request
 
 
 PLUG = {
@@ -20,13 +20,17 @@ PLUG = {
     "parent": None,
 }
 
-STATUS_DOOR = "/api/v1/update/status"
+STATUS_DOOR = "/api/v1/appliance/harmonia-update-engine/read-the-harmonia-update-profile-state-and-route-presence"
 TIMER_DOOR = "/api/v1/update/service/status"
 TIMER_TOGGLE_DOOR = "/api/v1/update/service/toggle"
-UPDATE_DOOR = "/api/v1/update/now"
-MODULES_DOOR = "/api/v1/update/modules"
-HISTORY_DOOR = "/api/v1/update/history"
-INTERACTABLES_DOOR = "/api/v1/interactables"
+UPDATE_DOOR = "/api/v1/appliance/harmonia-update-engine/converge-this-appliance-to-the-latest-harmonia-sources-now"
+MODULES_DOOR = "/api/v1/appliance/harmonia-module-profile/list-all-modules-with-enabled-state-and-metadata"
+MODULE_TOGGLE_DOOR = "/api/v1/update/modules"
+HISTORY_DOOR = "/api/v1/appliance/harmonia-update-engine/list-every-harmonia-update-history-entry"
+INTERACTABLES_DOOR = "/api/v1/appliance/harmonia-pending-interactables/list-every-pending-harmonia-interactable"
+INTERACTABLE_RUN_DOOR = "/api/v1/appliance/harmonia-pending-interactables/run-one-pending-harmonia-interactable-by-its-id"
+INTERACTABLE_SILENCE_DOOR = "/api/v1/appliance/harmonia-pending-interactables/set-one-harmonia-interactable-silenced-on-by-its-id"
+INTERACTABLE_UNSILENCE_DOOR = "/api/v1/appliance/harmonia-pending-interactables/set-one-harmonia-interactable-silenced-off-by-its-id"
 STATUS_SCHEMA = "caduceus.update.status.v1"
 HISTORY_SCHEMA = "caduceus.update.history.v1"
 
@@ -49,7 +53,8 @@ def _matches_read_schema(receipt: Any, former: str, path: str) -> bool:
 
 
 def _attended_request(path: str, payload: dict[str, Any] | None,
-                      prompt: Callable[[], str | None], *, precheck: bool = False) -> dict[str, Any]:
+                      prompt: Callable[[], str | None], *, precheck: bool = False,
+                      flat: bool = False) -> dict[str, Any]:
     if precheck:
         gate = _direct_request("/api/v1/access/gate")
         pin_state = gate.get("pin")
@@ -57,11 +62,38 @@ def _attended_request(path: str, payload: dict[str, Any] | None,
             raise RuntimeError("PIN switch unavailable")
         if pin_state["pin_required"] and not GATE.attendance:
             GATE.ask(prompt)
-    receipt = _request(path, "POST", payload, headers=GATE.headers())
+    def post() -> dict[str, Any]:
+        return _settings_request(path, payload if payload is not None else {}) if flat else _request(
+            path, "POST", payload, headers=GATE.headers())
+
+    receipt = post()
     if not _receipt_ok(receipt) and _refusal_signal(receipt) in PIN_REFUSALS:
         GATE.ask(prompt)
-        return _request(path, "POST", payload, headers=GATE.headers())
+        return post()
     return receipt
+
+
+def _read_door(path: str) -> dict[str, Any]:
+    return _request(path) if path == TIMER_DOOR else _settings_request(path, {})
+
+
+def _update_now(prompt: Callable[[], str | None]) -> dict[str, Any]:
+    return _attended_request(UPDATE_DOOR, {}, prompt, flat=True)
+
+
+def _interactable_action(action: str, identifier: str, prompt: Callable[[], str | None]) -> dict[str, Any]:
+    path = {"run": INTERACTABLE_RUN_DOOR, "silence": INTERACTABLE_SILENCE_DOOR,
+            "unsilence": INTERACTABLE_UNSILENCE_DOOR}[action]
+    return _attended_request(path, {"id": identifier}, prompt, precheck=True, flat=True)
+
+
+def _toggle_timer(payload: dict[str, Any] | None, prompt: Callable[[], str | None]) -> dict[str, Any]:
+    return _attended_request(TIMER_TOGGLE_DOOR, payload, prompt)
+
+
+def _toggle_module(identifier: str, payload: dict[str, Any], prompt: Callable[[], str | None]) -> dict[str, Any]:
+    path = f"{MODULE_TOGGLE_DOOR}/{urllib.parse.quote(identifier, safe='')}"
+    return _attended_request(path, payload, prompt)
 
 
 def _module_card_class(Gtk: Any) -> Any:
@@ -565,7 +597,7 @@ def build_widget() -> Any:
 
     def read_door(path: str, callback: Callable[..., bool], *args: Any) -> None:
         try:
-            receipt = _request(path)
+            receipt = _read_door(path)
             post_to_ui(callback, receipt, None, *args)
         except Exception as error:  # transport failures remain visible in the pane
             post_to_ui(callback, None, str(error), *args)
@@ -577,7 +609,12 @@ def build_widget() -> Any:
         *args: Any,
     ) -> None:
         try:
-            receipt = _attended_request(path, payload, prompt_pin)
+            if path == UPDATE_DOOR:
+                receipt = _update_now(prompt_pin)
+            elif path == TIMER_TOGGLE_DOOR:
+                receipt = _toggle_timer(payload, prompt_pin)
+            else:
+                receipt = _attended_request(path, payload, prompt_pin)
             post_to_ui(callback, receipt, None, *args)
         except Exception as error:  # transport failures remain visible in the pane
             post_to_ui(callback, None, str(error), *args)
@@ -621,9 +658,9 @@ def build_widget() -> Any:
         done.wait()
         return answer.pop()
 
-    def mutate_interactable(path: str, callback: Callable[..., bool]) -> None:
+    def mutate_interactable(action: str, identifier: str, callback: Callable[..., bool]) -> None:
         try:
-            receipt = _attended_request(path, None, prompt_pin, precheck=True)
+            receipt = _interactable_action(action, identifier, prompt_pin)
             post_to_ui(callback, receipt, None)
         except Exception as error:
             post_to_ui(callback, None, str(error))
@@ -1199,7 +1236,7 @@ def build_widget() -> Any:
         }
         data["module_errors"].pop(identifier, None)
         render_modules()
-        path = f"{MODULES_DOOR}/{urllib.parse.quote(identifier, safe='')}"
+
 
         def finish(receipt: Any, error: str | None) -> bool:
             current = data["module_pending"].get(identifier)
@@ -1219,7 +1256,14 @@ def build_widget() -> Any:
             return False
 
         payload = {"enabled": requested}
-        threading.Thread(target=mutate_door, args=(path, payload, finish), daemon=True).start()
+        def mutate_module() -> None:
+            try:
+                receipt = _toggle_module(identifier, payload, prompt_pin)
+                post_to_ui(finish, receipt, None)
+            except Exception as error:
+                post_to_ui(finish, None, str(error))
+
+        threading.Thread(target=mutate_module, daemon=True).start()
         return True
 
     def agree(_button: Any, identifier: str) -> None:
@@ -1230,7 +1274,7 @@ def build_widget() -> Any:
         data["agree_busy"][identifier] = sequence
         data["agree_messages"].pop(identifier, None)
         render_pending()
-        path = f"{INTERACTABLES_DOOR}/{urllib.parse.quote(identifier, safe='')}/run"
+        action = "run"
 
         def finish(receipt: Any, error: str | None) -> bool:
             if data["agree_busy"].get(identifier) != sequence:
@@ -1245,7 +1289,7 @@ def build_widget() -> Any:
                 request_read("interactables", INTERACTABLES_DOOR, finish_interactables)
             return False
 
-        threading.Thread(target=mutate_interactable, args=(path, finish), daemon=True).start()
+        threading.Thread(target=mutate_interactable, args=(action, identifier, finish), daemon=True).start()
 
     def set_silence(_button: Any, identifier: str, silenced: bool) -> None:
         if identifier in data["agree_busy"]:
@@ -1256,7 +1300,7 @@ def build_widget() -> Any:
         data["agree_messages"].pop(identifier, None)
         render_pending()
         action = "silence" if silenced else "unsilence"
-        path = f"{INTERACTABLES_DOOR}/{urllib.parse.quote(identifier, safe='')}/{action}"
+
 
         def finish(receipt: Any, error: str | None) -> bool:
             if data["agree_busy"].get(identifier) != sequence:
@@ -1270,7 +1314,7 @@ def build_widget() -> Any:
                     request_read("interactables", INTERACTABLES_DOOR, finish_interactables)
             return False
 
-        threading.Thread(target=mutate_interactable, args=(path, finish), daemon=True).start()
+        threading.Thread(target=mutate_interactable, args=(action, identifier, finish), daemon=True).start()
 
     def update_now(_button: Any) -> None:
         if data["update_busy"] or not data["status_ready"]:
