@@ -2,6 +2,7 @@
   "schema": "appliance.crossings.v1",
   "profile": "hometv",
   "bands": [
+    "appliance/harmonia-module-profile/set-one-module-enabled-state-by-its-id",
     "appliance/harmonia-pending-interactables/list-every-pending-harmonia-interactable",
     "appliance/harmonia-pending-interactables/run-one-pending-harmonia-interactable-by-its-id",
     "appliance/harmonia-pending-interactables/set-one-harmonia-interactable-silenced-off-by-its-id",
@@ -345,6 +346,7 @@
   ],
   "administrative": {
     "bands": [
+      "appliance/harmonia-module-profile/set-one-module-enabled-state-by-its-id",
       "appliance/power/poweroff",
       "appliance/power/reboot",
       "appliance/service",
