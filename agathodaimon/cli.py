@@ -1333,11 +1333,12 @@ def _transmission_keys_json_argv(args: list[str]) -> bool:
         target, _remainder = _cli_target(list(args))
     except Exception:
         return False
-    named = target in {
+    names = {
         "network/transmission-service-keys/read-which-transmission-service-keys-are-present-without-their-values",
         "network/transmission-service-keys/set-the-username-and-password-of-a-transmission-service-other-than-the-daemon",
         "network/transmission-service-keys/rotate-the-transmission-daemon-login-password-to-a-newly-generated-one",
     }
+    named = target in names or bool(args and args[0] in names)
     return (target == "transmission/keys" or named) and any(
         isinstance(argument, str) and argument.lstrip().startswith("{")
         for argument in args[1:]
@@ -1951,6 +1952,13 @@ def _main(argv, folder, seats, intents):
                     _front_answer("invalid-envelope-json", "parse-envelope")
                     return 2
     caduceus_root = os.environ.get("SUDO_USER") == "caduceus" and os.geteuid() == 0
+    if (args and args[0] in {
+            "network/transmission-service-keys/read-which-transmission-service-keys-are-present-without-their-values",
+            "network/transmission-service-keys/set-the-username-and-password-of-a-transmission-service-other-than-the-daemon",
+            "network/transmission-service-keys/rotate-the-transmission-daemon-login-password-to-a-newly-generated-one",
+        } and any(word == "--password" or word.startswith("--password=") for word in args[1:])):
+        _front_answer("invalid-or-forbidden-long-option", "options")
+        return 2
     if _transmission_keys_json_argv(args):
         if not caduceus_root and _refuse_undeclared_hand_option_before_argv_guard(args):
             return 2
