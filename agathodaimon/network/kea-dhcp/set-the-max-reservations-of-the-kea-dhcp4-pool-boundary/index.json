@@ -1,0 +1,19 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "sclerite": {
+    "name": "kea",
+    "features": {
+      "kea": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

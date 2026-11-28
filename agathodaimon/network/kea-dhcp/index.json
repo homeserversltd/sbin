@@ -1,3 +1,13 @@
 {
-  "children": []
+  "children": [
+    "add-one-reservation-by-its-mac-with-its-ip-and-hostname",
+    "read-the-pool-boundary-of-the-kea-dhcp4-subnet",
+    "read-the-pool-usage-statistics-of-kea-dhcp4",
+    "remove-one-reservation-by-its-identifier",
+    "set-the-hostname-of-one-reservation-by-its-identifier",
+    "set-the-ip-of-one-reservation-by-its-identifier",
+    "set-the-max-reservations-of-the-kea-dhcp4-pool-boundary",
+    "status-the-kea-dhcp4-server-unit-and-its-configuration-validity",
+    "verify-the-health-of-the-kea-dhcp4-service-and-its-configuration"
+  ]
 }

@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "sclerite": {
+    "name": "kea",
+    "features": {
+      "kea": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  },
+  "mutation_allowed": "seat"
+}
