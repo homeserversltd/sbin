@@ -1,5 +1,7 @@
 {
   "children": [
+    "set-the-unbound-adblock-blocklist-include-off",
+    "set-the-unbound-adblock-blocklist-include-on",
     "set-the-unbound-upstream-resolvers-by-preset-or-custom-list-and-dns-over-tls",
     "status-the-unbound-resolver-upstreams-dot-adblock-and-unit-state"
   ]

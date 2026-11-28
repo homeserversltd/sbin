@@ -1,0 +1,22 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "envelope": {
+    "stdin": "json"
+  },
+  "sclerite": {
+    "name": "transmission",
+    "features": {
+      "transmission": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": true,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

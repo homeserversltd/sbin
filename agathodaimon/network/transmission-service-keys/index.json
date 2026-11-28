@@ -1,3 +1,7 @@
 {
-  "children": []
+  "children": [
+    "read-which-transmission-service-keys-are-present-without-their-values",
+    "rotate-the-transmission-daemon-login-password-to-a-newly-generated-one",
+    "set-the-username-and-password-of-a-transmission-service-other-than-the-daemon"
+  ]
 }

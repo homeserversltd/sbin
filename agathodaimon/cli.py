@@ -1333,10 +1333,15 @@ def _transmission_keys_json_argv(args: list[str]) -> bool:
         target, _remainder = _cli_target(list(args))
     except Exception:
         return False
-    return target == "transmission/keys" and any(
+    named = target in {
+        "network/transmission-service-keys/read-which-transmission-service-keys-are-present-without-their-values",
+        "network/transmission-service-keys/set-the-username-and-password-of-a-transmission-service-other-than-the-daemon",
+        "network/transmission-service-keys/rotate-the-transmission-daemon-login-password-to-a-newly-generated-one",
+    }
+    return (target == "transmission/keys" or named) and any(
         isinstance(argument, str) and argument.lstrip().startswith("{")
         for argument in args[1:]
-    )
+    ) or named and any(argument == "--username" or argument.startswith("--username=") for argument in args[1:] if isinstance(argument, str))
 
 
 def _administrative_target(target: str, publication) -> bool:

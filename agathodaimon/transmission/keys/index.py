@@ -614,18 +614,23 @@ def _rotate(service_value: Any, service_present: bool) -> dict[str, Any]:
         service_value = None
 
 
-def main(argv: Any = None) -> int:
+def main(argv: Any = None, *, action=None, service=None) -> int:
     del argv
     request = None
     request_sanitized = False
-    action = None
+    named_action = action
+    action = named_action
     service_present = username_present = password_present = False
     service_value = username_value = password_value = None
     successful_read = False
     try:
         request = rt.read_request(known_fields=_KNOWN_FIELDS, declared_flags=())
-        action = select_action(request=request)
-        service_present, service_value = _field(request, "service")
+        if named_action is None:
+            action = select_action(request=request)
+        if service is None:
+            service_present, service_value = _field(request, "service")
+        else:
+            service_present, service_value = True, service
         username_present, username_value = _field(request, "username")
         password_present, password_value = _field(request, "password")
         request = _sanitize_request(request)

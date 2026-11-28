@@ -4,10 +4,10 @@ from agathodaimon import _envelope
 from agathodaimon.network.dns._resolver import resolver_control
 
 
-def main(argv=None):
+def main(argv=None, *, enabled=None):
     try:
         request = _envelope.read_fields('enabled')
-        receipt = resolver_control("adblock", {"enabled": request.payload.get("enabled")})
+        receipt = resolver_control("adblock", {"enabled": request.payload.get("enabled") if enabled is None else enabled})
     except (_envelope.EnvelopeError) as exc:
         receipt = {"ok": False, "mutationPerformed": False, "firstMissingSignal": str(exc)}
     else:
