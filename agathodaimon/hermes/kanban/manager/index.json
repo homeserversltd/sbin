@@ -1,0 +1,6 @@
+{
+  "children": [],
+  "mutation_allowed": "seat",
+  "envelope": {"stdin": "json"},
+  "hand": "envelope"
+}
