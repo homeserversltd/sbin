@@ -1,0 +1,7 @@
+{
+  "children": [],
+  "mutation_allowed": "seat",
+  "envelope": {"stdin": "json"},
+  "hand": "envelope",
+  "sclerite": {"name": "hermes", "features": {"hermes": {"band": true, "verbs": [["kanban", "beat"]], "routes": ["/api/v1/hermes/kanban/beat"]}}}
+}

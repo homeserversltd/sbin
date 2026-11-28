@@ -47,6 +47,7 @@
     "face/volume",
     "face/workspace",
     "hermes/dashboard-login",
+    "hermes/kanban/beat",
     "hermes/kanban/manager",
     "keyman/newkey",
     "keyman/secret/put",
@@ -228,6 +229,10 @@
     [
       "hermes",
       "dashboard-login"
+    ],
+    [
+      "kanban",
+      "beat"
     ],
     [
       "keyman",
@@ -443,6 +448,7 @@
     "/api/v1/file/ingress",
     "/api/v1/file/ingress/:upload_id/complete",
     "/api/v1/hermes/dashboard-login",
+    "/api/v1/hermes/kanban/beat",
     "/api/v1/hermes/kanban/manager",
     "/api/v1/interactables",
     "/api/v1/interactables/:id/run",
