@@ -178,7 +178,10 @@ def _read_gate_status(timeout: int = 30) -> dict[str, Any]:
             method="POST", timeout=timeout,
         )
         if (isinstance(gate, dict) and gate.get("ok") is True
-                and isinstance(gate.get("vault"), dict) and isinstance(gate.get("pin"), dict)):
+                and isinstance(gate.get("vault"), dict)
+                and isinstance(gate["vault"].get("unlock_required"), bool)
+                and isinstance(gate.get("pin"), dict)
+                and isinstance(gate["pin"].get("pin_required"), bool)):
             return gate
     except RuntimeError:
         pass
