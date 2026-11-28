@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -43,6 +44,38 @@ def _read_boards(home):
     return found
 
 
+def _board_available(home, board):
+    if not isinstance(board, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', board):
+        return False
+    root = home / 'kanban' / 'boards' / board
+    marker = root / 'board.json'
+    database = home / 'kanban.db' if board == 'default' else root / 'kanban.db'
+    if not database.is_file() or (board != 'default' and not marker.is_file()):
+        return False
+    if marker.is_file():
+        try:
+            meta = json.loads(marker.read_text(encoding='utf-8-sig'))
+            if not isinstance(meta, dict) or meta.get('archived'):
+                return False
+        except (OSError, ValueError):
+            return False
+    return True
+
+
+def _failure_count(board, ok):
+    path = decision.hermes_home() / 'kanban' / 'beat.sqlite3'
+    if ok and not path.exists():
+        return
+    with sqlite3.connect(path) as con:
+        con.execute('create table if not exists beat_failures (board text primary key, consecutive integer not null)')
+        previous = con.execute('select consecutive from beat_failures where board = ?', (board,)).fetchone()
+        count = 0 if ok else (previous[0] if previous else 0) + 1
+        con.execute('insert or replace into beat_failures(board, consecutive) values (?, ?)', (board, count))
+    if count == 2:
+        send('sbin', 'kanban-beat-repeated-failure', False, target=board,
+             signal='kanban-beat-repeated-failure')
+
+
 def _mentor(board, snapshot):
     path = decision.hermes_home() / 'kanban' / 'beat.sqlite3'
     running = {t['id']: int(t.get('started_at') or t.get('created_at') or 0)
@@ -61,7 +94,7 @@ def _mentor(board, snapshot):
 
 def _beat(board, dry):
     snapshot = decision.fetch_assignment_snapshot(board)
-    choice = decision.decide_next_management_beat(snapshot, revisit_blocked=not dry)
+    choice = decision.decide_next_management_beat(snapshot, revisit_blocked=True)
     action = choice['action']
     result = {'board': board, 'ok': True, 'actions': [], 'event_through': snapshot['event_through'], 'changed': False}
     if action not in NO_ACTION:
@@ -80,12 +113,13 @@ def _beat(board, dry):
     # Revisit is observation only; today's sweep does not grant unblock.
     if proc is not None:
         result['ok'] = proc.returncode == 0
+        send('sbin', 'hermes-kanban-beat', result['ok'], target=board,
+             signal='hermes-kanban-beat-failed', ref=action)
         after = decision.fetch_assignment_snapshot(board)
         result['event_through'] = max((x for x in (snapshot['event_through'], after['event_through']) if x is not None), default=None)
         result['changed'] = snapshot['event_through'] != after['event_through']
         _mentor(board, after)
-        if result['changed']:
-            send('sbin', 'hermes-kanban-beat', True, target=board)
+
     return result
 
 
@@ -97,6 +131,10 @@ def run(payload):
         response.update(ok=False, firstMissingSignal='hermes-kanban-hermes-absent')
         return response
     dry = payload.get('dry_run') is True
+    board = payload.get('board')
+    if board is not None and not _board_available(home, board):
+        response.update(ok=False, firstMissingSignal='hermes-kanban-board-list-failed')
+        return response
     lock = home / 'kanban' / 'beat.lock'
     handle = None
     try:
@@ -112,7 +150,6 @@ def run(payload):
             except BlockingIOError:
                 response['firstMissingSignal'] = 'hermes-kanban-busy'
                 return response
-        board = payload.get('board')
         if board is not None:
             boards = [board]
         elif dry:
@@ -140,6 +177,8 @@ def run(payload):
                 if not dry and (len(active) > 45 or sum(t['status'] == 'running' for t in active) > 10):
                     send('sbin', 'kanban-runaway', False, target=board, signal='kanban-runaway')
                 result = _beat(board, dry)
+                if not dry:
+                    _failure_count(board, result['ok'])
                 response['beats'] += 1
                 response['event_through'] = max((x for x in (response['event_through'], result.pop('event_through')) if x is not None), default=None)
                 response['mutationPerformed'] |= result.pop('changed')
@@ -147,6 +186,8 @@ def run(payload):
                 if not result['ok']:
                     response.update(ok=False, firstMissingSignal='hermes-kanban-beat-failed')
             except (OSError, sqlite3.Error, ValueError, subprocess.SubprocessError):
+                if not dry:
+                    _failure_count(board, False)
                 response['boards'].append({'board': board, 'ok': False, 'actions': []})
                 response.update(ok=False, firstMissingSignal='hermes-kanban-beat-failed')
         return response
