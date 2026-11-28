@@ -64,8 +64,6 @@ def _board_available(home, board):
 
 def _failure_count(board, ok):
     path = decision.hermes_home() / 'kanban' / 'beat.sqlite3'
-    if ok and not path.exists():
-        return
     with sqlite3.connect(path) as con:
         con.execute('create table if not exists beat_failures (board text primary key, consecutive integer not null)')
         previous = con.execute('select consecutive from beat_failures where board = ?', (board,)).fetchone()
