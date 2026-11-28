@@ -170,6 +170,21 @@ def _direct_request(path: str, method: str = "GET", payload: dict[str, Any] | No
     return value
 
 
+def _read_gate_status(timeout: int = 30) -> dict[str, Any]:
+    """Prefer the named status door, preserving the old read on failure."""
+    try:
+        gate = _direct_request(
+            "/api/v1/appliance/exousia-attendance/status-vault-unlock-and-pin-required-in-one-read",
+            method="POST", timeout=timeout,
+        )
+        if (isinstance(gate, dict) and gate.get("ok") is True
+                and isinstance(gate.get("vault"), dict) and isinstance(gate.get("pin"), dict)):
+            return gate
+    except RuntimeError:
+        pass
+    return _direct_request("/api/v1/access/gate", timeout=timeout)
+
+
 _DOOR_LIST = "/api/v1/appliance/caduceus-doors/read-the-door-route-list-of-the-active-profile"
 
 

@@ -366,10 +366,10 @@ def _install_page_keyboard(window: Any, Gtk: Any, Gdk: Any, Adw: Any,
 
 def read_open_gate() -> tuple[bool, bool]:
     """Read the gate once; only explicit true values require a stage."""
-    from agathodaimon.gui.plugs._common import _direct_request
+    from agathodaimon.gui.plugs._common import _read_gate_status
 
     try:
-        gate = _direct_request("/api/v1/access/gate", timeout=3)
+        gate = _read_gate_status(timeout=3)
     except RuntimeError:
         return False, False
     vault = gate.get("vault")

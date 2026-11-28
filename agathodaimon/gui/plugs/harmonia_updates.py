@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from ._attendance import GATE, PIN_REFUSALS
-from ._common import _direct_request, _receipt_ok, _refusal_signal, _request, _settings_request
+from ._common import _direct_request, _read_gate_status, _receipt_ok, _refusal_signal, _request, _settings_request
 
 
 PLUG = {
@@ -55,7 +55,7 @@ def _attended_request(path: str, payload: dict[str, Any] | None,
                       prompt: Callable[[], str | None], *, precheck: bool = False,
                       flat: bool = False) -> dict[str, Any]:
     if precheck:
-        gate = _direct_request("/api/v1/access/gate")
+        gate = _read_gate_status()
         pin_state = gate.get("pin")
         if not isinstance(pin_state, dict) or type(pin_state.get("pin_required")) is not bool:
             raise RuntimeError("PIN switch unavailable")
