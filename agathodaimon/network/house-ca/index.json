@@ -1,3 +1,17 @@
 {
-  "children": []
+  "children": [
+    "admit-one-homeserver-portal-by-its-name-and-address",
+    "converge-the-house-ca-root-to-present-and-valid",
+    "converge-the-house-ca-state-to-one-named-transition",
+    "export-the-house-ca-trust-bundle-for-one-platform-by-its-platform",
+    "hold-the-house-ca-constituent-lock-for-one-portal-by-its-name-and-lan-ip",
+    "install-the-house-ca-leaf-into-the-nginx-tls-sites-and-reload-nginx",
+    "install-the-house-ca-trust-bundle-into-this-seats-trust-store-by-its-platform",
+    "issue-one-leaf-certificate-for-named-subject-alternative-names",
+    "read-the-house-ca-trust-bundle-for-one-platform-by-its-platform",
+    "retire-one-homeserver-portal-by-its-name",
+    "rotate-the-house-ca-root-key-and-certificate",
+    "sign-one-certificate-signing-request-by-its-pem",
+    "status-the-house-ca-root-and-leaf-certificates-and-their-validity"
+  ]
 }

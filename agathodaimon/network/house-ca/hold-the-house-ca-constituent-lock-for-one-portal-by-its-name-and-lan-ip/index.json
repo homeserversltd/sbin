@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "dry-run": "seat",
+  "sclerite": {
+    "name": "gateway",
+    "features": {
+      "gateway": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

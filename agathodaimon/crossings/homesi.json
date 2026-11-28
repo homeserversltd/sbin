@@ -55,6 +55,8 @@
     "network/cert/house-ca/status",
     "network/cert/house-ca/trust-install",
     "network/cert/refresh",
+    "network/house-ca/install-the-house-ca-trust-bundle-into-this-seats-trust-store-by-its-platform",
+    "network/house-ca/status-the-house-ca-root-and-leaf-certificates-and-their-validity",
     "network/wake-on-lan/probe",
     "network/wake-on-lan/send",
     "network/wifi/connection/forget",
