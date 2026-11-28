@@ -1,3 +1,3 @@
 {
-  "children": []
+  "children": ["add-one-filtered-child-device-with-its-way-and-hostnames-by-its-mac", "list-every-filtered-child-device-with-its-way-and-hostnames", "list-the-devices-observed-on-the-lan-with-their-child-filter-policy", "read-the-hostname-whitelist-of-one-filtered-child-device-by-its-mac", "remove-one-filtered-child-device-by-its-mac", "set-the-hostname-whitelist-of-one-filtered-child-device-by-its-mac-at-its-revision", "set-the-way-of-one-filtered-child-device-by-its-mac-to-blocked-or-allowlist"]
 }

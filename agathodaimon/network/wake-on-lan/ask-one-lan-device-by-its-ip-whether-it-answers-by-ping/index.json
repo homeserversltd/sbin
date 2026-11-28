@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "mutation_allowed": "seat",
+  "sclerite": {
+    "name": "all",
+    "features": {
+      "all": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "children": [],
+  "hand": "envelope",
+  "mutation_allowed": "seat",
+  "sclerite": {
+    "name": "firewall",
+    "features": {
+      "firewall": {
+        "band": true,
+        "verbs": [],
+        "routes": [],
+        "administrative": {
+          "band": false,
+          "verbs": [],
+          "routes": []
+        }
+      }
+    }
+  }
+}

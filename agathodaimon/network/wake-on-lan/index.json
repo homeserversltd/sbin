@@ -1,5 +1,5 @@
 {
-  "children": ["send", "probe"],
+  "children": ["send", "probe", "ask-one-lan-device-by-its-ip-whether-it-answers-by-ping", "send-a-wake-on-lan-magic-packet-to-one-lan-device-by-its-mac-and-broadcast"],
   "sclerite": {
     "name": "settings",
     "features": {
